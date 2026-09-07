@@ -2,9 +2,7 @@
 build/
 dist/
 
-# 大文件 - 模型和运行时（手动传输）
-tools/models/
-tools/jdk-*/
+# 大文件 - jre 压缩包（手动传输）
 tools/jre*.zip
 
 # Allure 测试报告
