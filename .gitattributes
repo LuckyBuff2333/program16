@@ -1,0 +1,2 @@
+tools/models/** filter=lfs diff=lfs merge=lfs -text
+tools/jdk-*/** filter=lfs diff=lfs merge=lfs -text
