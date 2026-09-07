@@ -1,0 +1,22 @@
+INFO     db:db.py:56 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_analyze_api0/test.db
+INFO     db:db.py:85 bugid 去重完成: 新增 2 个, 过滤已存在 1 个
+INFO     pipeline:pipeline.py:77 bugid=WEB-1 数据库已存在，过滤跳过
+INFO     ai_log:ai_log_client.py:104 [mock] AI 日志分析: bugid=WEB-1, trigger_time=2026-08-14 10:00:00
+INFO     doc_gen:doc_generator.py:28 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_analyze_api0\output\docs\2026-08-14\WEB-1.md
+INFO     doc_gen:doc_generator.py:39 文档步骤提取完成: 共 4 条
+INFO     jira:jira_client.py:36 [mock] 获取 Jira 信息: bugid=WEB-1
+INFO     filter:filter.py:75 第 2 条评论到达根因相似结论（语义 0.700, 关键词命中 0.80），截断后续 3 条评论不参与对比
+INFO     filter:filter.py:120 有效评论不足 3 条，已从最后三条评论中补充 1 条
+INFO     filter:filter.py:122 评论过滤完成: 2 条评论提取出 3 条分析步骤
+INFO     similarity:similarity.py:65 根因比对完成: 关键词命中 5/8, 比例 0.62
+INFO     pipeline:pipeline.py:52 bugid=WEB-1 比对完成: 根因一致=True(关键词 0.62/语义 0.810), 步骤一致=True, 相似度=0.854
+INFO     ai_log:ai_log_client.py:104 [mock] AI 日志分析: bugid=WEB-2, trigger_time=None
+INFO     doc_gen:doc_generator.py:28 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_analyze_api0\output\docs\2026-08-14\WEB-2.md
+INFO     doc_gen:doc_generator.py:39 文档步骤提取完成: 共 4 条
+INFO     jira:jira_client.py:36 [mock] 获取 Jira 信息: bugid=WEB-2
+INFO     filter:filter.py:75 第 2 条评论到达根因相似结论（语义 0.700, 关键词命中 0.80），截断后续 3 条评论不参与对比
+INFO     filter:filter.py:120 有效评论不足 3 条，已从最后三条评论中补充 1 条
+INFO     filter:filter.py:122 评论过滤完成: 2 条评论提取出 3 条分析步骤
+INFO     similarity:similarity.py:65 根因比对完成: 关键词命中 5/8, 比例 0.62
+INFO     pipeline:pipeline.py:52 bugid=WEB-2 比对完成: 根因一致=True(关键词 0.62/语义 0.810), 步骤一致=True, 相似度=0.854
+INFO     report:report.py:63 每日结论报表已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_analyze_api0\output\reports\2026-08-14_daily.csv, 本次写入 2 条, 合计 2 条

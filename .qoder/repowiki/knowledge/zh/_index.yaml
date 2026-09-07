@@ -1,0 +1,46 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: Q0DeR-MaG1C-BrAnCh-Fo2-NoN-GiT-Or-No-C0MmIt
+nodes_managed: true
+exported_at: "2026-08-12T09:41:43Z"
+modules:
+    "":
+        dir_name: Bug 文档沉淀工具（根项目）
+        title: Bug 文档沉淀工具（根项目）
+        scope:
+            - README.md
+            - requirements.txt
+            - conftest.py
+            - config/
+            - docs/
+            - allure-results/
+        source_files: []
+        children:
+            - pipeline_and_app
+            - tests
+        depends_on: []
+        related_to: []
+    pipeline_and_app:
+        dir_name: Bug 文档分析流水线与 CLI 入口
+        title: Bug 文档分析流水线与 CLI 入口
+        scope:
+            - src/main.py
+            - src/pipeline.py
+            - src/config.py
+            - src/db.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: tests
+    tests:
+        dir_name: 测试套件（Pytest + Allure）
+        title: 测试套件（Pytest + Allure）
+        scope:
+            - tests/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: pipeline_and_app

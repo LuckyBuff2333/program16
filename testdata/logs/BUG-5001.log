@@ -1,0 +1,18 @@
+2026-08-10 09:00:12 [INFO] user-service - 健康检查通过，服务状态正常
+2026-08-10 09:02:45 [INFO] user-service - 定时任务 heartbeat 执行完成，耗时 12ms
+2026-08-10 09:05:33 [DEBUG] user-service - 缓存刷新完成，共加载 2340 条用户配置
+2026-08-10 09:08:21 [INFO] gateway - 路由表热更新成功，版本 v2.3.1
+2026-08-10 09:10:02 [INFO] user-service - 用户登录成功，userId=88231
+2026-08-10 09:11:47 [DEBUG] order-service - 消息队列消费正常，offset=109223
+2026-08-10 09:13:26 [INFO] user-service - 接口 /api/user/info 响应正常，平均耗时 45ms
+2026-08-10 09:14:38 [WARN] order-service - 数据库连接等待时间 850ms，接近告警阈值
+2026-08-10 09:14:52 [WARN] order-service - 数据库连接等待时间 2300ms，连接池活跃连接数 48/50
+2026-08-10 09:15:01 [ERROR] order-service - 获取数据库连接超时（等待 5000ms），连接池已耗尽，active=50 idle=0
+2026-08-10 09:15:03 [ERROR] order-service - java.sql.SQLTransientConnectionException: HikariPool-1 - Connection is not available, request timed out after 5000ms
+2026-08-10 09:15:06 [ERROR] order-service - 下单接口 /api/order/create 批量超时，失败率 87%，根因指向数据库连接池耗尽
+2026-08-10 09:15:18 [WARN] user-service - 数据库连接等待时间 3100ms，疑似连接池资源不足扩散
+2026-08-10 09:16:40 [INFO] monitor - 收到告警推送，级别 P1，目标群组 ops-oncall
+2026-08-10 09:18:22 [DEBUG] gateway - 限流规则加载完成，共 56 条
+2026-08-10 09:20:15 [INFO] ops-bot - 值班通知已发送给张工
+2026-08-10 09:25:33 [INFO] order-service - 慢查询扫描：SELECT * FROM t_order_detail WHERE status=0 执行耗时 28.4s，占用连接未释放
+2026-08-10 09:30:00 [INFO] user-service - 健康检查通过，服务状态正常

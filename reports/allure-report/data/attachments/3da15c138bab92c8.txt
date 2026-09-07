@@ -1,0 +1,21 @@
+INFO     db:db.py:56 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_audit_pool_smaller_than_c0/test.db
+INFO     db:db.py:102 抽查候选池读取完成: 共 3 个已入库 bugid
+INFO     audit:audit.py:109 抽查候选: 库内 3 个, 已抽查 0 个, 可用 3 个
+WARNING  audit:audit.py:114 可用候选不足 30 个，本次抽查全部 3 个
+INFO     ai_log:ai_log_client.py:104 [mock] AI 日志分析: bugid=KB-2, trigger_time=2026-08-01 10:02:00
+INFO     doc_gen:doc_generator.py:28 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_pool_smaller_than_c0\output\docs\2026-08-14\KB-2.md
+INFO     doc_gen:doc_generator.py:39 文档步骤提取完成: 共 4 条
+INFO     similarity:similarity.py:48 步骤相似度比对完成: 平均得分 1.000
+INFO     audit:audit.py:80 抽查比对完成: bugid=KB-2, 根因相似度=1.000, 流程相似度=1.000
+INFO     ai_log:ai_log_client.py:104 [mock] AI 日志分析: bugid=KB-1, trigger_time=2026-08-01 10:01:00
+INFO     doc_gen:doc_generator.py:28 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_pool_smaller_than_c0\output\docs\2026-08-14\KB-1.md
+INFO     doc_gen:doc_generator.py:39 文档步骤提取完成: 共 4 条
+INFO     similarity:similarity.py:48 步骤相似度比对完成: 平均得分 1.000
+INFO     audit:audit.py:80 抽查比对完成: bugid=KB-1, 根因相似度=1.000, 流程相似度=1.000
+INFO     ai_log:ai_log_client.py:104 [mock] AI 日志分析: bugid=KB-3, trigger_time=2026-08-01 10:03:00
+INFO     doc_gen:doc_generator.py:28 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_pool_smaller_than_c0\output\docs\2026-08-14\KB-3.md
+INFO     doc_gen:doc_generator.py:39 文档步骤提取完成: 共 4 条
+INFO     similarity:similarity.py:48 步骤相似度比对完成: 平均得分 1.000
+INFO     audit:audit.py:80 抽查比对完成: bugid=KB-3, 根因相似度=1.000, 流程相似度=1.000
+INFO     audit:audit.py:137 抽查审核表格已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_pool_smaller_than_c0\output\reports\audit_comparison.csv, 共 3 条
+INFO     audit:audit.py:52 已抽查记录已更新: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_pool_smaller_than_c0\output\reports\audited_bugids.csv, 本次追加 3 条

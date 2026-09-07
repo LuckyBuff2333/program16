@@ -1,0 +1,2 @@
+2026-08-14 14:07:00,042 [INFO] db - 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_truncate_by_keyword_hit0/test.db
+2026-08-14 14:07:00,069 [INFO] filter - 第 2 条评论到达根因相似结论（语义 0.917, 关键词命中 1.00），截断后续 1 条评论不参与对比
