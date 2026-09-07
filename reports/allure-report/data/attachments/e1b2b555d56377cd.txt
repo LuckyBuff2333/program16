@@ -1,0 +1,3 @@
+2026-08-14 14:07:01,288 [INFO] db - 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_compare_steps_empty_input0/test.db
+2026-08-14 14:07:01,290 [WARNING] similarity - 步骤比对输入为空: 文档步骤 0 条, 评论步骤 1 条
+2026-08-14 14:07:01,290 [WARNING] similarity - 步骤比对输入为空: 文档步骤 1 条, 评论步骤 0 条

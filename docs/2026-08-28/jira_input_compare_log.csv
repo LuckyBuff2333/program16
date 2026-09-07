@@ -1,0 +1,79 @@
+﻿jira号,rootcause,AI评论总结,结果置信度,达标,原因
+VCU-124922,非VCU问题,HMIC进程崩溃重启 [详情: D:\program16\docs\2026-08-28\VCU-124922_comments.md],0.0,否,置信度0.0<0.7，语义相似度0.0<0.7
+VCU-144388,E2UL无自动远光灯，setting里面不该有自动远光灯界面,标定参数P_VEHICLE_CONTRO [详情: D:\program16\docs\2026-08-28\VCU-144388_comments.md],0.878,是,
+VCU-151780,按照 CR 844023 删除远程控制类,远程控制设置项存在性缺陷 [详情: D:\program16\docs\2026-08-28\VCU-151780_comments.md],0.503,是,
+VCU-154979,远程天窗控制的available信号长时间为false，有时会跳变成true但很快又变成false，所以不显示，需要对手件确认。,根因：可用性信号晚于操作值信号到达 [详情: D:\program16\docs\2026-08-28\VCU-154979_comments.md],0.846,是,
+VCU-155122,Observable.zip 导致异常信息变更,根因：RxJava操作符误用 [详情: D:\program16\docs\2026-08-28\VCU-155122_comments.md],0.752,是,
+VCU-157809,便利上车和遍历下车的available信号都是false，不可用状态，请对手件确认。,VHAL信号未置位或广播异常 [详情: D:\program16\docs\2026-08-28\VCU-157809_comments.md],0.65,是,
+VCU-162230,无售后问题抱怨，且问题感知度极低,车辆信号上报功能不可用 [详情: D:\program16\docs\2026-08-28\VCU-162230_comments.md],0.525,否,置信度0.525<0.7，语义相似度0.661<0.7
+VCU-163127,在冷启动过程中，存在底层信号紊乱，导致一开始进程获取的菜单的available可能不正确，导致tab不显示,PN唤醒信号异常导致菜单加载不完整 [详情: D:\program16\docs\2026-08-28\VCU-163127_comments.md],0.52,否,置信度0.52<0.7，语义相似度0.15<0.7
+VCU-164457,需求要求：快捷控制编辑态无需展示按键的状态，预览区和仓库中的按键应统一显示为 Normal状态。 且自动远光灯之前就为打开的状态，INC进入编辑态后，自动远光灯与其他按钮一起进入Normal状态，符合需求。,自动远光灯QSItem未接入车辆信号监听 [详情: D:\program16\docs\2026-08-28\VCU-164457_comments.md],0.533,是,
+VCU-165996,没有同步自动除雾/自动座椅加热/自动座椅通风设置项,个性化设置同步链路缺陷 [详情: D:\program16\docs\2026-08-28\VCU-165996_comments.md],0.525,是,
+VCU-181064,"557 上无远端控制车机wifi开关功能,当前判断了有该功能后return，导致修改Wifi用户名密码部分代码没有被执行。",根因：TBOX协议版本差异（557未按4 [详情: D:\program16\docs\2026-08-28\VCU-181064_comments.md],0.564,是,
+VCU-193670,测试延期,车端APP数据生成或上报逻辑异常 [详情: D:\program16\docs\2026-08-28\VCU-193670_comments.md],0.664,是,
+VCU-194386,main1台架无法休眠,根因：平台至车端指令传输链路消息丢失 [详情: D:\program16\docs\2026-08-28\VCU-194386_comments.md],0.618,是,
+VCU-194755,测试延期,日志证据缺失，根因无法从评论中确认 [详情: D:\program16\docs\2026-08-28\VCU-194755_comments.md],0.849,是,
+VCU-194837,测试延期，待下版本重新测试,未连接对手件导致底层ECU无响应 [详情: D:\program16\docs\2026-08-28\VCU-194837_comments.md],0.509,是,
+VCU-197848,车端变更座椅远控接口,根因：车端状态机模式切换处理逻辑异常 [详情: D:\program16\docs\2026-08-28\VCU-197848_comments.md],0.933,是,
+VCU-198299,未复现,云端日志覆盖导致链路不可测，问题未复现 [详情: D:\program16\docs\2026-08-28\VCU-198299_comments.md],0.935,是,
+VCU-198434,代码问题,车端CoreService数据接收缺失 [详情: D:\program16\docs\2026-08-28\VCU-198434_comments.md],0.917,是,
+VCU-199058,代码逻辑,根因：模式字段未重置及UI层未联动判断 [详情: D:\program16\docs\2026-08-28\VCU-199058_comments.md],0.895,是,
+VCU-205023,ND车型空调的标定与557不一样，标定不同AREAID不同，所以需要通过标定来动态修改areaid,根因：字段丢失与状态判断逻辑缺陷 [详情: D:\program16\docs\2026-08-28\VCU-205023_comments.md],0.522,是,
+VCU-205835,冷启动时 通信代理与其他core service客户端启动时间不一致， 收到云端请求时，远控服务还未启动,根因：VCU休眠导致唤醒指令不可达 [详情: D:\program16\docs\2026-08-28\VCU-205835_comments.md],0.935,是,
+VCU-206038,冷启动时 通信代理与其他core service客户端启动时间不一致， 收到云端请求时，远控服务还未启动 ，远控服务启动太慢导致无法接收指令,根因：RPC服务URI未注册 [详情: D:\program16\docs\2026-08-28\VCU-206038_comments.md],0.0,否,置信度0.0<0.7，语义相似度0.0<0.7
+VCU-209484,同1063283 原因,根因：VCU未发起远程启动请求 [详情: D:\program16\docs\2026-08-28\VCU-209484_comments.md],0.935,是,
+VCU-210499,local 8155 property未成功集成进版本，需要用0725及以后版本复测 setusageprofile和vehiclemode都注册了CAN信号PatacProperty.<i>SYSTEM_POWER_MODE；</i>当信号信号回调时在仅触发了setusageprofile，没有触发vehiclemode；,根因：属性未注册且服务端路由缺失 [详情: D:\program16\docs\2026-08-28\VCU-210499_comments.md],0.513,否,置信度0.513<0.7，语义相似度0.35<0.7
+VCU-210539,同 1063283 相同需求原因同 1063283 相同解决方案,云端请求未下发至车端 [详情: D:\program16\docs\2026-08-28\VCU-210539_comments.md],0.919,是,
+VCU-215765,WAD,安吉星未注册致唤醒失败，预约充电屏幕逻辑 [详情: D:\program16\docs\2026-08-28\VCU-215765_comments.md],0.928,是,
+VCU-217787,立即充电模式下车端上报开始/结束时间为00，覆盖了手机端缓存数据,立即充电指令未携带时间参数，车端沿用预约 [详情: D:\program16\docs\2026-08-28\VCU-217787_comments.md],0.528,是,
+VCU-218521,代码原因,根因：CE出车前处理导致pub延迟 [详情: D:\program16\docs\2026-08-28\VCU-218521_comments.md],0.846,是,
+VCU-218867,动效逻辑错误 与1087515问题一样,根因：信号处理链路中断或状态更新逻辑缺陷 [详情: D:\program16\docs\2026-08-28\VCU-218867_comments.md],0.91,是,
+VCU-220600,网络原因,根因：someip链路未通，需刷新swi [详情: D:\program16\docs\2026-08-28\VCU-220600_comments.md],0.541,否,置信度0.541<0.7，语义相似度0.15<0.7
+VCU-221066,第三方问题,根因：模板变量替换失败致inhibit值 [详情: D:\program16\docs\2026-08-28\VCU-221066_comments.md],0.887,是,
+VCU-226779,刷新token时提示try catch,根因：状态上报逻辑与CAN信号校验缺失 [详情: D:\program16\docs\2026-08-28\VCU-226779_comments.md],0.7,是,
+VCU-229303,EnergyService和PropulsionService订阅了相同的监听，导致EnergyService订阅成功后，PropulsionService无法进行订阅,根因：版本或环境特异性偶发故障 [详情: D:\program16\docs\2026-08-28\VCU-229303_comments.md],0.704,是,
+VCU-232459,因为波谷请求无reponse,根因：VCU主动切换充电模式与下发指令冲 [详情: D:\program16\docs\2026-08-28\VCU-232459_comments.md],0.534,否,置信度0.534<0.7，语义相似度0.35<0.7
+VCU-233034,按照当前需求，远控下发请求成功后，在超时时间内仅判断mode_recall_status： MR_RECALL_SUCCESS：返回成功 MR_RECALL_UNSUCCESS_INTERRUPT：返回失败，2B009 MR_RECALL_UNSUCCESS_ERROOR：返回失败，2B011 由于上报的recall status一直是MR_TARGET_POSITION_ALREADY，<b>所,根因：业务逻辑对非错误码误判导致超时 [详情: D:\program16\docs\2026-08-28\VCU-233034_comments.md],0.499,否,置信度0.499<0.7，语义相似度0.2<0.7
+VCU-243308,mount时候user10未绑定上，导致未上报给APP。异常时候，也未做reset操作。,根因：blkid命令执行超时 [详情: D:\program16\docs\2026-08-28\VCU-243308_comments.md],0.95,是,
+VCU-243551,功能遗漏,VCU旧版本车窗控制逻辑缺陷 [详情: D:\program16\docs\2026-08-28\VCU-243551_comments.md],0.86,是,
+VCU-243971,同1210699,根因：jar包版本与接口信号定义不匹配 [详情: D:\program16\docs\2026-08-28\VCU-243971_comments.md],0.0,是,
+VCU-244354,VCU使用了真实SOC作为低电量依据，实际应该使用表显SOC值 远控服务目前使用的信号为，High Voltage Battery State of Charge : Battery State of Charge 按照comment7描述，需要修改为，Customer Usable State of Charge 这个是表显的总线信号,根因：SOC数据源引用错误，误用真实SO [详情: D:\program16\docs\2026-08-28\VCU-244354_comments.md],0.0,否,置信度0.0<0.7，语义相似度0.0<0.7
+VCU-403083,远控冷启动延时较短，coreservice服务还没有启动完成。,根因：SOME/IP服务瞬时不可用致轮询 [详情: D:\program16\docs\2026-08-28\VCU-403083_comments.md],0.504,否,置信度0.504<0.7，语义相似度0.35<0.7
+VCU-405621,启动时 someip 初始化逻辑错误依赖servicebus的状态,根因：VCU未订阅报文致数据缺失 [详情: D:\program16\docs\2026-08-28\VCU-405621_comments.md],0.622,否,置信度0.622<0.7，语义相似度0.35<0.7
+VCU-413869,TTS错误,根因：远光灯语音指令未实现TTS播报功能 [详情: D:\program16\docs\2026-08-28\VCU-413869_comments.md],0.93,是,
+VCU-416364,重复问题，跟踪1239577 即可,根因：前端未定义高度解析且座椅调节不支持 [详情: D:\program16\docs\2026-08-28\VCU-416364_comments.md],0.897,是,
+VCU-416584,当前设计如此（Critical）,根因：日志时间线分析偏差 [详情: D:\program16\docs\2026-08-28\VCU-416584_comments.md],0.878,是,
+VCU-416926,问题重复，跟踪1240096即可 by曹达,NLU槽位映射缺陷，未对“行李舱”做泛化 [详情: D:\program16\docs\2026-08-28\VCU-416926_comments.md],0.524,否,置信度0.524<0.7，语义相似度0.35<0.7
+VCU-416987,思必驰的协议字段参数增加了具体的数值,协议格式不统一导致执行层未响应 [详情: D:\program16\docs\2026-08-28\VCU-416987_comments.md],0.664,否,置信度0.664<0.7，语义相似度0.2<0.7
+VCU-417623,进入XX模式和退出XX模式，都会移动座椅，目前语音的交互设计都会引导二次确认,根因：零重力退出误判需二次确认，且TTS [详情: D:\program16\docs\2026-08-28\VCU-417623_comments.md],0.891,是,
+VCU-418572,代码问题,根因：VRDM逻辑缺陷 [详情: D:\program16\docs\2026-08-28\VCU-418572_comments.md],0.925,是,
+VCU-418592,档位逻辑设置错误。,NLU解析未传递强度字段，语音serve [详情: D:\program16\docs\2026-08-28\VCU-418592_comments.md],0.932,是,
+VCU-418802,代码逻辑问题·,VRDM逻辑缺陷导致温度指令执行异常 [详情: D:\program16\docs\2026-08-28\VCU-418802_comments.md],0.533,是,
+VCU-418896,na,根因：标定未配置充电功能致语义解析失败 [详情: D:\program16\docs\2026-08-28\VCU-418896_comments.md],0.857,是,
+VCU-419394,语义问题,根因：协议表语义字段空白导致空指针异常 [详情: D:\program16\docs\2026-08-28\VCU-419394_comments.md],0.888,是,
+VCU-419506,重复bug - 1239908,根因：VRDM的TTS回复链路异常 [详情: D:\program16\docs\2026-08-28\VCU-419506_comments.md],0.85,是,
+VCU-419833,预期结果不对,UE设计如此，测试预期需调整 [详情: D:\program16\docs\2026-08-28\VCU-419833_comments.md],0.529,否,置信度0.529<0.7，语义相似度0.15<0.7
+VCU-420205,二排有乘客不能开副驾零重力,根因：二排占位时MSM误判VIP启动条件 [详情: D:\program16\docs\2026-08-28\VCU-420205_comments.md],0.925,是,
+VCU-421511,跟踪1237895 重复单,NLU语义解析异常 [详情: D:\program16\docs\2026-08-28\VCU-421511_comments.md],0.934,是,
+VCU-421598,语义问题,根因：语义映射逻辑缺陷 [详情: D:\program16\docs\2026-08-28\VCU-421598_comments.md],0.905,是,
+VCU-421804,如最新评论,根因：跨进程回调结果未同步 [详情: D:\program16\docs\2026-08-28\VCU-421804_comments.md],0.871,是,
+VCU-431772,,,,否,Jira根因分析内容为空
+VCU-436082,,,,否,Jira根因分析内容为空
+VCU-480105,车窗的状态高频上报可能引起coreservice时序出错上报,根因：远控车窗命令执行链路中断 [详情: D:\program16\docs\2026-08-28\VCU-480105_comments.md],0.0,否,置信度0.0<0.7，语义相似度0.0<0.7
+VCU-486086,"Settings 的""尾门开启角度""overlay 对话框在 16:48:23 请求进入了 DM 模式，但关闭时没有退出 DM 模式，导致后续 Launcher 上旋转变成滚动。",根因：DM模式因无焦点节点未及时释放 [详情: D:\program16\docs\2026-08-28\VCU-486086_comments.md],0.628,是,
+VCU-491630,远控遮阳帘不上线，关闭此问题。,根因：BDF已知缺陷，功能不支持 [详情: D:\program16\docs\2026-08-28\VCU-491630_comments.md],0.863,是,
+VCU-504235,新模型未从主线合入到R6,根因：高压上电流程异常 [详情: D:\program16\docs\2026-08-28\VCU-504235_comments.md],0.883,是,
+VCU-514916,网络模块发送7539时MCU处于休眠状态，未接收到,根因：VCU休眠期间网络断开，唤醒后链路 [详情: D:\program16\docs\2026-08-28\VCU-514916_comments.md],0.956,是,
+VCU-523014,mqttmp 探测器服务pod内部网络异常，已修复，请重新测试，谢谢,根因：MQTTMP服务Pod损坏 [详情: D:\program16\docs\2026-08-28\VCU-523014_comments.md],0.774,是,
+VCU-525874,车型PM给的车能力错误,根因：无电动出风口配置，请求不响应 [详情: D:\program16\docs\2026-08-28\VCU-525874_comments.md],0.0,否,置信度0.0<0.7，语义相似度0.0<0.7
+VCU-53182,root cause:当前软件持续无法复现该问题，原Log不足，无法分析，所以需要走不复现流程 solution：请验证同时测试三个版本 验证版本：PATAC=458_163_ppv3-20220508-RQB23C-79;验证20次未复现问题，继续观察 验证版本：PATAC= 458_R2_NS1-20220528-RQB23C-6; 台架验证10次 未复现问题 验证版本：PATAC= 458_,根因：QNX层音量组切换异常 [详情: D:\program16\docs\2026-08-28\VCU-53182_comments.md],0.534,是,
+VCU-536319,,,,否,Jira根因分析内容为空
+VCU-537074,版本打包问题,根因：空指针导致能力检查崩溃 [详情: D:\program16\docs\2026-08-28\VCU-537074_comments.md],0.711,是,
+VCU-537348,REASON_PM_NON_OFF 错误状态没有映射到ConstantConnectUnavailableReason,根因：VCU通知上报链路异常 [详情: D:\program16\docs\2026-08-28\VCU-537348_comments.md],0.906,是,
+VCU-537367,"{noformat} Precondition 唤醒车机；车机启动正常 Operation 1、导出安卓gmlogger日志 2、执行 Android Selinux 脚本扫描lgmlogger日志 Observation 测试结果中存有进程权限问题 Filed against to PATAC, 7 Logs for Source Context u:r:system_app:s0: ['loc",根因：SELinux策略拒绝gmlogg [详情: D:\program16\docs\2026-08-28\VCU-537367_comments.md],0.554,否,置信度0.554<0.7，语义相似度0.645<0.7
+VCU-537386,【直接原因】在特定车辆配置变更的场景下，系统未能正确调用车标位置更新方法，导致车标位置显示异常。 【根本原因】需求文档中未明确指出在车辆配置变更时需要更新车标位置，导致开发人员在实现功能时忽略了这一逻辑，最终在代码中缺少了调用相关方法的处理。,分屏宽度归一化缺失导致坐标异常 [详情: D:\program16\docs\2026-08-28\VCU-537386_comments.md],0.538,是,
+VCU-537460,,,,否,Jira根因分析内容为空
+VCU-537757,云端服务实例某个节点重启时 遭遇数据库连接超时 加载配置信息失败， 导致 c2d 消息下发 探测设备在线永远失败，一定触发离线短信唤醒,根因：CommProxy车云连接不可用 [详情: D:\program16\docs\2026-08-28\VCU-537757_comments.md],0.636,是,
+VCU-72609,asm bin 集成有问题，另外VIP通知cluster绘制Sigicon的消息需要从ODI切换为SafeODI channel,根因：VCU软件配置或标定参数错误 [详情: D:\program16\docs\2026-08-28\VCU-72609_comments.md],0.609,是,
+VCU-77711,非VCU问题，info4关闭,根因：Android与仪表CAN信号ID [详情: D:\program16\docs\2026-08-28\VCU-77711_comments.md],0.9,是,
+VCU-86824,无法复现，有问题重开bug跟踪,控件类型注册错误，接口契约不匹配 [详情: D:\program16\docs\2026-08-28\VCU-86824_comments.md],0.525,否,置信度0.525<0.7，语义相似度0.15<0.7

@@ -1,0 +1,17 @@
+2026-08-12 03:20:11 [INFO] cache-service - 健康检查通过，集群 3 主 3 从状态正常
+2026-08-12 03:25:40 [DEBUG] cache-service - 内存碎片率 1.08，处于健康区间
+2026-08-12 03:30:22 [INFO] goods-service - 商品缓存预热完成，共 45200 个 key
+2026-08-12 03:35:18 [INFO] crontab - 夜间批处理任务 batch-night 正常推进
+2026-08-12 03:40:05 [DEBUG] search-service - 索引增量同步完成，延迟 2.1s
+2026-08-12 03:44:37 [INFO] cache-service - 主从同步延迟 0ms，状态正常
+2026-08-12 03:46:28 [WARN] cache-service - 节点 redis-node-2 响应延迟 450ms，疑似网络抖动
+2026-08-12 03:46:55 [ERROR] cache-service - 节点 redis-node-2 心跳丢失，集群标记节点 FAIL
+2026-08-12 03:47:03 [ERROR] goods-service - Redis 连接异常 JedisConnectionException: Could not get a resource from the pool，大批量请求开始穿透缓存
+2026-08-12 03:47:10 [ERROR] goods-service - 缓存雪崩发生：热点 key 集中失效叠加节点宕机，数据库 QPS 从 800 激增至 9200
+2026-08-12 03:47:22 [ERROR] db-monitor - 数据库 CPU 使用率 99%，活跃会话 480，被缓存穿透流量压垮
+2026-08-12 03:47:40 [WARN] order-service - 依赖商品接口超时，熔断器开启
+2026-08-12 03:48:15 [INFO] monitor - 收到告警推送，级别 P0，目标群组 ops-oncall
+2026-08-12 03:50:02 [INFO] ops-bot - 值班通知已发送给王工，电话提醒已触发
+2026-08-12 03:52:33 [DEBUG] gateway - 限流规则加载完成，共 56 条
+2026-08-12 03:55:41 [INFO] cache-service - 从节点 redis-node-5 提升为主节点，集群恢复服务
+2026-08-12 04:05:00 [INFO] db-monitor - 数据库 CPU 使用率回落至 32%，故障恢复

@@ -1,0 +1,30 @@
+INFO     db:db.py:56 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_run_pipeline_end_to_end0/test.db
+INFO     db:db.py:85 bugid 去重完成: 新增 3 个, 过滤已存在 1 个
+INFO     pipeline:pipeline.py:77 bugid=PROJ-1 数据库已存在，过滤跳过
+INFO     ai_log:ai_log_client.py:104 [mock] AI 日志分析: bugid=PROJ-1, trigger_time=2026-08-12 10:00:00
+INFO     doc_gen:doc_generator.py:28 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_run_pipeline_end_to_end0\output\docs\2026-08-14\PROJ-1.md
+INFO     doc_gen:doc_generator.py:39 文档步骤提取完成: 共 4 条
+INFO     jira:jira_client.py:36 [mock] 获取 Jira 信息: bugid=PROJ-1
+INFO     filter:filter.py:75 第 2 条评论到达根因相似结论（语义 0.700, 关键词命中 0.80），截断后续 3 条评论不参与对比
+INFO     filter:filter.py:120 有效评论不足 3 条，已从最后三条评论中补充 1 条
+INFO     filter:filter.py:122 评论过滤完成: 2 条评论提取出 3 条分析步骤
+INFO     similarity:similarity.py:65 根因比对完成: 关键词命中 5/8, 比例 0.62
+INFO     pipeline:pipeline.py:52 bugid=PROJ-1 比对完成: 根因一致=True(关键词 0.62/语义 0.810), 步骤一致=True, 相似度=0.854
+INFO     ai_log:ai_log_client.py:104 [mock] AI 日志分析: bugid=PROJ-2, trigger_time=None
+INFO     doc_gen:doc_generator.py:28 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_run_pipeline_end_to_end0\output\docs\2026-08-14\PROJ-2.md
+INFO     doc_gen:doc_generator.py:39 文档步骤提取完成: 共 4 条
+INFO     jira:jira_client.py:36 [mock] 获取 Jira 信息: bugid=PROJ-2
+INFO     filter:filter.py:75 第 2 条评论到达根因相似结论（语义 0.700, 关键词命中 0.80），截断后续 3 条评论不参与对比
+INFO     filter:filter.py:120 有效评论不足 3 条，已从最后三条评论中补充 1 条
+INFO     filter:filter.py:122 评论过滤完成: 2 条评论提取出 3 条分析步骤
+INFO     similarity:similarity.py:65 根因比对完成: 关键词命中 5/8, 比例 0.62
+INFO     pipeline:pipeline.py:52 bugid=PROJ-2 比对完成: 根因一致=True(关键词 0.62/语义 0.810), 步骤一致=True, 相似度=0.854
+INFO     ai_log:ai_log_client.py:104 [mock] AI 日志分析: bugid=PROJ-FAIL-1, trigger_time=None
+INFO     doc_gen:doc_generator.py:28 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_run_pipeline_end_to_end0\output\docs\2026-08-14\PROJ-FAIL-1.md
+INFO     doc_gen:doc_generator.py:39 文档步骤提取完成: 共 2 条
+INFO     jira:jira_client.py:36 [mock] 获取 Jira 信息: bugid=PROJ-FAIL-1
+INFO     filter:filter.py:120 有效评论不足 3 条，已从最后三条评论中补充 2 条
+INFO     filter:filter.py:122 评论过滤完成: 5 条评论提取出 5 条分析步骤
+INFO     similarity:similarity.py:65 根因比对完成: 关键词命中 1/8, 比例 0.12
+INFO     pipeline:pipeline.py:52 bugid=PROJ-FAIL-1 比对完成: 根因一致=False(关键词 0.12/语义 0.552), 步骤一致=False, 相似度=0.533
+INFO     report:report.py:63 每日结论报表已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_run_pipeline_end_to_end0\output\reports\2026-08-14_daily.csv, 本次写入 3 条, 合计 3 条

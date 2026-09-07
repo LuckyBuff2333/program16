@@ -1,0 +1,4 @@
+2026-08-14 14:06:53,470 [INFO] db - 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_truncate_at_conclusion0/test.db
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 8644.79it/s]
+2026-08-14 14:06:59,936 [INFO] semantic - 语义模型加载成功: BAAI/bge-small-zh-v1.5
+2026-08-14 14:06:59,976 [INFO] filter - 第 2 条评论到达根因相似结论（语义 0.948, 关键词命中 1.00），截断后续 1 条评论不参与对比

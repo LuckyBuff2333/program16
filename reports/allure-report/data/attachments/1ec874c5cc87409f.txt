@@ -1,0 +1,2 @@
+INFO     db:db.py:56 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_filter_batch_duplicates0/test.db
+INFO     db:db.py:85 bugid 去重完成: 新增 2 个, 过滤已存在 1 个

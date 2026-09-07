@@ -1,0 +1,21 @@
+INFO     db:db.py:56 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_retry_bug0/test.db
+INFO     db:db.py:85 bugid 去重完成: 新增 1 个, 过滤已存在 0 个
+INFO     ai_log:ai_log_client.py:104 [mock] AI 日志分析: bugid=PROJ-FAIL-1, trigger_time=None
+INFO     doc_gen:doc_generator.py:28 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_retry_bug0\output\docs\2026-08-14\PROJ-FAIL-1.md
+INFO     doc_gen:doc_generator.py:39 文档步骤提取完成: 共 2 条
+INFO     jira:jira_client.py:36 [mock] 获取 Jira 信息: bugid=PROJ-FAIL-1
+INFO     filter:filter.py:120 有效评论不足 3 条，已从最后三条评论中补充 2 条
+INFO     filter:filter.py:122 评论过滤完成: 5 条评论提取出 5 条分析步骤
+INFO     similarity:similarity.py:65 根因比对完成: 关键词命中 1/8, 比例 0.12
+INFO     pipeline:pipeline.py:52 bugid=PROJ-FAIL-1 比对完成: 根因一致=False(关键词 0.12/语义 0.552), 步骤一致=False, 相似度=0.533
+INFO     report:report.py:63 每日结论报表已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_retry_bug0\output\reports\2026-08-14_daily.csv, 本次写入 1 条, 合计 1 条
+INFO     pipeline:pipeline.py:104 重新分析 bugid=PROJ-FAIL-1
+INFO     ai_log:ai_log_client.py:104 [mock] AI 日志分析: bugid=PROJ-FAIL-1, trigger_time=None
+INFO     doc_gen:doc_generator.py:28 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_retry_bug0\output\docs\2026-08-14\PROJ-FAIL-1.md
+INFO     doc_gen:doc_generator.py:39 文档步骤提取完成: 共 2 条
+INFO     jira:jira_client.py:36 [mock] 获取 Jira 信息: bugid=PROJ-FAIL-1
+INFO     filter:filter.py:120 有效评论不足 3 条，已从最后三条评论中补充 2 条
+INFO     filter:filter.py:122 评论过滤完成: 5 条评论提取出 5 条分析步骤
+INFO     similarity:similarity.py:65 根因比对完成: 关键词命中 1/8, 比例 0.12
+INFO     pipeline:pipeline.py:52 bugid=PROJ-FAIL-1 比对完成: 根因一致=False(关键词 0.12/语义 0.552), 步骤一致=False, 相似度=0.533
+INFO     report:report.py:63 每日结论报表已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_retry_bug0\output\reports\2026-08-14_daily.csv, 本次写入 1 条, 合计 1 条

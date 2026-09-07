@@ -1,0 +1,22 @@
+2026-08-14 14:07:01,430 [INFO] db - 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_analyze_api0/test.db
+2026-08-14 14:07:01,434 [INFO] db - bugid 去重完成: 新增 2 个, 过滤已存在 1 个
+2026-08-14 14:07:01,434 [INFO] pipeline - bugid=WEB-1 数据库已存在，过滤跳过
+2026-08-14 14:07:01,434 [INFO] ai_log - [mock] AI 日志分析: bugid=WEB-1, trigger_time=2026-08-14 10:00:00
+2026-08-14 14:07:01,436 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_analyze_api0\output\docs\2026-08-14\WEB-1.md
+2026-08-14 14:07:01,436 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:07:01,436 [INFO] jira - [mock] 获取 Jira 信息: bugid=WEB-1
+2026-08-14 14:07:01,461 [INFO] filter - 第 2 条评论到达根因相似结论（语义 0.700, 关键词命中 0.80），截断后续 3 条评论不参与对比
+2026-08-14 14:07:01,462 [INFO] filter - 有效评论不足 3 条，已从最后三条评论中补充 1 条
+2026-08-14 14:07:01,462 [INFO] filter - 评论过滤完成: 2 条评论提取出 3 条分析步骤
+2026-08-14 14:07:01,462 [INFO] similarity - 根因比对完成: 关键词命中 5/8, 比例 0.62
+2026-08-14 14:07:01,508 [INFO] pipeline - bugid=WEB-1 比对完成: 根因一致=True(关键词 0.62/语义 0.810), 步骤一致=True, 相似度=0.854
+2026-08-14 14:07:01,508 [INFO] ai_log - [mock] AI 日志分析: bugid=WEB-2, trigger_time=None
+2026-08-14 14:07:01,509 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_analyze_api0\output\docs\2026-08-14\WEB-2.md
+2026-08-14 14:07:01,509 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:07:01,510 [INFO] jira - [mock] 获取 Jira 信息: bugid=WEB-2
+2026-08-14 14:07:01,535 [INFO] filter - 第 2 条评论到达根因相似结论（语义 0.700, 关键词命中 0.80），截断后续 3 条评论不参与对比
+2026-08-14 14:07:01,536 [INFO] filter - 有效评论不足 3 条，已从最后三条评论中补充 1 条
+2026-08-14 14:07:01,536 [INFO] filter - 评论过滤完成: 2 条评论提取出 3 条分析步骤
+2026-08-14 14:07:01,536 [INFO] similarity - 根因比对完成: 关键词命中 5/8, 比例 0.62
+2026-08-14 14:07:01,579 [INFO] pipeline - bugid=WEB-2 比对完成: 根因一致=True(关键词 0.62/语义 0.810), 步骤一致=True, 相似度=0.854
+2026-08-14 14:07:01,581 [INFO] report - 每日结论报表已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_analyze_api0\output\reports\2026-08-14_daily.csv, 本次写入 2 条, 合计 2 条

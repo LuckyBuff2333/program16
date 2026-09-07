@@ -1,0 +1,9 @@
+2026-08-14 14:07:01,748 [INFO] db - 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_comment_compare_api0/test.db
+2026-08-14 14:07:01,751 [INFO] ai_log - [mock] AI 日志分析: bugid=T-2, trigger_time=None
+2026-08-14 14:07:01,753 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_comment_compare_api0\output\docs\2026-08-14\T-2.md
+2026-08-14 14:07:01,754 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:07:01,754 [INFO] jira - [mock] 获取 Jira 信息: bugid=T-2
+2026-08-14 14:07:01,780 [INFO] filter - 第 2 条评论到达根因相似结论（语义 0.700, 关键词命中 0.80），截断后续 3 条评论不参与对比
+2026-08-14 14:07:01,780 [INFO] filter - 有效评论不足 3 条，已从最后三条评论中补充 1 条
+2026-08-14 14:07:01,780 [INFO] filter - 评论过滤完成: 2 条评论提取出 3 条分析步骤
+2026-08-14 14:07:01,780 [INFO] similarity - 根因比对完成: 关键词命中 5/8, 比例 0.62

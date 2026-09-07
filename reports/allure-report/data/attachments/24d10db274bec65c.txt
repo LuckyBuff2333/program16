@@ -1,0 +1,2 @@
+INFO     db:db.py:56 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_config_save_and_reload0/test.db
+INFO     web:server.py:67 配置已由页面更新: ['ai_log_api']

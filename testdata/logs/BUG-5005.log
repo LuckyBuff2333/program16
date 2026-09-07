@@ -1,0 +1,17 @@
+2026-08-13 15:50:14 [INFO] report-service - 健康检查通过，服务状态正常
+2026-08-13 15:55:38 [DEBUG] report-service - 报表模板缓存加载完成，共 86 个模板
+2026-08-13 16:00:25 [INFO] user-service - 接口 /api/user/list 响应正常，平均耗时 52ms
+2026-08-13 16:05:47 [INFO] msg-center - 站内信推送完成，批次 msg-20260813-16，共 5200 条
+2026-08-13 16:10:33 [DEBUG] schedule - 任务 report-export 进入执行队列
+2026-08-13 16:15:20 [INFO] gateway - 流量统计上报完成，QPS 均值 980
+2026-08-13 16:18:42 [WARN] report-service - SQL 执行耗时 8.3s，语句 SELECT * FROM t_trade_record WHERE create_time > '2026-01-01'，未命中索引
+2026-08-13 16:19:36 [WARN] db-monitor - 表 t_trade_record 锁等待会话数 35，持续增长
+2026-08-13 16:20:04 [ERROR] report-service - 慢SQL全表扫描 1200 万行并持有表锁，执行耗时 56s，触发锁表
+2026-08-13 16:20:08 [ERROR] order-service - 业务线程阻塞堆积：等待 t_trade_record 行锁的线程达 210 个，线程池使用率 100%
+2026-08-13 16:20:15 [ERROR] gateway - 下游接口 /api/trade/query 超时率 92%，根因为慢SQL锁表导致业务线程阻塞
+2026-08-13 16:20:38 [WARN] pay-service - 交易查询超时，自动降级为缓存读
+2026-08-13 16:21:12 [INFO] monitor - 收到告警推送，级别 P1，目标群组 ops-oncall
+2026-08-13 16:23:40 [INFO] ops-bot - 值班通知已发送给孙工
+2026-08-13 16:25:18 [DEBUG] gateway - 限流规则加载完成，共 56 条
+2026-08-13 16:28:55 [INFO] dba - 已 kill 慢SQL会话 4471，并为 create_time 字段补充索引 idx_create_time
+2026-08-13 16:35:00 [INFO] db-monitor - 锁等待会话清零，线程池使用率回落至 28%

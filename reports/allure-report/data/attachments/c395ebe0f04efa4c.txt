@@ -1,0 +1,1 @@
+2026-08-14 14:06:59,993 [INFO] db - 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_truncate_no_match_keeps_a0/test.db

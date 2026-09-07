@@ -1,0 +1,3 @@
+INFO     db:db.py:56 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_compare_steps_empty_input0/test.db
+WARNING  similarity:similarity.py:40 步骤比对输入为空: 文档步骤 0 条, 评论步骤 1 条
+WARNING  similarity:similarity.py:40 步骤比对输入为空: 文档步骤 1 条, 评论步骤 0 条

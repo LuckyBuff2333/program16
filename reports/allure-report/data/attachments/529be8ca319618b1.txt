@@ -1,0 +1,2 @@
+2026-08-14 14:07:01,302 [INFO] db - 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_compare_root_cause_hit0/test.db
+2026-08-14 14:07:01,304 [INFO] similarity - 根因比对完成: 关键词命中 2/2, 比例 1.00

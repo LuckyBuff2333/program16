@@ -1,0 +1,4 @@
+INFO     db:db.py:56 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_ai_analyze_api0/test.db
+INFO     ai_log:ai_log_client.py:104 [mock] AI 日志分析: bugid=T-1, trigger_time=2026-08-14 10:00:00
+INFO     doc_gen:doc_generator.py:28 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_ai_analyze_api0\output\docs\2026-08-14\T-1.md
+INFO     doc_gen:doc_generator.py:39 文档步骤提取完成: 共 4 条

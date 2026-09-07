@@ -1,0 +1,16 @@
+2026-08-12 10:40:08 [INFO] gateway - 健康检查通过，转发规则 128 条加载正常
+2026-08-12 10:45:33 [DEBUG] gateway - 访问日志归档完成，文件 access-20260812-10.log.gz
+2026-08-12 10:50:19 [INFO] auth-service - Token 签发正常，每分钟约 3200 次
+2026-08-12 10:55:47 [INFO] gateway - 上游服务探活全部通过，共 24 个实例
+2026-08-12 11:00:12 [DEBUG] lb - 负载均衡权重同步完成，版本 v1.8.0
+2026-08-12 11:03:28 [INFO] web-app - 页面静态资源 CDN 命中率 96%
+2026-08-12 11:04:50 [WARN] gateway - TLS 握手失败次数上升，最近 1 分钟 47 次
+2026-08-12 11:05:02 [ERROR] gateway - SSL 证书校验失败：certificate has expired，域名 api.example.com 证书已于 2026-08-12 00:00 过期
+2026-08-12 11:05:04 [ERROR] gateway - HTTPS 请求批量握手失败，javax.net.ssl.SSLHandshakeException，客户端报 ERR_CERT_DATE_INVALID
+2026-08-12 11:05:08 [ERROR] web-app - 全站 API 调用失败率 98%，根因为网关证书过期导致 TLS 握手失败
+2026-08-12 11:05:30 [WARN] pay-callback - 第三方支付回调全部失败，进入重试队列
+2026-08-12 11:06:15 [INFO] monitor - 收到告警推送，级别 P0，目标群组 ops-oncall
+2026-08-12 11:08:22 [INFO] ops-bot - 值班通知已发送给赵工，电话提醒已触发
+2026-08-12 11:10:44 [DEBUG] crontab - 证书巡检任务上次执行 2026-08-05，巡检周期 7 天，错过到期提醒
+2026-08-12 11:15:36 [INFO] gateway - 新证书部署完成并重载，TLS 握手恢复正常
+2026-08-12 11:20:00 [INFO] web-app - API 调用成功率恢复至 99.7%

@@ -1,0 +1,62 @@
+2026-08-14 14:06:52,899 [INFO] db - 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_audit_excludes_audited_bu0/test.db
+2026-08-14 14:06:52,908 [INFO] db - 抽查候选池读取完成: 共 10 个已入库 bugid
+2026-08-14 14:06:52,909 [INFO] audit - 抽查候选: 库内 10 个, 已抽查 0 个, 可用 10 个
+2026-08-14 14:06:52,909 [INFO] ai_log - [mock] AI 日志分析: bugid=KB-6, trigger_time=2026-08-01 10:06:00
+2026-08-14 14:06:52,910 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\docs\2026-08-14\KB-6.md
+2026-08-14 14:06:52,912 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:06:52,929 [INFO] similarity - 步骤相似度比对完成: 平均得分 1.000
+2026-08-14 14:06:52,929 [INFO] audit - 抽查比对完成: bugid=KB-6, 根因相似度=1.000, 流程相似度=1.000
+2026-08-14 14:06:52,930 [INFO] ai_log - [mock] AI 日志分析: bugid=KB-7, trigger_time=2026-08-01 10:07:00
+2026-08-14 14:06:52,931 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\docs\2026-08-14\KB-7.md
+2026-08-14 14:06:52,932 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:06:52,951 [INFO] similarity - 步骤相似度比对完成: 平均得分 1.000
+2026-08-14 14:06:52,951 [INFO] audit - 抽查比对完成: bugid=KB-7, 根因相似度=1.000, 流程相似度=1.000
+2026-08-14 14:06:52,952 [INFO] ai_log - [mock] AI 日志分析: bugid=KB-9, trigger_time=2026-08-01 10:09:00
+2026-08-14 14:06:52,953 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\docs\2026-08-14\KB-9.md
+2026-08-14 14:06:52,955 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:06:52,973 [INFO] similarity - 步骤相似度比对完成: 平均得分 1.000
+2026-08-14 14:06:52,973 [INFO] audit - 抽查比对完成: bugid=KB-9, 根因相似度=1.000, 流程相似度=1.000
+2026-08-14 14:06:52,973 [INFO] ai_log - [mock] AI 日志分析: bugid=KB-8, trigger_time=2026-08-01 10:08:00
+2026-08-14 14:06:52,974 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\docs\2026-08-14\KB-8.md
+2026-08-14 14:06:52,976 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:06:52,994 [INFO] similarity - 步骤相似度比对完成: 平均得分 1.000
+2026-08-14 14:06:52,995 [INFO] audit - 抽查比对完成: bugid=KB-8, 根因相似度=1.000, 流程相似度=1.000
+2026-08-14 14:06:52,995 [INFO] ai_log - [mock] AI 日志分析: bugid=KB-1, trigger_time=2026-08-01 10:01:00
+2026-08-14 14:06:52,996 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\docs\2026-08-14\KB-1.md
+2026-08-14 14:06:52,998 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:06:53,015 [INFO] similarity - 步骤相似度比对完成: 平均得分 1.000
+2026-08-14 14:06:53,015 [INFO] audit - 抽查比对完成: bugid=KB-1, 根因相似度=1.000, 流程相似度=1.000
+2026-08-14 14:06:53,015 [INFO] ai_log - [mock] AI 日志分析: bugid=KB-5, trigger_time=2026-08-01 10:05:00
+2026-08-14 14:06:53,018 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\docs\2026-08-14\KB-5.md
+2026-08-14 14:06:53,020 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:06:53,039 [INFO] similarity - 步骤相似度比对完成: 平均得分 1.000
+2026-08-14 14:06:53,039 [INFO] audit - 抽查比对完成: bugid=KB-5, 根因相似度=1.000, 流程相似度=1.000
+2026-08-14 14:06:53,041 [INFO] audit - 抽查审核表格已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\reports\audit_comparison.csv, 共 6 条
+2026-08-14 14:06:53,042 [INFO] audit - 已抽查记录已更新: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\reports\audited_bugids.csv, 本次追加 6 条
+2026-08-14 14:06:53,070 [INFO] db - 抽查候选池读取完成: 共 10 个已入库 bugid
+2026-08-14 14:06:53,071 [INFO] audit - 抽查候选: 库内 10 个, 已抽查 6 个, 可用 4 个
+2026-08-14 14:06:53,071 [WARNING] audit - 可用候选不足 6 个，本次抽查全部 4 个
+2026-08-14 14:06:53,072 [INFO] ai_log - [mock] AI 日志分析: bugid=KB-10, trigger_time=2026-08-01 10:10:00
+2026-08-14 14:06:53,072 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\docs\2026-08-14\KB-10.md
+2026-08-14 14:06:53,074 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:06:53,092 [INFO] similarity - 步骤相似度比对完成: 平均得分 1.000
+2026-08-14 14:06:53,092 [INFO] audit - 抽查比对完成: bugid=KB-10, 根因相似度=1.000, 流程相似度=1.000
+2026-08-14 14:06:53,093 [INFO] ai_log - [mock] AI 日志分析: bugid=KB-4, trigger_time=2026-08-01 10:04:00
+2026-08-14 14:06:53,094 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\docs\2026-08-14\KB-4.md
+2026-08-14 14:06:53,095 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:06:53,116 [INFO] similarity - 步骤相似度比对完成: 平均得分 1.000
+2026-08-14 14:06:53,116 [INFO] audit - 抽查比对完成: bugid=KB-4, 根因相似度=1.000, 流程相似度=1.000
+2026-08-14 14:06:53,116 [INFO] ai_log - [mock] AI 日志分析: bugid=KB-2, trigger_time=2026-08-01 10:02:00
+2026-08-14 14:06:53,118 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\docs\2026-08-14\KB-2.md
+2026-08-14 14:06:53,120 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:06:53,141 [INFO] similarity - 步骤相似度比对完成: 平均得分 1.000
+2026-08-14 14:06:53,141 [INFO] audit - 抽查比对完成: bugid=KB-2, 根因相似度=1.000, 流程相似度=1.000
+2026-08-14 14:06:53,141 [INFO] ai_log - [mock] AI 日志分析: bugid=KB-3, trigger_time=2026-08-01 10:03:00
+2026-08-14 14:06:53,142 [INFO] doc_gen - 分析文档已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\docs\2026-08-14\KB-3.md
+2026-08-14 14:06:53,144 [INFO] doc_gen - 文档步骤提取完成: 共 4 条
+2026-08-14 14:06:53,165 [INFO] similarity - 步骤相似度比对完成: 平均得分 1.000
+2026-08-14 14:06:53,165 [INFO] audit - 抽查比对完成: bugid=KB-3, 根因相似度=1.000, 流程相似度=1.000
+2026-08-14 14:06:53,167 [INFO] audit - 抽查审核表格已生成: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\reports\audit_comparison.csv, 共 4 条
+2026-08-14 14:06:53,170 [INFO] audit - 已抽查记录已更新: C:\Users\20637\AppData\Local\Temp\pytest-of-20637\pytest-27\test_audit_excludes_audited_bu0\output\reports\audited_bugids.csv, 本次追加 4 条
+2026-08-14 14:06:53,201 [INFO] db - 抽查候选池读取完成: 共 10 个已入库 bugid
+2026-08-14 14:06:53,203 [INFO] audit - 抽查候选: 库内 10 个, 已抽查 10 个, 可用 0 个

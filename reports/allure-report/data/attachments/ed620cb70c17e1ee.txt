@@ -1,0 +1,2 @@
+2026-08-14 14:06:53,347 [INFO] db - 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_filter_new_bugids0/test.db
+2026-08-14 14:06:53,356 [INFO] db - bugid 去重完成: 新增 2 个, 过滤已存在 1 个

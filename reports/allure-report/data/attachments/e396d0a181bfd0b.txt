@@ -1,0 +1,2 @@
+INFO     db:db.py:56 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_compare_steps_low_similar0/test.db
+INFO     similarity:similarity.py:48 步骤相似度比对完成: 平均得分 0.000

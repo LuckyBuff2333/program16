@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: pipeline_and_app
+title: Bug 文档分析流水线与 CLI 入口
+scope:
+    - src/main.py
+    - src/pipeline.py
+    - src/config.py
+    - src/db.py
+source_files: []
+depends_on: []
+related_to:
+    - path: tests
