@@ -7838,3 +7838,102 @@ async def test_feishu_doc(request: Request):
     except Exception as e:
         logger.error("飞书文档下载失败: %s", e)
         return _fail(f"{type(e).__name__}: {e}")
+
+
+# ==================== 功能11：线上正确执行跟进 ====================
+
+@app.post("/api/test/online_followup_compare")
+async def online_followup_compare(request: Request):
+    """对比 PC 执行成功 vs 线上执行成功，找出线上缺失/失败的 Jira"""
+    import json as _json
+    from src.clients import feishu_client
+    cfg = load_config().get("feishu_bitable", {})
+    app_token = cfg.get("app_token", "")
+    table_id = cfg.get("table_id", "")
+    if not app_token or not table_id:
+        return _fail("多维表格 app_token/table_id 未配置")
+    try:
+        records = feishu_client.list_bitable_records(app_token, table_id)
+    except Exception as e:
+        return _fail(f"多维表格查询失败: {e}")
+    # 分类收集 PC 和线上执行成功的记录
+    pc_success = {}   # jira号 -> {记录摘要}
+    online_success = {}  # jira号 -> {记录摘要}
+    online_all = {}   # jira号 -> [{记录摘要}]（包含失败的）
+    for rec in records:
+        fields = rec.get("fields", {})
+        jira_no = _bitable_text(fields.get(cfg.get("bugid_field", "jira号"), ""))
+        if not jira_no:
+            continue
+        result_status = _bitable_text(fields.get("分析结果", ""))
+        source = _bitable_text(fields.get("触发来源", ""))
+        done_time = _bitable_text(fields.get("分析完成时间", ""))
+        entry = {
+            "jira号": jira_no, "分析结果": result_status, "触发来源": source,
+            "分析完成时间": done_time,
+            "错误信息": _bitable_text(fields.get("错误信息", "")),
+        }
+        if result_status == "成功":
+            if source == "jira_analyze":
+                pc_success[jira_no] = entry
+            elif source in ("parseFullTicket", "feishu_bot"):
+                online_success[jira_no] = entry
+        # 收集线上所有记录（含失败）
+        if source in ("parseFullTicket", "feishu_bot"):
+            online_all.setdefault(jira_no, []).append(entry)
+    # 计算差集：PC 成功但线上未成功
+    pc_keys = set(pc_success.keys())
+    online_ok_keys = set(online_success.keys())
+    diff_keys = pc_keys - online_ok_keys
+    diff_records = []
+    for k in sorted(diff_keys):
+        pc_entry = pc_success[k]
+        online_recs = online_all.get(k, [])
+        online_failed = [r for r in online_recs if r["分析结果"] != "成功"]
+        if online_failed:
+            status = "线上失败"
+            err = online_failed[-1]["错误信息"][:100]
+        else:
+            status = "线上未执行"
+            err = ""
+        diff_records.append({
+            "jira号": k, "pc分析完成时间": pc_entry["分析完成时间"],
+            "线上状态": status, "线上错误信息": err,
+        })
+    # 保存到本地 data/online_followup/
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    save_dir = os.path.join(PROJECT_ROOT, "data", "online_followup")
+    os.makedirs(save_dir, exist_ok=True)
+    result_data = {
+        "date": date_str,
+        "pc_success_count": len(pc_success),
+        "online_success_count": len(online_success),
+        "diff_count": len(diff_records),
+        "diff_records": diff_records,
+        "pc_success_jiras": sorted(pc_keys),
+        "online_success_jiras": sorted(online_ok_keys),
+    }
+    save_path = os.path.join(save_dir, f"{date_str}_diff.json")
+    latest_path = os.path.join(save_dir, "latest.json")
+    with open(save_path, "w", encoding="utf-8") as f:
+        _json.dump(result_data, f, ensure_ascii=False, indent=2)
+    with open(latest_path, "w", encoding="utf-8") as f:
+        _json.dump(result_data, f, ensure_ascii=False, indent=2)
+    return _ok(result_data,
+               f"PC成功 {len(pc_success)} 条，线上成功 {len(online_success)} 条，差集 {len(diff_records)} 条")
+
+
+@app.get("/api/test/online_followup_load")
+def online_followup_load(date: str = None):
+    """加载已保存的线上跟进对比结果"""
+    import json as _json
+    save_dir = os.path.join(PROJECT_ROOT, "data", "online_followup")
+    if date:
+        path = os.path.join(save_dir, f"{date}_diff.json")
+    else:
+        path = os.path.join(save_dir, "latest.json")
+    if not os.path.exists(path):
+        return _ok(None, "无历史对比数据")
+    with open(path, "r", encoding="utf-8") as f:
+        data = _json.load(f)
+    return _ok(data, f"已加载 {data.get('date', '')} 对比数据")
