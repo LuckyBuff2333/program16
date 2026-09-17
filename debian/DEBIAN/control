@@ -1,0 +1,19 @@
+Package: bug-doc-tool
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Bug Doc Tool Team
+Description: Bug 文档沉淀工具
+ 集成 Jira / 飞书 / AI 日志分析的 Bug 文档自动化工具。
+ 支持 Web 可视化操作界面，包含批量执行、置信度写入、
+ 触发时间提取、失败排查等功能。
+Depends: libgl1 | libgl1-mesa-glx,
+         libglib2.0-0,
+         libsm6,
+         libxext6,
+         libxrender1,
+         p7zip-full
+Recommends: xdg-utils
+Homepage: https://github.com/your-org/bug-doc-tool
+Installed-Size: 260000

@@ -1,0 +1,55 @@
+# Docker 构建排除文件
+
+# 版本控制
+.git/
+.gitignore
+.gitattributes
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# 测试相关
+tests/
+conftest.py
+_test_final.py
+_wiki_check.py
+allure-results/
+allure-report/
+
+# 文档与报告（运行时生成）
+docs/
+reports/
+logs/
+data/
+
+# 工具链（体积大，容器内不需要）
+tools/
+
+# 构建产物
+build/
+dist/
+*.spec
+
+# IDE
+.idea/
+.vscode/
+.qoder/
+
+# 临时文件
+*.tmp
+*.log
+screenshot_*.png
+
+# Debian 打包
+debian/
+
+# 测试数据（体积大）
+testdata/logs/
+
+# 脚本（宿主机用）
+scripts/
+spotcheck/

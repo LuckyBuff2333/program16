@@ -28,6 +28,7 @@ _FEISHU_API = "https://open.feishu.cn/open-apis"
 # Token 缓存（有效期 2 小时，缓存到过期前 5 分钟刷新）
 _token_cache = {"token": None, "expire_at": 0}
 _refresh_lock = __import__('threading').Lock()
+_refresh_fail_time = 0  # 上次刷新失败的时间戳，用于冷却避免反复刷屏
 
 
 @retry(
@@ -363,11 +364,35 @@ def _get_doc_token() -> str:
     return get_tenant_access_token()
 
 
+def _clear_stale_user_token():
+    """清除配置中已失效的 user_access_token，后续请求自动回退到 tenant_access_token"""
+    try:
+        import yaml
+        from src.config import CONFIG_PATH
+        import src.config as _cfg_module
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+        fb = config.get("feishu_bitable", {})
+        if fb.get("user_access_token"):
+            fb["user_access_token"] = ""
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
+            _cfg_module._CONFIG = None
+            logger.info("已清除失效的 user_access_token，后续请求将回退使用 tenant_access_token")
+    except Exception as e:
+        logger.warning("清除失效 token 异常: %s", e)
+
+
 def _refresh_user_token() -> str:
     """使用 refresh_token 刷新 user_access_token 并保存到配置（线程安全）
 
     :return: 新的 user_access_token，失败返回空串
     """
+    global _refresh_fail_time
+    # 冷却机制：5 分钟内刷新失败过则跳过，避免反复刷屏报错
+    import time as _t
+    if _refresh_fail_time and (_t.time() - _refresh_fail_time) < 300:
+        return ""
     cfg = _get_bitable_cfg()
     refresh_token = cfg.get("user_refresh_token", "").strip()
     if not refresh_token:
@@ -384,6 +409,7 @@ def _refresh_user_token() -> str:
             app_token = r1.json().get("app_access_token", "")
             if not app_token:
                 logger.warning("获取 app_access_token 失败")
+                _refresh_fail_time = _t.time()
                 return ""
             # 刷新 user_access_token
             refresh_url = f"{_FEISHU_API}/authen/v1/oidc/refresh_access_token"
@@ -392,7 +418,13 @@ def _refresh_user_token() -> str:
                             timeout=15, verify=False)
             d2 = r2.json()
             if d2.get("code") != 0:
-                logger.warning("刷新 user_access_token 失败: %s", d2.get("msg", ""))
+                # OIDC 接口返回 message 而非 msg，兼容两种字段名
+                err_msg = d2.get("msg") or d2.get("message") or ""
+                logger.warning("刷新 user_access_token 失败 (code=%s): %s", d2.get("code"), err_msg)
+                _refresh_fail_time = _t.time()
+                # refresh_token 已失效（20038）：清除旧 token，回退使用 tenant_access_token
+                if d2.get("code") == 20038:
+                    _clear_stale_user_token()
                 return ""
             new_token = d2.get("data", {}).get("access_token", "")
             new_refresh = d2.get("data", {}).get("refresh_token", "")
@@ -414,9 +446,11 @@ def _refresh_user_token() -> str:
             logger.info("user_access_token 已自动刷新，有效期 %ds, scope=%s",
                         d2.get("data", {}).get("expires_in", 0),
                         d2.get("data", {}).get("scope", "未返回"))
+            _refresh_fail_time = 0  # 刷新成功，重置失败冷却
             return new_token
         except Exception as e:
             logger.warning("刷新 user_access_token 异常: %s", e)
+            _refresh_fail_time = _t.time()
             return ""
 
 
@@ -470,14 +504,31 @@ def list_bitable_records(app_token: str, table_id: str,
 
 
 def list_bitable_fields(app_token: str, table_id: str) -> list:
-    """获取多维表格字段（列）定义
+    """获取多维表格字段（列）定义，支持 token 过期自动刷新重试
 
     :param app_token: 多维表格 app_token
     :param table_id: 数据表 ID
     :return: 字段列表，每条为 {"field_id": str, "field_name": str, "type": int}
     """
     url = f"{_FEISHU_API}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
-    resp = httpx.get(url, headers=_bitable_headers(), timeout=15, verify=False)
+    headers = _bitable_headers()
+    resp = httpx.get(url, headers=headers, timeout=15, verify=False)
+    # HTTP 401：token 过期，刷新后重试一次
+    if resp.status_code == 401:
+        logger.info("Bitable 字段查询收到 HTTP 401，尝试刷新 token 重试")
+        _token_cache["token"] = None
+        if _refresh_user_token() or get_tenant_access_token():
+            headers = _bitable_headers()
+            resp = httpx.get(url, headers=headers, timeout=15, verify=False)
+    # 业务层 token 过期/无效自动刷新重试（99991677=过期, 99991672=无效, 99991668=认证失败）
+    if resp.status_code < 400:
+        data = resp.json()
+        if data.get("code") in (99991677, 99991672, 99991668):
+            logger.info("Bitable 字段查询 token 过期(code=%s)，刷新后重试", data.get("code"))
+            _token_cache["token"] = None
+            if _refresh_user_token() or get_tenant_access_token():
+                headers = _bitable_headers()
+                resp = httpx.get(url, headers=headers, timeout=15, verify=False)
     resp.raise_for_status()
     data = resp.json()
     if data.get("code") != 0:
@@ -1138,11 +1189,13 @@ def create_docx_document(title: str, md_content: str, folder_token: str = "") ->
         logger.warning("无可用 doc token，跳过在线文档创建")
         return {"document_id": "", "url": ""}
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    # 1. 创建空文档（可指定文件夹）
+    # 1. 创建空文档（可指定文件夹，默认读取配置 drive_folder）
     url = f"{_FEISHU_API}/docx/v1/documents"
     body = {"title": title}
-    if folder_token:
-        body["folder_token"] = folder_token
+    cfg = _get_bitable_cfg()
+    target_folder = folder_token or cfg.get("drive_folder", "") or ""
+    if target_folder:
+        body["folder_token"] = target_folder
     try:
         resp = httpx.post(url, headers=headers, json=body, timeout=15, verify=False)
         # token 过期时自动刷新重试一次
@@ -1302,6 +1355,10 @@ def list_folder_files(folder_token: str, recursive: bool = False) -> list:
                 if _refresh_user_token():
                     headers = {"Authorization": f"Bearer {_get_doc_token()}"}
                     continue
+            # 403 权限不足：通常是 user_access_token 失效后回退 tenant_access_token 无权限
+            if resp.status_code == 403:
+                logger.warning("飞书云盘文件夹无权限访问 (403)，请在接口设置中重新授权飞书账户")
+                return []
             resp.raise_for_status()
             data = resp.json()
             if data.get("code") != 0:

@@ -65,6 +65,34 @@ def parse_doc_steps(report_text: str) -> list:
     return steps
 
 
+def parse_root_cause_section(report_text: str) -> str:
+    """从报告文本中提取"② 问题根因"章节（AI日志分析的核心根因描述）
+
+    与 parse_conclusion（提取"④ 根因分析与关键发现"）不同，本函数专门提取问题根因章节。
+    """
+    lines = report_text.splitlines()
+    result = []
+    capturing = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            if capturing:
+                break
+            capturing = "问题根因" in stripped
+            continue
+        if capturing and stripped:
+            cleaned = re.sub(r"^[-*\u2022]\s*", "", stripped)
+            cleaned = re.sub(r"[\U0001f534-\U0001f7e5\u26aa\u26ab]\s*", "", cleaned)
+            cleaned = re.sub(r"\*\*", "", cleaned)
+            cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+            cleaned = re.sub(r"\(L\d+\)", "", cleaned)
+            cleaned = re.sub(r"\*([^*]+)\*", r"\1", cleaned)
+            cleaned = cleaned.strip()
+            if cleaned:
+                result.append(cleaned)
+    return "\n".join(result)
+
+
 def parse_conclusion(report_text: str) -> str:
     """从报告文本中提取根因结论段落
 
