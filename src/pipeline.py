@@ -199,7 +199,7 @@ def supplement_row(row: dict) -> dict:
 
 
 # 符合需求/符合预期类通用根因关键词（语义上无具体根因信息）
-_GENERIC_ROOTCAUSE_KEYWORDS = ("符合需求", "符合预期", "需求符合", "预期行为", "设计如此", "非问题")
+_GENERIC_ROOTCAUSE_KEYWORDS = ("符合需求", "符合预期", "需求符合", "预期行为", "设计如此", "非问题", "登陆后无法复现", "test error")
 
 
 def _is_generic_rootcause(rootcause: str) -> bool:
@@ -454,7 +454,7 @@ def _fill_confidence(bugid: str, feishu_link: str, rootcause: str, issue: dict =
 
 
 def execute_single_flow(bugid: str, trigger_time: str = "", cancel_check=None, step_callback=None) -> dict:
-    """单 bugid 流程执行：逐步检查 6 字段并补充缺失，返回每步详细结果
+    """单 bugid 流程执行：4步流程（AI分析 → 结果查看 → 置信度判断 → 写入），返回每步详细结果
 
     cancel_check: 可选回调函数，返回 True 表示需要取消，流程会在当前步骤完成后立即停止
     step_callback: 可选回调函数，每步完成后立即调用（传入步骤结果字典），用于实时推送
@@ -475,6 +475,7 @@ def execute_single_flow(bugid: str, trigger_time: str = "", cancel_check=None, s
     failed = False
     feishu_link = (row.get("AI分析结果(飞书链接)") or "").strip()
     issue = {}
+    need_ai = True  # 默认需要AI分析，去重时置为False
 
     def _step(num, name, ok, skipped=False, elapsed=0.0, summary="", detail=None, error=None):
         result = {"step": num, "name": name, "ok": ok, "skipped": skipped,
@@ -484,79 +485,58 @@ def execute_single_flow(bugid: str, trigger_time: str = "", cancel_check=None, s
             step_callback(result)
         return result
 
-    # Step 1: Jira 状态检查
+    # ── Step 1: AI日志分析（Jira检查 + 去重 + AI分析接口调用） ──
     t0 = time.time()
+    api_ok = False
+    doc_path = ""
     try:
+        # 1a. Jira 状态检查
         issue = jira_client.fetch_issue(bugid)
         status = jira_client.extract_status(issue)
-        elapsed = time.time() - t0
         issue_key = issue.get("key") or bugid
         issue_summary = (issue.get("fields") or {}).get("summary") or ""
         if status and status.lower() != "closed":
-            steps.append(_step(1, "Jira状态检查", False, elapsed=elapsed,
+            elapsed = time.time() - t0
+            steps.append(_step(1, "AI日志分析", False, elapsed=elapsed,
                                summary=f"状态为 [{status}]，仅 Closed 允许",
-                               detail={"status": status, "key": issue_key, "summary": issue_summary},
-                               error=f"Jira 状态为 [{status}]，仅 Closed 状态才进入补充流程"))
+                               detail={"key": issue_key, "status": status, "api_ok": False,
+                                       "trigger_time": trigger_time},
+                               error=f"Jira 状态为 [{status}]，仅 Closed 状态才进入流程"))
             failed = True
         else:
-            steps.append(_step(1, "Jira状态检查", True, elapsed=elapsed,
-                               summary=f"状态: {status or 'Closed'}",
-                               detail={"status": status, "key": issue_key, "summary": issue_summary}))
-    except Exception as e:
-        elapsed = time.time() - t0
-        steps.append(_step(1, "Jira状态检查", False, elapsed=elapsed,
-                           summary="Jira 查询失败", error=_extract_error_detail(e)))
-        failed = True
-
-    # 触发时间自动提取：在 AI 分析前从评论/附件提取（提取失败不阻断流程）
-    if not failed and not trigger_time:
-        try:
-            extracted = jira_client.extract_trigger_time_from_issue(issue)
-            if extracted:
-                trigger_time = extracted
-                row["分析问题时间"] = trigger_time
-                _save_trigger_time(bugid, trigger_time)
-                logger.info("flow: bugid=%s 自动提取触发时间: %s", bugid, trigger_time)
-        except Exception as e:
-            logger.warning("flow: bugid=%s 触发时间提取异常（不阻断流程）: %s", bugid, e)
-
-    # Step 2: 字段完整性检查
-    if not failed and not _cancelled():
-        t0 = time.time()
-        try:
-            date_str = datetime.now().strftime("%Y-%m-%d")
-            csv_path = os.path.join(get_path("doc_dir"), date_str, f"{date_str}_daily.csv")
-            if os.path.exists(csv_path):
-                df = pd.read_csv(csv_path, encoding="utf-8-sig")
-                first_col = df.columns[0]
-                df = df[df[first_col].notna() & (df[first_col].astype(str).str.strip() != "")]
-                df = df.fillna("").astype(str)
-                match = df[df["jira号"].astype(str) == bugid]
-                if not match.empty:
-                    for f in SUPPLEMENT_FIELDS:
-                        if f in match.columns:
-                            row[f] = match.iloc[0].get(f, "")
-        except Exception:
-            pass
-        missing = [f for f in SUPPLEMENT_FIELDS
-                   if (row.get(f) or "").strip() in ("", "-", "None")]
-        complete = [f for f in SUPPLEMENT_FIELDS if f not in missing]
-        elapsed = time.time() - t0
-        msg = f"{len(complete)}/5 字段已有值"
-        if missing:
-            msg += f"，缺失: {', '.join(missing)}"
-        field_values = {f: (row.get(f) or "").strip() for f in SUPPLEMENT_FIELDS}
-        steps.append(_step(2, "字段检查", True, elapsed=elapsed, summary=msg,
-                           detail={"missing": missing, "complete": complete, "field_values": field_values}))
-        all_complete = len(missing) == 0
-
-        # Step 3: AI 日志分析
-        if not failed and not _cancelled():
-            t0 = time.time()
-            need_ai = ("分析问题时间" in missing) or ("AI分析结果(飞书链接)" in missing)
+            # 1b. 触发时间自动提取
+            if not trigger_time:
+                try:
+                    extracted = jira_client.extract_trigger_time_from_issue(issue)
+                    if extracted:
+                        trigger_time = extracted
+                        row["分析问题时间"] = trigger_time
+                        _save_trigger_time(bugid, trigger_time)
+                        logger.info("flow: bugid=%s 自动提取触发时间: %s", bugid, trigger_time)
+                except Exception as e:
+                    logger.warning("flow: bugid=%s 触发时间提取异常（不阻断流程）: %s", bugid, e)
+            # 1c. 去重检查（从当日 CSV 加载已有字段）
+            missing = []
+            try:
+                date_str = datetime.now().strftime("%Y-%m-%d")
+                csv_path = os.path.join(get_path("doc_dir"), date_str, f"{date_str}_daily.csv")
+                if os.path.exists(csv_path):
+                    df = pd.read_csv(csv_path, encoding="utf-8-sig")
+                    first_col = df.columns[0]
+                    df = df[df[first_col].notna() & (df[first_col].astype(str).str.strip() != "")]
+                    df = df.fillna("").astype(str)
+                    match = df[df["jira号"].astype(str) == bugid]
+                    if not match.empty:
+                        for f in SUPPLEMENT_FIELDS:
+                            if f in match.columns:
+                                row[f] = match.iloc[0].get(f, "")
+            except Exception:
+                pass
+            missing = [f for f in SUPPLEMENT_FIELDS if (row.get(f) or "").strip() in ("", "-", "None")]
             feishu_link = (row.get("AI分析结果(飞书链接)") or "").strip()
+            need_ai = ("分析问题时间" in missing) or ("AI分析结果(飞书链接)" in missing)
+            # 1d. 调用 AI 日志分析接口
             if need_ai:
-                # 检测 AI 分析接口连通性（15s 超时，避免 3 次重试 ×30s 连接超时的长等待）
                 api_reachable = True
                 try:
                     import socket
@@ -570,64 +550,85 @@ def execute_single_flow(bugid: str, trigger_time: str = "", cancel_check=None, s
                     api_reachable = False
                 if not api_reachable:
                     elapsed = time.time() - t0
-                    steps.append(_step(3, "AI日志分析", False, elapsed=elapsed,
+                    steps.append(_step(1, "AI日志分析", False, elapsed=elapsed,
                                        summary="AI分析接口不可达",
+                                       detail={"key": issue_key, "status": status or "Closed",
+                                               "api_ok": False, "trigger_time": trigger_time},
                                        error="AI 日志分析接口不可达，请确认是否在内网环境"))
                     failed = True
                 else:
-                    try:
-                        logger.info("flow: bugid=%s 缺少AI分析字段，调用AI日志分析接口", bugid)
-                        # 进度回调：异步任务提交成功时推送 50% 进度
-                        def _on_async_submitted(msg):
-                            if not trigger_time:
-                                trigger_time_ref[0] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            row["分析问题时间"] = trigger_time_ref[0]
-                            elapsed = time.time() - t0
-                            step_result = _step(3, "AI日志分析", True, elapsed=elapsed,
-                                                summary=f"分析已提交(50%): {msg[:80]}，等待文档生成...",
-                                                detail={"trigger_time": trigger_time_ref[0], "msg": msg, "pending": True})
-                        trigger_time_ref = [trigger_time]  # 用列表绕过闭包赋值限制
-                        response = ai_log_client.analyze_logs(
-                            bugid, trigger_time, cancel_check=cancel_check,
-                            progress_callback=_on_async_submitted)
-                        # 检查响应是否表示失败（如轮询超时）
-                        resp_code = response.get("code") if isinstance(response, dict) else None
-                        if resp_code is not None and resp_code != 200 and resp_code != 0:
-                            elapsed = time.time() - t0
-                            err_msg = response.get("msg", "未知错误") if isinstance(response, dict) else str(response)
-                            steps.append(_step(3, "AI日志分析", False, elapsed=elapsed,
-                                               summary="AI 分析失败",
-                                               error=f"{err_msg}"))
-                            failed = True
-                        else:
-                            report_text = ai_log_client.extract_report(response)
-                            doc_path = doc_generator.save_document(bugid, report_text)
-                            row["AI分析结果(飞书链接)"] = doc_path
-                            if not trigger_time:
-                                trigger_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            row["分析问题时间"] = trigger_time
-                            feishu_link = doc_path
-                            elapsed = time.time() - t0
-                            conclusion_preview = doc_generator.parse_conclusion(report_text)[:200] if report_text else ""
-                            steps.append(_step(3, "AI日志分析", True, elapsed=elapsed,
-                                               summary=f"报告已生成: {os.path.basename(doc_path)}",
-                                               detail={"doc_path": doc_path, "content_length": len(report_text or ""),
-                                                       "conclusion": conclusion_preview, "trigger_time": trigger_time}))
-                    except Exception as e:
+                    logger.info("flow: bugid=%s 调用AI日志分析接口", bugid)
+                    trigger_time_ref = [trigger_time]
+                    def _on_async_submitted(msg):
+                        if not trigger_time_ref[0]:
+                            trigger_time_ref[0] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        row["分析问题时间"] = trigger_time_ref[0]
+                    response = ai_log_client.analyze_logs(
+                        bugid, trigger_time, cancel_check=cancel_check,
+                        progress_callback=_on_async_submitted)
+                    trigger_time = trigger_time_ref[0] or trigger_time
+                    row["分析问题时间"] = trigger_time
+                    resp_code = response.get("code") if isinstance(response, dict) else None
+                    if resp_code is not None and resp_code != 200 and resp_code != 0:
                         elapsed = time.time() - t0
-                        steps.append(_step(3, "AI日志分析", False, elapsed=elapsed,
-                                           summary="AI 分析失败", error=_extract_error_detail(e)))
+                        err_msg = response.get("msg", "未知错误") if isinstance(response, dict) else str(response)
+                        steps.append(_step(1, "AI日志分析", False, elapsed=elapsed,
+                                           summary=f"AI 分析失败: {err_msg}",
+                                           detail={"key": issue_key, "status": status or "Closed",
+                                                   "api_ok": False, "trigger_time": trigger_time},
+                                           error=err_msg))
                         failed = True
-            elif all_complete:
-                steps.append(_step(3, "AI日志分析", True, skipped=True,
-                                   summary="所有字段已完整，跳过"))
+                    else:
+                        api_ok = True
+                        report_text = ai_log_client.extract_report(response)
+                        doc_path = doc_generator.save_document(bugid, report_text)
+                        row["AI分析结果(飞书链接)"] = doc_path
+                        feishu_link = doc_path
+                        elapsed = time.time() - t0
+                        steps.append(_step(1, "AI日志分析", True, elapsed=elapsed,
+                                           summary=f"分析完成: {os.path.basename(doc_path)}",
+                                           detail={"key": issue_key, "status": status or "Closed",
+                                                   "api_ok": True, "trigger_time": trigger_time,
+                                                   "doc_path": doc_path,
+                                                   "content_length": len(report_text or "")}))
             else:
-                steps.append(_step(3, "AI日志分析", True, skipped=True,
-                                   summary="AI分析字段已有值"))
+                # 去重：AI分析字段已有值，跳过
+                api_ok = True
+                doc_path = feishu_link
+                elapsed = time.time() - t0
+                steps.append(_step(1, "AI日志分析", True, skipped=True, elapsed=elapsed,
+                                   summary="AI分析字段已有值，跳过",
+                                   detail={"key": issue_key, "status": status or "Closed",
+                                           "api_ok": True, "trigger_time": trigger_time,
+                                           "doc_path": doc_path}))
+    except Exception as e:
+        elapsed = time.time() - t0
+        steps.append(_step(1, "AI日志分析", False, elapsed=elapsed,
+                           summary="AI分析执行异常", error=_extract_error_detail(e),
+                           detail={"api_ok": False, "trigger_time": trigger_time}))
+        failed = True
 
-        # Step 4: 飞书文档获取
-        if not failed and not _cancelled():
-            t0 = time.time()
+    # ── Step 2: 执行结果查看 ──
+    if not failed and not _cancelled():
+        t0 = time.time()
+        elapsed = time.time() - t0
+        steps.append(_step(2, "执行结果查看", True, elapsed=elapsed,
+                           summary=f"执行成功，文档: {os.path.basename(doc_path) if doc_path else '无'}",
+                           detail={"success": True, "skipped": not need_ai,
+                                   "doc_path": doc_path}))
+    elif failed:
+        t0 = time.time()
+        elapsed = time.time() - t0
+        steps.append(_step(2, "执行结果查看", False, elapsed=elapsed,
+                           summary="AI分析执行失败",
+                           detail={"success": False, "skipped": False, "doc_path": ""},
+                           error="AI分析执行失败，可使用【失败排查】功能"))
+
+    # ── Step 3: 置信度判断（飞书文档获取 + Rootcause + 评论总结 + 置信度计算） ──
+    if not failed and not _cancelled():
+        t0 = time.time()
+        try:
+            # 3a. 飞书文档获取
             has_local_doc = False
             try:
                 doc_generator.find_latest_document(bugid)
@@ -640,52 +641,19 @@ def execute_single_flow(bugid: str, trigger_time: str = "", cancel_check=None, s
                     feishu_domain = feishu_client.extract_domain_from_url(feishu_link)
                     md_content = feishu_client.fetch_docx_as_markdown(
                         doc_id, bugid=bugid, feishu_domain=feishu_domain)
-                    doc_path = doc_generator.save_document(bugid, md_content)
-                    elapsed = time.time() - t0
-                    steps.append(_step(4, "飞书文档获取", True, elapsed=elapsed,
-                                       summary=f"文档已下载: {os.path.basename(doc_path)}",
-                                       detail={"doc_path": doc_path, "content_length": len(md_content or ""),
-                                               "doc_id": doc_id, "domain": feishu_domain}))
+                    doc_generator.save_document(bugid, md_content)
                 except Exception as e:
-                    elapsed = time.time() - t0
-                    steps.append(_step(4, "飞书文档获取", False, elapsed=elapsed,
-                                       summary="飞书文档下载失败", error=_extract_error_detail(e)))
-                    failed = True
-            else:
-                reason = "本地文档已存在" if has_local_doc else "无飞书链接"
-                steps.append(_step(4, "飞书文档获取", True, skipped=True, summary=reason))
-
-        # Step 5: Rootcause 提取
-        if not failed and not _cancelled():
-            t0 = time.time()
+                    logger.warning("flow: bugid=%s 飞书文档下载失败（不阻断）: %s", bugid, e)
+            # 3b. Rootcause 提取
             rootcause = (row.get("rootcause") or "").strip()
             if not rootcause or rootcause in ("-", "None"):
                 try:
                     rootcause = _fill_rootcause(bugid, issue)
                     row["rootcause"] = rootcause
-                    elapsed = time.time() - t0
-                    # 根因分析内容为空时直接过滤
-                    if not rootcause:
-                        steps.append(_step(5, "Rootcause提取", False, elapsed=elapsed,
-                                           summary="Jira根因分析内容为空，跳过分析",
-                                           error="Jira根因分析内容为空，该条数据无需分析"))
-                        failed = True
-                    else:
-                        steps.append(_step(5, "Rootcause提取", True, elapsed=elapsed,
-                                           summary=f"{rootcause[:80]}",
-                                           detail={"rootcause": rootcause}))
                 except Exception as e:
-                    elapsed = time.time() - t0
-                    steps.append(_step(5, "Rootcause提取", False, elapsed=elapsed,
-                                       summary="rootcause 获取失败", error=_extract_error_detail(e)))
-                    failed = True
-            else:
-                steps.append(_step(5, "Rootcause提取", True, skipped=True,
-                                   summary=f"已有: {rootcause[:50]}"))
-
-        # Step 6: AI评论总结
-        if not failed and not _cancelled():
-            t0 = time.time()
+                    logger.warning("flow: bugid=%s rootcause获取失败（不阻断）: %s", bugid, e)
+                    rootcause = ""
+            # 3c. AI评论总结
             comment_summary = (row.get("AI评论总结") or "").strip()
             if not comment_summary or comment_summary in ("-", "None"):
                 try:
@@ -697,50 +665,66 @@ def execute_single_flow(bugid: str, trigger_time: str = "", cancel_check=None, s
                     link = doc_url or cs_path
                     row["AI评论总结"] = f"{conclusion} [详情: {link}]" if conclusion else link
                     row["doc_url"] = doc_url
-                    elapsed = time.time() - t0
-                    cs_content = conclusion
-                    steps.append(_step(6, "AI评论总结", True, elapsed=elapsed,
-                                       summary=f"已生成: {os.path.basename(cs_path)}",
-                                       detail={"path": cs_path, "content_preview": cs_content}))
                 except Exception as e:
-                    elapsed = time.time() - t0
-                    steps.append(_step(6, "AI评论总结", False, elapsed=elapsed,
-                                       summary="评论总结生成失败", error=_extract_error_detail(e)))
-                    failed = True
-            else:
-                steps.append(_step(6, "AI评论总结", True, skipped=True, summary="已有值"))
-
-        # Step 7: 置信度计算
-        if not failed and not _cancelled():
-            t0 = time.time()
+                    logger.warning("flow: bugid=%s 评论总结生成失败（不阻断）: %s", bugid, e)
+            # 3d. 置信度计算
             confidence = (row.get("结果置信度") or "").strip()
             if not confidence or confidence in ("-", "None", "0"):
                 try:
-                    conf = _fill_confidence(
-                        bugid, feishu_link, row.get("rootcause", ""), issue)
+                    conf = _fill_confidence(bugid, feishu_link, row.get("rootcause", ""), issue)
                     row["结果置信度"] = conf
-                    elapsed = time.time() - t0
-                    steps.append(_step(7, "置信度计算", True, elapsed=elapsed,
-                                       summary=f"置信度: {conf}",
-                                       detail={"confidence": conf, "threshold": load_config().get("similarity", {}).get("threshold", 0.7)}))
+                    confidence = conf
                 except Exception as e:
-                    elapsed = time.time() - t0
-                    steps.append(_step(7, "置信度计算", False, elapsed=elapsed,
-                                       summary="置信度计算失败", error=_extract_error_detail(e)))
-                    failed = True
-            else:
-                steps.append(_step(7, "置信度计算", True, skipped=True,
-                                   summary=f"已有: {confidence}"))
+                    logger.warning("flow: bugid=%s 置信度计算失败（不阻断）: %s", bugid, e)
+                    confidence = "0"
+            threshold = load_config().get("similarity", {}).get("threshold", 0.7)
+            confidence_ok = False
+            try:
+                confidence_ok = float(confidence) >= float(threshold)
+            except (ValueError, TypeError):
+                confidence_ok = False
+            elapsed = time.time() - t0
+            steps.append(_step(3, "置信度判断", confidence_ok, elapsed=elapsed,
+                               summary=f"置信度: {confidence}（阈值: {threshold}）{'✓ 达标' if confidence_ok else '✗ 不达标'}",
+                               detail={"confidence": confidence, "confidence_ok": confidence_ok,
+                                       "threshold": threshold, "rootcause": (row.get("rootcause") or "")[:200]}))
+            if not confidence_ok:
+                failed = True  # 置信度不达标，流程标记为未完成
+        except Exception as e:
+            elapsed = time.time() - t0
+            steps.append(_step(3, "置信度判断", False, elapsed=elapsed,
+                               summary="置信度判断失败", error=_extract_error_detail(e),
+                               detail={"confidence": "0", "confidence_ok": False, "threshold": 0.7}))
+            failed = True
+
+    # ── Step 4: 写入完成 ──
+    if not failed and not _cancelled():
+        t0 = time.time()
+        try:
+            report_module.generate_daily_csv([row])
+            elapsed = time.time() - t0
+            steps.append(_step(4, "写入完成", True, elapsed=elapsed,
+                               summary=f"已写入报表: {bugid}",
+                               detail={"written": True, "bugid": bugid}))
+        except Exception as e:
+            elapsed = time.time() - t0
+            steps.append(_step(4, "写入完成", False, elapsed=elapsed,
+                               summary="写入报表失败", error=_extract_error_detail(e),
+                               detail={"written": False, "bugid": bugid}))
+            failed = True
+    elif not _cancelled():
+        t0 = time.time()
+        elapsed = time.time() - t0
+        reason = "置信度不达标，需手工修复后重新执行" if failed else "流程未完成"
+        steps.append(_step(4, "写入完成", False, elapsed=elapsed,
+                           summary=reason,
+                           detail={"written": False, "bugid": bugid},
+                           error=reason))
 
     cancelled = _cancelled()
     if cancelled and not failed:
         failed = True
     all_ok = not failed and not cancelled and _is_row_complete(row)
-    # 将结果写入每日结论报表（合并模式）
-    try:
-        report_module.generate_daily_csv([row])
-    except Exception as e:
-        logger.warning("flow: bugid=%s 写入每日报表失败（不影响主流程）: %s", bugid, e)
     return {"bugid": bugid, "steps": steps, "row": row, "all_ok": all_ok,
             "failed": failed, "cancelled": cancelled, "complete": _is_row_complete(row)}
 

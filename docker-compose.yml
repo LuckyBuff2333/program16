@@ -1,0 +1,63 @@
+# Bug 文档沉淀工具 Docker Compose 部署配置
+# 使用方式：
+#   1. 确保 config/config.yaml 已配置好（敏感信息不提交 Git）
+#   2. docker compose up -d        # 后台启动
+#   3. docker compose logs -f      # 查看日志
+#   4. docker compose down         # 停止服务
+
+services:
+  bug-doc-tool:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bug-doc-tool
+    restart: unless-stopped
+    ports:
+      - "8060:8060"
+    volumes:
+      # 配置文件（含密钥，宿主机维护，不打入镜像）
+      - ./config/config.yaml:/app/config/config.yaml:ro
+      # 运行时数据持久化
+      - ./data:/app/data
+      - ./docs:/app/docs
+      - ./reports:/app/reports
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8060/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    networks:
+      - bug-doc-net
+
+  # ---- 可选：MySQL 数据库（如需替换 SQLite）----
+  # 启用步骤：
+  #   1. 取消下方注释
+  #   2. 修改 config.yaml 中 database.url 为：
+  #      mysql+pymysql://bugtool:bugtool123@mysql:3306/bug_records?charset=utf8mb4
+  #
+  # mysql:
+  #   image: mysql:8.0
+  #   container_name: bug-doc-mysql
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3307:3306"
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: root123
+  #     MYSQL_DATABASE: bug_records
+  #     MYSQL_USER: bugtool
+  #     MYSQL_PASSWORD: bugtool123
+  #   volumes:
+  #     - mysql_data:/var/lib/mysql
+  #   networks:
+  #     - bug-doc-net
+
+networks:
+  bug-doc-net:
+    driver: bridge
+
+# volumes:
+#   mysql_data:

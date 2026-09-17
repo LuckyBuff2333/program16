@@ -4,7 +4,7 @@ mock 模式下直接从本地测试数据表（bug_test_data.csv）读取评论�
 不再使用硬编码兜底数据。
 """
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.clients.ai_log_client import _load_testdata_row
 from src.clients.base import http_get
@@ -68,8 +68,8 @@ def fetch_issue(bugid: str) -> dict:
             auth = (cfg["username"], token)
     url = f"{cfg['url']}/{bugid}"
     logger.info("调用 Jira RESTAPI (GET): %s", url)
-    # expand=comment 确保返回评论区数据，否则 Jira API 默认不包含评论
-    return http_get(url, params={"expand": "comment"}, timeout=cfg.get("timeout", 30), auth=auth, headers=headers)
+    # expand=comment,names 确保返回评论区数据 + 字段显示名映射，否则 Jira API 默认不包含
+    return http_get(url, params={"expand": "comment,names"}, timeout=cfg.get("timeout", 30), auth=auth, headers=headers)
 
 
 def search_issues(jql: str, max_results: int = 500) -> list:
@@ -127,7 +127,8 @@ def extract_status(issue: dict) -> str:
 def extract_rootcause(issue: dict) -> str:
     """从 issue 中提取 rootcause 字段
 
-    优先取配置中指定的自定义字段，回退尝试常见字段名，最后回退 description。
+    优先取配置中指定的自定义字段，回退尝试常见字段名。
+    根因字段为空时返回空字符串（不回退 description，避免误读测试时间等非根因内容）。
     """
     fields = issue.get("fields") or {}
     # 1. 优先取配置中指定的自定义字段名
@@ -142,11 +143,8 @@ def extract_rootcause(issue: dict) -> str:
         val = fields.get(key)
         if val:
             return _parse_rootcause_value(val)
-    # 3. 回退：从 description 中提取
-    import re
-    description = fields.get("description") or ""
-    cleaned = re.sub(r"^线上服务报错[\uff0c,]\s*原因[\uff1a:]\s*", "", description.strip())
-    return cleaned.strip()
+    # 3. 根因字段为空，返回空字符串（不再回退 description）
+    return ""
 
 
 def _parse_rootcause_value(val) -> str:
@@ -202,15 +200,302 @@ def _extract_adf_text(adf: dict) -> str:
 # 时间戳正则：完整格式 YYYY-MM-DD HH:MM:SS 和 无年份格式 MM-DD HH:MM:SS（可带毫秒）
 _TIMESTAMP_FULL_RE = re.compile(r"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})")
 _TIMESTAMP_SHORT_RE = re.compile(r"(?<!\d)(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})(?:\.\d+)?")
+# 斜杠日期格式：YYYY/M/D HH:MM 或 YYYY/MM/DD HH:MM:SS（月/日支持单位数）
+_TIMESTAMP_SLASH_RE = re.compile(r"(\d{4}/\d{1,2}/\d{1,2}\s+\d{2}:\d{2}(?::\d{2})?)")
+# 点分隔日期格式：YYYY.M.D HH:MM 或 YYYY.M.DD HH:MM:SS（月/日支持单位数，如 2026.8.28 14:50）
+_TIMESTAMP_DOT_RE = re.compile(r"(\d{4}\.\d{1,2}\.\d{1,2}\s+\d{2}:\d{2}(?::\d{2})?)")
+# ISO 8601 格式：YYYY-MM-DDTHH:MM:SS（可带毫秒和时区，捕获时区用于转换）
+_TIMESTAMP_ISO_RE = re.compile(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?([+\-]\d{2}:\d{2})?(Z?)")
+# UTC+8 时区偏移量（用于将 UTC 时间转换为本地时间）
+_UTC8_OFFSET = timedelta(hours=8)
 
+# 紧凑日期格式：前缀+YYYYMMDD_HHMM（如 HMI:20240708_1556）
+_TIMESTAMP_HMI_RE = re.compile(r"[A-Za-z]+:(20\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})")
 # 附件文件名时间正则
 _GMLOGGER_RE = re.compile(r"gmlogger[_\-](\d{4})[_\-](\d{1,2})[_\-](\d{1,2})[_\-](\d{1,2})[_\-](\d{1,2})(?:[_\-](\d{1,2}))?")
 _US_DATE_RE = re.compile(r"(\d{1,2})-(\d{1,2})-(\d{4})\s+(\d{1,2})-(\d{1,2})(?:-(\d{1,2}))?\s*(am|pm)?", re.IGNORECASE)
 _COMPACT_RE = re.compile(r"(20\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:(\d{2}))?")
 
+
+def _normalize_datetime_text(text: str) -> str:
+    """标准化非标准日期时间文本，提升提取兼容性
+
+    处理两类常见异常格式：
+    1. 破折号分隔符：YYYY/MM/DD——HH:MM → YYYY/MM/DD HH:MM（全角/半角破折号替换为空格）
+    2. 冒号空格：HH: MM → HH:MM（去除时间冒号旁的空格）
+    """
+    # 破折号/全角横线替换为空格（U+2013 en-dash, U+2014 em-dash, U+2015 horizontal bar, U+FF0D fullwidth hyphen-minus）
+    text = re.sub(r'[\u2013\u2014\u2015\uFF0D]+', ' ', text)
+    # 时间冒号旁空格去除（14: 57 → 14:57，不影响日期部分）
+    text = re.sub(r'(\d)\s*:\s*(\d)', r'\1:\2', text)
+    return text
+
+
 # 附件分类后缀
 _ARCHIVE_SUFFIXES = (".7z", ".zip", ".rar", ".gz", ".tar", ".z001", ".001")
 _MEDIA_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".mp4", ".avi", ".mov", ".mkv")
+
+
+def _is_valid_date(year: int, month: int, day: int) -> bool:
+    """校验日期是否符合公历逻辑（如 2 月 31 日、4 月 31 日等无效日期返回 False）"""
+    if not (2020 <= year <= 2030):
+        return False
+    if not (1 <= month <= 12):
+        return False
+    # 每月最大天数
+    max_days = [31, 29 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 28,
+                31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    return 1 <= day <= max_days[month - 1]
+
+
+def _parse_datetime_string(text: str) -> tuple:
+    """尝试多种格式解析日期时间字符串，返回 (标准化时间字符串, datetime) 或 None
+
+    支持格式：YYYY-MM-DD HH:MM:SS, YYYY/MM/DD HH:MM, YYYY/MM/DD HH:MM:SS,
+               YYYY-MM-DDTHH:MM:SS, YYYY-MM-DD HH:MM
+    """
+    text = _normalize_datetime_text(text.strip())
+    # YYYY-MM-DD HH:MM:SS
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M",
+                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+        try:
+            ts = datetime.strptime(text[:len("2025-04-15 19:07:30")], fmt)
+            if _is_valid_date(ts.year, ts.month, ts.day):
+                return (ts.strftime("%Y-%m-%d %H:%M:%S"), ts)
+        except (ValueError, IndexError):
+            continue
+    # 正则提取 YYYY/MM/DD HH:MM 格式
+    m = _TIMESTAMP_SLASH_RE.search(text)
+    if m:
+        raw = m.group(1)
+        for fmt in ("%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
+            try:
+                ts = datetime.strptime(raw, fmt)
+                if _is_valid_date(ts.year, ts.month, ts.day):
+                    return (ts.strftime("%Y-%m-%d %H:%M:%S"), ts)
+            except ValueError:
+                continue
+    # 正则提取 YYYY.M.D HH:MM 格式
+    m = _TIMESTAMP_DOT_RE.search(text)
+    if m:
+        raw = m.group(1)
+        for fmt in ("%Y.%m.%d %H:%M:%S", "%Y.%m.%d %H:%M"):
+            try:
+                ts = datetime.strptime(raw, fmt)
+                if _is_valid_date(ts.year, ts.month, ts.day):
+                    return (ts.strftime("%Y-%m-%d %H:%M:%S"), ts)
+            except ValueError:
+                continue
+    return None
+
+
+def _extract_from_custom_fields(issue: dict) -> str:
+    """从 Jira issue 自定义字段中提取触发时间
+
+    仅从以下指定字段提取：
+    1. Operation Schedule（排期时间）
+    2. Unit Test 中的 time stamp 值
+    3. Initial Setting 中的 log time 值（最低优先级）
+    """
+    fields = issue.get("fields") or {}
+    names = issue.get("names") or {}
+    _SKIP_FIELDS = {"comment", "attachment", "description", "summary", "status", "issuetype",
+                    "project", "assignee", "reporter", "creator", "priority", "labels",
+                    "fixVersions", "versions", "components", "resolution", "watches", "votes"}
+    # 构建 field_id -> display_name 映射
+    id_to_name = {}
+    for fid, fname in names.items():
+        if fid not in _SKIP_FIELDS:
+            id_to_name[fid] = str(fname)
+    # 收集目标字段
+    schedule_fields = []  # Operation Schedule
+    unittest_fields = []  # Unit Test (提取其中的 time stamp)
+    initial_fields = []  # Initial Setting (提取其中的 log time)
+    operation_fields = []  # 操作顺序 / 执行结果（兆底提取）
+    for fid, value in fields.items():
+        if fid in _SKIP_FIELDS or value is None:
+            continue
+        name = id_to_name.get(fid, fid).lower()
+        if "operation schedule" in name or "schedule" in name and "operation" in name:
+            schedule_fields.append((fid, value, id_to_name.get(fid, fid)))
+        elif "unit test" in name or "unittest" in name:
+            unittest_fields.append((fid, value, id_to_name.get(fid, fid)))
+        elif "initial setting" in name or "初始设定" in name:
+            initial_fields.append((fid, value, id_to_name.get(fid, fid)))
+        elif "操作顺序" in name or "operation sequence" in name or "执行结果" in name or "actual result" in name:
+            operation_fields.append((fid, value, id_to_name.get(fid, fid)))
+    # 优先 Operation Schedule
+    for fid, value, name in schedule_fields:
+        text = str(value).strip()
+        if not text or text.lower() in ("none", "null", ""):
+            continue
+        parsed = _parse_datetime_string(text)
+        if parsed:
+            logger.info("从自定义字段[%s/%s]提取到时间: %s", fid, name, parsed[0])
+            return parsed[0]
+        for regex, fmt in [(_TIMESTAMP_FULL_RE, "%Y-%m-%d %H:%M:%S"),
+                           (_TIMESTAMP_SLASH_RE, None)]:
+            for m in regex.finditer(text):
+                raw = m.group(1) if m.lastindex else m.group(0)
+                p = _parse_datetime_string(raw) if fmt is None else None
+                if p:
+                    logger.info("从字段[%s/%s]文本提取到时间: %s", fid, name, p[0])
+                    return p[0]
+                if fmt:
+                    try:
+                        ts = datetime.strptime(raw, fmt)
+                        if _is_valid_date(ts.year, ts.month, ts.day):
+                            logger.info("从字段[%s/%s]文本提取到时间: %s", fid, name, ts.strftime(fmt))
+                            return ts.strftime(fmt)
+                    except ValueError:
+                        continue
+    # 其次 Unit Test 中的 time stamp
+    for fid, value, name in unittest_fields:
+        text = str(value).strip()
+        if not text or text.lower() in ("none", "null", ""):
+            continue
+        # 优先查找 time stamp / timestamp 相关行
+        for line in text.split("\n"):
+            line_lower = line.lower()
+            if "time stamp" in line_lower or "timestamp" in line_lower:
+                parsed = _parse_datetime_string(line)
+                if parsed:
+                    logger.info("从字段[%s/%s] time stamp 提取到时间: %s", fid, name, parsed[0])
+                    return parsed[0]
+                for regex, fmt in [(_TIMESTAMP_FULL_RE, "%Y-%m-%d %H:%M:%S"),
+                                   (_TIMESTAMP_SLASH_RE, None)]:
+                    for m in regex.finditer(line):
+                        raw = m.group(1) if m.lastindex else m.group(0)
+                        p = _parse_datetime_string(raw) if fmt is None else None
+                        if p:
+                            logger.info("从字段[%s/%s] time stamp 提取到时间: %s", fid, name, p[0])
+                            return p[0]
+                        if fmt:
+                            try:
+                                ts = datetime.strptime(raw, fmt)
+                                if _is_valid_date(ts.year, ts.month, ts.day):
+                                    logger.info("从字段[%s/%s] time stamp 提取到时间: %s", fid, name, ts.strftime(fmt))
+                                    return ts.strftime(fmt)
+                            except ValueError:
+                                continue
+        # 没有 time stamp 行，从整个字段值中提取第一个有效时间
+        parsed = _parse_datetime_string(text)
+        if parsed:
+            logger.info("从自定义字段[%s/%s]提取到时间: %s", fid, name, parsed[0])
+            return parsed[0]
+    # 最后 Initial Setting 中的 log time / Time
+    for fid, value, name in initial_fields:
+        text = str(value).strip()
+        if not text or text.lower() in ("none", "null", ""):
+            continue
+        # 标准化破折号分隔符和冒号空格（如 2026/08/31——14: 57 → 2026/08/31 14:57）
+        text = _normalize_datetime_text(text)
+        for line in text.split("\n"):
+            line_lower = line.lower().strip()
+            if "log time" in line_lower or line_lower.startswith("time:") or line_lower.startswith("time "):
+                parsed = _parse_datetime_string(line)
+                if parsed:
+                    logger.info("从字段[%s/%s] Initial Setting time 提取到时间: %s", fid, name, parsed[0])
+                    return parsed[0]
+                for regex, fmt in [(_TIMESTAMP_FULL_RE, "%Y-%m-%d %H:%M:%S"),
+                                   (_TIMESTAMP_SLASH_RE, None)]:
+                    for m in regex.finditer(line):
+                        raw = m.group(1) if m.lastindex else m.group(0)
+                        p = _parse_datetime_string(raw) if fmt is None else None
+                        if p:
+                            logger.info("从字段[%s/%s] Initial Setting time 提取到时间: %s", fid, name, p[0])
+                            return p[0]
+                        if fmt:
+                            try:
+                                ts = datetime.strptime(raw, fmt)
+                                if _is_valid_date(ts.year, ts.month, ts.day):
+                                    logger.info("从字段[%s/%s] Initial Setting time 提取到时间: %s", fid, name, ts.strftime(fmt))
+                                    return ts.strftime(fmt)
+                            except ValueError:
+                                continue
+    # 兆底：操作顺序 / 执行结果字段中的时间
+    # 支持短格式 M/D HH:MM（无年份，从 issue 创建日期推断年份）
+    _SHORT_TIME_RE = re.compile(r'(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?')
+    created = ((issue.get("fields") or {}).get("created") or "")[:4]
+    fallback_year = int(created) if created.isdigit() else datetime.now().year
+    for fid, value, name in operation_fields:
+        text = str(value).strip()
+        if not text or text.lower() in ("none", "null", ""):
+            continue
+        # 先尝试完整格式
+        for regex, fmt in [(_TIMESTAMP_FULL_RE, "%Y-%m-%d %H:%M:%S"),
+                           (_TIMESTAMP_SLASH_RE, None)]:
+            for m in regex.finditer(text):
+                raw = m.group(1) if m.lastindex else m.group(0)
+                p = _parse_datetime_string(raw) if fmt is None else None
+                if p:
+                    logger.info("从字段[%s/%s]提取到时间: %s", fid, name, p[0])
+                    return p[0]
+                if fmt:
+                    try:
+                        ts = datetime.strptime(raw, fmt)
+                        if _is_valid_date(ts.year, ts.month, ts.day):
+                            logger.info("从字段[%s/%s]提取到时间: %s", fid, name, ts.strftime(fmt))
+                            return ts.strftime(fmt)
+                    except ValueError:
+                        continue
+        # 短格式 M/D HH:MM 兆底
+        for m in _SHORT_TIME_RE.finditer(text):
+            month, day, hour, minute = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+            second = int(m.group(5)) if m.group(5) else 0
+            if _is_valid_date(fallback_year, month, day) and 0 <= hour < 24 and 0 <= minute < 60:
+                try:
+                    ts = datetime(fallback_year, month, day, hour, minute, second)
+                    result = ts.strftime("%Y-%m-%d %H:%M:%S")
+                    logger.info("从字段[%s/%s]短格式提取到时间: %s", fid, name, result)
+                    return result
+                except ValueError:
+                    continue
+    return ""
+
+
+def _supplement_from_gmlogger(issue: dict, partial_time: str) -> str:
+    """当提取的时间不完整时，从 gmlogger 文件名中补充年份和日期
+
+    策略：找到文件名中日期与 partial_time 的月日最匹配的 gmlogger 文件，用其年份补全
+    """
+    if not partial_time:
+        return partial_time
+    attachments = (issue.get("fields") or {}).get("attachment") or []
+    gmlogger_dates = []
+    for att in attachments:
+        filename = att.get("filename", "")
+        if "gmlogger" not in filename.lower():
+            continue
+        m = _GMLOGGER_RE.search(filename)
+        if m:
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if _is_valid_date(y, mo, d):
+                gmlogger_dates.append((y, mo, d))
+    if not gmlogger_dates:
+        return partial_time
+    # 尝试解析 partial_time 中的月日信息
+    try:
+        # partial_time 可能是 "MM-DD HH:MM:SS" 或 "04-15 19:07:30" 等无年份格式
+        parts = partial_time.strip().split()
+        date_part = parts[0] if parts else partial_time
+        if re.match(r'^\d{2}-\d{2}$', date_part):
+            mo, d = int(date_part.split('-')[0]), int(date_part.split('-')[1])
+            time_part = parts[1] if len(parts) > 1 else "00:00:00"
+            # 找月日匹配的 gmlogger
+            for y, gmo, gd in gmlogger_dates:
+                if gmo == mo and gd == d:
+                    result = f"{y:04d}-{mo:02d}-{d:02d} {time_part}"
+                    logger.info("gmlogger 补充年份: %s -> %s", partial_time, result)
+                    return result
+            # 无精确匹配，用最近的 gmlogger 年份
+            y = gmlogger_dates[0][0]
+            result = f"{y:04d}-{mo:02d}-{d:02d} {time_part}"
+            logger.info("gmlogger 补充年份（无精确匹配）: %s -> %s", partial_time, result)
+            return result
+    except (ValueError, IndexError):
+        pass
+    return partial_time
 
 
 def _extract_attachment_time(issue: dict) -> str:
@@ -307,7 +592,12 @@ def _is_log_related(text: str) -> bool:
 
 
 def _pick_best_time(text: str, times: list) -> tuple:
-    """从多个时间中选择最佳的一个：取最早的时间（按时间戳从小到大排序取第一个）
+    """从多个时间中选择最佳的一个：优先选择出现次数最多的时间，或相近时间簇中的代表值
+
+    选择策略：
+    1. 完全相同的时间合并计数，取出现最多的
+    2. 若多个时间都在 1 分钟内视为同一簇，取簇中最早的一个
+    3. 多个簇时取最大的簇
 
     :param text: 原始文本
     :param times: [(time_str, datetime), ...]
@@ -317,56 +607,123 @@ def _pick_best_time(text: str, times: list) -> tuple:
         return None
     if len(times) == 1:
         return times[0]
-    # 去重
-    seen = set()
-    unique = []
-    for t in times:
-        if t[0] not in seen:
-            seen.add(t[0])
-            unique.append(t)
+    # 精确去重计数
+    from collections import Counter
+    count_map = Counter()
+    time_map = {}
+    for t_str, t_dt in times:
+        count_map[t_str] += 1
+        time_map[t_str] = t_dt
+    unique = [(t_str, time_map[t_str]) for t_str in count_map]
     if len(unique) == 1:
         return unique[0]
-    # 按时间戳从小到大排序，取最早的一个
+    # 按时间戳排序后聚类（1分钟内视为同簇）
     unique.sort(key=lambda t: t[1])
-    best = unique[0]
-    logger.info("从 %d 个时间中选择最早的一个: %s", len(unique), best[0])
+    clusters = []
+    current_cluster = [unique[0]]
+    for t in unique[1:]:
+        diff = (t[1] - current_cluster[-1][1]).total_seconds()
+        if diff <= 60:  # 1分钟内视为同簇
+            current_cluster.append(t)
+        else:
+            clusters.append(current_cluster)
+            current_cluster = [t]
+    clusters.append(current_cluster)
+    # 计算每个簇的总出现次数
+    cluster_scores = []
+    for cluster in clusters:
+        total_count = sum(count_map[t[0]] for t in cluster)
+        cluster_scores.append((total_count, cluster))
+    cluster_scores.sort(key=lambda x: x[0], reverse=True)
+    best_cluster = cluster_scores[0][1]
+    # 取最大簇中出现次数最多的时间
+    best = max(best_cluster, key=lambda t: count_map[t[0]])
+    logger.info("从 %d 个时间中选择最佳: %s（簇大小=%d，总出现=%d次，该时间出现=%d次）",
+                len(unique), best[0], len(best_cluster), cluster_scores[0][0], count_map[best[0]])
     return best
 
 
 def _extract_times_from_text(text: str, year: str = "") -> list:
-    """从文本中提取时间，返回 [(time_str, datetime), ...]"""
+    """从文本中提取时间，返回 [(time_str, datetime), ...]
+
+    支持格式：YYYY-MM-DD HH:MM:SS, MM-DD HH:MM:SS, YYYY/MM/DD HH:MM(:SS), ISO 8601
+    """
     times = []
-    # 完整格式
+    # 标准化非标准分隔符和冒号空格，确保后续正则命中
+    text = _normalize_datetime_text(text)
+    # 完整格式 YYYY-MM-DD HH:MM:SS
     for match in _TIMESTAMP_FULL_RE.finditer(text):
         try:
             ts = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
-            times.append((match.group(1), ts))
+            if _is_valid_date(ts.year, ts.month, ts.day):
+                times.append((match.group(1), ts))
         except ValueError:
             continue
-    # 短格式
+    # ISO 8601 格式 YYYY-MM-DDTHH:MM:SS（支持时区转换）
+    for match in _TIMESTAMP_ISO_RE.finditer(text):
+        date_str, time_str, tz_offset, z_suffix = match.group(1), match.group(2), match.group(3), match.group(4)
+        try:
+            ts = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+            # UTC 时间（Z 后缀）转换为 UTC+8
+            if z_suffix == "Z":
+                ts = ts + _UTC8_OFFSET
+                logger.debug("ISO时间 %sT%sZ 转换为 UTC+8: %s", date_str, time_str, ts)
+            # 带偏移量的非 UTC+8 时区也进行转换
+            elif tz_offset and tz_offset not in ("+08:00", "-08:00"):
+                sign = 1 if tz_offset[0] == '+' else -1
+                h, m = int(tz_offset[1:3]), int(tz_offset[4:6])
+                offset_delta = timedelta(hours=h, minutes=m) * sign
+                ts = ts - offset_delta + _UTC8_OFFSET
+            if _is_valid_date(ts.year, ts.month, ts.day):
+                fmt_str = ts.strftime("%Y-%m-%d %H:%M:%S")
+                if fmt_str not in [t[0] for t in times]:
+                    times.append((fmt_str, ts))
+        except ValueError:
+            continue
+    # 斜杠格式 YYYY/MM/DD HH:MM(:SS)
+    for match in _TIMESTAMP_SLASH_RE.finditer(text):
+        p = _parse_datetime_string(match.group(1))
+        if p and p[0] not in [t[0] for t in times]:
+            times.append(p)
+    # 点分隔格式 YYYY.M.D HH:MM(:SS)
+    for match in _TIMESTAMP_DOT_RE.finditer(text):
+        p = _parse_datetime_string(match.group(1))
+        if p and p[0] not in [t[0] for t in times]:
+            times.append(p)
+    # HMI 紧凑格式 HMI:YYYYMMDD_HHMM
+    for match in _TIMESTAMP_HMI_RE.finditer(text):
+        y, mo, d, h, mi = int(match.group(1)), int(match.group(2)), int(match.group(3)), int(match.group(4)), int(match.group(5))
+        if _is_valid_date(y, mo, d) and 0 <= h <= 23 and 0 <= mi <= 59:
+            fmt_str = f"{y:04d}-{mo:02d}-{d:02d} {h:02d}:{mi:02d}:00"
+            if fmt_str not in [t[0] for t in times]:
+                try:
+                    ts = datetime(y, mo, d, h, mi, 0)
+                    times.append((fmt_str, ts))
+                except ValueError:
+                    continue
+    # 短格式 MM-DD HH:MM:SS（需补充年份）
     if year:
         for match in _TIMESTAMP_SHORT_RE.finditer(text):
             short_str = match.group(1)
             full_str = f"{year}-{short_str}"
             try:
                 ts = datetime.strptime(full_str, "%Y-%m-%d %H:%M:%S")
-                times.append((full_str, ts))
+                if _is_valid_date(ts.year, ts.month, ts.day):
+                    times.append((full_str, ts))
             except ValueError:
                 continue
     return times
 
 
 def extract_trigger_time_from_issue(issue: dict) -> str:
-    """从 issue 评论区提取日志时间，优先从最新评论的日志内容中提取
+    """从 issue 中提取触发时间，按优先级逐级回退
 
-    策略：
-    - 按评论创建时间倒序（最新在前）
-    - 优先从日志相关内容中提取（如包含 gmlogger/log/Line 等关键字的行）
-    - 如果最新评论的日志内容中有时间，直接返回第一个
-    - 如果最新评论无日志时间，再从普通文本中提取
-    - 如果都没有，继续往前找
-    :param issue: Jira issue 原始响应
-    :return: 提取的时间字符串，未找到返回空字符串
+    提取顺序：
+    1. 评论区（按时间倒序，优先日志相关行）
+    2. 描述(description)
+    3. 标题(summary)
+    4. 自定义字段（Operation Schedule > Unit Test 的 time stamp > Initial Setting 的 log time）
+    附件文件名仅用于补充不完整时间的年月日，不直接作为触发时间
     """
     fields = issue.get("fields") or {}
     comment_obj = fields.get("comment") or {}
@@ -386,11 +743,11 @@ def extract_trigger_time_from_issue(issue: dict) -> str:
         # 从评论创建时间获取年份（用于补充短格式）
         created = c.get("created", "")
         comment_year = created[:4] if created and len(created) >= 4 else ""
-        # 检查评论是否包含日志相关内容
+        # 检查评论是否包含日志相关内容（排除附件引用行，附件名中的时间仅用于补充不完整日期）
         lines = body.split("\n")
-        log_lines = [line for line in lines if _is_log_related(line)]
+        log_lines = [line for line in lines if _is_log_related(line) and "附件" not in line and "attachment" not in line.lower()]
         if log_lines:
-            # 包含日志相关行：优先从日志相关行中提取时间，取最早的
+            # 仅从日志相关行中提取时间，非日志内容（验证/复测/变更等）跳过
             log_text = "\n".join(log_lines)
             log_times = _extract_times_from_text(log_text, comment_year)
             if log_times:
@@ -398,45 +755,31 @@ def extract_trigger_time_from_issue(issue: dict) -> str:
                 if best:
                     logger.info("从最新评论日志相关行中提取到最早时间: %s", best[0])
                     return best[0]
-            # 日志相关行中没有时间，尝试从普通行中提取
-            normal_lines = [line for line in lines if not _is_log_related(line)]
-            if normal_lines:
-                normal_text = "\n".join(normal_lines)
-                normal_times = _extract_times_from_text(normal_text, comment_year)
-                if normal_times:
-                    best = _pick_best_time(normal_text, normal_times)
-                    if best:
-                        logger.info("从最新评论普通文本中提取到最早时间: %s", best[0])
-                        return best[0]
-        else:
-            # 不包含日志相关行：从普通文本中提取时间
-            normal_times = _extract_times_from_text(body, comment_year)
-            if normal_times:
-                best = _pick_best_time(body, normal_times)
-                if best:
-                    logger.info("从最新评论普通文本中提取到最早时间: %s", best[0])
-                    return best[0]
-    # 评论无时间，尝试从描述(description)中提取时间
+    # ---- 评论无时间 → 从描述(description)中提取 ----
     description = fields.get("description") or ""
     if isinstance(description, dict):
         description = _extract_adf_text(description)
     if description:
-        desc_times = []
-        for match in _TIMESTAMP_FULL_RE.finditer(description):
-            try:
-                ts = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
-                desc_times.append((match.group(1), ts))
-            except ValueError:
-                continue
+        desc_times = _extract_times_from_text(description)
         if desc_times:
-            if len(desc_times) == 1:
-                logger.info("从描述中提取到 1 个时间: %s", desc_times[0][0])
-                return desc_times[0][0]
-            mean_ts = sum(t[1].timestamp() for t in desc_times) / len(desc_times)
-            closest = min(desc_times, key=lambda t: abs(t[1].timestamp() - mean_ts))
-            logger.info("从描述中提取到 %d 个时间，均值附近最近: %s", len(desc_times), closest[0])
-            return closest[0]
-    # 描述中也没有时间
+            best = _pick_best_time(description, desc_times)
+            if best:
+                logger.info("从描述中提取到时间: %s", best[0])
+                return _supplement_from_gmlogger(issue, best[0])
+    # ---- 描述无时间 → 从标题(summary)中提取 ----
+    summary = fields.get("summary") or ""
+    if summary:
+        summary_times = _extract_times_from_text(summary)
+        if summary_times:
+            best = _pick_best_time(summary, summary_times)
+            if best:
+                logger.info("从标题中提取到时间: %s", best[0])
+                return _supplement_from_gmlogger(issue, best[0])
+    # ---- 标题无时间 → 从自定义字段(content页面)中提取 ----
+    custom_time = _extract_from_custom_fields(issue)
+    if custom_time:
+        return _supplement_from_gmlogger(issue, custom_time)
+    # 附件文件名仅用于补充年月日（已在 _supplement_from_gmlogger 中处理），不直接作为触发时间
     return ""
 
 

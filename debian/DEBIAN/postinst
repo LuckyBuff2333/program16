@@ -1,0 +1,35 @@
+#!/bin/bash
+# 安装后执行：设置权限、创建数据目录
+set -e
+
+INSTALL_DIR="/usr/lib/bug-doc-tool"
+DATA_DIR="/var/lib/bug-doc-tool"
+LOG_DIR="/var/log/bug-doc-tool"
+
+# 设置可执行权限
+chmod +x "${INSTALL_DIR}/bug-doc-tool" 2>/dev/null || true
+chmod +x "/usr/bin/bug-doc-tool" 2>/dev/null || true
+
+# 创建数据与日志目录（首次安装时）
+if [ ! -d "${DATA_DIR}" ]; then
+    mkdir -p "${DATA_DIR}"
+    echo "[bug-doc-tool] 已创建数据目录: ${DATA_DIR}"
+fi
+
+if [ ! -d "${LOG_DIR}" ]; then
+    mkdir -p "${LOG_DIR}"
+    echo "[bug-doc-tool] 已创建日志目录: ${LOG_DIR}"
+fi
+
+echo "=========================================="
+echo "  Bug 文档沉淀工具 安装完成"
+echo "=========================================="
+echo ""
+echo "启动方式:"
+echo "  bug-doc-tool          # 启动 Web 服务（默认端口 8060）"
+echo "  bug-doc-tool web      # 启动 Web 服务"
+echo "  bug-doc-tool web --port 9000  # 自定义端口"
+echo ""
+echo "配置文件: ${INSTALL_DIR}/config/config.yaml"
+echo "数据目录: ${DATA_DIR}"
+echo ""

@@ -223,9 +223,11 @@ def llm_similarity(text_a: str, text_b: str, timeout: int = 30) -> float:
     if len(text_b) > max_len:
         text_b = text_b[:max_len]
     prompt = (
-        f"将下列内容进行语义对比:\"{text_a}\",\"{text_b}\"。\n"
-        f"相似度指两段文本描述的问题或含义是否相同，而非字面是否一致。"
-        f"请只输出一个0到1之间的数字分数。"
+        f"判断以下两段文本的根因是否相同。\n"
+        f"A：{text_a}\n"
+        f"B：{text_b}\n"
+        f"如果描述的故障现象或根本原因一致，即使技术细节和表述不同，也视为相同根因。"
+        f"只输出一个0到1之间的数字。"
     )
     content = _llm_chat(prompt, max_tokens=10, timeout=timeout)
     if not content:
