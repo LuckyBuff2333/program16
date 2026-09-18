@@ -449,7 +449,7 @@ def _is_cancelled(chat_id: str) -> bool:
     return evt.is_set() if evt else False
 
 
-def _set_bot_session(chat_id: str, state: str):
+def _set_bot_session(chat_id: str, state: str, **kwargs):
     """设置机器人会话状态并启动 2 分钟自动超时定时器"""
     import threading
     # 取消旧的定时器
@@ -457,7 +457,9 @@ def _set_bot_session(chat_id: str, state: str):
     if old and old.get("timer"):
         old["timer"].cancel()
     # 设置新会话
-    _bot_sessions[chat_id] = {"state": state, "created_at": datetime.now(), "timer": None}
+    session_data = {"state": state, "created_at": datetime.now(), "timer": None}
+    session_data.update(kwargs)
+    _bot_sessions[chat_id] = session_data
     # 启动超时定时器
     def _on_timeout():
         cur = _bot_sessions.get(chat_id)
@@ -505,20 +507,19 @@ def _process_bot_command(chat_id: str, text: str):
             "4.1 置信度批量写入（根因语义对比）\n"
             "5.1 失败批量排查（按时间）\n"
             "5.2 单个Jira诊断归类\n"
-            "6.1 AI分析单个执行\n"
-            "6.2 仅提取触发时间\n"
-            "6.3 批量执行（JQL）\n"
-            "6.4 仅JQL搜索统计\n"
+            "6.1.1 JQL批量执行（JQL编号,数量,PC/线上）\n"
+            "6.1.2 CSV批量执行（选文件后自动执行）\n"
+            "6.2 单个执行（Jira号,PC/线上）\n"
             "9.1 Bug未分析提取（JQL）\n"
             "10.1 线上批量执行（输入Jira号）\n\n"
             "发送「退出」可取消当前任务\n"
-            "请输入子功能编号（如 6.1）唤醒对应功能（2分钟内有效）")
+            "请输入子功能编号（如 6.1.1）唤醒对应功能（2分钟内有效）")
         return
 
     if session and session.get("state") == "wait_menu":
         stripped = text.strip()
-        # 支持子功能编号直接跳转（4/5/6/9/10）
-        if re.match(r'^(4|5|6|9|10)\.\d$', stripped):
+        # 支持子功能编号直接跳转（4/5/6/9/10，支持6.1.1等三级编号）
+        if re.match(r'^(4|5|6|9|10)\.\d(\.\d)?$', stripped):
             _clear_bot_session(chat_id)
             text = stripped  # 继续往下执行，让子功能处理逻辑接管
         elif stripped in ("4", "5", "6", "9", "10"):
@@ -606,62 +607,71 @@ def _process_bot_command(chat_id: str, text: str):
 
     # ==================== 功能6：PC侧AI日志分析批量执行 ====================
     if text == "6" or text == "6.1":
-        _set_bot_session(chat_id, "wait_jira")
-        feishu_client.send_bot_message(
-            chat_id, "6.1 AI分析单个执行\n请输入 Jira 号，多个用逗号隔开\n示例：VCU-538942,VCU-200273")
+        feishu_client.send_bot_message(chat_id,
+            "PC侧AI日志分析批量执行\n"
+            "子功能：\n"
+            "6.1.1 JQL批量执行（JQL编号,数量,PC/线上）\n"
+            "6.1.2 CSV批量执行（选文件后自动执行）\n"
+            "6.2 单个执行（Jira号,PC/线上）\n\n"
+            "请输入子功能编号")
         return
 
-    if text == "6.2":
-        _set_bot_session(chat_id, "wait_trigger_only")
-        feishu_client.send_bot_message(
-            chat_id, "6.2 仅提取触发时间\n请输入 Jira 号，多个用逗号隔开\n示例：VCU-538942,VCU-200273")
-        return
-
-    if text == "6.3":
+    # 6.1.1 JQL批量执行
+    if text == "6.1.1":
         jql_presets = _get_jql_presets()
-        jql_desc = "\n".join(f"{k}({label}): {jql}" for k, (label, jql) in jql_presets.items())
-        _set_bot_session(chat_id, "wait_batch")
+        jql_desc = "\n".join(f"{label}({k})" for k, (label, _) in jql_presets.items())
+        _set_bot_session(chat_id, "wait_batch_jql")
         feishu_client.send_bot_message(
-            chat_id, f"6.3 批量执行（JQL）\n请输入：JQL编号,抽取数量\n{jql_desc}\n\n默认过滤表中所有已存在记录（防止PC/线上重复）\n示例: JQL1,50")
+            chat_id, f"6.1.1 JQL批量执行\n请输入：按钮名称或JQL编号,抽取数量,PC/线上\n{jql_desc}\n\n"
+                     f"默认过滤：表中已存在 + AI初步分析结果\n"
+                     f"示例: JQL1,50,PC 或 JQL5,50,线上\n"
+                     f"发送「退出」可中断任务")
         return
 
-    if text == "6.4":
-        jql_presets = _get_jql_presets()
-        jql_desc = "\n".join(f"{k}({label}): {jql}" for k, (label, jql) in jql_presets.items())
-        _set_bot_session(chat_id, "wait_jql_search")
+    # 6.1.2 CSV批量执行
+    if text == "6.1.2":
+        import csv as _csv
+        _set_bot_session(chat_id, "wait_batch_csv")
+        csv_files = []
+        if os.path.isdir(_UNANALYZED_DIR):
+            for fname in sorted(os.listdir(_UNANALYZED_DIR), reverse=True):
+                if not fname.endswith(".csv"):
+                    continue
+                fpath = os.path.join(_UNANALYZED_DIR, fname)
+                count = 0
+                try:
+                    with open(fpath, "r", encoding="utf-8-sig") as f:
+                        reader = _csv.reader(f)
+                        next(reader, None)
+                        count = sum(1 for _ in reader)
+                except Exception:
+                    pass
+                csv_files.append({"name": fname, "path": fpath, "count": count})
+        if not csv_files:
+            feishu_client.send_bot_message(chat_id, "data/unanalyzed/ 目录下无 CSV 文件")
+            return
+        _set_bot_session(chat_id, "wait_batch_csv", csv_files=csv_files)
+        file_list = "\n".join(f"{i+1}. {f['name']} ({f['count']}条)" for i, f in enumerate(csv_files))
         feishu_client.send_bot_message(
-            chat_id, f"6.4 仅JQL搜索统计\n请输入：JQL编号\n{jql_desc}\n\n示例: JQL1")
+            chat_id, f"6.1.2 CSV批量执行\n请选择CSV文件（输入序号）：\n{file_list}\n\n"
+                     f"默认过滤：表中已存在 + AI初步分析结果\n"
+                     f"发送「退出」可中断任务")
         return
 
-    if session and session.get("state") == "wait_jira":
-        bugids = _parse_bugids(text)
-        if not bugids:
-            feishu_client.send_bot_message(chat_id, "未解析到 Jira 号，请重新输入（多个用逗号隔开）")
-            return
-        _clear_bot_session(chat_id)
-        feishu_client.send_bot_message(chat_id, f"已收到 {len(bugids)} 个 Jira 号：{','.join(bugids)}\n执行中，请稍候...")
-        threading.Thread(target=_bot_run_ai_analysis, args=(chat_id, bugids),
-                         name=f"bot-ai-{bugids[0]}", daemon=True).start()
-        return
-
-    if session and session.get("state") == "wait_trigger_only":
-        bugids = _parse_bugids(text)
-        if not bugids:
-            feishu_client.send_bot_message(chat_id, "未解析到 Jira 号，请重新输入（多个用逗号隔开）")
-            return
-        _clear_bot_session(chat_id)
-        feishu_client.send_bot_message(chat_id, f"已收到 {len(bugids)} 个 Jira 号：{','.join(bugids)}\n提取触发时间中，请稍候...")
-        threading.Thread(target=_bot_extract_trigger_times, args=(chat_id, bugids),
-                         name="bot-trigger-only", daemon=True).start()
-        return
-
-    if session and session.get("state") == "wait_batch":
-        m = re.match(r"(jql\s*\d+)\s*[,，]\s*(\d+)$", text, re.I)
+    # 功能6.1.1 JQL输入处理
+    if session and session.get("state") == "wait_batch_jql":
+        m = re.match(r"(jql\s*\d+)\s*[,，]\s*(\d+)\s*[,，]\s*(pc|线上|online)", text, re.I)
         if not m:
-            feishu_client.send_bot_message(chat_id, "格式错误，请输入「JQL编号,抽取数量」\n示例: JQL3,50")
+            feishu_client.send_bot_message(chat_id,
+                "格式错误，请输入「JQL编号,抽取数量,PC/线上」\n示例: JQL1,50,PC 或 JQL1,50,线上")
             return
         jql_key = m.group(1).replace(" ", "").upper()
         count = int(m.group(2))
+        exec_mode = m.group(3).lower()
+        if exec_mode in ("online", "线上"):
+            exec_mode = "online"
+        else:
+            exec_mode = "pc"
         if count <= 0:
             feishu_client.send_bot_message(chat_id, "抽取数量必须大于 0")
             return
@@ -670,19 +680,87 @@ def _process_bot_command(chat_id: str, text: str):
             feishu_client.send_bot_message(chat_id, f"未找到 JQL 编号 {jql_key}，可用：{','.join(jql_presets.keys())}")
             return
         _clear_bot_session(chat_id)
-        threading.Thread(target=_bot_run_batch_ai, args=(chat_id, jql_key, count),
+        mode_label = "线上" if exec_mode == "online" else "PC"
+        label = jql_presets[jql_key][0]
+        feishu_client.send_bot_message(chat_id,
+            f"{jql_key}({label}) 开始执行\n抽取 {count} 条，{mode_label}模式\n"
+            f"默认过滤：表中已存在 + AI初步分析结果\n"
+            f"发送「退出」可中断任务")
+        threading.Thread(target=_bot_run_batch_ai, args=(chat_id, jql_key, count, exec_mode),
                          name=f"bot-batch-{jql_key}", daemon=True).start()
         return
 
-    if session and session.get("state") == "wait_jql_search":
-        jql_key = text.strip().replace(" ", "").upper()
-        jql_presets = _get_jql_presets()
-        if jql_key not in jql_presets:
-            feishu_client.send_bot_message(chat_id, f"未找到 JQL 编号 {jql_key}，可用：{','.join(jql_presets.keys())}")
+    # 功能6.1.2 CSV文件选择处理
+    if session and session.get("state") == "wait_batch_csv":
+        csv_files = session.get("csv_files", [])
+        try:
+            idx = int(text.strip()) - 1
+            if idx < 0 or idx >= len(csv_files):
+                raise ValueError
+        except (ValueError, TypeError):
+            feishu_client.send_bot_message(chat_id, f"请输入有效序号（1-{len(csv_files)}）")
+            return
+        selected = csv_files[idx]
+        # 读取 CSV 中 Jira 号
+        import csv as _csv
+        try:
+            bugids = []
+            seen = set()
+            with open(selected["path"], "r", encoding="utf-8-sig") as f:
+                reader = _csv.DictReader(f)
+                for row in reader:
+                    jira = (row.get("Jira号") or row.get("jira号") or row.get("JIRA号") or "").strip()
+                    if jira and jira not in seen:
+                        seen.add(jira)
+                        bugids.append(jira)
+        except Exception as e:
+            feishu_client.send_bot_message(chat_id, f"读取 CSV 失败: {e}")
+            return
+        if not bugids:
+            feishu_client.send_bot_message(chat_id, "CSV 文件中无 Jira 号")
             return
         _clear_bot_session(chat_id)
-        threading.Thread(target=_bot_jql_search_only, args=(chat_id, jql_key),
-                         name=f"bot-jql-search-{jql_key}", daemon=True).start()
+        feishu_client.send_bot_message(chat_id,
+            f"已选择: {selected['name']} ({len(bugids)}条)\n"
+            f"默认过滤：表中已存在 + AI初步分析结果\n"
+            f"发送「退出」可中断任务")
+        threading.Thread(target=_bot_run_csv_batch_ai, args=(chat_id, bugids, selected["name"]),
+                         name=f"bot-csv-batch", daemon=True).start()
+        return
+
+    # 6.2 单个执行（输入Jira号+执行模式）
+    if text == "6.2":
+        _set_bot_session(chat_id, "wait_single_execute")
+        feishu_client.send_bot_message(
+            chat_id, "6.2 单个执行\n请输入：Jira号,PC/线上\n"
+                     "多个Jira号用逗号分隔\n\n"
+                     "示例: VCU-538942,PC 或 VCU-538942,VCU-200273,线上\n"
+                     "发送「退出」可中断任务")
+        return
+
+    if session and session.get("state") == "wait_single_execute":
+        parts = re.split(r'[,，]', text.strip())
+        if len(parts) < 2:
+            feishu_client.send_bot_message(chat_id, "格式错误，请输入「Jira号,PC/线上」\n示例: VCU-538942,PC")
+            return
+        # 最后一个部分是执行模式
+        mode_str = parts[-1].strip().lower()
+        if mode_str not in ("pc", "线上", "online"):
+            feishu_client.send_bot_message(chat_id, "执行模式错误，请填写 PC 或 线上\n示例: VCU-538942,PC")
+            return
+        exec_mode = "online" if mode_str in ("线上", "online") else "pc"
+        # 前面部分都是Jira号
+        bugids = _parse_bugids(",".join(parts[:-1]))
+        if not bugids:
+            feishu_client.send_bot_message(chat_id, "未解析到 Jira 号，请重新输入")
+            return
+        _clear_bot_session(chat_id)
+        mode_label = "线上" if exec_mode == "online" else "PC"
+        feishu_client.send_bot_message(chat_id,
+            f"已收到 {len(bugids)} 个 Jira 号：{','.join(bugids)}\n"
+            f"{mode_label}模式执行，发送「退出」可中断任务")
+        threading.Thread(target=_bot_run_single_execute, args=(chat_id, bugids, exec_mode),
+                         name=f"bot-single-{bugids[0]}", daemon=True).start()
         return
 
     # ==================== 功能9：Bug未分析提取 ====================
@@ -733,10 +811,9 @@ def _process_bot_command(chat_id: str, text: str):
         "4.1 置信度批量写入（发送 4.1）\n"
         "5.1 失败批量排查（发送 5.1）\n"
         "5.2 单个Jira诊断（发送 5.2）\n"
-        "6.1 AI分析单个执行（发送 6.1）\n"
-        "6.2 仅提取触发时间（发送 6.2）\n"
-        "6.3 批量执行JQL（发送 6.3）\n"
-        "6.4 JQL搜索统计（发送 6.4）\n"
+        "6.1.1 JQL批量执行（发送 6.1.1）\n"
+        "6.1.2 CSV批量执行（发送 6.1.2）\n"
+        "6.2 单个执行（发送 6.2）\n"
         "9.1 Bug未分析提取（发送 9.1）\n"
         "10.1 线上批量执行（发送 10.1）\n\n"
         "发送「菜单」查看完整功能列表")
@@ -757,12 +834,18 @@ def _get_jql_presets() -> dict:
     presets = {
         "JQL1": ("远控", 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"'),
         "JQL2": ("coreservice", 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"'),
-        "JQL3": ("Navigation750", 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'),
+        "JQL3": ("导航", 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'),
         "JQL4": ("VCU近期未关闭", 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED'),
+        "JQL5": ("8.25后已关闭导航", 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed'),
+        "JQL6": ("8.25后远控", 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed'),
+        "JQL7": ("8.25后coreservice", 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed'),
+        "JQL8": ("8.25后RES1.0/1.1", 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")'),
     }
     cfg_jqls = load_config().get("feishu_bot", {}).get("jqls", {}) or {}
     for k, v in cfg_jqls.items():
-        presets[k.upper()] = (k, v)
+        key = k.upper()
+        if key not in presets:  # 不覆盖硬编码的标签
+            presets[key] = (k, v)
     return presets
 
 
@@ -1003,27 +1086,27 @@ def _is_bitable_excluded(fields: dict, bugid_field: str = "jira号") -> bool:
 def _bot_get_trigger_times(bugids: list) -> dict:
     """批量获取触发时间（优先云端缓存，已标记空跳过，新提取结果存入云端+本地），机器人功能 6/10 共用"""
     from src.clients import jira_client as _jc
-    cloud_times = _load_trigger_times_from_cloud()
-    cloud_keys = _load_cloud_trigger_keys()
+    # 一次加载云端缓存（同时获取有时间的和已标记空的）
+    cloud_times, cloud_keys = _load_cloud_trigger_cache()
     trigger_times = {}
     for bugid in bugids:
         if bugid in cloud_times:
-            # 云端有触发时间，直接复用
             trigger_times[bugid] = cloud_times[bugid]
             continue
         if bugid in cloud_keys:
-            # 云端已标记空，跳过不再提取
             continue
         try:
             issue = _jc.fetch_issue(bugid)
             tt = _jc.extract_trigger_time_from_issue(issue)
             if not tt:
-                # 标准提取为空，尝试视频帧 OCR 兜底
                 tt = _diag_extract_time_from_video_simple(issue)
             if tt:
-                trigger_times[bugid] = tt
+                trigger_times[bugid] = str(tt)
             # 无论是否有时间，都写入云端（空结果作为标记，避免下次重复提取）
-            _save_trigger_time_to_cloud(bugid, tt or "")
+            try:
+                _save_trigger_time_to_cloud(bugid, str(tt) if tt else "")
+            except Exception as save_e:
+                logger.warning("云端保存触发时间失败 %s（不影响流程）: %s", bugid, save_e)
         except Exception as e:
             logger.warning("机器人提取触发时间失败 %s: %s", bugid, e)
     return trigger_times
@@ -1236,6 +1319,80 @@ def _bot_send_batch_results(chat_id: str, success: int, total: int, lines: list)
         feishu_client.send_bot_message(chat_id, "\n".join(lines[i:i + 10]))
 
 
+def _bot_run_single_execute(chat_id: str, bugids: list, exec_mode: str = "pc"):
+    """功能6.2后台执行：提取触发时间→根据执行模式调用对应接口
+
+    exec_mode: 'pc' 调用PC接口，'online' 调用线上接口。
+    支持「退出」中断。
+    """
+    from src.clients import feishu_client
+    from src.clients.base import http_post
+    _reset_cancel_event(chat_id)
+    mode_label = "线上" if exec_mode == "online" else "PC"
+    # 步骤1：提取触发时间
+    feishu_client.send_bot_message(chat_id, f"步骤1/2：提取触发时间（{len(bugids)} 个）...")
+    trigger_times = _bot_get_trigger_times(bugids)
+    if _is_cancelled(chat_id):
+        feishu_client.send_bot_message(chat_id, "任务已被用户取消")
+        return
+    has_time = sum(1 for b in bugids if b in trigger_times)
+    feishu_client.send_bot_message(chat_id, f"提取完成: {has_time}/{len(bugids)} 有触发时间")
+    # 仅执行有触发时间的记录
+    run_bugids = [b for b in bugids if b in trigger_times]
+    if not run_bugids:
+        feishu_client.send_bot_message(chat_id, "所有 Jira 号均无触发时间，无法执行")
+        return
+    if _is_cancelled(chat_id):
+        feishu_client.send_bot_message(chat_id, "任务已被用户取消")
+        return
+    # 步骤2：执行
+    feishu_client.send_bot_message(chat_id, f"步骤2/2：{mode_label}执行 {len(run_bugids)} 条...")
+    success = 0
+    lines = []
+    results = []
+    batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for bugid in run_bugids:
+        if _is_cancelled(chat_id):
+            lines.append(f"⊘ 任务已被用户取消，剩余 {len(run_bugids) - run_bugids.index(bugid)} 条未执行")
+            break
+        exec_time = trigger_times.get(bugid)
+        try:
+            if exec_mode == "online":
+                payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
+                resp = http_post(_PROD_AI_URL, payload, timeout=30)
+            else:
+                cfg = load_config()["ai_log_api"]
+                payload = {cfg["bugid_field"]: bugid}
+                if cfg.get("trigger_time_field"):
+                    payload[cfg["trigger_time_field"]] = exec_time
+                resp = http_post(cfg["url"], payload, timeout=int(cfg.get("timeout", 60)))
+            resp_code = resp.get("code") if isinstance(resp, dict) else None
+            resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
+            is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
+            if is_ok:
+                success += 1
+                line = f"✓ {bugid} 执行成功（{exec_time}）"
+            else:
+                line = f"✗ {bugid} 执行失败（{resp_msg[:100]}）"
+            results.append({"jira号": bugid, "执行结果": "成功" if is_ok else "失败", "报告长度": 0,
+                            "备注": resp_msg[:200], "触发时间": exec_time, "执行时间": batch_start,
+                            "分析执行时间": batch_start})
+        except Exception as e:
+            line = f"✗ {bugid} 执行异常：{str(e)[:100]}"
+            results.append({"jira号": bugid, "执行结果": "失败", "报告长度": 0,
+                            "备注": str(e)[:200], "触发时间": exec_time, "执行时间": batch_start,
+                            "分析执行时间": batch_start})
+        lines.append(line)
+    if _is_cancelled(chat_id):
+        return
+    # 保存执行记录
+    try:
+        _save_bot_execution_results(results, batch_name=f"single_{exec_mode}_{datetime.now().strftime('%H%M%S')}")
+    except Exception as e:
+        logger.warning("机器人单个执行结果保存失败: %s", e)
+    feishu_client.send_bot_message(chat_id, f"批量执行{len(run_bugids)}个，成功{success}个，失败{len(run_bugids)-success}个，均在分析中。")
+
+
 def _bot_run_ai_analysis(chat_id: str, bugids: list):
     """功能6.1后台执行：获取触发时间后用 Jira 号逐个触发 AI 分析并即时回复结果"""
     from src.clients import feishu_client
@@ -1255,24 +1412,26 @@ def _bot_run_ai_analysis(chat_id: str, bugids: list):
     feishu_client.send_bot_message(chat_id, f"全部执行完成：成功 {success}/{len(bugids)}")
 
 
-def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, filter_all: bool = True):
-    """功能6.3后台执行：一键批量 AI 日志分析（JQL搜索→提取时间→多维表格去重→随机抽样→触发执行）
+def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "pc"):
+    """功能6.1.1后台执行：JQL搜索→过滤(已存在+AI初步)→随机抽样→提取时间→执行
 
-    与测试页“6. PC侧AI日志分析批量执行”一键执行逻辑一致。
-    filter_all=True 时过滤表中所有已存在记录（防止PC/线上重复）。
+    exec_mode: 'pc' 调用PC接口，'online' 调用线上接口。
+    时间提取仅在抽样后的候选上进行，避免全量提取浪费时间。
     """
     import random
     from src.clients import feishu_client
     from src.clients import jira_client as _jc
-    _reset_cancel_event(chat_id)  # 重置取消标记
-    # 使用统一的 JQL 预设
+    from src.clients.base import http_post
+    _reset_cancel_event(chat_id)
     jql_presets = _get_jql_presets()
     preset = jql_presets.get(jql_key)
     if not preset:
-        feishu_client.send_bot_message(chat_id, f"未找到 JQL 编号 {jql_key}，可用：{','.join(jql_presets.keys()) or '未配置'}")
+        feishu_client.send_bot_message(chat_id, f"未找到 JQL 编号 {jql_key}")
         return
-    jql = preset[1]
-    # 步骤1：JQL 搜索（仅保留 VCU）
+    label, jql = preset
+    mode_label = "线上" if exec_mode == "online" else "PC"
+    # 步骤1：JQL搜索
+    feishu_client.send_bot_message(chat_id, f"步骤1/5：JQL搜索 [{jql_key}({label})]...")
     try:
         issues = _jc.search_issues(jql, max_results=2000)
         candidates = [(i.get("key") or "").strip() for i in issues if "VCU" in (i.get("key") or "").upper()]
@@ -1286,12 +1445,8 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, filter_all: bool =
     if _is_cancelled(chat_id):
         feishu_client.send_bot_message(chat_id, "任务已被用户取消")
         return
-    # 步骤2：批量提取触发时间（云端缓存优先，已标记空跳过，新提取结果存入云端+本地）
-    trigger_times = _bot_get_trigger_times(candidates)
-    if _is_cancelled(chat_id):
-        feishu_client.send_bot_message(chat_id, "任务已被用户取消")
-        return
-    # 步骤3：多维表格去重过滤（filter_all=True 时排除所有已存在记录，否则仅排除成功+人工审核无需重试）
+    # 步骤2：多维表格去重过滤（已存在 + AI初步分析结果）
+    feishu_client.send_bot_message(chat_id, f"搜索完成 {len(candidates)} 条，步骤2/5：过滤已存在记录...")
     filtered = candidates
     try:
         cfg_b = load_config().get("feishu_bitable", {})
@@ -1309,45 +1464,195 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, filter_all: bool =
                 jira_key = str(fv).strip()
                 if not jira_key:
                     continue
-                if filter_all:
-                    # 过滤所有已存在记录（防止PC/线上重复）
-                    exclude_keys.add(jira_key)
-                elif _is_bitable_excluded(fields, bugid_field):
-                    # 仅过滤分析成功或人工审核无需重试的记录
-                    exclude_keys.add(jira_key)
-            filtered = [k for k in candidates if k not in exclude_keys]
-            logger.info("机器人去重过滤: filter_all=%s, 排除 %d 条, 剩余 %d 条", filter_all, len(exclude_keys), len(filtered))
+                # 过滤所有已存在记录
+                exclude_keys.add(jira_key)
+            # 二次过滤：AI初步分析结果（已成功+无效审核）
+            ai_exclude = set()
+            for rec in records:
+                fields = rec.get("fields", {})
+                fv = fields.get(bugid_field, "")
+                if isinstance(fv, list):
+                    fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
+                elif isinstance(fv, dict):
+                    fv = fv.get("text", str(fv))
+                jira_key = str(fv).strip()
+                if jira_key and _is_bitable_excluded(fields, bugid_field):
+                    ai_exclude.add(jira_key)
+            # 合并过滤：表中已存在 + AI初步分析结果
+            final_exclude = exclude_keys | ai_exclude
+            filtered = [k for k in candidates if k not in final_exclude]
+            logger.info("机器人过滤: 搜索%d→排除%d→剩余%d", len(candidates), len(final_exclude), len(filtered))
     except Exception as e:
-        logger.warning("机器人多维表格去重过滤失败（不过滤继续）: %s", e)
+        logger.warning("机器人多维表格过滤失败（跳过过滤）: %s", e)
     if not filtered:
-        feishu_client.send_bot_message(chat_id, f"候选 {len(candidates)} 条均已分析成功或确认无需重试，无需执行")
+        feishu_client.send_bot_message(chat_id, f"搜索 {len(candidates)} 条均已被过滤，无需执行")
         return
-    # 步骤4：随机抽样（排除 docs/ 已测试，优先抽有时间的）
-    tested = _load_all_doc_jira_keys()
-    available = [k for k in filtered if k not in tested]
-    if not available:
-        feishu_client.send_bot_message(chat_id, "候选均已测试过，无可抽取记录")
-        return
-    with_time = [k for k in available if k in trigger_times]
-    sample_size = min(count, len(with_time))
-    selected = random.sample(with_time, sample_size) if sample_size > 0 else []
-    skipped_no_time = len(available) - len(with_time)
-    feishu_client.send_bot_message(
-        chat_id, f"任务执行中，请等待\n搜索 {len(candidates)} 条 → 提取时间 {len(trigger_times)} 条 → 去重后 {len(filtered)} 条 → 抽取 {len(selected)} 条（跳过无时间 {skipped_no_time} 条）\n"
-                 f"抽取的 Jira 号：{';'.join(selected)}")
     if _is_cancelled(chat_id):
         feishu_client.send_bot_message(chat_id, "任务已被用户取消")
         return
-    # 步骤5：逐个触发执行，收集结果，完成后统一反馈
-    success, lines, results = _bot_trigger_and_reply(chat_id, selected, trigger_times, realtime=False)
+    # 步骤3+4：增量抽样+提取触发时间（凑够 count 个有触发时间的才停止）
+    tested = _load_all_doc_jira_keys()
+    remaining = [k for k in filtered if k not in tested]
+    if not remaining:
+        feishu_client.send_bot_message(chat_id, f"过滤后 {len(filtered)} 条均已测试过，无可抽取")
+        return
+    selected = []
+    trigger_times = {}
+    batch_num = 0
+    while len(trigger_times) < count and remaining:
+        batch_num += 1
+        need = count - len(trigger_times)
+        batch_size = min(need, len(remaining))
+        batch = random.sample(remaining, batch_size)
+        remaining = [k for k in remaining if k not in batch]
+        feishu_client.send_bot_message(chat_id,
+            f"步骤3/5：第{batch_num}批抽取 {len(batch)} 条，已收集 {len(trigger_times)}/{count} 条触发时间...")
+        batch_times = _bot_get_trigger_times(batch)
+        trigger_times.update(batch_times)
+        selected.extend(b for b in batch if b in batch_times)
+        if _is_cancelled(chat_id):
+            feishu_client.send_bot_message(chat_id, "任务已被用户取消")
+            return
+    selected = selected[:count]
+    feishu_client.send_bot_message(chat_id,
+        f"提取完成: 收集到 {len(selected)} 条触发时间（共提取 {batch_num} 批）")
+    # 步骤5：执行（PC或线上）
+    run_bugids = [b for b in selected if b in trigger_times]
+    if not run_bugids:
+        feishu_client.send_bot_message(chat_id, "抽取的记录均无触发时间，无法执行")
+        return
+    feishu_client.send_bot_message(chat_id, f"步骤5/5：{mode_label}执行 {len(run_bugids)} 条...")
+    success = 0
+    lines = []
+    results = []
+    batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for bugid in run_bugids:
+        if _is_cancelled(chat_id):
+            lines.append(f"⊘ 任务已被用户取消，剩余 {len(run_bugids) - run_bugids.index(bugid)} 条未执行")
+            break
+        exec_time = trigger_times.get(bugid)
+        try:
+            if exec_mode == "online":
+                payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
+                resp = http_post(_PROD_AI_URL, payload, timeout=30)
+            else:
+                cfg = load_config()["ai_log_api"]
+                payload = {cfg["bugid_field"]: bugid}
+                if cfg.get("trigger_time_field"):
+                    payload[cfg["trigger_time_field"]] = exec_time
+                resp = http_post(cfg["url"], payload, timeout=int(cfg.get("timeout", 60)))
+            resp_code = resp.get("code") if isinstance(resp, dict) else None
+            resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
+            is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
+            if is_ok:
+                success += 1
+                line = f"✓ {bugid} 执行成功（{exec_time}）"
+            else:
+                line = f"✗ {bugid} 执行失败（{resp_msg[:100]}）"
+            results.append({"jira号": bugid, "执行结果": "成功" if is_ok else "失败", "报告长度": 0,
+                            "备注": resp_msg[:200], "触发时间": exec_time, "执行时间": batch_start,
+                            "分析执行时间": batch_start})
+        except Exception as e:
+            line = f"✗ {bugid} 执行异常：{str(e)[:100]}"
+            results.append({"jira号": bugid, "执行结果": "失败", "报告长度": 0,
+                            "备注": str(e)[:200], "触发时间": exec_time, "执行时间": batch_start,
+                            "分析执行时间": batch_start})
+        lines.append(line)
     if _is_cancelled(chat_id):
-        return  # 已被取消，不再发送结果
-    # 保存本地记录
+        return
+    # 保存执行记录
     try:
-        _save_bot_execution_results(results, batch_name=f"bot_batch_{datetime.now().strftime('%H%M%S')}")
+        _save_bot_execution_results(results, batch_name=f"bot_{exec_mode}_{datetime.now().strftime('%H%M%S')}")
     except Exception as e:
-        logger.warning("机器人批量执行结果保存本地失败: %s", e)
-    _bot_send_batch_results(chat_id, success, len(selected), lines)
+        logger.warning("机器人批量结果保存失败: %s", e)
+    feishu_client.send_bot_message(chat_id, f"批量执行{len(run_bugids)}个，成功{success}个，失败{len(run_bugids)-success}个，均在分析中。")
+
+
+def _bot_run_csv_batch_ai(chat_id: str, bugids: list, csv_name: str = ""):
+    """功能6.1.2后台执行：CSV导入→过滤(已存在+AI初步)→随机抽样→提取时间→执行
+
+    默认PC执行。与 _bot_run_batch_ai 流程一致，只是数据源从JQL改为CSV。
+    """
+    import random as _rand
+    from src.clients import feishu_client
+    _reset_cancel_event(chat_id)
+    feishu_client.send_bot_message(chat_id, f"CSV导入 {len(bugids)} 条 [{csv_name}]\n步骤1/4：过滤已存在记录...")
+    # 步骤1：多维表格去重过滤
+    filtered = bugids
+    try:
+        cfg_b = load_config().get("feishu_bitable", {})
+        if cfg_b.get("app_token") and cfg_b.get("table_id"):
+            records = feishu_client.list_bitable_records(cfg_b["app_token"], cfg_b["table_id"])
+            bugid_field = cfg_b.get("bugid_field", "jira号")
+            exclude_keys = set()
+            for rec in records:
+                fields = rec.get("fields", {})
+                fv = fields.get(bugid_field, "")
+                if isinstance(fv, list):
+                    fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
+                elif isinstance(fv, dict):
+                    fv = fv.get("text", str(fv))
+                jira_key = str(fv).strip()
+                if not jira_key:
+                    continue
+                exclude_keys.add(jira_key)
+            # AI初步分析过滤
+            ai_exclude = set()
+            for rec in records:
+                fields = rec.get("fields", {})
+                fv = fields.get(bugid_field, "")
+                if isinstance(fv, list):
+                    fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
+                elif isinstance(fv, dict):
+                    fv = fv.get("text", str(fv))
+                jira_key = str(fv).strip()
+                if jira_key and _is_bitable_excluded(fields, bugid_field):
+                    ai_exclude.add(jira_key)
+            final_exclude = exclude_keys | ai_exclude
+            filtered = [k for k in bugids if k not in final_exclude]
+            logger.info("CSV过滤: 导入%d→排除%d→剩余%d", len(bugids), len(final_exclude), len(filtered))
+    except Exception as e:
+        logger.warning("CSV多维表格过滤失败（跳过过滤）: %s", e)
+    if not filtered:
+        feishu_client.send_bot_message(chat_id, f"CSV {len(bugids)} 条均已被过滤，无需执行")
+        return
+    if _is_cancelled(chat_id):
+        feishu_client.send_bot_message(chat_id, "任务已被用户取消")
+        return
+    # 步骤2：随机抽样（抽取数量=过滤后全量）
+    tested = _load_all_doc_jira_keys()
+    available = [k for k in filtered if k not in tested]
+    if not available:
+        feishu_client.send_bot_message(chat_id, f"过滤后 {len(filtered)} 条均已测试过，无可抽取")
+        return
+    selected = list(available)
+    feishu_client.send_bot_message(chat_id,
+        f"过滤后 {len(filtered)} 条，步骤2/4：抽取 {len(selected)} 条")
+    if _is_cancelled(chat_id):
+        feishu_client.send_bot_message(chat_id, "任务已被用户取消")
+        return
+    # 步骤3：仅对抽样结果提取触发时间
+    feishu_client.send_bot_message(chat_id, f"步骤3/4：提取触发时间（{len(selected)} 条）...")
+    trigger_times = _bot_get_trigger_times(selected)
+    has_time = sum(1 for b in selected if b in trigger_times)
+    if _is_cancelled(chat_id):
+        feishu_client.send_bot_message(chat_id, "任务已被用户取消")
+        return
+    feishu_client.send_bot_message(chat_id, f"提取完成: {has_time}/{len(selected)} 有触发时间")
+    # 步骤4：PC执行
+    run_bugids = [b for b in selected if b in trigger_times]
+    if not run_bugids:
+        feishu_client.send_bot_message(chat_id, "抽取的记录均无触发时间，无法执行")
+        return
+    feishu_client.send_bot_message(chat_id, f"步骤4/4：PC执行 {len(run_bugids)} 条...")
+    success, lines, results = _bot_trigger_and_reply(chat_id, run_bugids, trigger_times, realtime=False)
+    if _is_cancelled(chat_id):
+        return
+    try:
+        _save_bot_execution_results(results, batch_name=f"csv_{datetime.now().strftime('%H%M%S')}")
+    except Exception as e:
+        logger.warning("CSV批量结果保存失败: %s", e)
+    feishu_client.send_bot_message(chat_id, f"批量执行{len(run_bugids)}个，成功{success}个，失败{len(run_bugids)-success}个，均在分析中。")
 
 
 def _get_unanalyzed_jql_presets() -> dict:
@@ -1803,6 +2108,43 @@ def _migrate_local_trigger_times_to_cloud(app_token: str, table_id: str):
         logger.warning("本地触发时间迁移失败: %s", e)
 
 
+def _load_cloud_trigger_cache() -> tuple:
+    """一次加载云端触发时间缓存，返回 (times_dict, keys_set)
+
+    合并加载有触发时间的记录和已标记空的记录，避免两次 API 调用。
+    云端不可用时降级读本地 CSV。
+
+    :return: ({jira号: 触发时间}, {已记录的jira号})
+    """
+    from src.clients import feishu_client
+    try:
+        app_token, table_ids = _get_trigger_time_table_cfg()
+        times = {}
+        keys = set()
+        for tid in table_ids:
+            try:
+                records = feishu_client.list_bitable_records(app_token, tid)
+                for rec in records:
+                    fields = rec.get("fields", {})
+                    jira_no = _bitable_text(fields.get("jira号", ""))
+                    if not jira_no:
+                        continue
+                    keys.add(jira_no)
+                    tt = _bitable_text(fields.get("触发时间", ""))
+                    if tt:
+                        times[jira_no] = tt
+                    # 同时填充 bugid 缓存，避免后续 _ensure_trigger_time_bugid_cache 重复加载
+                    if not _trigger_time_bugid_cache or jira_no not in _trigger_time_bugid_cache:
+                        _trigger_time_bugid_cache[jira_no] = (tid, rec.get("record_id", ""), tt)
+            except Exception as e:
+                logger.warning("加载触发时间表 %s 失败，已跳过: %s", tid, e)
+        logger.info("云端触发时间缓存加载完成: %d 条有触发时间, %d 条已记录", len(times), len(keys))
+        return times, keys
+    except Exception as e:
+        logger.warning("云端触发时间缓存加载失败，降级读本地 CSV: %s", e)
+        return _load_trigger_times_from_local(), set()
+
+
 def _load_trigger_times_from_cloud() -> dict:
     """从云端多维表格加载所有触发时间（支持多表），云端不可用时降级读本地 CSV
 
@@ -1906,13 +2248,13 @@ def _ensure_trigger_time_bugid_cache():
 
 
 def _save_trigger_time_to_cloud(bugid: str, trigger_time: str):
-    """将单条触发时间写入云端 bitable（有则更新，无则新建），同时写本地 CSV"""
-    _save_trigger_time_to_csv(bugid, trigger_time)
+    """将单条触发时间写入云端 bitable（有则更新，无则新建），云端成功后再写本地 CSV"""
     # 懒加载缓存
     _ensure_trigger_time_bugid_cache()
     # 单条更新：优先用缓存直接定位，避免全表扫描
     cached = _trigger_time_bugid_cache.get(bugid)
-    if cached:
+    cloud_ok = False
+    if cached and isinstance(cached, tuple) and len(cached) >= 3:
         tid, rec_id, _ = cached
         try:
             app_token, _ = _get_trigger_time_table_cfg()
@@ -1923,19 +2265,28 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str):
             # 更新缓存时间戳
             _trigger_time_bugid_cache[bugid] = (tid, rec_id, trigger_time)
             logger.info("云端触发时间单条更新(缓存命中): %s -> %s", bugid, trigger_time)
-            return
+            cloud_ok = True
         except Exception as e:
             logger.warning("缓存更新失败 %s，回退批量模式: %s", bugid, e)
             _trigger_time_bugid_cache.pop(bugid, None)
-    # 缓存未命中或更新失败：走批量模式
-    _batch_save_trigger_times_to_cloud({bugid: trigger_time})
+    if not cloud_ok:
+        # 缓存未命中或更新失败：走批量模式
+        cloud_ok = _batch_save_trigger_times_to_cloud({bugid: trigger_time})
+    # 云端成功后才写本地 CSV，避免云端失败时本地多余
+    if cloud_ok:
+        _save_trigger_time_to_csv(bugid, trigger_time)
+    else:
+        logger.warning("云端写入失败，跳过本地 CSV 保存: %s", bugid)
 
 
-def _batch_save_trigger_times_to_cloud(items: dict):
-    """批量将触发时间写入云端 bitable，只加载一次表数据。items: {bugid: trigger_time}"""
+def _batch_save_trigger_times_to_cloud(items: dict) -> bool:
+    """批量将触发时间写入云端 bitable，只加载一次表数据。items: {bugid: trigger_time}
+
+    :return: 云端写入是否成功
+    """
     from src.clients import feishu_client
     if not items:
-        return
+        return True
     try:
         app_token, table_ids = _get_trigger_time_table_cfg()
         # 一次性加载所有表数据
@@ -2010,7 +2361,41 @@ def _batch_save_trigger_times_to_cloud(items: dict):
             for bid, tt in new_items:
                 _trigger_time_bugid_cache.pop(bid, None)  # 清除旧缓存，下次会从云端加载
     except Exception as e:
-        logger.warning("云端触发时间批量写入失败（已写本地 CSV）: %s", e)
+        logger.warning("云端触发时间批量写入失败: %s", e)
+        # 云端写入失败，从本地 CSV 中删除本次写入的条目，避免本地和云端不一致
+        _remove_local_trigger_entries(set(items.keys()))
+        return False
+    return True
+
+
+def _remove_local_trigger_entries(jira_keys: set):
+    """从本地 CSV 中删除指定的 jira 号条目，保持与云端一致"""
+    import csv as _csv
+    if not jira_keys:
+        return
+    data_dir = os.path.join(PROJECT_ROOT, "data")
+    removed = 0
+    for root, _dirs, files in os.walk(data_dir):
+        for filename in files:
+            if not filename.startswith("trigger_times_") or not filename.endswith(".csv"):
+                continue
+            path = os.path.join(root, filename)
+            try:
+                rows = []
+                with open(path, "r", encoding="utf-8-sig") as f:
+                    for row in _csv.DictReader(f):
+                        rows.append(row)
+                keep = [r for r in rows if (r.get("jira号") or "").strip() not in jira_keys]
+                if len(keep) < len(rows):
+                    removed += len(rows) - len(keep)
+                    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                        writer = _csv.DictWriter(f, fieldnames=["jira号", "触发时间", "提取时间"])
+                        writer.writeheader()
+                        writer.writerows(keep)
+            except Exception:
+                pass
+    if removed:
+        logger.info("已从本地 CSV 清理 %d 条未同步到云端的记录", removed)
 
 
 def _refresh_trigger_time_bugid_cache(app_token: str, table_ids: list):
@@ -2031,17 +2416,29 @@ def _refresh_trigger_time_bugid_cache(app_token: str, table_ids: list):
 
 
 def _create_trigger_time_subtable(app_token: str, index: int, existing_table_ids: set = None) -> str:
-    """创建触发时间子表（触发时间_N），返回 table_id"""
+    """创建触发时间子表（触发时间_N），返回 table_id
+
+    遇到重名则跳过，继续创建下一个编号，直到成功。
+    """
     from src.clients import feishu_client
     fields = [
         {"field_name": "jira号", "type": 1},
         {"field_name": "触发时间", "type": 1},
         {"field_name": "提取时间", "type": 1},
     ]
-    table_id = feishu_client.create_bitable_table(app_token, f"触发时间_{index}", fields)
-    _delete_default_bitable_table(app_token, table_id, keep_table_ids=existing_table_ids)
-    logger.info("触发时间子表已创建: 触发时间_%d -> %s", index, table_id)
-    return table_id
+    for i in range(10):  # 最多尝试10次避免死循环
+        name = f"触发时间_{index + i}"
+        try:
+            table_id = feishu_client.create_bitable_table(app_token, name, fields)
+            _delete_default_bitable_table(app_token, table_id, keep_table_ids=existing_table_ids)
+            logger.info("触发时间子表已创建: %s -> %s", name, table_id)
+            return table_id
+        except ValueError as e:
+            if "TableNameDuplicated" in str(e):
+                logger.info("子表 %s 已存在，跳过尝试下一个...", name)
+                continue
+            raise
+    raise RuntimeError(f"连续创建 10 个子表均重名，请检查云端多维表格")
 
 
 def _update_config_table_ids(app_token: str, table_ids: list):
@@ -2325,9 +2722,206 @@ async def classify_comment_docs_api(request: Request):
 
 @app.get("/api/report/daily")
 def report_daily(date: str = None):
-    """按日期查询结论报表"""
+    """按日期查询结论报表（读取本地 CSV）"""
     date_str = date or datetime.now().strftime("%Y-%m-%d")
     return _ok(_read_csv_rows(_daily_csv_path(date_str)))
+
+
+@app.get("/api/report/daily_refresh")
+def report_daily_refresh(date: str = None):
+    """刷新今日结论报表：从今日所有批次执行记录中收集 Jira 号，
+    然后查多维表格找每个 Jira 最接近执行时间的分析完成记录，拼接成报表。
+    """
+    date_str = date or datetime.now().strftime("%Y-%m-%d")
+    doc_dir = get_path("doc_dir")
+    day_dir = os.path.join(doc_dir, date_str)
+    # 步骤1：读取今日所有 batch_*.csv，收集 jira号 + 执行时间
+    jira_exec = {}  # {jira号: 最新执行时间}
+    if os.path.isdir(day_dir):
+        for fname in sorted(os.listdir(day_dir)):
+            if not fname.lower().startswith("batch_") or not fname.lower().endswith(".csv"):
+                continue
+            for r in _read_csv_rows(os.path.join(day_dir, fname)):
+                jira_no = (r.get("jira号") or "").strip()
+                if not jira_no:
+                    continue
+                exec_time = (r.get("执行时间") or "").strip()
+                # 同一 Jira 取最新执行时间
+                if jira_no not in jira_exec or exec_time > jira_exec[jira_no]:
+                    jira_exec[jira_no] = exec_time
+    if not jira_exec:
+        return _ok([])
+    # 步骤2：查询多维表格，收集所有匹配记录
+    from src.clients import feishu_client
+    cfg = load_config().get("feishu_bitable", {})
+    app_token = cfg.get("app_token", "")
+    table_id = cfg.get("table_id", "")
+    bugid_field = cfg.get("bugid_field", "jira号")
+    report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
+    jira_set = set(jira_exec.keys())
+    # jira号 -> [多维表格记录列表]（全字段）
+    bt_map = {}
+    if app_token and table_id:
+        try:
+            records = feishu_client.list_bitable_records(app_token, table_id)
+            for rec in records:
+                fields = rec.get("fields", {})
+                jira_key = _bitable_text(fields.get(bugid_field, ""))
+                if jira_key and jira_key in jira_set:
+                    bt_map.setdefault(jira_key, []).append(
+                        _flatten_bitable_record_all(fields, report_field))
+        except Exception as e:
+            logger.warning("今日报表刷新：多维表格查询失败: %s", e)
+    # 步骤3：每个 Jira 找分析完成时间最接近执行时间的记录
+    rows = []
+    for jira_no, exec_time in jira_exec.items():
+        bt_records = bt_map.get(jira_no, [])
+        if bt_records:
+            # 仅保留分析完成时间 >= 执行时间的记录，取最接近的
+            candidates = [r for r in bt_records
+                         if r.get("分析完成时间", "") and r["分析完成时间"] >= exec_time]
+            if not candidates:
+                candidates = bt_records  # 兜底：用全部记录
+            # 按分析完成时间升序，取最接近执行时间的（第一条）
+            candidates.sort(key=lambda x: x.get("分析完成时间", ""))
+            bf = candidates[0]
+            row = {"jira号": jira_no}
+            row.update(bf)
+            rows.append(row)
+        else:
+            rows.append({"jira号": jira_no})
+    # 按 jira号 排序
+    rows.sort(key=lambda x: x["jira号"])
+    # 确保所有行拥有相同的列（前端表格依赖第一行的 keys 渲染列）
+    all_keys = ["jira号"]
+    for r in rows:
+        for k in r:
+            if k not in all_keys:
+                all_keys.append(k)
+    for r in rows:
+        for k in all_keys:
+            r.setdefault(k, "")
+    logger.info("今日结论报表刷新: %s, %d 个 Jira, 多维表格命中 %d, %d 列",
+               date_str, len(jira_exec),
+               len(jira_exec) - sum(1 for j in jira_exec if j not in bt_map),
+               len(all_keys))
+    return _ok(rows)
+
+
+@app.get("/api/report/daily_summary")
+def report_daily_summary(date: str = None):
+    """根据今日结论报表生成汇总统计：执行总数、成功率、平均耗时、失败分类"""
+    date_str = date or datetime.now().strftime("%Y-%m-%d")
+    doc_dir = get_path("doc_dir")
+    day_dir = os.path.join(doc_dir, date_str)
+    # 步骤1：读取今日所有 batch_*.csv
+    jira_exec = {}
+    if os.path.isdir(day_dir):
+        for fname in sorted(os.listdir(day_dir)):
+            if not fname.lower().startswith("batch_") or not fname.lower().endswith(".csv"):
+                continue
+            for r in _read_csv_rows(os.path.join(day_dir, fname)):
+                jira_no = (r.get("jira号") or "").strip()
+                if not jira_no:
+                    continue
+                exec_time = (r.get("执行时间") or "").strip()
+                if jira_no not in jira_exec or exec_time > jira_exec[jira_no]:
+                    jira_exec[jira_no] = exec_time
+    if not jira_exec:
+        return _ok({"total": 0, "success": 0, "fail": 0, "success_rate": "0%",
+                     "avg_duration": "-", "too_long": 0, "failures": {},
+                     "pending": 0})
+    # 步骤2：查多维表格
+    from src.clients import feishu_client
+    cfg = load_config().get("feishu_bitable", {})
+    app_token = cfg.get("app_token", "")
+    table_id = cfg.get("table_id", "")
+    bugid_field = cfg.get("bugid_field", "jira号")
+    report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
+    jira_set = set(jira_exec.keys())
+    bt_map = {}
+    if app_token and table_id:
+        try:
+            records = feishu_client.list_bitable_records(app_token, table_id)
+            for rec in records:
+                fields = rec.get("fields", {})
+                jira_key = _bitable_text(fields.get(bugid_field, ""))
+                if jira_key and jira_key in jira_set:
+                    bt_map.setdefault(jira_key, []).append(
+                        _flatten_bitable_record_all(fields, report_field))
+        except Exception as e:
+            logger.warning("今日汇总：多维表格查询失败: %s", e)
+    # 步骤3：匹配记录并计算统计
+    total = len(jira_exec)
+    success_count = 0
+    durations = []  # 耗时秒数
+    too_long_count = 0
+    fail_cats = {}  # {分类: 数量}
+    pending_count = 0
+    too_long_threshold = 600  # 10分钟
+    for jira_no, exec_time in jira_exec.items():
+        bt_records = bt_map.get(jira_no, [])
+        if not bt_records:
+            pending_count += 1
+            continue
+        # 找最接近执行时间的记录
+        candidates = [r for r in bt_records
+                     if r.get("分析完成时间", "") and r["分析完成时间"] >= exec_time]
+        if not candidates:
+            candidates = bt_records
+        candidates.sort(key=lambda x: x.get("分析完成时间", ""))
+        bf = candidates[0]
+        result = bf.get("分析结果", "")
+        if result == "成功":
+            success_count += 1
+        else:
+            # 失败分类：优先人工审核结果，无则用 _diag_pre_classify 归类，都归不到则算待审核
+            review = bf.get("人工审核结果", "")
+            if review and review not in ("-", "None"):
+                fail_cats[review] = fail_cats.get(review, 0) + 1
+            else:
+                err_msg = bf.get("错误信息", "")
+                pre_cat = _diag_pre_classify(err_msg)
+                cat = pre_cat if pre_cat else "待审核"
+                fail_cats[cat] = fail_cats.get(cat, 0) + 1
+        # 解析总耗时（如 "123.45s" 或纯数字秒数）
+        raw_dur = bf.get("总耗时", "")
+        if raw_dur:
+            try:
+                sec_str = str(raw_dur).replace("s", "").replace("秒", "").strip()
+                dur = float(sec_str)
+                if dur > 0:
+                    durations.append(dur)
+                    if dur > too_long_threshold:
+                        too_long_count += 1
+            except (ValueError, TypeError):
+                pass
+    # 汇总（平均耗时 = 所有总耗时之和 / 总条数）
+    fail_count = total - success_count - pending_count
+    success_rate = f"{success_count / total * 100:.1f}%" if total else "0%"
+    if durations:
+        avg_sec = sum(durations) / total
+        avg_min = int(avg_sec // 60)
+        avg_s = int(avg_sec % 60)
+        avg_duration = f"{avg_min}分{avg_s}秒" if avg_min else f"{avg_s}秒"
+    else:
+        avg_duration = "-"
+    # 构建待分析
+    if pending_count:
+        fail_cats["待分析"] = pending_count
+    summary = {
+        "total": total,
+        "success": success_count,
+        "fail": fail_count,
+        "success_rate": success_rate,
+        "avg_duration": avg_duration,
+        "too_long": too_long_count,
+        "too_long_threshold": too_long_threshold,
+        "failures": fail_cats,
+    }
+    logger.info("今日汇总: %s, 总 %d, 成功 %d, 失败 %d, 待分析 %d",
+               date_str, total, success_count, fail_count, pending_count)
+    return _ok(summary)
 
 
 @app.get("/api/report/audit")
@@ -2427,6 +3021,23 @@ def _flatten_bitable_record(fields: dict, report_field: str) -> dict:
         "AI评论总结": _bitable_text(pick("AI评论总结")),
         "结果置信度": _bitable_text(pick("结果置信度")),
     }
+
+
+def _flatten_bitable_record_all(fields: dict, report_field: str) -> dict:
+    """提取多维表格单条记录的所有字段，URL 字段取 link"""
+    result = {}
+    for key, val in fields.items():
+        if isinstance(val, dict) and "link" in val:
+            # URL 字段取 link
+            result[key] = str(val.get("link", "") or "").strip()
+        else:
+            result[key] = _bitable_text(val)
+    # 飞书报告链接字段单独处理（可能是配置的字段名）
+    if report_field and report_field in fields:
+        report_val = fields[report_field]
+        if isinstance(report_val, dict):
+            result["飞书报告链接"] = str(report_val.get("link", "") or "").strip()
+    return result
 
 
 @app.get("/api/data/history_batches")
@@ -5415,7 +6026,12 @@ def _ocr_extract_time_from_video_data(video_data: bytes, video_name: str,
 
 
 def _diag_extract_time_from_video_simple(issue: dict) -> str:
-    """简化版视频帧 OCR 提取触发时间，选取与 gmlogger 最相关的单个视频尝试"""
+    """视频帧 OCR 提取触发时间。
+
+    单视频或单gmlogger：走原来的 _pick_best_video 选取逻辑。
+    多视频+多gmlogger：按gmlogger从新到旧逐个匹配同日期视频，
+    OCR 验证时间是否接近（5分钟容差），都不匹配则回退正常逻辑。
+    """
     import httpx as _httpx
     fields = issue.get("fields") or {}
     attachments = fields.get("attachment") or []
@@ -5433,18 +6049,85 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         logger.warning("视频兜底提取：OCR 不可用，跳过")
         return ""
     from src.clients.jira_client import _parse_datetime_string
-    # 选取与 gmlogger 最相关的一个视频（文件名时间接近 > 上传时间接近 > 最早上传）
-    video_att = _pick_best_video(videos, attachments)
-    video_url = video_att.get("content", "")
-    video_name = video_att.get("filename", "")
-    if not video_url:
-        return ""
-    # 从 gmlogger 附件解析文件名时间（用于日期补充和重合优先）
+    # 解析 gmlogger 文件名时间，按时间倒序（最新的优先）
     gm_times = _diag_gmlogger_times(attachments)
+    gm_times.sort(key=lambda x: x[1], reverse=True)
+    # 构建所有 gmlogger 日期集合（用于 OCR 日期补充）
     gm_dates = [(dt.year, dt.month, dt.day) for _, dt in gm_times]
     ref_pool = [dt for _, dt in gm_times]
-    gm_ref_dt = gm_times[0][1] if gm_times else None  # gmlogger 文件名时间参考
-    # 下载视频
+    gm_ref_dt = gm_times[0][1] if gm_times else None
+    # 仅多视频+多gmlogger才走逐个匹配逻辑，否则走原来的选取逻辑
+    if len(videos) < 2 or len(gm_times) < 2:
+        video_att = _pick_best_video(videos, attachments)
+        return _download_and_ocr_video(video_att, gm_dates, ref_pool,
+                                       cv2, reader, _parse_datetime_string, gm_ref_dt)
+    # 逐个 gmlogger 尝试匹配同日期视频
+    cfg = load_config().get("jira_api", {})
+    headers = {}
+    token = cfg.get("token", "")
+    if token:
+        auth_type = cfg.get("auth_type", "bearer").lower()
+        if auth_type == "bearer":
+            headers["Authorization"] = f"Bearer {token}"
+    for gm_str, gm_dt in gm_times:
+        gm_date_tuple = (gm_dt.year, gm_dt.month, gm_dt.day)
+        # 查找同日期视频：优先文件名含日期，其次上传时间同天
+        matched_video = None
+        for v in videos:
+            v_fname = v.get("filename", "") or ""
+            # 策略1：视频文件名中包含同日日期
+            v_parsed = _diag_parse_entry_time(v_fname)
+            if v_parsed:
+                v_dt = v_parsed[1]
+                if (v_dt.year, v_dt.month, v_dt.day) == gm_date_tuple:
+                    matched_video = v
+                    break
+            # 策略2：视频上传时间与 gmlogger 同天
+            v_upload_dt = _ts_parse_datetime(v.get("created", ""))
+            if v_upload_dt and (v_upload_dt.year, v_upload_dt.month, v_upload_dt.day) == gm_date_tuple:
+                matched_video = v
+                break
+        if not matched_video:
+            logger.info("视频兜底：gmlogger %s 未找到同日期视频，跳过", gm_str)
+            continue
+        v_name = matched_video.get("filename", "")
+        v_url = matched_video.get("content", "")
+        if not v_url:
+            continue
+        logger.info("视频兜底：gmlogger %s 匹配视频 %s，开始 OCR", gm_str, v_name)
+        # 下载 + OCR
+        result = _download_and_ocr_video(matched_video, gm_dates, ref_pool,
+                                         cv2, reader, _parse_datetime_string, gm_dt)
+        if not result:
+            continue
+        # 验证 OCR 时间与 gmlogger 文件名时间是否接近（5分钟容差）
+        result_dt = _ts_parse_datetime(result)
+        if result_dt:
+            diff_sec = abs((result_dt - gm_dt).total_seconds())
+            if diff_sec <= 300:
+                logger.info("视频兜底成功：OCR %s 与 gmlogger %s 差 %.0f 秒，匹配", result, gm_str, diff_sec)
+                return result
+            else:
+                logger.info("视频兜底：OCR %s 与 gmlogger %s 差 %.0f 秒，不接近，继续下一个",
+                           result, gm_str, diff_sec)
+        else:
+            # OCR 结果无法解析为 datetime，但有时间字符串，直接使用
+            logger.info("视频兜底：OCR 结果 %s 无法解析为 datetime，跳过验证", result)
+    # 所有 gmlogger 均未匹配到接近的视频，回退正常提取逻辑
+    logger.info("视频兜底：所有 gmlogger 均未匹配到接近视频，回退正常选取逻辑")
+    video_att = _pick_best_video(videos, attachments)
+    return _download_and_ocr_video(video_att, gm_dates, ref_pool,
+                                   cv2, reader, _parse_datetime_string, gm_times[0][1] if gm_times else None)
+
+
+def _download_and_ocr_video(video_att: dict, gm_dates: list, ref_pool: list,
+                             cv2, reader, parse_fn, gm_ref_dt) -> str:
+    """下载单个视频并截帧 OCR 提取时间，返回时间字符串或空串"""
+    import httpx as _httpx
+    v_url = video_att.get("content", "")
+    v_name = video_att.get("filename", "")
+    if not v_url:
+        return ""
     cfg = load_config().get("jira_api", {})
     headers = {}
     token = cfg.get("token", "")
@@ -5453,16 +6136,14 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         if auth_type == "bearer":
             headers["Authorization"] = f"Bearer {token}"
     try:
-        logger.info("视频兜底提取：下载视频 %s", video_name)
-        resp = _httpx.get(video_url, headers=headers, timeout=120, verify=False, follow_redirects=True)
+        logger.info("视频兜底提取：下载视频 %s", v_name)
+        resp = _httpx.get(v_url, headers=headers, timeout=120, verify=False, follow_redirects=True)
         resp.raise_for_status()
-        video_data = resp.content
     except Exception as e:
-        logger.warning("视频兜底提取：下载失败 %s: %s", video_name, e)
+        logger.warning("视频兜底提取：下载失败 %s: %s", v_name, e)
         return ""
-    # 截帧 + OCR
     return _ocr_extract_time_from_video_data(
-        video_data, video_name, gm_dates, ref_pool, cv2, reader, _parse_datetime_string, gm_ref_dt)
+        resp.content, v_name, gm_dates, ref_pool, cv2, reader, parse_fn, gm_ref_dt)
 
 
 def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
@@ -7102,6 +7783,10 @@ async def test_prod_batch_run(request: Request):
                     tt = _jc.extract_trigger_time_from_issue(issue)
                     if tt:
                         return bugid, tt
+                    # 标准提取为空，尝试视频帧 OCR 兜底
+                    tt = _diag_extract_time_from_video_simple(issue)
+                    if tt:
+                        return bugid, tt
                 except Exception:
                     pass
                 return bugid, ""
@@ -7115,6 +7800,11 @@ async def test_prod_batch_run(request: Request):
                         bugid, tt = future.result()
                         if tt:
                             trigger_times[bugid] = tt
+                            # 提取成功（含视频兜底）存入云端
+                            _save_trigger_time_to_cloud(bugid, tt)
+                        else:
+                            # 提取为空，标记空值避免下次重复提取
+                            _save_trigger_time_to_cloud(bugid, "")
                     except Exception:
                         pass
                     if done_count % 20 == 0 or done_count == len(batch):
@@ -7908,7 +8598,7 @@ async def online_followup_compare(request: Request):
     result_data = {
         "date": date_str,
         "pc_success_count": len(pc_success),
-        "online_success_count": len(overlap_keys),  # PC成功中线上也成功的数量
+        "online_success_count": len(online_success),  # 触发来源为线上且分析结果为成功的总数
         "diff_count": len(diff_records),
         "diff_records": diff_records,
         "pc_success_jiras": sorted(pc_keys),
@@ -7938,3 +8628,128 @@ def online_followup_load(date: str = None):
     with open(path, "r", encoding="utf-8") as f:
         data = _json.load(f)
     return _ok(data, f"已加载 {data.get('date', '')} 对比数据")
+
+
+# ==================== 功能12：AI日志分析自学习内容可视化 ====================
+
+# AI日志分析服务的接口地址
+_AI_LOG_SERVICE_URL = "http://10.22.126.133:8001"
+
+
+def _fetch_ai_logs(name: str = "all", limit: int = 5000) -> list:
+    """从AI日志分析服务读取日志内容"""
+    import urllib.request
+    url = f"{_AI_LOG_SERVICE_URL}/api/logs?name={name}&start_line=1&limit={min(limit, 5000)}"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+            data = _json.loads(raw)
+            # 兼容多种返回格式
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return data.get("logs") or data.get("data") or data.get("lines") or []
+            return []
+    except Exception as e:
+        logger.error("读取AI日志失败: %s", e)
+        raise
+
+
+def _parse_ai_log_lines(lines: list, jira_id: str) -> dict:
+    """解析日志行，按 Jira 号过滤并按分析轮次分组
+
+    返回结构:
+    {
+      "rounds": [
+        {"round": 1, "entries": [{"line_no": int, "time": str, "type": str, "content": str}, ...]},
+        ...
+      ],
+      "total_lines": int,
+      "matched_lines": int
+    }
+    """
+    jira_upper = jira_id.upper().strip()
+    matched = []
+    for i, line in enumerate(lines):
+        line_str = str(line).strip() if not isinstance(line, str) else line.strip()
+        if not line_str:
+            continue
+        if jira_upper and jira_upper not in line_str.upper():
+            continue
+        matched.append({"line_no": i + 1, "raw": line_str})
+    # 按分析轮次分组：识别"轮"、"round"、"第.*次"等关键词
+    rounds = []
+    current_round = {"round": 1, "entries": []}
+    round_counter = 1
+    for item in matched:
+        raw = item["raw"]
+        # 检测是否是新轮次的开始
+        new_round = False
+        if re.search(r'第\s*\d+\s*轮', raw) or re.search(r'round\s*\d+', raw, re.I):
+            round_counter += 1
+            new_round = True
+        elif re.search(r'分析开始|开始分析|start.*analy', raw, re.I):
+            round_counter += 1
+            new_round = True
+        elif re.search(r'={5,}|-{5,}|\*{5,}', raw) and len(current_round["entries"]) > 0:
+            round_counter += 1
+            new_round = True
+        if new_round and current_round["entries"]:
+            rounds.append(current_round)
+            current_round = {"round": round_counter, "entries": []}
+        # 识别条目类型
+        entry_type = "其他"
+        if re.search(r'知识库|knowledge|\.md|\.txt|文件', raw, re.I):
+            entry_type = "知识库调用"
+        elif re.search(r'结果|result|成功|失败|rootcause|根因|结论', raw, re.I):
+            entry_type = "分析结果"
+        elif re.search(r'评论|comment|jira.*评论', raw, re.I):
+            entry_type = "评论分析"
+        elif re.search(r'触发时间|trigger.*time', raw, re.I):
+            entry_type = "触发时间"
+        elif re.search(r'视频|video|ocr', raw, re.I):
+            entry_type = "视频/OCR"
+        elif re.search(r'置信度|confidence', raw, re.I):
+            entry_type = "置信度"
+        elif re.search(r'提取|extract', raw, re.I):
+            entry_type = "提取"
+        # 提取时间戳
+        time_str = ""
+        tm = re.search(r'(\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2})', raw)
+        if tm:
+            time_str = tm.group(1)
+        current_round["entries"].append({
+            "line_no": item["line_no"],
+            "time": time_str,
+            "type": entry_type,
+            "content": raw[:500],  # 截断过长内容
+        })
+    if current_round["entries"]:
+        rounds.append(current_round)
+    return {
+        "rounds": rounds,
+        "total_lines": len(lines),
+        "matched_lines": len(matched),
+    }
+
+
+@app.post("/api/test/ai_log_visual")
+async def ai_log_visual(request: Request):
+    """读取AI日志分析服务的日志，按 Jira 号过滤并分组展示"""
+    body = await request.json() or {}
+    jira_id = str(body.get("jira_id", "")).strip()
+    log_name = str(body.get("log_name", "all")).strip()
+    limit = int(body.get("limit", 5000))
+    if not jira_id:
+        return _fail("请输入 Jira 号")
+    if log_name not in ("all", "app", "perf"):
+        log_name = "all"
+    try:
+        lines = _fetch_ai_logs(name=log_name, limit=limit)
+        result = _parse_ai_log_lines(lines, jira_id)
+        result["jira_id"] = jira_id
+        result["log_name"] = log_name
+        return _ok(result, f"读取 {len(lines)} 行日志，匹配 {result['matched_lines']} 行，{len(result['rounds'])} 轮分析")
+    except Exception as e:
+        return _fail(f"读取日志失败: {e}")
