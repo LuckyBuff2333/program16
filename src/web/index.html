@@ -278,6 +278,7 @@
               <template #default="{row}"><el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag></template>
             </el-table-column>
             <el-table-column prop="触发时间" label="触发时间" width="160" show-overflow-tooltip></el-table-column>
+            <el-table-column prop="执行时间" label="执行时间" width="160" show-overflow-tooltip></el-table-column>
             <el-table-column prop="备注" label="备注" show-overflow-tooltip></el-table-column>
           </el-table>
           <el-alert v-if="batchAi.runDoneMsg" type="success" :closable="false" :title="batchAi.runDoneMsg" style="margin-top:10px"></el-alert>
@@ -480,9 +481,17 @@
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
                 <span style="font-weight:700;font-size:14px">诊断归类结果</span>
                 <div style="display:flex;align-items:center;gap:8px">
+                  <el-button size="small" type="warning" :loading="troubleshoot.exportingTriggerIssues" @click="exportTriggerTimeIssues"
+                    :disabled="!troubleshoot.diagResults.filter(r => r.category === '触发时间问题' || r.category?.includes('触发时间')).length">
+                    生成触发时间问题表格
+                  </el-button>
                   <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview"
                     :disabled="!getFilteredDiagResults().filter(r => r.report && r.report.human_reason).length">
                     批量写入人工审核结果{{ troubleshoot.categoryFilter ? '（筛选）' : '' }}
+                  </el-button>
+                  <el-button size="small" type="primary" :loading="troubleshoot.batchApplyingTime" @click="batchApplyCorrectionTimes"
+                    :disabled="!getApplicableCorrectionCount()">
+                    一键应用正确时间（{{ getApplicableCorrectionCount() }}）
                   </el-button>
                   <el-select v-model="troubleshoot.categoryFilter" size="small" placeholder="按归类筛选" clearable style="width:200px">
                     <el-option v-for="c in getTroubleshootCategories()" :key="c" :label="c" :value="c"></el-option>
@@ -1293,6 +1302,7 @@
                     <template #default="{row}"><el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag></template>
                   </el-table-column>
                   <el-table-column prop="触发时间" label="触发时间" width="160" show-overflow-tooltip></el-table-column>
+                  <el-table-column prop="执行时间" label="执行时间" width="160" show-overflow-tooltip></el-table-column>
                   <el-table-column prop="备注" label="备注" show-overflow-tooltip></el-table-column>
                 </el-table>
                 <el-alert v-if="batchAi.runDoneMsg" type="success" :closable="false" :title="batchAi.runDoneMsg" style="margin-top:10px"></el-alert>
@@ -1966,9 +1976,17 @@
                   <div style="display:flex;justify-content:space-between;align-items:center">
                     <span style="font-weight:700">② 诊断归类结果</span>
                     <div style="display:flex;align-items:center;gap:8px">
+                      <el-button size="small" type="warning" :loading="troubleshoot.exportingTriggerIssues" @click="exportTriggerTimeIssues"
+                        :disabled="!troubleshoot.diagResults.filter(r => r.category === '触发时间问题' || r.category?.includes('触发时间')).length">
+                        生成触发时间问题表格
+                      </el-button>
                       <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview"
                         :disabled="!getFilteredDiagResults().filter(r => r.report && r.report.human_reason).length">
                         批量写入人工审核结果{{ troubleshoot.categoryFilter ? '（筛选）' : '' }}
+                      </el-button>
+                      <el-button size="small" type="primary" :loading="troubleshoot.batchApplyingTime" @click="batchApplyCorrectionTimes"
+                        :disabled="!getApplicableCorrectionCount()">
+                        一键应用正确时间（{{ getApplicableCorrectionCount() }}）
                       </el-button>
                       <el-select v-model="troubleshoot.categoryFilter" size="small" placeholder="按归类筛选" clearable style="width:200px">
                         <el-option v-for="c in getTroubleshootCategories()" :key="c" :label="c" :value="c"></el-option>
@@ -2371,7 +2389,7 @@ createApp({
         results: [], currentIndex: 0, total: 0, hasTime: 0, empty: 0, errorCount: 0,
         doneMsg: '',
         filterExisting: false,  // 过滤多维表格中已有数据
-        videoFallback: false,   // 用视频提取兜底
+        videoFallback: true,    // 视频提取优先级最高（默认启用）
         refreshCache: false,    // 云端缓存更新：有缓存也重新提取，提取不到则保留旧值
         reExtractEmpty: false,  // 空标记重新提取：已标记空的也重新提取
       },
@@ -2408,7 +2426,7 @@ createApp({
         afterTime: '', resultFilter: '失败', sourceFilter: '', dedup: true, noManualReview: false,
         querying: false, records: [], successRecords: [], queryingSuccess: false, successSearched: false,
         diagRunning: false, diagLoadingMap: {}, diagResults: [], categoryFilter: '',
-        writingReview: false,
+        writingReview: false, exportingTriggerIssues: false, batchApplyingTime: false,
         stopFlag: false, abortController: null,
         correctionEditor: { visible: false, row: null, time: '', note: '', humanReason: '', matchedCategory: '', saving: false },
       },
@@ -4367,6 +4385,7 @@ createApp({
                 }));
                 bt.doneMsg = `提取完成: 共${evt.total}条, 有时间${evt.time_count}条(云端命中${evt.local_hit}, 新提取${evt.new_count}), 空${evt.empty_count}条`;
                 if (evt.skip_bitable) bt.doneMsg += `, 多维表过滤${evt.skip_bitable}条`;
+                if (evt.skip_corrected) bt.doneMsg += `, 已修正跳过${evt.skip_corrected}条`;
                 if (evt.interrupted) bt.doneMsg += '（已中断）';
               }
             } catch (e) { /* 忽略解析错误 */ }
@@ -5003,7 +5022,35 @@ createApp({
           body: JSON.stringify({ bugid: row.bugid, new_time: row.suggested_time })
         });
         ElementPlus.ElMessage.success(`${row.bugid} 触发时间已替换为 ${row.suggested_time}（${body.message || '已保存'}）`);
+        // 同步更新本地状态
+        row.verify_status = 'corrected';
+        row.correction_time = row.suggested_time;
       } catch (e) { /* 已提示 */ }
+    },
+    // 可应用的修正时间记录数
+    getApplicableCorrectionCount() {
+      return this.troubleshoot.diagResults.filter(
+        r => r.verify_status === 'success' && r.suggested_time && r.suggested_time !== r.problem_time
+      ).length;
+    },
+    // 一键应用所有正确时间
+    async batchApplyCorrectionTimes() {
+      const targets = this.troubleshoot.diagResults.filter(
+        r => r.verify_status === 'success' && r.suggested_time && r.suggested_time !== r.problem_time
+      );
+      if (!targets.length) return ElementPlus.ElMessage.warning('无待应用的修正时间');
+      this.troubleshoot.batchApplyingTime = true;
+      try {
+        const items = targets.map(r => ({ bugid: r.bugid, new_time: r.suggested_time }));
+        const body = await this.api('/api/trigger_time/batch_update', {
+          method: 'POST',
+          body: JSON.stringify({ items })
+        });
+        // 同步更新本地状态
+        targets.forEach(r => { r.verify_status = 'corrected'; r.correction_time = r.suggested_time; });
+        ElementPlus.ElMessage.success(body.message || `已应用 ${targets.length} 条修正时间`);
+      } catch (e) { /* 已提示 */ }
+      finally { this.troubleshoot.batchApplyingTime = false; }
     },
     // 打开修正建议编辑器
     openSuggestionEditor(row) {
@@ -5299,6 +5346,33 @@ createApp({
       } catch (e) {
         ElementPlus.ElMessage.error('写入失败: ' + (e.message || e));
       } finally { this.troubleshoot.writingReview = false; }
+    },
+    // 生成触发时间问题表格：筛选归类为触发时间问题的记录，导出本地CSV+云端多维表格
+    async exportTriggerTimeIssues() {
+      const triggerIssues = this.troubleshoot.diagResults
+        .filter(r => r.category === '触发时间问题' || r.category?.includes('触发时间') || r.category?.includes('解压问题'))
+        .map(r => ({
+          jira号: r.bugid,
+          问题归类: r.category,
+          分析完成时间: r.done_time || '',
+          错误时间: r.problem_time || '',
+          诊断详情: r.detail || '',
+          修正建议: r.suggested_time || '',
+          人工审核结果: (r.report && r.report.human_reason) || r.correction_note || '',
+        }));
+      if (!triggerIssues.length) return ElementPlus.ElMessage.warning('无触发时间问题记录');
+      this.troubleshoot.exportingTriggerIssues = true;
+      try {
+        const body = await this.api('/api/troubleshoot/export_trigger_time_issues', {
+          method: 'POST', body: JSON.stringify({ items: triggerIssues })
+        });
+        const d = body.data;
+        let msg = `已生成触发时间问题表格: ${d.count} 条`;
+        if (d.cloud_url) msg += `\n云端: ${d.cloud_url}`;
+        ElementPlus.ElMessage.success(msg);
+      } catch (e) {
+        ElementPlus.ElMessage.error('生成失败: ' + (e.message || e));
+      } finally { this.troubleshoot.exportingTriggerIssues = false; }
     },
     // 批量诊断失败记录：并发 3 逐个诊断，实时刷新归类结果（支持人工停止）
     async diagnoseAllFailed() {

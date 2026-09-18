@@ -1481,6 +1481,53 @@ def upload_md_to_drive(file_path: str, title: str = "", folder_token: str = "") 
         return {"file_token": "", "url": ""}
 
 
+def upload_file_to_drive(file_path: str, folder_token: str = "", content_type: str = "") -> dict:
+    """上传本地文件到飞书云盘，支持任意文件类型
+
+    :param file_path: 本地文件绝对路径
+    :param folder_token: 指定上传到的飞书文件夹 token
+    :param content_type: MIME 类型，默认根据扩展名推断
+    :return: {"file_token": str, "url": str}
+    """
+    token = _get_doc_token()
+    if not token:
+        logger.warning("无可用 token，跳过云盘上传")
+        return {"file_token": "", "url": ""}
+    if not _os.path.isfile(file_path):
+        logger.warning("文件不存在: %s", file_path)
+        return {"file_token": "", "url": ""}
+    file_size = _os.path.getsize(file_path)
+    file_name = _os.path.basename(file_path)
+    ext = _os.path.splitext(file_name)[1].lower()
+    mime_map = {".csv": "text/csv", ".md": "text/markdown", ".txt": "text/plain",
+                ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+    if not content_type:
+        content_type = mime_map.get(ext, "application/octet-stream")
+    parent_node = folder_token or ""
+    headers = {"Authorization": f"Bearer {token}"}
+    upload_url = f"{_FEISHU_API}/drive/v1/files/upload_all"
+    try:
+        with open(file_path, "rb") as f:
+            files = {"file": (file_name, f, content_type)}
+            data = {"file_name": file_name, "size": str(file_size),
+                    "parent_type": "explorer", "parent_node": parent_node}
+            resp = httpx.post(upload_url, headers=headers, data=data, files=files, timeout=60, verify=False)
+            resp.raise_for_status()
+            result = resp.json()
+            if result.get("code") != 0:
+                logger.error("上传文件失败: %s (code=%s)", result.get("msg"), result.get("code"))
+                return {"file_token": "", "url": ""}
+            file_token = result.get("data", {}).get("file_token", "")
+            cfg = _get_bitable_cfg()
+            domain = cfg.get("domain", "feishu.cn")
+            file_url = f"https://{domain}/file/{file_token}"
+            logger.info("文件上传成功: %s -> %s", file_name, file_url)
+            return {"file_token": file_token, "url": file_url}
+    except Exception as e:
+        logger.warning("上传文件到云盘失败: %s", e)
+        return {"file_token": "", "url": ""}
+
+
 # ============ Cookie 模式（无需创建飞书应用）============
 
 
