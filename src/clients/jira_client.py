@@ -214,7 +214,7 @@ _TIMESTAMP_HMI_RE = re.compile(r"[A-Za-z]+:(20\d{2})(\d{2})(\d{2})_(\d{2})(\d{2}
 # 附件文件名时间正则
 _GMLOGGER_RE = re.compile(r"gmlogger[_\-](\d{4})[_\-](\d{1,2})[_\-](\d{1,2})[_\-](\d{1,2})[_\-](\d{1,2})(?:[_\-](\d{1,2}))?")
 _US_DATE_RE = re.compile(r"(\d{1,2})-(\d{1,2})-(\d{4})\s+(\d{1,2})-(\d{1,2})(?:-(\d{1,2}))?\s*(am|pm)?", re.IGNORECASE)
-_COMPACT_RE = re.compile(r"(20\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:(\d{2}))?")
+_COMPACT_RE = re.compile(r"(20\d{2})[\-_.]?(\d{2})[\-_.]?(\d{2})[\-_./T ]?(\d{2})[\-_: .]?(\d{2})(?:[\-_: .]?(\d{2}))?")  # YYYY[sep]MM[sep]DD[sep]HH[sep]MM[SS]，支持 -_./T 等分隔符
 
 
 def _normalize_datetime_text(text: str) -> str:
@@ -575,6 +575,18 @@ def _parse_filename_time(filename: str, file_type: str) -> tuple:
     return None
 
 
+def _is_ai_analysis_comment(text: str) -> bool:
+    """判断评论是否为 AI 分析系统自动发布的评论（应跳过，避免提取到旧分析时间）"""
+    ai_markers = [
+        "AI分析", "AI日志分析", "分析完成", "分析结果", "分析任务已启动",
+        "正在后台处理", "jira_analyze", "触发来源",
+        "根因分析", "因果链", "置信度",
+        "问题重复", "正常处理机制",
+    ]
+    lower = text.lower()
+    return any(marker.lower() in lower for marker in ai_markers)
+
+
 def _is_log_related(text: str) -> bool:
     """判断文本是否为日志相关内容"""
     log_keywords = ["gmlogger", "log", "line ", "timestamp", "error", "fail", "exception", "trace"]
@@ -719,43 +731,51 @@ def extract_trigger_time_from_issue(issue: dict) -> str:
     """从 issue 中提取触发时间，按优先级逐级回退
 
     提取顺序：
-    1. 评论区（按时间倒序，优先日志相关行）
-    2. 描述(description)
-    3. 标题(summary)
+    1. 标题(summary)——最直接反映当前触发事件
+    2. 评论区（按时间正序，跳过AI分析评论，优先日志相关行）
+    3. 描述(description)
     4. 自定义字段（Operation Schedule > Unit Test 的 time stamp > Initial Setting 的 log time）
     附件文件名仅用于补充不完整时间的年月日，不直接作为触发时间
     """
     fields = issue.get("fields") or {}
+    # ---- 1. 标题(summary)中提取（最高优先级）----
+    summary = fields.get("summary") or ""
+    if summary:
+        summary_times = _extract_times_from_text(summary)
+        if summary_times:
+            best = _pick_best_time(summary, summary_times)
+            if best:
+                logger.info("从标题中提取到时间: %s", best[0])
+                return _supplement_from_gmlogger(issue, best[0])
+    # ---- 2. 评论区（按时间正序，跳过AI分析评论，优先原始问题描述）----
     comment_obj = fields.get("comment") or {}
     raw_comments = comment_obj.get("comments") or []
-    # 按创建时间倒序，最新的评论在前
-    raw_comments.sort(key=lambda c: c.get("created", ""), reverse=True)
+    raw_comments.sort(key=lambda c: c.get("created", ""))  # 正序：最早的评论最接近问题发生时间
     # mock 格式：顶层 comments 列表，无创建时间信息
     if not raw_comments and issue.get("comments"):
         return extract_trigger_time_from_comments(issue["comments"])
-
     for c in raw_comments:
         body = c.get("body") or ""
         if isinstance(body, dict):
             body = _extract_adf_text(body)
         if not body.strip():
             continue
-        # 从评论创建时间获取年份（用于补充短格式）
+        # 跳过 AI 分析系统自动发布的评论（避免提取到旧分析时间戳）
+        if _is_ai_analysis_comment(body):
+            continue
         created = c.get("created", "")
         comment_year = created[:4] if created and len(created) >= 4 else ""
-        # 检查评论是否包含日志相关内容（排除附件引用行，附件名中的时间仅用于补充不完整日期）
         lines = body.split("\n")
         log_lines = [line for line in lines if _is_log_related(line) and "附件" not in line and "attachment" not in line.lower()]
         if log_lines:
-            # 仅从日志相关行中提取时间，非日志内容（验证/复测/变更等）跳过
             log_text = "\n".join(log_lines)
             log_times = _extract_times_from_text(log_text, comment_year)
             if log_times:
                 best = _pick_best_time(log_text, log_times)
                 if best:
-                    logger.info("从最新评论日志相关行中提取到最早时间: %s", best[0])
+                    logger.info("从评论区日志相关行中提取到时间: %s", best[0])
                     return best[0]
-    # ---- 评论无时间 → 从描述(description)中提取 ----
+    # ---- 3. 描述(description) ----
     description = fields.get("description") or ""
     if isinstance(description, dict):
         description = _extract_adf_text(description)
@@ -766,20 +786,10 @@ def extract_trigger_time_from_issue(issue: dict) -> str:
             if best:
                 logger.info("从描述中提取到时间: %s", best[0])
                 return _supplement_from_gmlogger(issue, best[0])
-    # ---- 描述无时间 → 从标题(summary)中提取 ----
-    summary = fields.get("summary") or ""
-    if summary:
-        summary_times = _extract_times_from_text(summary)
-        if summary_times:
-            best = _pick_best_time(summary, summary_times)
-            if best:
-                logger.info("从标题中提取到时间: %s", best[0])
-                return _supplement_from_gmlogger(issue, best[0])
-    # ---- 标题无时间 → 从自定义字段(content页面)中提取 ----
+    # ---- 4. 自定义字段(content页面) ----
     custom_time = _extract_from_custom_fields(issue)
     if custom_time:
         return _supplement_from_gmlogger(issue, custom_time)
-    # 附件文件名仅用于补充年月日（已在 _supplement_from_gmlogger 中处理），不直接作为触发时间
     return ""
 
 
