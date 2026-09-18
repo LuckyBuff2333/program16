@@ -603,12 +603,40 @@
         </el-dialog>
 
         <el-card shadow="never">
-          <div class="section-title">今日结论报表（{{ overview.today }}）</div>
-          <el-table :data="dailyRows" size="small" stripe max-height="360">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div class="section-title" style="margin:0">今日结论报表（{{ overview.today }}）</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <el-date-picker v-model="dailyReportDate" type="date" placeholder="选择日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:140px"></el-date-picker>
+              <el-button size="small" type="primary" :loading="dailyReportLoading" @click="refreshDailyReport">刷新</el-button>
+              <el-tag v-if="dailyRows.length" type="info" size="small">{{ dailyRows.length }} 条</el-tag>
+            </div>
+          </div>
+          <!-- 汇总卡片 -->
+          <div v-if="dailySummary.total" style="margin-bottom:12px;padding:12px 16px;background:#f8f9fa;border-radius:8px;border:1px solid #e8e8e8">
+            <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
+              <span style="font-weight:700;color:#303133">汇总：</span>
+              <span>今日执行 <b>{{ dailySummary.total }}</b> 条</span>
+              <span>成功 <b style="color:#67c23a">{{ dailySummary.success }}</b> 条</span>
+              <span>成功率 <b :style="{color: parseFloat(dailySummary.success_rate) >= 70 ? '#67c23a' : '#e6a23c'}">{{ dailySummary.success_rate }}</b></span>
+              <span>平均执行时间 <b>{{ dailySummary.avg_duration }}</b></span>
+              <span v-if="dailySummary.too_long">耗时过长 <b style="color:#e6a23c">{{ dailySummary.too_long }}</b> 条</span>
+            </div>
+            <div v-if="Object.keys(dailySummary.failures || {}).length" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center">
+              <span style="font-weight:700;color:#f56c6c">失败分析：</span>
+              <el-tag v-for="(count, cat) in dailySummary.failures" :key="cat"
+                :type="(cat==='待审核'||cat==='待分析')?'warning':(cat.includes('触发时间')||cat.includes('损坏')||cat.includes('过载')||cat.includes('超时')||cat.includes('拥堵')?'danger':(cat.includes('正常处理')||cat.includes('无需分析')?'info':''))" size="small">
+                {{ cat }} {{ count }} 条
+              </el-tag>
+            </div>
+          </div>
+          <el-table :data="dailyRows" size="small" stripe max-height="360" v-loading="dailyReportLoading">
             <el-table-column v-for="col in dailyColumns" :key="col" :prop="col" :label="col"
               :min-width="colWidth(col)" show-overflow-tooltip>
               <template #default="{ row }">
-                <el-tag v-if="col === '结果置信度'" :type="Number(row[col]) >= 0.7 ? 'success' : (Number(row[col]) >= 0.4 ? 'warning' : 'danger')" size="small">{{ row[col] }}</el-tag>
+                <el-tag v-if="col === '结果置信度' && row[col]" :type="Number(row[col]) >= 0.7 ? 'success' : (Number(row[col]) >= 0.4 ? 'warning' : 'danger')" size="small">{{ row[col] }}</el-tag>
+                <span v-else-if="col === '结果置信度'" style="color:#c0c4cc">-</span>
+                <el-tag v-else-if="col === '分析结果'" :type="row[col]==='成功'?'success':'danger'" size="small">{{ row[col] || '-' }}</el-tag>
+                <a v-else-if="col.includes('链接') && row[col]" :href="row[col]" target="_blank" style="color:#409eff">查看报告 ↗</a>
                 <el-tag v-else-if="col === '补充状态'" :type="row[col]==='success'?'success':(row[col]==='部分补充'?'warning':'danger')" size="small">{{ row[col] }}</el-tag>
                 <span v-else-if="col === '判定结果'" :style="verdictStyle(row[col])">{{ row[col] }}</span>
                 <span v-else>{{ row[col] }}</span>
@@ -860,7 +888,8 @@
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
             <div class="section-title" style="margin:0">每日批量执行记录</div>
             <div style="display:flex;align-items:center;gap:8px">
-              <el-button size="small" @click="loadDaily">刷新</el-button>
+              <el-date-picker v-model="dailyDate" type="date" placeholder="选择日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:140px" @change="loadDaily"></el-date-picker>
+              <el-button size="small" :loading="dailyLoading" @click="loadDaily">刷新</el-button>
               <el-tag type="info" size="small">{{ batchReportRows.length }} 条</el-tag>
             </div>
           </div>
@@ -946,6 +975,7 @@
               <el-menu-item index="unanalyzed_past">9. Bug未分析提取</el-menu-item>
               <el-menu-item index="prod_batch">10. 线上AI日志分析批量执行</el-menu-item>
               <el-menu-item index="online_followup">11. 线上正确执行跟进</el-menu-item>
+              <el-menu-item index="ai_log_visual">12. AI日志分析可视化</el-menu-item>
             </el-menu>
           </el-aside>
           <el-main style="padding:20px;display:flex;flex-direction:column">
@@ -1274,10 +1304,10 @@
                   placeholder="输入 Jira 号，换行/逗号/空格分隔，如：VCU-538942, VCU-200273" @change="parseAiDirectBugids"></el-input>
                 <el-tag v-if="aiDirect.parsed.length" type="info" size="small" style="margin-top:8px">已解析 {{ aiDirect.parsed.length }} 个 Jira 号（已去重）</el-tag>
                 <div style="display:flex;gap:10px;margin-top:10px;align-items:center">
-                  <el-button type="primary" :loading="running.aiDirectExtract" :disabled="!aiDirect.parsed.length"
-                    @click="runAiDirectExtract">获取触发时间</el-button>
-                  <el-button type="success" :loading="running.aiDirectRun" :disabled="!aiDirect.parsed.length"
-                    @click="runAiDirectAnalyze">触发分析（{{ aiDirect.parsed.length }} 条）</el-button>
+                  <el-checkbox v-model="aiDirect.execMode" true-value="pc" @change="v => { if(v) aiDirect.execMode='pc' }" style="margin-right:4px">PC执行</el-checkbox>
+                  <el-checkbox v-model="aiDirect.execMode" true-value="online" @change="v => { if(v) aiDirect.execMode='online' }" style="margin-right:8px">线上执行</el-checkbox>
+                  <el-button type="primary" :loading="running.aiDirectRun" :disabled="!aiDirect.parsed.length || !aiDirect.execMode"
+                    @click="runAiDirectOneClick">一键执行（{{ aiDirect.parsed.length }} 条）</el-button>
                   <el-button v-if="running.aiDirectRun" type="danger" @click="stopAiDirectAnalyze">停止</el-button>
                   <el-tag v-if="aiDirect.runTotal" type="info" size="small">进度: {{ aiDirect.runDone }} / {{ aiDirect.runTotal }}</el-tag>
                 </div>
@@ -2204,6 +2234,52 @@
               </el-card>
             </div>
 
+            <!-- 功能12：AI日志分析可视化 -->
+            <div v-else-if="testPanel === 'ai_log_visual'" key="ai_log_visual" class="test-panel">
+              <div class="section-title">AI日志分析自学习内容可视化</div>
+              <el-alert type="info" :closable="false" style="margin-bottom:12px">
+                读取AI日志分析服务的日志，按 Jira 号过滤并按分析轮次分组展示每轮的调用细节
+              </el-alert>
+              <el-card shadow="never" style="margin-bottom:12px">
+                <template #header>① 查询条件</template>
+                <el-form inline>
+                  <el-form-item label="Jira号">
+                    <el-input v-model="aiLogVisual.jiraId" placeholder="输入 Jira 号（如 VCU-123456）" clearable @keyup.enter="readAiLogVisual" style="width:260px"></el-input>
+                  </el-form-item>
+                  <el-form-item label="日志类型">
+                    <el-select v-model="aiLogVisual.logName" style="width:100px">
+                      <el-option label="全部" value="all"></el-option>
+                      <el-option label="应用" value="app"></el-option>
+                      <el-option label="性能" value="perf"></el-option>
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item>
+                    <el-button type="primary" :loading="aiLogVisual.loading" @click="readAiLogVisual">读取日志</el-button>
+                  </el-form-item>
+                </el-form>
+                <el-alert v-if="aiLogVisual.msg" :type="aiLogVisual.error?'error':'success'" :closable="false" style="margin-top:8px">{{ aiLogVisual.msg }}</el-alert>
+              </el-card>
+              <el-card v-if="aiLogVisual.rounds.length" shadow="never">
+                <template #header>
+                  ② 分析结果：{{ aiLogVisual.totalLines }} 行日志，匹配 {{ aiLogVisual.matchedLines }} 行，共 {{ aiLogVisual.rounds.length }} 轮
+                </template>
+                <div v-for="(round, ri) in aiLogVisual.rounds" :key="ri" style="margin-bottom:16px">
+                  <div style="font-weight:bold;color:#409eff;margin-bottom:6px;font-size:14px">第 {{ round.round }} 轮分析（{{ round.entries.length }} 条记录）</div>
+                  <el-table :data="round.entries" size="small" stripe border>
+                    <el-table-column prop="line_no" label="行号" width="70"></el-table-column>
+                    <el-table-column prop="time" label="时间" width="160"></el-table-column>
+                    <el-table-column prop="type" label="类型" width="100">
+                      <template #default="{row}">
+                        <el-tag size="small" :type="row.type==='知识库调用'?'primary':row.type==='分析结果'?'success':row.type==='评论分析'?'warning':'info'">{{ row.type }}</el-tag>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="content" label="内容" min-width="500" show-overflow-tooltip></el-table-column>
+                  </el-table>
+                </div>
+              </el-card>
+              <el-empty v-else-if="!aiLogVisual.loading && aiLogVisual.msg && !aiLogVisual.error" description="无匹配记录"></el-empty>
+            </div>
+
             </transition>
           </el-main>
         </el-container>
@@ -2280,6 +2356,7 @@ createApp({
         bugidsRaw: '', parsed: [],
         extracting: false, triggerTimes: {}, timeRows: [],
         runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '',
+        execMode: '',
       },
       aiDirectAbort: null,
       commentCompare: { bugid: '', results: [], selected: null, currentStyle: '' },
@@ -2339,7 +2416,6 @@ createApp({
       unanalyzedPast: {
         jql: 'issuetype = bug AND created >= "2026/08/25" AND status = closed',
         jqlPresets: [
-          'issuetype = bug AND created >= "2026/08/25" AND status = closed',
           "issuetype = bug AND created >= startOfDay('-1d') AND created <= endOfDay('-1d')",
           "issuetype = bug AND text ~ \"coreservice\" AND text ~ \"VCU\" AND created >= startOfDay('-1d') AND created <= endOfDay('-1d')",
           "issuetype = bug AND text ~ \"远控\" AND text ~ \"VCU\" AND created >= startOfDay('-1d') AND created <= endOfDay('-1d')",
@@ -2347,9 +2423,10 @@ createApp({
           "issuetype = bug AND created >= startOfDay('-1d') AND created <= endOfDay('-1d') AND (text ~ \"RES1.1\" OR text ~ \"RES1.0\")",
           "issuetype = bug AND text ~ \"SGM_Navigation750\" AND created >= \"2026/08/25\" AND status = closed",
           "issuetype = bug AND text ~ \"远控\" AND created >= \"2026/08/25\" AND status = closed",
-          "issuetype = bug AND text ~ \"coreservice\" AND created >= \"2026/08/25\" AND status = closed"
+          "issuetype = bug AND text ~ \"coreservice\" AND created >= \"2026/08/25\" AND status = closed",
+          "issuetype = bug AND created >= \"2026/08/25\" AND status = closed AND (text ~ \"RES1.1\" OR text ~ \"RES1.0\")"
         ],
-        jqlLabels: ['以往已关闭Bug', '昨日新增Bug', '昨日新增coreservice', '昨日新增远控', '昨日新增导航', '昨日RES1.0/1.1', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice'],
+        jqlLabels: ['昨日新增Bug', '昨日新增coreservice', '昨日新增远控', '昨日新增导航', '昨日RES1.0/1.1', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice', '8.25后RES1.0/1.1'],
         filterAiInit: true,
         msg: '', error: false, progress: '', progressPct: 0, results: [], csvPaths: [],
       },
@@ -2374,6 +2451,11 @@ createApp({
         diffRecords: [], selectedDiff: [],
         batchSize: 10, running: false, runResults: [], runDone: 0, runTotal: 0, runMsg: '',
       },
+      // AI日志分析可视化
+      aiLogVisual: {
+        jiraId: '', logName: 'all', loading: false,
+        totalLines: 0, matchedLines: 0, rounds: [], msg: '', error: false,
+      },
       // 置信度批量写入
       confidenceBatch: {
         running: false, committing: false, total: 0, currentIndex: 0, passed: 0, low: 0, failed: 0,
@@ -2393,7 +2475,7 @@ createApp({
       feishuDocError: '',
       feishuImQuery: { chatName: '王源泉', chatId: '', startDateTime: null, chats: null, result: null, error: '', debugResult: null },
       feishuEvents: { result: null },
-      batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"', 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED'], jqlLabels: ['远控', 'coreservice', 'Navigation750', 'VCU近期未关闭'], sampleCount: 5, source: 'jql', filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, execMode: '', csvFiles: [], selectedCsv: '', csvTriggerTimes: {}, rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '' },
+      batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"', 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED', 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")'], jqlLabels: ['远控', 'coreservice', '导航', 'VCU近期未关闭', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice', '8.25后RES1.0/1.1'], sampleCount: 5, source: 'jql', filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, execMode: '', csvFiles: [], selectedCsv: '', csvTriggerTimes: {}, rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '' },
       verifyForm: { csvPath: '' },
       verifyMode: 'browse',
       docsFiles: [],
@@ -2449,7 +2531,9 @@ createApp({
         { key: 'jira_api', title: 'Jira RESTAPI' },
         { key: 'knowledge_base_api', title: '知识库入库接口' },
       ],
-      dailyRows: [], dailyDate: '', dailyColumns: [],
+      dailyRows: [], dailyDate: '', dailyColumns: [], dailyLoading: false,
+            dailyReportDate: '', dailyReportLoading: false,
+            dailySummary: {},
       batchReportRows: [],
       // 多维表格全量数据
       bitableAllRecords: [], bitableAllColumns: [], bitableFilters: [], bitableLoading: false,
@@ -2493,17 +2577,50 @@ createApp({
     async loadOverview() {
       const body = await this.api('/api/overview');
       this.overview = body.data;
-      await this.loadDaily();
+      await this.loadBatchReport();
+    },
+    async loadBatchReport() {
+      this.dailyLoading = true;
+      try {
+        const query = this.dailyDate ? `?date=${this.dailyDate}` : '';
+        const batch = await this.api(`/api/report/batch${query}`);
+        this.batchReportRows = batch.data || [];
+      } catch (e) {
+        console.warn('加载批量执行记录失败', e);
+      } finally {
+        this.dailyLoading = false;
+      }
+    },
+    async refreshDailyReport() {
+      this.dailyReportLoading = true;
+      try {
+        const query = this.dailyReportDate ? `?date=${this.dailyReportDate}` : '';
+        const [rowsBody, summaryBody] = await Promise.all([
+          this.api(`/api/report/daily_refresh${query}`),
+          this.api(`/api/report/daily_summary${query}`),
+        ]);
+        this.dailyRows = rowsBody.data;
+        this.dailyColumns = this.dailyRows.length ? Object.keys(this.dailyRows[0]) : [];
+        this.dailySummary = summaryBody.data || {};
+        const dateLabel = this.dailyReportDate || '今日';
+        ElementPlus.ElMessage.success(`${dateLabel}结论报表: ${this.dailyRows.length} 条`);
+      } catch (e) {
+        ElementPlus.ElMessage.error('刷新失败: ' + e.message);
+      } finally {
+        this.dailyReportLoading = false;
+      }
     },
     async loadDaily() {
-      const query = this.dailyDate ? `?date=${this.dailyDate}` : '';
-      const [daily, batch] = await Promise.all([
-        this.api(`/api/report/daily${query}`),
-        this.api(`/api/report/batch${query}`),
-      ]);
-      this.dailyRows = daily.data;
-      this.dailyColumns = this.dailyRows.length ? Object.keys(this.dailyRows[0]) : [];
-      this.batchReportRows = batch.data || [];
+      this.dailyLoading = true;
+      try {
+        const query = this.dailyDate ? `?date=${this.dailyDate}` : '';
+        const batch = await this.api(`/api/report/batch${query}`);
+        this.batchReportRows = batch.data || [];
+      } catch (e) {
+        console.warn('加载批量执行记录失败', e);
+      } finally {
+        this.dailyLoading = false;
+      }
     },
     // 评论分析侧重点对比：对同一 Jira 用多种策略各跑一次
     async runCommentCompare() {
@@ -3588,6 +3705,27 @@ createApp({
         this.onlineFollowup.runMsg = '执行失败: ' + e.message;
       } finally { this.onlineFollowup.running = false; }
     },
+    // ==================== 功能12：AI日志分析可视化 ====================
+    async readAiLogVisual() {
+      if (!this.aiLogVisual.jiraId) return ElementPlus.ElMessage.warning('请输入 Jira 号');
+      this.aiLogVisual.loading = true;
+      this.aiLogVisual.msg = ''; this.aiLogVisual.error = false;
+      this.aiLogVisual.rounds = []; this.aiLogVisual.totalLines = 0; this.aiLogVisual.matchedLines = 0;
+      try {
+        const body = await this.api('/api/test/ai_log_visual', {
+          method: 'POST',
+          body: JSON.stringify({ jira_id: this.aiLogVisual.jiraId, log_name: this.aiLogVisual.logName }),
+        });
+        const d = body.data;
+        this.aiLogVisual.totalLines = d.total_lines;
+        this.aiLogVisual.matchedLines = d.matched_lines;
+        this.aiLogVisual.rounds = d.rounds || [];
+        this.aiLogVisual.msg = body.message;
+      } catch (e) {
+        this.aiLogVisual.msg = '读取失败: ' + e.message;
+        this.aiLogVisual.error = true;
+      } finally { this.aiLogVisual.loading = false; }
+    },
     async batchAiLoadCsvFiles() {
       this.running.batchLoadCsv = true;
       try {
@@ -4070,6 +4208,68 @@ createApp({
       } catch (e) {
         if (e.name === 'AbortError') ElementPlus.ElMessage.warning('已停止');
         else ElementPlus.ElMessage.error('触发分析失败: ' + e.message);
+      } finally { this.running.aiDirectRun = false; }
+    },
+    // 单个执行：一键执行（获取触发时间→根据执行模式调用对应接口）
+    async runAiDirectOneClick() {
+      if (!this.aiDirect.parsed.length) { this.parseAiDirectBugids(); }
+      if (!this.aiDirect.parsed.length) return ElementPlus.ElMessage.warning('请先输入 Jira 号');
+      if (!this.aiDirect.execMode) return ElementPlus.ElMessage.warning('请选择执行模式');
+      // 步骤1：获取触发时间
+      try {
+        await this.runAiDirectExtract();
+      } catch (e) {
+        return ElementPlus.ElMessage.error('获取触发时间失败: ' + (e.message || ''));
+      }
+      // 步骤2：根据执行模式调用对应接口
+      this.running.aiDirectRun = true;
+      this.aiDirect.runResults = [];
+      this.aiDirect.runTotal = this.aiDirect.parsed.length;
+      this.aiDirect.runDone = 0;
+      this.aiDirect.runDoneMsg = '';
+      this.aiDirectAbort = new AbortController();
+      try {
+        const isOnline = this.aiDirect.execMode === 'online';
+        const url = isOnline ? '/api/test/prod_batch_run' : '/api/test/batch_ai_run';
+        const body = isOnline
+          ? { bugids: this.aiDirect.parsed, trigger_times: this.aiDirect.triggerTimes, skip_existing: false }
+          : { bugids: this.aiDirect.parsed, trigger_times: this.aiDirect.triggerTimes };
+        const resp = await fetch(url, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body), signal: this.aiDirectAbort.signal,
+        });
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const evt = JSON.parse(line.slice(6));
+              if (evt.type === 'progress') {
+                this.aiDirect.runDone = evt.index;
+                this.aiDirect.runResults.push({
+                  'jira号': evt.bugid || evt['Jira号'] || '',
+                  '执行结果': (evt.status === 'success') ? '成功' : '失败',
+                  '备注': evt.msg || '',
+                  '触发时间': evt.exec_time || '',
+                  '执行时间': evt.analysis_time || '',
+                });
+              } else if (evt.type === 'done') {
+                this.aiDirect.runDoneMsg = evt.message || `完成: ${this.aiDirect.runDone}/${this.aiDirect.runTotal}`;
+                if (evt.interrupted) this.aiDirect.runDoneMsg += '（已中断）';
+              }
+            } catch (e) { /* 忽略解析错误 */ }
+          }
+        }
+      } catch (e) {
+        if (e.name === 'AbortError') ElementPlus.ElMessage.warning('已停止');
+        else ElementPlus.ElMessage.error('执行失败: ' + e.message);
       } finally { this.running.aiDirectRun = false; }
     },
     // 停止触发分析（中断 SSE 流，已完成结果保留）
@@ -5330,6 +5530,7 @@ createApp({
       const wide = ['AI评论总结', 'AI分析结果(飞书链接)', 'rootcause', '文档路径', '已入库分析流程', '新根因结论', '已入库根因分析', '错误信息'];
       if (col === '判定结果' || col === '结果置信度' || col === '补充状态') return 100;
       if (col === 'jira号') return 120;
+      if (col.includes('时间')) return 160;
       return wide.includes(col) ? 220 : 110;
     },
     // 抽查判定结果样式：达标绿色，不达标/失败红色

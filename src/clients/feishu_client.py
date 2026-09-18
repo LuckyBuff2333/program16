@@ -312,9 +312,15 @@ def _paginate_get(url: str, headers: dict, params: dict,
         if page_token:
             params["page_token"] = page_token
         resp = httpx.get(url, headers=headers, params=params, timeout=30, verify=False)
-        # HTTP 401/400 时尝试自动刷新 token 重试一次（飞书可能返回 400 而非 401）
-        if retry_on_token_expire and resp.status_code in (401, 400) and not retried:
+        # HTTP 401/400/403 时尝试自动刷新 token 重试一次（飞书可能返回 400 而非 401）
+        if retry_on_token_expire and resp.status_code in (401, 400, 403) and not retried:
             logger.info("收到 HTTP %d，尝试自动刷新 token...", resp.status_code)
+            if resp.status_code == 403:
+                # 403 无权限：强制刷新 user token 重试
+                if _refresh_user_token(force=True):
+                    retried = True
+                    headers = {"Authorization": f"Bearer {_get_doc_token()}", "Content-Type": "application/json"}
+                    continue
             if _is_tenant_token:
                 # tenant_access_token 失败：重新获取 tenant token 重试
                 try:
@@ -356,9 +362,12 @@ def _paginate_get(url: str, headers: dict, params: dict,
 
 
 def _get_doc_token() -> str:
-    """获取文档 API 的认证 token：优先使用 user_access_token，回退 tenant_access_token"""
+    """获取文档 API 的认证 token：优先使用 user_access_token，为空时自动刷新，回退 tenant_access_token"""
     cfg = _get_bitable_cfg()
     user_token = cfg.get("user_access_token", "").strip()
+    if not user_token and cfg.get("user_refresh_token", "").strip():
+        # user_access_token 为空但有 refresh_token，自动尝试刷新
+        user_token = _refresh_user_token()
     if user_token:
         return user_token
     return get_tenant_access_token()
@@ -383,15 +392,16 @@ def _clear_stale_user_token():
         logger.warning("清除失效 token 异常: %s", e)
 
 
-def _refresh_user_token() -> str:
+def _refresh_user_token(force: bool = False) -> str:
     """使用 refresh_token 刷新 user_access_token 并保存到配置（线程安全）
 
+    :param force: 为 True 时跳过冷却机制，强制尝试刷新
     :return: 新的 user_access_token，失败返回空串
     """
     global _refresh_fail_time
-    # 冷却机制：5 分钟内刷新失败过则跳过，避免反复刷屏报错
+    # 冷却机制：5 分钟内刷新失败过则跳过（force=True 时忽略冷却）
     import time as _t
-    if _refresh_fail_time and (_t.time() - _refresh_fail_time) < 300:
+    if not force and _refresh_fail_time and (_t.time() - _refresh_fail_time) < 300:
         return ""
     cfg = _get_bitable_cfg()
     refresh_token = cfg.get("user_refresh_token", "").strip()
@@ -550,12 +560,13 @@ def update_bitable_records(app_token: str, table_id: str, records: list) -> dict
     payload = {"records": [{"record_id": r["record_id"], "fields": r["fields"]} for r in records]}
     headers = _bitable_headers()
     resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
-    # HTTP 401：token 过期，刷新后重试
-    if resp.status_code == 401:
-        logger.info("Bitable 更新收到 HTTP 401，尝试刷新 token 重试")
-        _token_cache["token"] = None  # 强制刷新
-        headers = _bitable_headers()
-        resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
+    # HTTP 401/403：token 过期或无权限，强制刷新 user token 后重试
+    if resp.status_code in (401, 403):
+        logger.info("Bitable 更新收到 HTTP %d，强制刷新 token 重试", resp.status_code)
+        _token_cache["token"] = None
+        if _refresh_user_token(force=True):
+            headers = _bitable_headers()
+            resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
     # HTTP 400：数据格式问题，提取飞书具体错误信息并抛出
     if resp.status_code == 400:
         try:
@@ -597,9 +608,13 @@ def create_bitable(name: str, folder_token: str) -> dict:
     body = {"name": name, "folder_token": folder_token}
     headers = _bitable_headers()
     resp = httpx.post(url, headers=headers, json=body, timeout=30, verify=False)
-    if resp.status_code in (401, 400):
+    if resp.status_code in (401, 400, 403):
         err_data = resp.json()
-        if err_data.get("code") in (99991677, 99991672) and _refresh_user_token():
+        if err_data.get("code") in (99991677, 99991672, 99991668) and _refresh_user_token(force=True):
+            headers = _bitable_headers()
+            resp = httpx.post(url, headers=headers, json=body, timeout=30, verify=False)
+        elif resp.status_code == 403:
+            _refresh_user_token(force=True)
             headers = _bitable_headers()
             resp = httpx.post(url, headers=headers, json=body, timeout=30, verify=False)
     resp.raise_for_status()
@@ -622,9 +637,15 @@ def create_bitable_table(app_token: str, name: str, fields: list) -> str:
     body = {"table": {"name": name, "default_view_name": "默认视图", "fields": fields}}
     headers = _bitable_headers()
     resp = httpx.post(url, headers=headers, json=body, timeout=30, verify=False)
-    if resp.status_code in (401, 400):
+    # HTTP 401/403：token 过期或无权限，强制刷新 user token 后重试
+    if resp.status_code in (401, 400, 403):
         err_data = resp.json()
-        if err_data.get("code") in (99991677, 99991672) and _refresh_user_token():
+        if err_data.get("code") in (99991677, 99991672, 99991668) and _refresh_user_token(force=True):
+            headers = _bitable_headers()
+            resp = httpx.post(url, headers=headers, json=body, timeout=30, verify=False)
+        elif resp.status_code == 403:
+            # 403 但业务码不是 token 相关，仍尝试强制刷新 user token
+            _refresh_user_token(force=True)
             headers = _bitable_headers()
             resp = httpx.post(url, headers=headers, json=body, timeout=30, verify=False)
     resp.raise_for_status()
@@ -634,6 +655,15 @@ def create_bitable_table(app_token: str, name: str, fields: list) -> str:
     table_id = data.get("data", {}).get("table_id", "")
     logger.info("数据表已创建: app=%s, table=%s, name=%s", app_token, table_id, name)
     return table_id
+
+
+def list_bitable_tables(app_token: str) -> list:
+    """获取多维表格中所有数据表，返回 [{"table_id": str, "name": str}]"""
+    url = f"{_FEISHU_API}/bitable/v1/apps/{app_token}/tables"
+    headers = _bitable_headers()
+    items = _paginate_get(url, headers, {"page_size": 100}, "获取数据表列表失败",
+                          retry_on_token_expire=True)
+    return [{"table_id": t.get("table_id", ""), "name": t.get("name", "")} for t in items]
 
 
 def batch_create_records(app_token: str, table_id: str, records: list) -> dict:
@@ -654,9 +684,10 @@ def batch_create_records(app_token: str, table_id: str, records: list) -> dict:
         payload = {"records": [{"fields": r["fields"]} for r in batch]}
         headers = _bitable_headers()
         resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
-        if resp.status_code == 401:
-            logger.info("批量创建收到 HTTP 401，尝试刷新 token 重试")
+        if resp.status_code in (401, 403):
+            logger.info("批量创建收到 HTTP %d，强制刷新 token 重试", resp.status_code)
             _token_cache["token"] = None
+            _refresh_user_token(force=True)
             headers = _bitable_headers()
             resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
         resp.raise_for_status()
@@ -692,8 +723,10 @@ def batch_delete_records(app_token: str, table_id: str, record_ids: list) -> dic
         payload = {"records": batch}
         headers = _bitable_headers()
         resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
-        if resp.status_code == 401:
+        if resp.status_code in (401, 403):
+            logger.info("批量删除收到 HTTP %d，强制刷新 token 重试", resp.status_code)
             _token_cache["token"] = None
+            _refresh_user_token(force=True)
             headers = _bitable_headers()
             resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
         resp.raise_for_status()
