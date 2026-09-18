@@ -7884,6 +7884,7 @@ async def online_followup_compare(request: Request):
     # 计算差集：PC 成功但线上未成功
     pc_keys = set(pc_success.keys())
     online_ok_keys = set(online_success.keys())
+    overlap_keys = pc_keys & online_ok_keys  # PC 成功中线上也成功的
     diff_keys = pc_keys - online_ok_keys
     diff_records = []
     for k in sorted(diff_keys):
@@ -7907,7 +7908,7 @@ async def online_followup_compare(request: Request):
     result_data = {
         "date": date_str,
         "pc_success_count": len(pc_success),
-        "online_success_count": len(online_success),
+        "online_success_count": len(overlap_keys),  # PC成功中线上也成功的数量
         "diff_count": len(diff_records),
         "diff_records": diff_records,
         "pc_success_jiras": sorted(pc_keys),
