@@ -3591,9 +3591,11 @@ createApp({
       this.batchAi.sampleMsg = ''; this.batchAi.sampleError = false;
       this.batchAi.selected = []; this.batchAi.runResults = []; this.batchAi.runDoneMsg = '';
       this.batchAi.sampleStats = null;
+      // 视频提取较慢，使用 10 分钟超时
+      const sampleAbort = AbortSignal.timeout(600000);
       try {
         const keys = this.batchAi.filteredKeys.length ? this.batchAi.filteredKeys : this.batchAi.rows.map(r => r.key);
-        const body = await this.api('/api/test/batch_ai_sample', { method: 'POST', body: JSON.stringify({ keys, count: this.batchAi.sampleCount, csv_trigger_times: this.batchAi.csvTriggerTimes }) });
+        const body = await this.api('/api/test/batch_ai_sample', { method: 'POST', body: JSON.stringify({ keys, count: this.batchAi.sampleCount, csv_trigger_times: this.batchAi.csvTriggerTimes }), signal: sampleAbort });
         this.batchAi.selected = body.data.selected;
         this.batchAi.triggerTimes = body.data.trigger_times || {};
         this.batchAi.sampleStats = {
@@ -3815,9 +3817,15 @@ createApp({
           await this.batchAiSearch();
         }
         if (!this.batchAi.rows.length) throw new Error('候选列表为空');
-        // 步骤2: 智能过滤（排除已成功 + 失败且人工审核为无效原因的，不区分勾选框状态）
-        await this.batchAiFilter(true);
-        if (!this.batchAi.filteredKeys.length) throw new Error('过滤后无候选记录');
+        // 步骤2: 按用户当前勾选的过滤条件过滤（未勾选任何过滤时跳过过滤步骤）
+        const hasAnyFilter = this.batchAi.filterAllExisting || this.batchAi.filterPcOnly || this.batchAi.filterOnlineOnly || this.batchAi.filterAiPreliminary;
+        if (hasAnyFilter) {
+          await this.batchAiFilter(false);
+          if (!this.batchAi.filteredKeys.length) throw new Error('已无未执行的内容，所有候选记录均已处理完成');
+        } else {
+          // 未勾选任何过滤选项，直接使用全部搜索结果
+          this.batchAi.filteredKeys = this.batchAi.rows.map(r => r.key);
+        }
         // 步骤3: 随机抽样（优先云端缓存，仅对选中记录按需提取时间）
         await this.batchAiSample();
         if (!this.batchAi.selected.length) throw new Error('抽样结果为空');

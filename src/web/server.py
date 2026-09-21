@@ -3029,8 +3029,7 @@ def _batch_save_trigger_times_to_cloud(items: dict) -> bool:
                 _trigger_time_bugid_cache.pop(bid, None)  # 清除旧缓存，下次会从云端加载
     except Exception as e:
         logger.warning("云端触发时间批量写入失败: %s", e)
-        # 云端写入失败，从本地 CSV 中删除本次写入的条目，避免本地和云端不一致
-        _remove_local_trigger_entries(set(items.keys()))
+        # 云端写入失败时保留本地缓存，避免下次重复提取（本地与云端短暂不一致可接受）
         return False
     return True
 
@@ -4721,6 +4720,8 @@ async def test_batch_ai_sample(request: Request):
     else:
         # 云端不够，从待提取池逐批提取，提取失败跳过继续下一个，直到凑够或池子耗尽
         extract_batch = 20
+        _cloud_flush_interval = 2  # 每提取 2 个增量保存一次云端，防止请求超时丢失
+        _cloud_flush_counter = 0
         while len(selected) < sample_size and pending_pool:
             batch = pending_pool[:extract_batch]
             pending_pool = pending_pool[extract_batch:]
@@ -4758,7 +4759,13 @@ async def test_batch_ai_sample(request: Request):
                     _save_trigger_time_to_csv(k, "")
                     new_to_cloud[k] = ""
                     extract_failed += 1
-    # 循环结束后一次性批量上传到云端
+                # 增量保存云端：每 N 个刷新一次，防止请求超时导致已提取数据全部丢失
+                _cloud_flush_counter += 1
+                if _cloud_flush_counter >= _cloud_flush_interval and new_to_cloud:
+                    _batch_save_trigger_times_to_cloud(new_to_cloud)
+                    new_to_cloud.clear()
+                    _cloud_flush_counter = 0
+    # 循环结束后保存剩余未上传的到云端
     if new_to_cloud:
         _batch_save_trigger_times_to_cloud(new_to_cloud)
     # 统计
@@ -7043,13 +7050,13 @@ def _ocr_extract_time_from_video_data(video_data: bytes, video_name: str,
                 resolved = _resolve_12h_ambiguity(time_str, gm_dates[0], ref_pool, gm_ref_dt, parse_fn)
                 if resolved:
                     partial_candidates.append((resolved[0], resolved[1], sec))
-        # 选择最优结果：优先取视频时间与 gmlogger 时间重合（前后5分钟）
+        # 选择最优结果：优先取视频时间与 gmlogger 时间重合（前后10分钟）
         for candidates, tag in [(full_candidates, "完整"), (partial_candidates, "日期补充")]:
             if not candidates:
                 continue
             if ref_pool:
                 for ts, dt, sec in candidates:
-                    if any(abs((ref_dt - dt).total_seconds()) <= 300 for ref_dt in ref_pool):
+                    if any(abs((ref_dt - dt).total_seconds()) <= 600 for ref_dt in ref_pool):
                         logger.info("视频兜底提取成功(%s, gmlogger重合): %s (视频第%d秒)", tag, ts, sec + 1)
                         return ts
             # 无 gmlogger 或无重合，取第一个候选
@@ -7147,11 +7154,11 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         result_dt = _ts_parse_datetime(result)
         if result_dt:
             diff_sec = abs((result_dt - gm_dt).total_seconds())
-            if diff_sec <= 900:
+            if diff_sec <= 1800:
                 logger.info("视频兜底成功：OCR %s 与 gmlogger %s 差 %.0f 秒，匹配", result, gm_str, diff_sec)
                 return result
             else:
-                logger.info("视频兜底：OCR %s 与 gmlogger %s 差 %.0f 秒，超15分钟，继续下一个",
+                logger.info("视频兜底：OCR %s 与 gmlogger %s 差 %.0f 秒，超30分钟，继续下一个",
                            result, gm_str, diff_sec)
         else:
             logger.info("视频兜底：OCR 结果 %s 无法解析，跳过", result)
