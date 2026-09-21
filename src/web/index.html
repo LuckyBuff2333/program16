@@ -223,9 +223,9 @@
             <el-radio-button value="csv">CSV 文件导入</el-radio-button>
           </el-radio-group>
           <div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap">
-            <el-checkbox v-model="batchAi.filterAllExisting">过滤表中所有已存在记录（含失败，防止PC/线上重复）</el-checkbox>
-            <el-checkbox v-model="batchAi.filterPcOnly">仅过滤触发来源为PC的</el-checkbox>
-            <el-checkbox v-model="batchAi.filterOnlineOnly">仅过滤线上的</el-checkbox>
+            <el-checkbox v-model="batchAi.filterAllExisting" @change="onFilterAllChange">过滤表中所有已存在记录（含失败，防止PC/线上重复）</el-checkbox>
+            <el-checkbox v-model="batchAi.filterPcOnly" @change="onFilterSourceChange">过滤PC正确和通用失败的</el-checkbox>
+            <el-checkbox v-model="batchAi.filterOnlineOnly" @change="onFilterSourceChange">过滤线上正确和通用失败的</el-checkbox>
             <el-checkbox v-model="batchAi.filterAiPreliminary">过滤AI初步分析结果</el-checkbox>
           </div>
           <el-form inline v-if="batchAi.source==='jql'" style="margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -613,7 +613,7 @@
 
         <el-card shadow="never">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <div class="section-title" style="margin:0">今日结论报表（{{ overview.today }}）</div>
+            <div class="section-title" style="margin:0">结论报表（{{ dailyReportDate || overview.today }}）</div>
             <div style="display:flex;align-items:center;gap:8px">
               <el-date-picker v-model="dailyReportDate" type="date" placeholder="选择日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:140px"></el-date-picker>
               <el-button size="small" type="primary" :loading="dailyReportLoading" @click="refreshDailyReport">刷新</el-button>
@@ -625,15 +625,18 @@
             <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
               <span style="font-weight:700;color:#303133">汇总：</span>
               <span>今日执行 <b>{{ dailySummary.total }}</b> 条</span>
+              <span v-if="dailySummary.pc_count || dailySummary.online_count">💻 PC <b>{{ dailySummary.pc_count || 0 }}</b></span>
+              <span v-if="dailySummary.pc_count || dailySummary.online_count">🌐 线上 <b>{{ dailySummary.online_count || 0 }}</b></span>
+              <span>回归 <b style="color:#409eff">{{ dailySummary.regression || 0 }}</b> 条</span>
               <span>成功 <b style="color:#67c23a">{{ dailySummary.success }}</b> 条</span>
               <span>成功率 <b :style="{color: parseFloat(dailySummary.success_rate) >= 70 ? '#67c23a' : '#e6a23c'}">{{ dailySummary.success_rate }}</b></span>
-              <span>平均执行时间 <b>{{ dailySummary.avg_duration }}</b></span>
-              <span v-if="dailySummary.too_long">耗时过长 <b style="color:#e6a23c">{{ dailySummary.too_long }}</b> 条</span>
+              <span>平均总耗时 <b>{{ dailySummary.avg_total_duration || '-' }}</b></span>
+              <span>平均分析耗时 <b>{{ dailySummary.avg_analysis_duration || '-' }}</b><template v-if="dailySummary.too_long">，耗时过长 <b style="color:#e6a23c">{{ dailySummary.too_long }}</b> 条</template></span>
             </div>
             <div v-if="Object.keys(dailySummary.failures || {}).length" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center">
               <span style="font-weight:700;color:#f56c6c">失败分析：</span>
               <el-tag v-for="(count, cat) in dailySummary.failures" :key="cat"
-                :type="(cat==='待审核'||cat==='待分析')?'warning':(cat.includes('触发时间')||cat.includes('损坏')||cat.includes('过载')||cat.includes('超时')||cat.includes('拥堵')?'danger':(cat.includes('正常处理')||cat.includes('无需分析')?'info':''))" size="small">
+                :type="(cat==='待开发排查'||cat==='待分析')?'warning':(cat.includes('触发时间')||cat.includes('损坏')||cat.includes('过载')||cat.includes('超时')||cat.includes('拥堵')?'danger':(cat.includes('正常处理')||cat.includes('无需分析')?'info':''))" size="small">
                 {{ cat }} {{ count }} 条
               </el-tag>
             </div>
@@ -645,6 +648,7 @@
                 <el-tag v-if="col === '结果置信度' && row[col]" :type="Number(row[col]) >= 0.7 ? 'success' : (Number(row[col]) >= 0.4 ? 'warning' : 'danger')" size="small">{{ row[col] }}</el-tag>
                 <span v-else-if="col === '结果置信度'" style="color:#c0c4cc">-</span>
                 <el-tag v-else-if="col === '分析结果'" :type="row[col]==='成功'?'success':'danger'" size="small">{{ row[col] || '-' }}</el-tag>
+                <el-tag v-else-if="col === '失败分类'" :type="row[col]==='待开发排查'?'warning':(row[col]?'danger':'info')" size="small">{{ row[col] || '-' }}</el-tag>
                 <a v-else-if="col.includes('链接') && row[col]" :href="row[col]" target="_blank" style="color:#409eff">查看报告 ↗</a>
                 <el-tag v-else-if="col === '补充状态'" :type="row[col]==='success'?'success':(row[col]==='部分补充'?'warning':'danger')" size="small">{{ row[col] }}</el-tag>
                 <span v-else-if="col === '判定结果'" :style="verdictStyle(row[col])">{{ row[col] }}</span>
@@ -899,6 +903,7 @@
             <div style="display:flex;align-items:center;gap:8px">
               <el-date-picker v-model="dailyDate" type="date" placeholder="选择日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:140px" @change="loadDaily"></el-date-picker>
               <el-button size="small" :loading="dailyLoading" @click="loadDaily">刷新</el-button>
+              <el-button size="small" type="warning" :loading="syncCloudLoading" @click="syncCloudBatches">同步云端</el-button>
               <el-tag type="info" size="small">{{ batchReportRows.length }} 条</el-tag>
             </div>
           </div>
@@ -1247,9 +1252,9 @@
                   <el-radio-button value="csv">CSV 文件导入</el-radio-button>
                 </el-radio-group>
                 <div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap">
-                  <el-checkbox v-model="batchAi.filterAllExisting">过滤表中所有已存在记录（含失败，防止PC/线上重复）</el-checkbox>
-                  <el-checkbox v-model="batchAi.filterPcOnly">仅过滤触发来源为PC的</el-checkbox>
-                  <el-checkbox v-model="batchAi.filterOnlineOnly">仅过滤线上的</el-checkbox>
+                  <el-checkbox v-model="batchAi.filterAllExisting" @change="onFilterAllChange">过滤表中所有已存在记录（含失败，防止PC/线上重复）</el-checkbox>
+                  <el-checkbox v-model="batchAi.filterPcOnly" @change="onFilterSourceChange">过滤PC正确和通用失败的</el-checkbox>
+                  <el-checkbox v-model="batchAi.filterOnlineOnly" @change="onFilterSourceChange">过滤线上正确和通用失败的</el-checkbox>
                   <el-checkbox v-model="batchAi.filterAiPreliminary">过滤AI初步分析结果</el-checkbox>
                 </div>
                 <el-form inline v-if="batchAi.source==='jql'" style="margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -1313,6 +1318,12 @@
                 <el-input v-model="aiDirect.bugidsRaw" type="textarea" :rows="3"
                   placeholder="输入 Jira 号，换行/逗号/空格分隔，如：VCU-538942, VCU-200273" @change="parseAiDirectBugids"></el-input>
                 <el-tag v-if="aiDirect.parsed.length" type="info" size="small" style="margin-top:8px">已解析 {{ aiDirect.parsed.length }} 个 Jira 号（已去重）</el-tag>
+                <div v-if="aiDirect.parsed.length" style="display:flex;gap:12px;margin-top:8px;align-items:center">
+                  <el-checkbox v-model="aiDirect.filterPcSuccess" size="small">过滤PC已成功</el-checkbox>
+                  <el-checkbox v-model="aiDirect.filterOnlineSuccess" size="small">过滤线上已成功</el-checkbox>
+                  <el-button v-if="aiDirect.filterPcSuccess || aiDirect.filterOnlineSuccess" type="warning" size="small" :loading="aiDirect.filterLoading" @click="applyAiDirectFilter">应用过滤</el-button>
+                  <el-tag v-if="aiDirect.filterInfo" type="success" size="small">{{ aiDirect.filterInfo }}</el-tag>
+                </div>
                 <div style="display:flex;gap:10px;margin-top:10px;align-items:center">
                   <el-checkbox v-model="aiDirect.execMode" true-value="pc" @change="v => { if(v) aiDirect.execMode='pc' }" style="margin-right:4px">PC执行</el-checkbox>
                   <el-checkbox v-model="aiDirect.execMode" true-value="online" @change="v => { if(v) aiDirect.execMode='online' }" style="margin-right:8px">线上执行</el-checkbox>
@@ -2375,6 +2386,8 @@ createApp({
         extracting: false, triggerTimes: {}, timeRows: [],
         runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '',
         execMode: '',
+        filterPcSuccess: false, filterOnlineSuccess: false,
+        filterLoading: false, filterInfo: '',
       },
       aiDirectAbort: null,
       commentCompare: { bugid: '', results: [], selected: null, currentStyle: '' },
@@ -2549,7 +2562,7 @@ createApp({
         { key: 'jira_api', title: 'Jira RESTAPI' },
         { key: 'knowledge_base_api', title: '知识库入库接口' },
       ],
-      dailyRows: [], dailyDate: '', dailyColumns: [], dailyLoading: false,
+      dailyRows: [], dailyDate: '', dailyColumns: [], dailyLoading: false, syncCloudLoading: false,
             dailyReportDate: '', dailyReportLoading: false,
             dailySummary: {},
       batchReportRows: [],
@@ -2639,6 +2652,21 @@ createApp({
       } finally {
         this.dailyLoading = false;
       }
+    },
+    async syncCloudBatches() {
+      const dateStr = this.dailyDate || new Date().toISOString().slice(0, 10);
+      this.syncCloudLoading = true;
+      try {
+        // 同步当天及前一天（确保机器人执行的记录都能拉下来）
+        const prev = new Date(dateStr); prev.setDate(prev.getDate() - 1);
+        const dates = [prev.toISOString().slice(0, 10), dateStr];
+        const body = await this.api('/api/data/sync_cloud_batches', {
+          method: 'POST', body: JSON.stringify({ dates })
+        });
+        ElementPlus.ElMessage.success(body.message || '同步完成');
+        await this.loadDaily();
+      } catch (e) { /* 已提示 */ }
+      finally { this.syncCloudLoading = false; }
     },
     // 评论分析侧重点对比：对同一 Jira 用多种策略各跑一次
     async runCommentCompare() {
@@ -3533,6 +3561,12 @@ createApp({
         else { this.batchAi.extractMsg = e.message || '提取失败'; this.batchAi.extractError = true; }
       } finally { this.running.batchExtract = false; }
     },
+    onFilterAllChange(val) {
+      if (val) { this.batchAi.filterPcOnly = false; this.batchAi.filterOnlineOnly = false; }
+    },
+    onFilterSourceChange() {
+      if (this.batchAi.filterPcOnly || this.batchAi.filterOnlineOnly) { this.batchAi.filterAllExisting = false; }
+    },
     async batchAiFilter(forceSmartFilter = false) {
       if (!this.batchAi.rows.length) return ElementPlus.ElMessage.warning('请先执行步骤1');
       this.running.batchFilter = true;
@@ -4128,6 +4162,31 @@ createApp({
       this.aiDirect.parsed = [...new Set(ids)];
       this.aiDirect.timeRows = [];
       this.aiDirect.triggerTimes = {};
+      this.aiDirect.filterInfo = '';
+    },
+    // 应用“过滤已成功”：查询多维表格排除已成功的 Jira
+    async applyAiDirectFilter() {
+      if (!this.aiDirect.parsed.length) return;
+      this.aiDirect.filterLoading = true;
+      this.aiDirect.filterInfo = '';
+      try {
+        const body = await this.api('/api/test/filter_success_jiras', {
+          method: 'POST', body: JSON.stringify({ bugids: this.aiDirect.parsed })
+        });
+        const data = body.data || {};
+        const pcSet = new Set(data.pc_success || []);
+        const onlineSet = new Set(data.online_success || []);
+        const before = this.aiDirect.parsed.length;
+        const exclude = new Set();
+        if (this.aiDirect.filterPcSuccess) pcSet.forEach(k => exclude.add(k));
+        if (this.aiDirect.filterOnlineSuccess) onlineSet.forEach(k => exclude.add(k));
+        this.aiDirect.parsed = this.aiDirect.parsed.filter(k => !exclude.has(k));
+        // 同步过滤触发时间列表
+        for (const k of exclude) delete this.aiDirect.triggerTimes[k];
+        this.aiDirect.filterInfo = `过滤前 ${before} 条，排除 ${exclude.size} 条已成功，剩余 ${this.aiDirect.parsed.length} 条`;
+      } catch (e) {
+        ElementPlus.ElMessage.error('过滤失败: ' + (e.message || ''));
+      } finally { this.aiDirect.filterLoading = false; }
     },
     // 通用：调用触发时间提取 SSE 接口，返回 done 事件数据
     async _extractTimesSSE(keys) {
@@ -4230,6 +4289,13 @@ createApp({
     },
     // 单个执行：一键执行（获取触发时间→根据执行模式调用对应接口）
     async runAiDirectOneClick() {
+      // 1分钟内重复点击过滤
+      const now = Date.now();
+      if (this.aiDirect._lastClickTime && (now - this.aiDirect._lastClickTime) < 60000) {
+        const remain = Math.ceil((60000 - (now - this.aiDirect._lastClickTime)) / 1000);
+        return ElementPlus.ElMessage.warning(`请勿重复点击，${remain}秒后可再次执行`);
+      }
+      this.aiDirect._lastClickTime = now;
       if (!this.aiDirect.parsed.length) { this.parseAiDirectBugids(); }
       if (!this.aiDirect.parsed.length) return ElementPlus.ElMessage.warning('请先输入 Jira 号');
       if (!this.aiDirect.execMode) return ElementPlus.ElMessage.warning('请选择执行模式');
@@ -5604,6 +5670,7 @@ createApp({
       const wide = ['AI评论总结', 'AI分析结果(飞书链接)', 'rootcause', '文档路径', '已入库分析流程', '新根因结论', '已入库根因分析', '错误信息'];
       if (col === '判定结果' || col === '结果置信度' || col === '补充状态') return 100;
       if (col === 'jira号') return 120;
+      if (col === '失败分类') return 130;
       if (col.includes('时间')) return 160;
       return wide.includes(col) ? 220 : 110;
     },
