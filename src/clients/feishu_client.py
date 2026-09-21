@@ -1287,6 +1287,89 @@ def create_docx_document(title: str, md_content: str, folder_token: str = "") ->
     return {"document_id": doc_id, "url": doc_url}
 
 
+def update_docx_content(document_id: str, md_content: str) -> bool:
+    """更新已有飞书文档的内容：清除旧内容并写入新内容（保持文档链接不变）
+
+    :param document_id: 文档 ID
+    :param md_content: 新的 Markdown 内容
+    :return: 成功返回 True
+    """
+    token = _get_doc_token()
+    if not token:
+        logger.warning("无可用 doc token，跳过文档更新")
+        return False
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    # 1. 获取现有子块数量
+    list_url = f"{_FEISHU_API}/docx/v1/documents/{document_id}/blocks/{document_id}/children"
+    params = {"page_size": 500, "document_revision_id": -1}
+    try:
+        resp = httpx.get(list_url, headers=headers, params=params, timeout=30, verify=False)
+        if resp.status_code in (401, 400):
+            if _refresh_user_token():
+                headers = {"Authorization": f"Bearer {_get_doc_token()}", "Content-Type": "application/json"}
+                resp = httpx.get(list_url, headers=headers, params=params, timeout=30, verify=False)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.error("获取文档子块失败: %s (code=%s)", data.get("msg"), data.get("code"))
+            return False
+        child_count = data.get("data", {}).get("total", 0)
+    except Exception as e:
+        logger.warning("获取文档子块异常: %s", e)
+        return False
+    # 2. 批量删除所有现有子块（循环删除确保彻底清除）
+    if child_count > 0:
+        del_url = f"{_FEISHU_API}/docx/v1/documents/{document_id}/blocks/{document_id}/children/batch_delete"
+        try:
+            # 循环删除，每次删除后重新获取剩余数量，确保全部清除
+            for _round in range(5):  # 最多重试5次
+                resp = httpx.delete(del_url, headers=headers,
+                                    json={"start_index": 0, "end_index": child_count},
+                                    timeout=30, verify=False)
+                if resp.status_code in (401, 400):
+                    if _refresh_user_token():
+                        headers = {"Authorization": f"Bearer {_get_doc_token()}", "Content-Type": "application/json"}
+                        resp = httpx.delete(del_url, headers=headers,
+                                            json={"start_index": 0, "end_index": child_count},
+                                            timeout=30, verify=False)
+                resp.raise_for_status()
+                rd = resp.json()
+                if rd.get("code") != 0:
+                    logger.warning("删除旧文档块失败: %s (code=%s)", rd.get("msg"), rd.get("code"))
+                    break
+                # 重新检查剩余块数
+                check_resp = httpx.get(list_url, headers=headers, params=params, timeout=30, verify=False)
+                check_data = check_resp.json()
+                remaining = check_data.get("data", {}).get("total", 0)
+                if remaining == 0:
+                    break
+                child_count = remaining
+        except Exception as e:
+            logger.warning("删除旧文档块异常: %s", e)
+    # 3. 写入新内容
+    blocks = _md_to_feishu_blocks(md_content)
+    if blocks:
+        add_url = f"{_FEISHU_API}/docx/v1/documents/{document_id}/blocks/{document_id}/children"
+        for start in range(0, len(blocks), 50):
+            batch = blocks[start:start + 50]
+            payload = {"children": batch, "index": -1}
+            try:
+                r = httpx.post(add_url, headers=headers, json=payload, timeout=30, verify=False)
+                if r.status_code in (401, 400):
+                    if _refresh_user_token():
+                        headers = {"Authorization": f"Bearer {_get_doc_token()}", "Content-Type": "application/json"}
+                        r = httpx.post(add_url, headers=headers, json=payload, timeout=30, verify=False)
+                r.raise_for_status()
+                rd = r.json()
+                if rd.get("code") != 0:
+                    logger.warning("添加文档块失败(批次%d): %s (code=%s)",
+                                   start // 50 + 1, rd.get("msg"), rd.get("code"))
+            except Exception as e:
+                logger.warning("添加文档块异常(批次%d): %s", start // 50 + 1, e)
+    logger.info("文档内容更新完成: doc_id=%s", document_id)
+    return True
+
+
 def create_folder(name: str, parent_folder_token: str) -> dict:
     """在飞书云端文件夹下创建子文件夹
 

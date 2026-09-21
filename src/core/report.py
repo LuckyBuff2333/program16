@@ -21,7 +21,7 @@ def generate_daily_csv(results: list, date_str: str = None) -> str:
     """将分析结果生成/合并当日结论报表：docs/YYYY-MM-DD/YYYY-MM-DD_daily.csv
 
     与生成的 md 分析文档放在同一目录下；
-    同日多次运行时，新结果放在最上面（最新优先），批次间插入空行分隔。
+    同日多次运行时，按 jira号 去重覆盖（新结果覆盖旧结果）。
 
     :param results: 内存中的分析结果字典列表（含 6 列字段）
     :param date_str: 日期字符串，默认当天
@@ -31,14 +31,17 @@ def generate_daily_csv(results: list, date_str: str = None) -> str:
     day_dir = get_day_dir("doc_dir", date_str)
     csv_path = os.path.join(day_dir, f"{date_str}_daily.csv")
     df_new = pd.DataFrame(results, columns=COLUMNS)
-    # 已存在当日报表时，新结果前置（最新在上），旧结果追加在下，中间插入空行分隔批次
+    # 已存在当日报表时，按 jira号 去重覆盖（新结果覆盖旧结果，不添加分隔空行）
     if os.path.exists(csv_path):
-        df_old = pd.read_csv(csv_path, encoding="utf-8-sig")
-        # 按 jira号 去重：同 bugid 的新结果覆盖旧行
-        df_old = df_old[~df_old["jira号"].astype(str).isin(df_new["jira号"].astype(str))]
-        # 插入空行作为批次分隔标记
-        separator = pd.DataFrame([{col: "" for col in COLUMNS}])
-        df_new = pd.concat([df_new, separator, df_old], ignore_index=True)
+        try:
+            df_old = pd.read_csv(csv_path, encoding="utf-8-sig")
+            # 过滤空行（jira号为空的行）
+            df_old = df_old[df_old["jira号"].notna() & (df_old["jira号"].astype(str).str.strip() != "")]
+            # 移除新结果中已包含的 jira号，用新结果覆盖
+            df_old = df_old[~df_old["jira号"].astype(str).isin(df_new["jira号"].astype(str))]
+            df_new = pd.concat([df_new, df_old], ignore_index=True)
+        except Exception:
+            pass  # 读取失败时直接覆盖
     # utf-8-sig 保证 Excel 打开中文不乱码
     df_new.to_csv(csv_path, index=False, encoding="utf-8-sig")
     logger.info("每日结论报表已生成: %s, 本次写入 %d 条, 合计 %d 条",
