@@ -547,18 +547,23 @@ def _process_bot_command(chat_id: str, text: str):
     session = _bot_sessions.get(chat_id)
     logger.info("机器人收到命令: chat=%s, text=%s", chat_id[:12], text[:60])
 
-    # 退出命令：仅取消当前运行中的任务，不清除会话状态
+    # 退出命令：取消当前运行中的任务 或 清除会话等待状态
     if text.strip() in ("退出", "取消", "exit", "cancel", "stop"):
         task_desc = _bot_running_tasks.get(chat_id)
         if task_desc:
-            # 有任务正在运行，设置取消标记
+            # 有任务正在运行，设置取消标记并立即中断
             _get_cancel_event(chat_id).set()
             _bot_running_tasks.pop(chat_id, None)
-            feishu_client.send_bot_message(chat_id,
-                f"已取消任务：{task_desc}\n任务将在当前操作完成后停止。")
-        else:
-            # 无运行中任务，仅清除会话等待状态
             _clear_bot_session(chat_id)
+            feishu_client.send_bot_message(chat_id,
+                f"已中断任务：{task_desc}")
+        elif session and session.get("state"):
+            # 处于会话等待状态，清除会话
+            state = session.get("state", "")
+            _clear_bot_session(chat_id)
+            feishu_client.send_bot_message(chat_id,
+                f"已退出当前操作。\n发送「菜单」查看可用功能")
+        else:
             feishu_client.send_bot_message(chat_id,
                 "当前无运行中的任务。\n发送「菜单」查看可用功能")
         return
@@ -1268,6 +1273,7 @@ def _get_jql_presets() -> dict:
         "JQL6": ("8.25后远控", 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed'),
         "JQL7": ("8.25后coreservice", 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed'),
         "JQL8": ("8.25后RES1.0/1.1", 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")'),
+        "JQL9": ("9.1新增非close", 'issuetype = bug AND status != closed AND created >= "2026/09/01"'),
     }
     cfg_jqls = load_config().get("feishu_bot", {}).get("jqls", {}) or {}
     for k, v in cfg_jqls.items():
@@ -1752,7 +1758,8 @@ def _save_bot_execution_results(results: list, batch_name: str = None, batch_met
         logger.warning("机器人执行结果写入每日报表失败: %s", e)
     # 上传到飞书云端文件夹
     try:
-        doc_title = f"批量执行 {date_str}_{batch_name or time_str}"
+        _sc = sum(1 for r in results if (r.get("执行结果") or "") == "成功")
+        doc_title = f"批量执行 {date_str}_{batch_name or time_str} ({_sc}/{len(results)})"
         cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
         if cloud_url:
             logger.info("机器人批量执行已上传云端: %s", cloud_url)
@@ -1877,6 +1884,7 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
     success_count = 0
     fail_count = 0
     fail_cats = {}  # {分类: 数量}
+    fail_jiras = {}  # {分类: [{jira号, 错误信息}]}
     todo_items = []  # 待办跟进列表
     durations = []
     analysis_durations = []
@@ -1901,6 +1909,10 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
             else:
                 bf = candidates[-1]  # 全失败取最后一次
             row.update(bf)
+            # 保留批次记录中的原始触发来源，不被多维表格字段覆盖
+            original_source = exec_info.get("触发来源", "")
+            if original_source:
+                row["触发来源"] = original_source
             result = bf.get("分析结果", "")
             # 解析耗时
             raw_dur = bf.get("总耗时", "")
@@ -1921,6 +1933,11 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
                 # 失败分类
                 cat = _classify_failure(jira_no, bf)
                 fail_cats[cat] = fail_cats.get(cat, 0) + 1
+                row["失败分类"] = cat
+                if cat not in fail_jiras:
+                    fail_jiras[cat] = []
+                err_short = (_bitable_text(bf.get("错误信息", "")) or "")[:80]
+                fail_jiras[cat].append({"jira号": jira_no, "错误信息": err_short})
                 # 失败未重新成功 = 待办（通用原因不计入待办）
                 human_review = _bitable_text(bf.get("人工审核结果", ""))
                 is_common_reason = human_review and (
@@ -1951,16 +1968,16 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
         avg_analysis_duration = _format_dur(avg_analysis_sec)
     else:
         avg_analysis_duration = "-"
-    # 统计 PC/线上数量，分别收集基础信息和重复过滤数
-    pc_rows = [r for r in rows if r.get("触发来源", "") == "jira_analyze"]
+    # 统计 PC/线上数量（非线上的统一归为PC，确保 PC + 线上 = 总数）
     online_rows = [r for r in rows if r.get("触发来源", "") == "parseFullTicket"]
+    pc_rows = [r for r in rows if r not in online_rows]
     pc_count = len(pc_rows)
     online_count = len(online_rows)
-    # 分别统计 PC/线上的重复过滤数（执行成功但被排除的记录）
-    pc_dup = sum(1 for jno, info in jira_exec.items()
-                 if info.get("触发来源", "") == "jira_analyze" and jno not in bt_map)
+    # 分别统计 PC/线上的重复过滤数（非线上统一归为PC）
     online_dup = sum(1 for jno, info in jira_exec.items()
                      if info.get("触发来源", "") == "parseFullTicket" and jno not in bt_map)
+    pc_dup = sum(1 for jno, info in jira_exec.items()
+                   if info.get("触发来源", "") != "parseFullTicket" and jno not in bt_map)
     # 收集基础信息（取 PC/线上各自最常见的配置）
     def _collect_meta(group_rows: list) -> dict:
         if not group_rows:
@@ -1977,7 +1994,7 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
     online_meta = _collect_meta(online_rows)
     return {"total": len(rows), "regression": regression_count,
             "success": success_count, "fail": fail_count,
-            "pending": pending_count, "failures": fail_cats,
+            "pending": pending_count, "failures": fail_cats, "failure_jiras": fail_jiras,
             "todo_items": todo_items, "too_long": too_long_count,
             "avg_total_duration": avg_total_duration,
             "avg_analysis_duration": avg_analysis_duration,
@@ -1995,14 +2012,20 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
     if cached and cached.get("category"):
         return cached["category"]
     # 优先检查错误信息中的上游系统错误（504/500/502/503等）
+    import re
     err_info = (bf.get("错误信息", "") or "").strip()
     if any(code in err_info for code in ("504 Gateway Timeout", "502 Bad Gateway",
                                          "503 Service Unavailable", "500 Internal Server Error",
                                          "Gateway Timeout", "Service Unavailable")):
         return "上游jira卡住问题"
+    # 模型调用失败：第x轮LLM调用失败 / 第x轮调用失败
+    if re.search(r"第\d+轮.*调用失败", err_info):
+        return "模型调用失败"
     review = (bf.get("人工审核结果", "") or "").strip()
     if not review or review in ("-", "None"):
         return "待开发排查"
+    if "模型调用失败" in review:
+        return "模型调用失败"
     if "时间添加" in review or "时间异常" in review:
         return "触发时间问题"
     if "无gmlogger" in review or "无日志附件" in review or "损坏" in review:
@@ -2025,6 +2048,8 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
         return "问题重复"
     if "待人工排查" in review:
         return "待人工排查"
+    if "分析can信号导致超时" in review:
+        return "分析can信号导致超时"
     return review[:20]
 
 
@@ -2298,6 +2323,64 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
         return ""
 
 
+def _sync_daily_stats_to_bitable(report: dict, date_str: str):
+    """将每日播报数据同步到数据沉淀统计表，写入后按日期降序排列"""
+    try:
+        from src.clients import feishu_client
+        app_token = load_config().get("feishu_bitable", {}).get("app_token", "")
+        stats_table_id = "tbl2R1L3Xz9NyS7i"  # 统计表 table_id
+        if not app_token:
+            return
+        total = report.get("total", 0)
+        if total == 0:
+            logger.info("统计表同步跳过: %s 无数据", date_str)
+            return
+        # 日期转毫秒时间戳
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        date_ts = int(dt.timestamp() * 1000)
+        # 成功率
+        success = report.get("success", 0)
+        fail = report.get("fail", 0)
+        rate_val = round(success / total * 100, 1) if total else 0
+        # 失败分析标签
+        failures = report.get("failures", {})
+        fail_tags = [f"{cat} {cnt}条" for cat, cnt in sorted(failures.items(), key=lambda x: -x[1])]
+        fields_to_write = {
+            "日期": date_ts,
+            "测试总数": total,
+            "PC端": report.get("pc_count", 0),
+            "jira线上": report.get("online_count", 0),
+            "成功": success,
+            "失败": fail,
+            "成功率": rate_val,
+            "平均总耗时": report.get("avg_total_duration", "-"),
+            "平均分析耗时": report.get("avg_analysis_duration", "-"),
+            "失败分析": fail_tags,
+        }
+        # 读取已有记录，合并或替换当前日期数据
+        records = feishu_client.list_bitable_records(app_token, stats_table_id)
+        all_data = {}  # {date_ts: fields}
+        for rec in records:
+            f = rec.get("fields", {})
+            rd = f.get("日期", 0)
+            if isinstance(rd, (int, float)) and int(rd) > 0:
+                all_data[int(rd)] = f
+        # 写入当天数据（覆盖）
+        all_data[date_ts] = fields_to_write
+        # 按日期降序排列
+        sorted_dates = sorted(all_data.keys(), reverse=True)
+        sorted_records = [{"fields": all_data[d]} for d in sorted_dates]
+        # 删除所有旧记录
+        old_ids = [rec.get("record_id") for rec in records if rec.get("record_id")]
+        if old_ids:
+            feishu_client.batch_delete_records(app_token, stats_table_id, old_ids)
+        # 按日期降序重新写入
+        feishu_client.batch_create_records(app_token, stats_table_id, sorted_records)
+        logger.info("统计表已同步并排序: %s (total=%d, 共%d条)", date_str, total, len(sorted_records))
+    except Exception as e:
+        logger.warning("统计表同步失败: %s", e)
+
+
 def _bot_daily_broadcast(chat_id: str, date_str: str, is_scheduled: bool):
     """昨日结论播报执行函数（单次和定时共用），自动扩展到后续非工作日"""
     from src.clients import feishu_client
@@ -2315,6 +2398,8 @@ def _bot_daily_broadcast(chat_id: str, date_str: str, is_scheduled: bool):
         cloud_url = _upload_daily_report_to_cloud(report, date_str)
         if cloud_url:
             logger.info("昨日结论已上传: %s", cloud_url)
+        # 同步到数据沉淀统计表
+        _sync_daily_stats_to_bitable(report, date_str)
         msg = _format_daily_report_msg(report, date_str, cloud_url=cloud_url)
         ok = feishu_client.send_bot_message(chat_id, msg)
         if not ok:
@@ -2411,6 +2496,7 @@ def _generate_weekly_report(date_str: str, chat_id: str = "") -> dict:
     daily_breakdown = []
     all_rows = []
     all_failures = {}
+    all_failure_jiras = {}
     all_todo = []
     total = success = fail = pending = dedup = regression = too_long = 0
     pc_count = online_count = 0
@@ -2450,6 +2536,8 @@ def _generate_weekly_report(date_str: str, chat_id: str = "") -> dict:
         online_count += day_report.get("online_count", 0)
         for cat, cnt in day_report.get("failures", {}).items():
             all_failures[cat] = all_failures.get(cat, 0) + cnt
+        for cat, jlist in day_report.get("failure_jiras", {}).items():
+            all_failure_jiras.setdefault(cat, []).extend(jlist)
         for item in day_report.get("todo_items", []):
             item["日期"] = day
             all_todo.append(item)
@@ -2460,9 +2548,120 @@ def _generate_weekly_report(date_str: str, chat_id: str = "") -> dict:
     weekly_rate = f"{success / total * 100:.1f}%" if total else "0%"
     return {"total": total, "success": success, "fail": fail, "pending": pending,
             "dedup": dedup, "regression": regression, "too_long": too_long,
-            "failures": all_failures, "todo_items": all_todo,
+            "failures": all_failures, "failure_jiras": all_failure_jiras, "todo_items": all_todo,
             "daily_breakdown": daily_breakdown, "rows": all_rows,
             "week_info": week_info, "weekly_rate": weekly_rate,
+            "pc_count": pc_count, "online_count": online_count}
+
+
+def _generate_range_report(start_date: str, end_date: str, chat_id: str = "") -> dict:
+    """生成自定义时间段汇总报告，聚合指定日期范围内所有工作日的每日播报数据"""
+    from datetime import timedelta as _td
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+    if start > end:
+        start, end = end, start
+        start_date, end_date = end_date, start_date
+    # 收集范围内所有工作日
+    working_days = []
+    cur = start
+    while cur <= end:
+        if _is_chinese_workday(cur):
+            working_days.append(cur.strftime("%Y-%m-%d"))
+        cur += _td(days=1)
+    range_label = f"{start_date} ~ {end_date}"
+    range_info = {"range_label": range_label, "start": start_date, "end": end_date,
+                  "working_days": working_days}
+    if not working_days:
+        return {"total": 0, "success": 0, "fail": 0, "pending": 0, "dedup": 0,
+                "regression": 0, "too_long": 0, "failures": {}, "todo_items": [],
+                "daily_breakdown": [], "rows": [], "range_info": range_info,
+                "weekly_rate": "0%", "pc_count": 0, "online_count": 0}
+    # 复用周报的核心逻辑：先收集 jira + 一次 bitable 查询 + 逐日生成
+    all_jira = set()
+    day_batch_data = {}
+    for day in working_days:
+        report_dates = _get_report_date_range(day)
+        jira_exec, dedup_count = _read_multi_day_batch_records(report_dates)
+        day_batch_data[day] = (jira_exec, dedup_count)
+        all_jira.update(jira_exec.keys())
+        logger.info("时间段汇总: %s 读取到 %d 条记录", day, len(jira_exec))
+    bt_map = {}
+    if all_jira:
+        from src.clients import feishu_client
+        cfg = load_config().get("feishu_bitable", {})
+        app_token, table_id = cfg.get("app_token", ""), cfg.get("table_id", "")
+        bugid_field = cfg.get("bugid_field", "jira号")
+        report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
+        if app_token and table_id:
+            try:
+                records = feishu_client.list_bitable_records(app_token, table_id)
+                for rec in records:
+                    fields = rec.get("fields", {})
+                    jira_key = _bitable_text(fields.get(bugid_field, ""))
+                    if jira_key and jira_key in all_jira:
+                        bt_map.setdefault(jira_key, []).append(
+                            _flatten_bitable_record_all(fields, report_field))
+                logger.info("时间段汇总: 多维表格查询完成, %d 条记录匹配", len(bt_map))
+            except Exception as e:
+                logger.warning("时间段汇总: 多维表格查询失败: %s", e)
+    # 逐日生成报告
+    daily_breakdown = []
+    all_rows = []
+    all_failures = {}
+    all_failure_jiras = {}
+    all_todo = []
+    total = success = fail = pending = dedup = regression = too_long = 0
+    pc_count = online_count = 0
+    for day in working_days:
+        if chat_id and _is_cancelled(chat_id):
+            break
+        preloaded = day_batch_data.get(day)
+        if preloaded and not preloaded[0]:
+            daily_breakdown.append({"date": day, "total": 0, "success": 0, "fail": 0,
+                                    "pending": 0, "dedup": 0, "rate": "-", "avg_analysis": "-"})
+            continue
+        try:
+            day_report = _generate_daily_report(day, bt_map=bt_map, preloaded_batch=preloaded)
+        except Exception as e:
+            logger.error("时间段汇总: %s 日报生成失败: %s", day, e)
+            day_report = {"total": 0, "success": 0, "fail": 0, "pending": 0,
+                          "dedup": 0, "regression": 0, "too_long": 0, "failures": {},
+                          "todo_items": [], "rows": [], "avg_analysis_duration": "-"}
+        dt = day_report.get("total", 0)
+        ds = day_report.get("success", 0)
+        df = day_report.get("fail", 0)
+        dp = day_report.get("pending", 0)
+        dd = day_report.get("dedup", 0)
+        dr = day_report.get("regression", 0)
+        dtl = day_report.get("too_long", 0)
+        rate = f"{ds / dt * 100:.0f}%" if dt else "-"
+        daily_breakdown.append({
+            "date": day, "total": dt, "success": ds, "fail": df,
+            "pending": dp, "dedup": dd, "rate": rate,
+            "avg_analysis": day_report.get("avg_analysis_duration", "-"),
+        })
+        total += dt; success += ds; fail += df; pending += dp
+        dedup += dd; regression += dr; too_long += dtl
+        pc_count += day_report.get("pc_count", 0)
+        online_count += day_report.get("online_count", 0)
+        for cat, cnt in day_report.get("failures", {}).items():
+            all_failures[cat] = all_failures.get(cat, 0) + cnt
+        for cat, jlist in day_report.get("failure_jiras", {}).items():
+            all_failure_jiras.setdefault(cat, []).extend(jlist)
+        for item in day_report.get("todo_items", []):
+            item["日期"] = day
+            all_todo.append(item)
+        for r in day_report.get("rows", []):
+            r["日期"] = day
+            all_rows.append(r)
+    all_rows.sort(key=lambda x: (x.get("日期", ""), x.get("jira号", "")))
+    weekly_rate = f"{success / total * 100:.1f}%" if total else "0%"
+    return {"total": total, "success": success, "fail": fail, "pending": pending,
+            "dedup": dedup, "regression": regression, "too_long": too_long,
+            "failures": all_failures, "failure_jiras": all_failure_jiras, "todo_items": all_todo,
+            "daily_breakdown": daily_breakdown, "rows": all_rows,
+            "range_info": range_info, "weekly_rate": weekly_rate,
             "pc_count": pc_count, "online_count": online_count}
 
 
@@ -2953,15 +3152,25 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "
                 break
             exec_time = trigger_times.get(bugid)
             try:
+                # 使用较短超时以实现快速中断
+                _exec_timeout = 15
                 if exec_mode == "online":
                     payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
-                    resp = http_post(_PROD_AI_URL, payload, timeout=30)
+                    resp = http_post(_PROD_AI_URL, payload, timeout=_exec_timeout)
                 else:
                     cfg = load_config()["ai_log_api"]
                     payload = {cfg["bugid_field"]: bugid}
                     if cfg.get("trigger_time_field"):
                         payload[cfg["trigger_time_field"]] = exec_time
-                    resp = http_post(cfg["url"], payload, timeout=int(cfg.get("timeout", 60)))
+                    resp = http_post(cfg["url"], payload, timeout=_exec_timeout)
+                # HTTP 完成后再次检查取消
+                if _is_cancelled(chat_id):
+                    results.append({"jira号": bugid, "执行结果": "成功", "报告长度": 0,
+                                    "备注": "", "触发时间": exec_time, "执行时间": batch_start,
+                                    "分析执行时间": batch_start})
+                    success += 1
+                    lines.append(f"⊘ 任务已被用户取消，剩余 {len(run_bugids) - run_bugids.index(bugid) - 1} 条未执行")
+                    break
                 resp_code = resp.get("code") if isinstance(resp, dict) else None
                 resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
                 is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
@@ -3560,6 +3769,15 @@ _trigger_time_table_cache = {"app_token": "", "table_ids": [], "inited": False}
 # 单条记录缓存：bugid -> (table_id, record_id, trigger_time)
 _trigger_time_bugid_cache = {}
 
+# 批量加载缓存（避免短时间内重复拉取相同数据）
+_bitable_bulk_cache = {}  # key -> (timestamp, data)
+_BITABLE_CACHE_TTL = 300  # 5分钟
+
+def _invalidate_bitable_cache():
+    """清除批量加载缓存，在数据写入时调用"""
+    global _bitable_bulk_cache
+    _bitable_bulk_cache = {}
+
 # 单表记录上限
 _TRIGGER_TIME_TABLE_LIMIT = 500
 
@@ -3638,6 +3856,12 @@ def _load_cloud_trigger_cache() -> tuple:
 
     :return: ({jira号: 触发时间}, {已记录的jira号})
     """
+    import time
+    _ck = "cloud_trigger_cache"
+    cached = _bitable_bulk_cache.get(_ck)
+    if cached and time.time() - cached[0] < _BITABLE_CACHE_TTL:
+        logger.info("云端触发时间缓存命中（TTL内）: %d 条有触发时间", len(cached[1][0]))
+        return cached[1]
     from src.clients import feishu_client
     try:
         app_token, table_ids = _get_trigger_time_table_cfg()
@@ -3661,6 +3885,7 @@ def _load_cloud_trigger_cache() -> tuple:
             except Exception as e:
                 logger.warning("加载触发时间表 %s 失败，已跳过: %s", tid, e)
         logger.info("云端触发时间缓存加载完成: %d 条有触发时间, %d 条已记录", len(times), len(keys))
+        _bitable_bulk_cache[_ck] = (time.time(), (times, keys))
         return times, keys
     except Exception as e:
         logger.warning("云端触发时间缓存加载失败，降级读本地 CSV: %s", e)
@@ -3669,6 +3894,12 @@ def _load_cloud_trigger_cache() -> tuple:
 
 def _load_bitable_success_jiras() -> set:
     """从多维表格加载分析结果为“成功”的 jira 号集合，用于缓存过期判断"""
+    import time
+    _ck = "success_jiras"
+    cached = _bitable_bulk_cache.get(_ck)
+    if cached and time.time() - cached[0] < _BITABLE_CACHE_TTL:
+        logger.info("多维表格成功记录缓存命中（TTL内）: %d 条", len(cached[1]))
+        return cached[1]
     try:
         from src.clients import feishu_client
         cfg = load_config().get("feishu_bitable", {})
@@ -3687,6 +3918,7 @@ def _load_bitable_success_jiras() -> set:
                 if jk:
                     success_set.add(jk)
         logger.info("多维表格成功记录加载完成: %d 条", len(success_set))
+        _bitable_bulk_cache[_ck] = (time.time(), success_set)
         return success_set
     except Exception as e:
         logger.warning("加载多维表格成功记录失败: %s", e)
@@ -3698,6 +3930,12 @@ def _load_trigger_times_from_cloud() -> dict:
 
     :return: {jira号: 触发时间}
     """
+    import time
+    _ck = "trigger_times_cloud"
+    cached = _bitable_bulk_cache.get(_ck)
+    if cached and time.time() - cached[0] < _BITABLE_CACHE_TTL:
+        logger.info("云端触发时间加载缓存命中（TTL内）: %d 条", len(cached[1]))
+        return cached[1]
     from src.clients import feishu_client
     try:
         app_token, table_ids = _get_trigger_time_table_cfg()
@@ -3714,6 +3952,7 @@ def _load_trigger_times_from_cloud() -> dict:
             except Exception as e:
                 logger.warning("加载触发时间表 %s 失败，已跳过: %s", tid, e)
         logger.info("云端触发时间加载完成: %d 条", len(result))
+        _bitable_bulk_cache[_ck] = (time.time(), result)
         return result
     except Exception as e:
         logger.warning("云端触发时间加载失败，降级读本地 CSV: %s", e)
@@ -4388,6 +4627,8 @@ def report_daily_refresh(date: str = None):
             cloud_url = _upload_daily_report_to_cloud(report, date_str)
             if cloud_url:
                 logger.info("前端刷新触发云端文档覆盖: %s", cloud_url)
+            # 同步到数据沉淀统计表
+            _sync_daily_stats_to_bitable(report, date_str)
     except Exception as e:
         logger.warning("前端刷新时云端文档覆盖失败: %s", e)
     return _ok(rows)
@@ -4434,6 +4675,7 @@ def report_daily_summary(date: str = None):
     analysis_durations = []  # 分析耗时秒数
     too_long_count = 0
     fail_cats = {}  # {分类: 数量}
+    fail_jiras = {}  # {分类: [{jira号, 错误信息}]}
     pc_count = 0
     online_count = 0
     too_long_threshold = 900  # 15分钟
@@ -4464,6 +4706,10 @@ def report_daily_summary(date: str = None):
             # 失败分类：统一使用 _classify_failure
             cat = _classify_failure(jira_no, bf)
             fail_cats[cat] = fail_cats.get(cat, 0) + 1
+            if cat not in fail_jiras:
+                fail_jiras[cat] = []
+            err_short = (bf.get("错误信息", "") or "")[:80]
+            fail_jiras[cat].append({"jira号": jira_no, "错误信息": err_short})
         # 解析总耗时
         dur = _parse_dur_sec(bf.get("总耗时", ""))
         if dur > 0:
@@ -4498,6 +4744,7 @@ def report_daily_summary(date: str = None):
         "too_long": too_long_count,
         "too_long_threshold": too_long_threshold,
         "failures": fail_cats,
+        "failure_jiras": fail_jiras,
         "pc_count": pc_count,
         "online_count": online_count,
         "report_dates": report_dates,
@@ -4518,6 +4765,17 @@ def report_weekly_summary(date: str = None):
     except Exception as e:
         logger.error("每周汇总生成失败: %s", e, exc_info=True)
         return _fail(f"每周汇总生成失败: {e}")
+
+
+@app.get("/api/report/range_summary")
+def report_range_summary(start_date: str, end_date: str):
+    """时间段汇总：聚合自定义日期范围内所有工作日的每日播报数据"""
+    try:
+        report = _generate_range_report(start_date, end_date)
+        return _ok(report)
+    except Exception as e:
+        logger.error("时间段汇总生成失败: %s", e, exc_info=True)
+        return _fail(f"时间段汇总生成失败: {e}")
 
 
 @app.get("/api/report/audit")
@@ -5785,7 +6043,7 @@ async def test_batch_ai_run(request: Request):
         # 上传到飞书云端文件夹
         cloud_url = ""
         try:
-            doc_title = f"批量执行 {date_str}_{time_str}"
+            doc_title = f"批量执行 {date_str}_{time_str} ({success_count}/{len(results)})"
             cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
         except Exception as e:
             logger.warning("批量执行上传云端失败（不影响主流程）: %s", e)
@@ -8479,6 +8737,7 @@ async def troubleshoot_search_jira(request: Request):
 
 def _diag_pre_classify(err_msg: str) -> str:
     """根据失败原因文本预归类（对应问题排查文档的归类方式），无法判定时返回空串"""
+    import re
     msg = err_msg or ""
     if "未找到问题时间" in msg:
         return "触发时间问题"
@@ -8486,6 +8745,9 @@ def _diag_pre_classify(err_msg: str) -> str:
         return "正常处理机制，无需分析"
     if "分析任务执行超时" in msg or "分析任务被取消" in msg:
         return "分析任务执行超时，跳过排查"
+    # 模型调用失败：第x轮LLM调用失败 / 第x轮调用失败，无需分析直接给结论
+    if re.search(r"第\d+轮.*调用失败", msg):
+        return "模型调用失败"
     if "adjudication" in msg or "未获取有效响应" in msg or "LLM 调用失败" in msg or "调用失败" in msg:
         return "接口拥堵手动中断"
     # 服务端运行异常类报错：与触发时间/日志过滤无关，直接归类避免无效下载比对
@@ -8522,6 +8784,11 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         human_reason = "接口无响应，待源泉排查"
         retry_result = ""
         final_category = "接口响应问题"
+    elif category == "模型调用失败":
+        ai_reason = msg or "LLM 调用失败"
+        human_reason = "模型调用失败"
+        retry_result = ""
+        final_category = "模型调用失败"
     elif category == "接口拥堵手动中断" or "adjudication" in low or "llm 调用失败" in low:
         ai_reason = msg or "分析报告生成失败: LLM 调用失败或 adjudication 失败"
         human_reason = "疑似接口拥堵导致的手动中断"
@@ -9506,7 +9773,7 @@ async def test_unanalyzed_bugs(request: Request):
             search_url = cfg["url"].rsplit("/issue", 1)[0] + "/search"
             fields = "summary,status,created," + _AI_INIT_FIELD_ID
             all_issues, start_at, page_size = [], 0, 1000
-            while len(all_issues) < 8000:
+            while len(all_issues) < 25000:
                 result = _jc.http_get(search_url, params={"jql": jql, "maxResults": page_size,
                                                           "startAt": start_at, "fields": fields},
                                       timeout=cfg.get("timeout", 30), auth=auth, headers=headers)
@@ -9518,7 +9785,7 @@ async def test_unanalyzed_bugs(request: Request):
                 if len(all_issues) >= total or len(issues) < page_size:
                     break
                 start_at += len(issues)
-            return all_issues[:8000]
+            return all_issues[:25000]
         try:
             issues = await loop.run_in_executor(None, _search)
         except Exception as e:
@@ -11300,6 +11567,14 @@ def _scan_all_batch_records() -> list:
                             base_info["分析并发数"] = (r.get("分析并发数") or "").strip()
                             base_info["下载并发数"] = (r.get("下载并发数") or "").strip()
                             base_info["模型"] = (r.get("模型") or "").strip()
+                    # 云端批次 source 推断：优先从 CSV 字段读取，否则从文档名推断
+                    if not source:
+                        if fname.startswith("线上批量执行"):
+                            source = "parseFullTicket"
+                        elif fname.startswith("批量执行") and "_bot_online_" in fname:
+                            source = "parseFullTicket"
+                        elif fname.startswith("批量执行"):
+                            source = "jira_analyze"
                     batches.append({
                         "batch_id": bid, "date": f_folder, "name": fname,
                         "source": source,
