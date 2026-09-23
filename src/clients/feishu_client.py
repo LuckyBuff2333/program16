@@ -300,6 +300,7 @@ def _paginate_get(url: str, headers: dict, params: dict,
     all_items = []
     page_token = None
     retried = False
+    server_retry_count = 0  # 服务端错误重试计数
     # 记录原始 token 类型，重试时保持一致
     _orig_auth = headers.get("Authorization", "")
     _is_tenant_token = False
@@ -312,6 +313,12 @@ def _paginate_get(url: str, headers: dict, params: dict,
         if page_token:
             params["page_token"] = page_token
         resp = httpx.get(url, headers=headers, params=params, timeout=30, verify=False)
+        # HTTP 5xx 服务端错误：自动重试最多 2 次，间隔 1~2 秒
+        if resp.status_code >= 500 and server_retry_count < 2:
+            server_retry_count += 1
+            time.sleep(server_retry_count)
+            logger.info("%s: HTTP %d 服务端错误，第 %d 次重试", log_msg, resp.status_code, server_retry_count)
+            continue
         # HTTP 401/400/403 时尝试自动刷新 token 重试一次（飞书可能返回 400 而非 401）
         if retry_on_token_expire and resp.status_code in (401, 400, 403) and not retried:
             logger.info("收到 HTTP %d，尝试自动刷新 token...", resp.status_code)
@@ -1292,60 +1299,85 @@ def update_docx_content(document_id: str, md_content: str) -> bool:
 
     :param document_id: 文档 ID
     :param md_content: 新的 Markdown 内容
-    :return: 成功返回 True
+    :return: 成功返回 True，失败返回 False
     """
     token = _get_doc_token()
     if not token:
         logger.warning("无可用 doc token，跳过文档更新")
         return False
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    # 1. 获取现有子块数量
+    # 1. 获取现有子块数量（API无 total 字段，需分页计数）
     list_url = f"{_FEISHU_API}/docx/v1/documents/{document_id}/blocks/{document_id}/children"
-    params = {"page_size": 500, "document_revision_id": -1}
+    child_count = 0
     try:
-        resp = httpx.get(list_url, headers=headers, params=params, timeout=30, verify=False)
-        if resp.status_code in (401, 400):
-            if _refresh_user_token():
-                headers = {"Authorization": f"Bearer {_get_doc_token()}", "Content-Type": "application/json"}
-                resp = httpx.get(list_url, headers=headers, params=params, timeout=30, verify=False)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("code") != 0:
-            logger.error("获取文档子块失败: %s (code=%s)", data.get("msg"), data.get("code"))
-            return False
-        child_count = data.get("data", {}).get("total", 0)
+        page_token = ""
+        while True:
+            params = {"page_size": 500, "document_revision_id": -1}
+            if page_token:
+                params["page_token"] = page_token
+            resp = httpx.get(list_url, headers=headers, params=params, timeout=30, verify=False)
+            if resp.status_code in (401, 400):
+                if _refresh_user_token():
+                    headers = {"Authorization": f"Bearer {_get_doc_token()}", "Content-Type": "application/json"}
+                    resp = httpx.get(list_url, headers=headers, params=params, timeout=30, verify=False)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code") != 0:
+                logger.error("获取文档子块失败: %s (code=%s)", data.get("msg"), data.get("code"))
+                return False
+            items = data.get("data", {}).get("items", [])
+            child_count += len(items)
+            if not data.get("data", {}).get("has_more", False):
+                break
+            page_token = data.get("data", {}).get("page_token", "")
     except Exception as e:
         logger.warning("获取文档子块异常: %s", e)
         return False
-    # 2. 批量删除所有现有子块（循环删除确保彻底清除）
+    # 2. 批量删除所有现有子块
     if child_count > 0:
+        delete_success = False
         del_url = f"{_FEISHU_API}/docx/v1/documents/{document_id}/blocks/{document_id}/children/batch_delete"
         try:
-            # 循环删除，每次删除后重新获取剩余数量，确保全部清除
-            for _round in range(5):  # 最多重试5次
-                resp = httpx.delete(del_url, headers=headers,
-                                    json={"start_index": 0, "end_index": child_count},
-                                    timeout=30, verify=False)
+            import json as _json
+            import time as _time
+            current_count = child_count
+            for _round in range(10):
+                del_body = _json.dumps({"start_index": 0, "end_index": current_count})
+                resp = httpx.request("DELETE", del_url, headers=headers, content=del_body, timeout=30, verify=False)
                 if resp.status_code in (401, 400):
                     if _refresh_user_token():
                         headers = {"Authorization": f"Bearer {_get_doc_token()}", "Content-Type": "application/json"}
-                        resp = httpx.delete(del_url, headers=headers,
-                                            json={"start_index": 0, "end_index": child_count},
-                                            timeout=30, verify=False)
+                        resp = httpx.request("DELETE", del_url, headers=headers, content=del_body, timeout=30, verify=False)
                 resp.raise_for_status()
                 rd = resp.json()
                 if rd.get("code") != 0:
                     logger.warning("删除旧文档块失败: %s (code=%s)", rd.get("msg"), rd.get("code"))
                     break
-                # 重新检查剩余块数
-                check_resp = httpx.get(list_url, headers=headers, params=params, timeout=30, verify=False)
-                check_data = check_resp.json()
-                remaining = check_data.get("data", {}).get("total", 0)
+                _time.sleep(0.5)
+                # 重新检查剩余块数（分页计数）
+                remaining = 0
+                check_page = ""
+                while True:
+                    cp = {"page_size": 500, "document_revision_id": -1}
+                    if check_page:
+                        cp["page_token"] = check_page
+                    check_resp = httpx.get(list_url, headers=headers, params=cp, timeout=30, verify=False)
+                    cd = check_resp.json()
+                    remaining += len(cd.get("data", {}).get("items", []))
+                    if not cd.get("data", {}).get("has_more", False):
+                        break
+                    check_page = cd.get("data", {}).get("page_token", "")
+                logger.info("删除文档块: 第%d轮, 原有 %d, 剩余 %d", _round + 1, current_count, remaining)
                 if remaining == 0:
+                    delete_success = True
                     break
-                child_count = remaining
+                current_count = remaining
         except Exception as e:
-            logger.warning("删除旧文档块异常: %s", e)
+            logger.warning("删除旧文档块异常: %s", e, exc_info=True)
+        # 删除失败则不写入新内容，避免内容叠加
+        if not delete_success:
+            logger.error("无法清除旧文档内容，中止更新以避免内容叠加")
+            return False
     # 3. 写入新内容
     blocks = _md_to_feishu_blocks(md_content)
     if blocks:
