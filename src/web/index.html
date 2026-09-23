@@ -175,9 +175,9 @@
   </div>
 
   <div class="main">
-    <el-tabs v-model="page" type="card" class="root-tabs">
+    <el-tabs v-model="page" type="card" class="root-tabs" @tab-click="activeFailCat = ''">
       <el-tab-pane label="流程执行页面" name="online">
-    <el-tabs v-model="tab" type="border-card" class="online-tabs">
+    <el-tabs v-model="tab" type="border-card" class="online-tabs" @tab-click="activeFailCat = ''">
 
       <!-- 页签1：流程可视化 -->
       <el-tab-pane label="流程可视化" name="flow">
@@ -669,12 +669,26 @@
               <span>平均总耗时 <b>{{ dailySummary.avg_total_duration || '-' }}</b></span>
               <span>平均分析耗时 <b>{{ dailySummary.avg_analysis_duration || '-' }}</b><template v-if="dailySummary.too_long">，耗时过长 <b style="color:#e6a23c">{{ dailySummary.too_long }}</b> 条</template></span>
             </div>
-            <div v-if="Object.keys(dailySummary.failures || {}).length" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center">
+            <div v-if="Object.keys(dailySummary.failures || {}).length" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
               <span style="font-weight:700;color:#f56c6c">失败分析：</span>
-              <el-tag v-for="(count, cat) in dailySummary.failures" :key="cat"
-                :type="(cat==='待开发排查'||cat==='待分析')?'warning':(cat.includes('触发时间')||cat.includes('损坏')||cat.includes('过载')||cat.includes('超时')||cat.includes('拥堵')?'danger':(cat.includes('正常处理')||cat.includes('无需分析')?'info':''))" size="small">
-                {{ cat }} {{ count }} 条
-              </el-tag>
+              <el-popover v-for="(count, cat) in dailySummary.failures" :key="cat" placement="bottom" :width="320" trigger="click"
+                @show="activeFailCat = cat" @hide="activeFailCat = activeFailCat === cat ? '' : activeFailCat">
+                <template #reference>
+                  <el-tag style="cursor:pointer" :type="(cat==='待开发排查'||cat==='待分析')?'warning':(cat.includes('触发时间')||cat.includes('损坏')||cat.includes('过载')||cat.includes('超时')||cat.includes('拥堵')?'danger':(cat.includes('正常处理')||cat.includes('无需分析')?'info':''))" size="small"
+                    :effect="activeFailCat === cat ? 'dark' : 'light'">
+                    {{ cat }} {{ count }} 条
+                  </el-tag>
+                </template>
+                <div style="max-height:260px;overflow-y:auto">
+                  <div v-if="(dailySummary.failure_jiras || {})[cat]" style="font-size:13px">
+                    <div v-for="item in (dailySummary.failure_jiras || {})[cat]" :key="item['jira号']" style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f0f0f0">
+                      <span style="font-weight:600;color:#409eff;min-width:90px">{{ item['jira号'] }}</span>
+                      <span style="color:#909399;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="item['错误信息']">{{ item['错误信息'] || '-' }}</span>
+                    </div>
+                  </div>
+                  <div v-else style="color:#c0c4cc;text-align:center;padding:8px 0">无详情</div>
+                </div>
+              </el-popover>
             </div>
           </div>
           <el-table :data="dailyRows" size="small" stripe max-height="360" v-loading="dailyReportLoading">
@@ -694,16 +708,28 @@
           </el-table>
         </el-card>
 
-        <!-- 每周汇总卡片 -->
+        <!-- 每周/时间段汇总卡片 -->
         <el-card shadow="never" style="margin-top:12px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <div class="section-title" style="margin:0">每周汇总</div>
-            <div style="display:flex;align-items:center;gap:8px">
+            <div class="section-title" style="margin:0">
+              <el-radio-group v-model="summaryMode" size="small" style="margin-right:12px" @change="activeFailCat = ''">
+                <el-radio-button label="week">每周汇总</el-radio-button>
+                <el-radio-button label="range">时间段汇总</el-radio-button>
+              </el-radio-group>
+            </div>
+            <div v-if="summaryMode === 'week'" style="display:flex;align-items:center;gap:8px">
               <el-date-picker v-model="weeklyDate" type="date" placeholder="选择日期所在周" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:160px"></el-date-picker>
               <el-button size="small" type="primary" :loading="weeklyLoading" @click="loadWeeklySummary">查询本周</el-button>
             </div>
+            <div v-else style="display:flex;align-items:center;gap:8px">
+              <el-date-picker v-model="rangeStart" type="date" placeholder="开始日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:150px"></el-date-picker>
+              <span style="color:#909399">~</span>
+              <el-date-picker v-model="rangeEnd" type="date" placeholder="结束日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:150px"></el-date-picker>
+              <el-button size="small" type="primary" :loading="rangeLoading" :disabled="!rangeStart || !rangeEnd" @click="loadRangeSummary">查询</el-button>
+            </div>
           </div>
-          <div v-if="weeklySummary.total" style="margin-bottom:12px;padding:12px 16px;background:#f0f5ff;border-radius:8px;border:1px solid #d6e4ff">
+          <!-- 周报结果 -->
+          <div v-if="summaryMode === 'week' && weeklySummary.total" style="margin-bottom:12px;padding:12px 16px;background:#f0f5ff;border-radius:8px;border:1px solid #d6e4ff">
             <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
               <span style="font-weight:700;color:#1d39c4">{{ weeklySummary.week_info ? weeklySummary.week_info.week_label : '' }}</span>
               <span v-if="weeklySummary.week_info && weeklySummary.week_info.working_days.length">
@@ -718,28 +744,96 @@
               <span v-if="weeklySummary.dedup">去重 <b style="color:#909399">{{ weeklySummary.dedup }}</b></span>
               <span>成功率 <b :style="{color: parseFloat(weeklySummary.weekly_rate) >= 70 ? '#67c23a' : '#e6a23c'}">{{ weeklySummary.weekly_rate }}</b></span>
             </div>
-            <div v-if="Object.keys(weeklySummary.failures || {}).length" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center">
+            <div v-if="Object.keys(weeklySummary.failures || {}).length" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
               <span style="font-weight:700;color:#f56c6c">失败分析：</span>
-              <el-tag v-for="(count, cat) in weeklySummary.failures" :key="cat" :type="cat==='待开发排查'?'warning':'danger'" size="small">{{ cat }} {{ count }} 条</el-tag>
+              <el-popover v-for="(count, cat) in weeklySummary.failures" :key="cat" placement="bottom" :width="320" trigger="click"
+                @show="activeFailCat = cat" @hide="activeFailCat = activeFailCat === cat ? '' : activeFailCat">
+                <template #reference>
+                  <el-tag style="cursor:pointer" :type="cat==='待开发排查'?'warning':'danger'" size="small"
+                    :effect="activeFailCat === cat ? 'dark' : 'light'">{{ cat }} {{ count }} 条</el-tag>
+                </template>
+                <div style="max-height:260px;overflow-y:auto">
+                  <div v-if="(weeklySummary.failure_jiras || {})[cat]" style="font-size:13px">
+                    <div v-for="item in (weeklySummary.failure_jiras || {})[cat]" :key="item['jira号']" style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f0f0f0">
+                      <span style="font-weight:600;color:#409eff;min-width:90px">{{ item['jira号'] }}</span>
+                      <span style="color:#909399;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="item['错误信息']">{{ item['错误信息'] || '-' }}</span>
+                    </div>
+                  </div>
+                  <div v-else style="color:#c0c4cc;text-align:center;padding:8px 0">无详情</div>
+                </div>
+              </el-popover>
             </div>
           </div>
-          <!-- 每日统计表 -->
-          <el-table v-if="weeklySummary.daily_breakdown && weeklySummary.daily_breakdown.length" :data="weeklySummary.daily_breakdown" size="small" stripe max-height="240" border style="margin-bottom:12px">
-            <el-table-column prop="date" label="日期" width="120"></el-table-column>
-            <el-table-column prop="total" label="总数" width="80" align="center"></el-table-column>
-            <el-table-column prop="success" label="成功" width="80" align="center">
-              <template #default="{ row }"><span style="color:#67c23a">{{ row.success }}</span></template>
-            </el-table-column>
-            <el-table-column prop="fail" label="失败" width="80" align="center">
-              <template #default="{ row }"><span :style="{color: row.fail > 0 ? '#f56c6c' : '#909399'}">{{ row.fail }}</span></template>
-            </el-table-column>
-            <el-table-column prop="dedup" label="去重" width="80" align="center">
-              <template #default="{ row }"><span style="color:#909399">{{ row.dedup || 0 }}</span></template>
-            </el-table-column>
-            <el-table-column prop="rate" label="成功率" width="100" align="center"></el-table-column>
-            <el-table-column prop="avg_analysis" label="平均分析耗时" width="130" align="center"></el-table-column>
-          </el-table>
-          <div v-if="weeklySummary.total === 0 && weeklySummary.week_info" style="color:#909399;text-align:center;padding:20px 0">本周无批量执行记录</div>
+          <!-- 每周汇总表 -->
+          <template v-if="summaryMode === 'week'">
+            <el-table v-if="weeklySummary.daily_breakdown && weeklySummary.daily_breakdown.length" :data="weeklySummary.daily_breakdown" size="small" stripe max-height="240" border style="margin-bottom:12px">
+              <el-table-column prop="date" label="日期" width="120"></el-table-column>
+              <el-table-column prop="total" label="总数" width="80" align="center"></el-table-column>
+              <el-table-column prop="success" label="成功" width="80" align="center">
+                <template #default="{ row }"><span style="color:#67c23a">{{ row.success }}</span></template>
+              </el-table-column>
+              <el-table-column prop="fail" label="失败" width="80" align="center">
+                <template #default="{ row }"><span :style="{color: row.fail > 0 ? '#f56c6c' : '#909399'}">{{ row.fail }}</span></template>
+              </el-table-column>
+              <el-table-column prop="dedup" label="去重" width="80" align="center">
+                <template #default="{ row }"><span style="color:#909399">{{ row.dedup || 0 }}</span></template>
+              </el-table-column>
+              <el-table-column prop="rate" label="成功率" width="100" align="center"></el-table-column>
+              <el-table-column prop="avg_analysis" label="平均分析耗时" width="130" align="center"></el-table-column>
+            </el-table>
+            <div v-if="weeklySummary.total === 0 && weeklySummary.week_info" style="color:#909399;text-align:center;padding:20px 0">本周无批量执行记录</div>
+          </template>
+          <!-- 时间段汇总结果 -->
+          <template v-if="summaryMode === 'range'">
+            <div v-if="rangeSummary.total" style="margin-bottom:12px;padding:12px 16px;background:#fff7e6;border-radius:8px;border:1px solid #ffd591">
+              <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
+                <span style="font-weight:700;color:#d46b08">{{ rangeSummary.range_info ? rangeSummary.range_info.range_label : '' }}</span>
+                <span>执行 <b>{{ rangeSummary.total }}</b> 条</span>
+                <span v-if="rangeSummary.pc_count || rangeSummary.online_count">💻 PC <b>{{ rangeSummary.pc_count || 0 }}</b></span>
+                <span v-if="rangeSummary.pc_count || rangeSummary.online_count">🌐 线上 <b>{{ rangeSummary.online_count || 0 }}</b></span>
+                <span>成功 <b style="color:#67c23a">{{ rangeSummary.success }}</b></span>
+                <span v-if="rangeSummary.fail">失败 <b style="color:#f56c6c">{{ rangeSummary.fail }}</b></span>
+                <span v-if="rangeSummary.pending">待分析 <b style="color:#e6a23c">{{ rangeSummary.pending }}</b></span>
+                <span v-if="rangeSummary.dedup">去重 <b style="color:#909399">{{ rangeSummary.dedup }}</b></span>
+                <span>成功率 <b :style="{color: parseFloat(rangeSummary.weekly_rate) >= 70 ? '#67c23a' : '#e6a23c'}">{{ rangeSummary.weekly_rate }}</b></span>
+              </div>
+              <div v-if="Object.keys(rangeSummary.failures || {}).length" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
+                <span style="font-weight:700;color:#f56c6c">失败分析：</span>
+                <el-popover v-for="(count, cat) in rangeSummary.failures" :key="cat" placement="bottom" :width="320" trigger="click"
+                  @show="activeFailCat = cat" @hide="activeFailCat = activeFailCat === cat ? '' : activeFailCat">
+                  <template #reference>
+                    <el-tag style="cursor:pointer" :type="cat==='待开发排查'?'warning':'danger'" size="small"
+                      :effect="activeFailCat === cat ? 'dark' : 'light'">{{ cat }} {{ count }} 条</el-tag>
+                  </template>
+                  <div style="max-height:260px;overflow-y:auto">
+                    <div v-if="(rangeSummary.failure_jiras || {})[cat]" style="font-size:13px">
+                      <div v-for="item in (rangeSummary.failure_jiras || {})[cat]" :key="item['jira号']" style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f0f0f0">
+                        <span style="font-weight:600;color:#409eff;min-width:90px">{{ item['jira号'] }}</span>
+                        <span style="color:#909399;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="item['错误信息']">{{ item['错误信息'] || '-' }}</span>
+                      </div>
+                    </div>
+                    <div v-else style="color:#c0c4cc;text-align:center;padding:8px 0">无详情</div>
+                  </div>
+                </el-popover>
+              </div>
+            </div>
+            <el-table v-if="rangeSummary.daily_breakdown && rangeSummary.daily_breakdown.length" :data="rangeSummary.daily_breakdown" size="small" stripe max-height="360" border style="margin-bottom:12px">
+              <el-table-column prop="date" label="日期" width="120"></el-table-column>
+              <el-table-column prop="total" label="总数" width="80" align="center"></el-table-column>
+              <el-table-column prop="success" label="成功" width="80" align="center">
+                <template #default="{ row }"><span style="color:#67c23a">{{ row.success }}</span></template>
+              </el-table-column>
+              <el-table-column prop="fail" label="失败" width="80" align="center">
+                <template #default="{ row }"><span :style="{color: row.fail > 0 ? '#f56c6c' : '#909399'}">{{ row.fail }}</span></template>
+              </el-table-column>
+              <el-table-column prop="dedup" label="去重" width="80" align="center">
+                <template #default="{ row }"><span style="color:#909399">{{ row.dedup || 0 }}</span></template>
+              </el-table-column>
+              <el-table-column prop="rate" label="成功率" width="100" align="center"></el-table-column>
+              <el-table-column prop="avg_analysis" label="平均分析耗时" width="130" align="center"></el-table-column>
+            </el-table>
+            <div v-if="rangeSummary.total === 0 && rangeSummary.range_info" style="color:#909399;text-align:center;padding:20px 0">该时间段无批量执行记录</div>
+          </template>
         </el-card>
       </el-tab-pane>
 
@@ -1757,16 +1851,48 @@
               </el-card>
               <!-- 步骤1：提取失败jira号 -->
               <el-card shadow="never" style="margin-top:12px">
-                <template #header><span style="font-weight:700">① 提取分析失败的 Jira 号</span></template>
-                <el-button type="primary" :loading="failedRetry.loadingJiras" @click="loadFailedJiras">从多维表格提取失败记录</el-button>
+                <template #header>
+                  <div style="display:flex;align-items:center;justify-content:space-between">
+                    <span style="font-weight:700">① 提取分析失败的 Jira 号</span>
+                    <el-tag v-if="failedRetry.jiras.length" type="success">{{ failedRetry.jiras.length }} 条</el-tag>
+                  </div>
+                </template>
+                <el-form inline style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                  <el-form-item label="分析完成时间起" style="margin-bottom:0">
+                    <el-date-picker v-model="failedRetry.afterTime" type="datetime" value-format="YYYY-MM-DD HH:mm:ss"
+                      placeholder="不填则不筛选时间" clearable style="width:220px"></el-date-picker>
+                  </el-form-item>
+                  <el-form-item style="margin-bottom:0">
+                    <el-checkbox v-model="failedRetry.excludeCommon">过滤通用失败原因</el-checkbox>
+                  </el-form-item>
+                  <el-form-item style="margin-bottom:0">
+                    <el-checkbox v-model="failedRetry.excludeSuccess">过滤已成功的</el-checkbox>
+                  </el-form-item>
+                  <el-form-item style="margin-bottom:0">
+                    <el-button type="primary" :loading="failedRetry.loadingJiras" @click="loadFailedJiras">提取失败记录</el-button>
+                  </el-form-item>
+                </el-form>
                 <el-alert v-if="failedRetry.extractMsg" :type="failedRetry.extractError ? 'error' : 'success'" :closable="false" :title="failedRetry.extractMsg" style="margin-top:8px"></el-alert>
+                <!-- 抽样控制 -->
+                <div v-if="failedRetry.jiras.length" style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                  <span style="font-size:13px;color:#606266">抽取个数：</span>
+                  <el-input-number v-model="failedRetry.sampleCount" :min="0" :max="500" :step="1" style="width:120px" controls-position="right" size="small"></el-input-number>
+                  <span style="font-size:12px;color:#909399">0=全部</span>
+                  <el-button size="small" @click="sampleFailedJiras" :disabled="!failedRetry.jiras.length">随机抽样</el-button>
+                  <el-tag v-if="failedRetry.jiras.length" type="info">当前 {{ failedRetry.jiras.length }} 条</el-tag>
+                </div>
                 <div v-if="failedRetry.jiras.length" style="margin-top:10px">
                   <el-tag v-for="j in failedRetry.jiras" :key="j" style="margin:3px" size="default">{{ j }}</el-tag>
                 </div>
               </el-card>
               <!-- 步骤2：获取触发时间 -->
               <el-card shadow="never" style="margin-top:12px" v-if="failedRetry.jiras.length">
-                <template #header><span style="font-weight:700">② 获取触发时间（本地优先）</span></template>
+                <template #header>
+                  <div style="display:flex;align-items:center;justify-content:space-between">
+                    <span style="font-weight:700">② 获取触发时间（本地优先）</span>
+                    <el-tag v-if="Object.keys(failedRetry.triggerTimes).length" type="success">{{ Object.keys(failedRetry.triggerTimes).length }} 条</el-tag>
+                  </div>
+                </template>
                 <el-button type="primary" :loading="failedRetry.loadingTimes" @click="extractFailedTimes">提取触发时间（{{ failedRetry.jiras.length }} 条）</el-button>
                 <el-alert v-if="failedRetry.timeMsg" :type="failedRetry.timeError ? 'error' : 'success'" :closable="false" :title="failedRetry.timeMsg" style="margin-top:8px"></el-alert>
                 <div v-if="Object.keys(failedRetry.triggerTimes).length" style="margin-top:10px">
@@ -1775,9 +1901,19 @@
               </el-card>
               <!-- 步骤3：批量执行 -->
               <el-card shadow="never" style="margin-top:12px" v-if="failedRetry.jiras.length">
-                <template #header><span style="font-weight:700">③ 批量执行 AI 日志分析</span></template>
-                <el-button type="danger" :loading="failedRetry.running" @click="runFailedRetry">开始执行（{{ failedRetry.jiras.length }} 条并行）</el-button>
-                <el-tag v-if="failedRetry.runTotal" style="margin-left:8px">进度: {{ failedRetry.runDone }} / {{ failedRetry.runTotal }}</el-tag>
+                <template #header>
+                  <div style="display:flex;align-items:center;justify-content:space-between">
+                    <span style="font-weight:700">③ 批量执行 AI 日志分析</span>
+                    <el-tag v-if="failedRetry.runTotal" type="info">{{ failedRetry.runDone }}/{{ failedRetry.runTotal }}</el-tag>
+                  </div>
+                </template>
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+                  <el-radio-group v-model="failedRetry.execMode" size="small">
+                    <el-radio-button label="pc">PC执行</el-radio-button>
+                    <el-radio-button label="online">线上执行</el-radio-button>
+                  </el-radio-group>
+                  <el-button type="danger" :loading="failedRetry.running" @click="runFailedRetry" :disabled="failedRetry.running">开始执行（{{ failedRetry.jiras.length }} 条）</el-button>
+                </div>
                 <el-table v-if="failedRetry.runResults.length" :data="failedRetry.runResults" size="small" stripe border max-height="260" style="margin-top:10px">
                   <el-table-column type="index" label="#" width="45"></el-table-column>
                   <el-table-column prop="jira号" label="Jira号" width="130"></el-table-column>
@@ -1899,13 +2035,22 @@
                 <div v-if="unanalyzedPast.progress" style="margin-top:8px">
                   <el-progress :percentage="unanalyzedPast.progressPct" :format="() => `${unanalyzedPast.progress}`" :stroke-width="18"></el-progress>
                 </div>
-                <el-table v-if="unanalyzedPast.results.length" :data="unanalyzedPast.results" size="small" stripe border max-height="360" style="margin-top:10px">
-                  <el-table-column type="index" label="#" width="45"></el-table-column>
+                <el-table v-if="unanalyzedPast.results.length" :data="unanalyzedPageResults" size="small" stripe border max-height="360" style="margin-top:10px">
+                  <el-table-column type="index" label="#" width="65" :index="i => (unanalyzedPast.page - 1) * unanalyzedPast.pageSize + i + 1"></el-table-column>
                   <el-table-column prop="bugid" label="Jira号" width="130"></el-table-column>
                   <el-table-column prop="created" label="创建时间" width="160"></el-table-column>
                   <el-table-column prop="status" label="状态" width="100"></el-table-column>
                   <el-table-column prop="summary" label="摘要" show-overflow-tooltip></el-table-column>
                 </el-table>
+                <div v-if="unanalyzedPast.results.length > unanalyzedPast.pageSize" style="display:flex;justify-content:flex-end;margin-top:8px">
+                  <el-pagination small background layout="total, prev, pager, next, sizes"
+                    :total="unanalyzedPast.results.length" :page-size="unanalyzedPast.pageSize"
+                    :current-page="unanalyzedPast.page"
+                    :page-sizes="[50, 100, 200]"
+                    @current-change="p => unanalyzedPast.page = p"
+                    @size-change="s => { unanalyzedPast.pageSize = s; unanalyzedPast.page = 1; }">
+                  </el-pagination>
+                </div>
                 <div v-if="unanalyzedPast.csvPaths.length" style="margin-top:8px">
                   <el-tag v-for="p in unanalyzedPast.csvPaths" :key="p" type="success" style="margin-right:6px">已保存: {{ p.split('\\').pop() }}</el-tag>
                 </div>
@@ -1925,6 +2070,15 @@
                 <el-tag v-if="prodBatch.directInput.trim()" type="info" style="margin-top:6px">
                   已输入 {{ prodBatch.directInput.replace(/[，;；\s]+/g, ',').split(',').filter(Boolean).length }} 个
                 </el-tag>
+                <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+                  <el-button size="small" type="primary" plain
+                    @click="prodBatch.jqlInput = 'issuetype = bug AND status != closed AND created >= &quot;2026/09/01&quot;'">
+                    9.1新增非close
+                  </el-button>
+                  <el-input v-model="prodBatch.jqlInput" size="small" placeholder="JQL查询" style="width:400px" @keyup.enter="prodJqlSearchFill"></el-input>
+                  <el-button size="small" type="success" :loading="prodBatch.jqlSearching" @click="prodJqlSearchFill">搜索并填入</el-button>
+                </div>
+                <el-tag v-if="prodBatch.jqlSearchMsg" :type="prodBatch.jqlSearchMsg.includes('失败') ? 'danger' : 'success'" style="margin-top:4px" size="small">{{ prodBatch.jqlSearchMsg }}</el-tag>
               </el-card>
               <!-- 方式2：选择CSV文件 -->
               <el-card shadow="never" style="margin-top:12px">
@@ -2413,9 +2567,18 @@
                     <el-button :loading="onlineFollowup.errorStats.querying" @click="queryErrorStats(false)">全量查询</el-button>
                   </el-form-item>
                 </el-form>
-                <div v-if="onlineFollowup.errorStats.queryMsg" style="margin-bottom:8px;font-size:13px"
-                  :style="{color: onlineFollowup.errorStats.queryError ? '#f56c6c' : '#67c23a'}">{{ onlineFollowup.errorStats.queryMsg }}</div>
-                <el-table v-if="onlineFollowup.errorStats.records.length" :data="onlineFollowup.errorStats.records" size="small" stripe border max-height="400">
+                <div v-if="onlineFollowup.errorStats.queryMsg" style="display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap">
+                  <span style="font-size:13px" :style="{color: onlineFollowup.errorStats.queryError ? '#f56c6c' : '#67c23a'}">{{ onlineFollowup.errorStats.queryMsg }}</span>
+                  <el-select v-model="onlineFollowup.errorStats.successFilter" placeholder="筛选" style="width:150px" size="small" clearable>
+                    <el-option label="全部" value=""></el-option>
+                    <el-option label="有分析成功" value="yes"></el-option>
+                    <el-option label="无分析成功" value="no"></el-option>
+                  </el-select>
+                  <el-button size="small" @click="copyFilteredJiras" :disabled="!filteredErrorStatsRecords.length">
+                    复制 Jira 号（{{ filteredErrorStatsRecords.length }}）
+                  </el-button>
+                </div>
+                <el-table v-if="filteredErrorStatsRecords.length" :data="filteredErrorStatsRecords" size="small" stripe border max-height="400">
                   <el-table-column type="index" label="#" width="45"></el-table-column>
                   <el-table-column prop="jira号" label="Jira号" width="140"></el-table-column>
                   <el-table-column prop="失败次数" label="失败次数" width="80" align="center">
@@ -2436,7 +2599,7 @@
                   </el-table-column>
                   <el-table-column prop="最新失败时间" label="最新失败时间" width="160"></el-table-column>
                 </el-table>
-                <el-empty v-else-if="!onlineFollowup.errorStats.querying && onlineFollowup.errorStats.queryMsg && !onlineFollowup.errorStats.queryError" description="无失败记录" :image-size="40"></el-empty>
+                <el-empty v-else-if="!onlineFollowup.errorStats.querying && onlineFollowup.errorStats.queryMsg && !onlineFollowup.errorStats.queryError" description="无匹配记录" :image-size="40"></el-empty>
               </el-card>
             </div>
 
@@ -2918,6 +3081,7 @@ createApp({
         jqlLabels: ['昨日新增Bug', '昨日新增coreservice', '昨日新增远控', '昨日新增导航', '昨日RES1.0/1.1', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice', '8.25后RES1.0/1.1'],
         filterAiInit: true,
         msg: '', error: false, progress: '', progressPct: 0, results: [], csvPaths: [],
+        page: 1, pageSize: 50,
       },
       // 线上AI日志分析批量执行
       prodBatch: {
@@ -2925,6 +3089,9 @@ createApp({
         skipExisting: true, filterPcOnly: false, filterOnlineOnly: false, maxCount: 0, msg: '', error: false, stage: '',
         results: [], doneMsg: '', cloudUrl: '',
         analysisConcurrency: 5, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上',
+        // JQL搜索填入
+        jqlInput: 'issuetype = bug AND status != closed AND created >= "2026/09/01"',
+        jqlSearching: false, jqlSearchMsg: '',
         // 持续执行参数
         continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false,
       },
@@ -2943,6 +3110,7 @@ createApp({
         // 错误统计查询
         errorStats: {
           afterTime: '', querying: false, records: [], queryMsg: '', queryError: false,
+          successFilter: '',
         },
       },
       // AI日志分析可视化
@@ -2975,7 +3143,7 @@ createApp({
       feishuDocError: '',
       feishuImQuery: { chatName: '王源泉', chatId: '', startDateTime: null, chats: null, result: null, error: '', debugResult: null },
       feishuEvents: { result: null },
-      batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"', 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED', 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")'], jqlLabels: ['远控', 'coreservice', '导航', 'VCU近期未关闭', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice', '8.25后RES1.0/1.1'], sampleCount: 5, source: 'jql', filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', csvFiles: [], selectedCsv: '', csvTriggerTimes: {}, rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false },
+      batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"', 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED', 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")', 'issuetype = bug AND status != closed AND created >= "2026/09/01"'], jqlLabels: ['远控', 'coreservice', '导航', 'VCU近期未关闭', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice', '8.25后RES1.0/1.1', '9.1新增非close'], sampleCount: 5, source: 'jql', filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', csvFiles: [], selectedCsv: '', csvTriggerTimes: {}, rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false },
       verifyForm: { csvPath: '' },
       verifyMode: 'browse',
       docsFiles: [],
@@ -3034,7 +3202,9 @@ createApp({
       dailyRows: [], dailyDate: '', dailyColumns: [], dailyLoading: false, syncCloudLoading: false,
             dailyReportDate: '', dailyReportLoading: false,
             dailySummary: {},
+      activeFailCat: '',  // 当前展示的失败分类弹出框
       weeklySummary: {}, weeklyLoading: false, weeklyDate: null,
+              summaryMode: 'week', rangeStart: null, rangeEnd: null, rangeSummary: {}, rangeLoading: false,
       batchReportRows: [],
       // 多维表格全量数据
       bitableAllRecords: [], bitableAllColumns: [], bitableFilters: [], bitableLoading: false,
@@ -3083,6 +3253,21 @@ createApp({
         conclusion: '',
       },
     };
+  },
+  computed: {
+    filteredErrorStatsRecords() {
+      const records = this.onlineFollowup.errorStats.records;
+      const filter = this.onlineFollowup.errorStats.successFilter;
+      if (!filter) return records;
+      if (filter === 'yes') return records.filter(r => r['有成功记录']);
+      if (filter === 'no') return records.filter(r => !r['有成功记录']);
+      return records;
+    },
+    unanalyzedPageResults() {
+      const s = this.unanalyzedPast;
+      const start = (s.page - 1) * s.pageSize;
+      return s.results.slice(start, start + s.pageSize);
+    },
   },
   methods: {
     // 统一请求封装：失败时弹出错误提示
@@ -3137,6 +3322,7 @@ createApp({
     },
     async loadWeeklySummary() {
       this.weeklyLoading = true;
+      this.activeFailCat = '';
       try {
         const query = this.weeklyDate ? `?date=${this.weeklyDate}` : '';
         const body = await this.api(`/api/report/weekly_summary${query}`);
@@ -3149,6 +3335,23 @@ createApp({
         ElementPlus.ElMessage.error('每周汇总查询失败: ' + e.message);
       } finally {
         this.weeklyLoading = false;
+      }
+    },
+    async loadRangeSummary() {
+      if (!this.rangeStart || !this.rangeEnd) return;
+      this.rangeLoading = true;
+      this.activeFailCat = '';
+      try {
+        const body = await this.api(`/api/report/range_summary?start_date=${this.rangeStart}&end_date=${this.rangeEnd}`, { signal: AbortSignal.timeout(600000) });
+        this.rangeSummary = body.data || {};
+        const ri = this.rangeSummary.range_info;
+        if (ri) {
+          ElementPlus.ElMessage.success(`${ri.range_label} 汇总: ${this.rangeSummary.total} 条`);
+        }
+      } catch (e) {
+        ElementPlus.ElMessage.error('时间段汇总查询失败: ' + e.message);
+      } finally {
+        this.rangeLoading = false;
       }
     },
     async loadDaily() {
@@ -4311,6 +4514,23 @@ createApp({
         this.onlineFollowup.errorStats.queryMsg = '查询失败: ' + e.message;
         this.onlineFollowup.errorStats.queryError = true;
       } finally { this.onlineFollowup.errorStats.querying = false; }
+    },
+    // 复制当前筛选的 Jira 号到剪贴板
+    async copyFilteredJiras() {
+      const records = this.filteredErrorStatsRecords;
+      if (!records.length) return ElementPlus.ElMessage.warning('无数据可复制');
+      const text = records.map(r => r['jira号']).filter(Boolean).join('\n');
+      try {
+        await navigator.clipboard.writeText(text);
+        ElementPlus.ElMessage.success(`已复制 ${records.length} 个 Jira 号`);
+      } catch (e) {
+        // 兑容不支持 clipboard API 的环境
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+        document.body.removeChild(ta);
+        ElementPlus.ElMessage.success(`已复制 ${records.length} 个 Jira 号`);
+      }
     },
     // ==================== 冒烟测试 ====================
     async runSmokeTest() {
@@ -5639,6 +5859,23 @@ createApp({
         this.failedRetry.extractError = true;
       } finally { this.failedRetry.loadingJiras = false; }
     },
+    // 失败重触发：随机抽样
+    sampleFailedJiras() {
+      const sampleCount = this.failedRetry.sampleCount;
+      if (!sampleCount || sampleCount <= 0 || this.failedRetry.jiras.length <= sampleCount) {
+        return ElementPlus.ElMessage.info('无需抽样，已保留全部');
+      }
+      const arr = [...this.failedRetry.jiras];
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      this.failedRetry.jiras = arr.slice(0, sampleCount);
+      this.failedRetry.extractMsg = `已随机抽取 ${sampleCount} 条`;
+      this.failedRetry.triggerTimes = {};
+      this.failedRetry.runResults = [];
+      ElementPlus.ElMessage.success(`已随机抽取 ${sampleCount} 条`);
+    },
     // 失败重触发：获取触发时间（本地优先）
     async extractFailedTimes() {
       if (!this.failedRetry.jiras.length) return ElementPlus.ElMessage.warning('请先提取失败Jira号');
@@ -6082,7 +6319,7 @@ createApp({
       const runKey = 'unanalyzedPast';
       if (!state.jql.trim()) return ElementPlus.ElMessage.warning('请输入 JQL');
       this.running[runKey] = true;
-      state.msg = ''; state.error = false; state.results = []; state.csvPaths = []; state.progress = ''; state.progressPct = 0;
+      state.msg = ''; state.error = false; state.results = []; state.csvPaths = []; state.progress = ''; state.progressPct = 0; state.page = 1;
       try {
         const resp = await fetch('/api/test/unanalyzed_bugs', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -6117,6 +6354,23 @@ createApp({
       } catch (e) {
         state.msg = '提取失败: ' + (e.message || ''); state.error = true;
       } finally { this.running[runKey] = false; }
+    },
+    // 线上批量执行：JQL搜索并填入Jira号
+    async prodJqlSearchFill() {
+      const jql = this.prodBatch.jqlInput.trim();
+      if (!jql) return ElementPlus.ElMessage.warning('请输入 JQL');
+      this.prodBatch.jqlSearching = true;
+      this.prodBatch.jqlSearchMsg = '';
+      try {
+        const resp = await this.api('/api/test/batch_ai_search', { method: 'POST', body: JSON.stringify({ jql }) });
+        const rows = resp.data?.rows || [];
+        if (!rows.length) { this.prodBatch.jqlSearchMsg = '搜索无 VCU 结果'; return; }
+        const keys = rows.map(r => r.key).join(', ');
+        this.prodBatch.directInput = keys;
+        this.prodBatch.jqlSearchMsg = `搜索到 ${resp.data.total} 条，VCU ${resp.data.vcu_count} 条，已填入`;
+      } catch (e) {
+        this.prodBatch.jqlSearchMsg = '搜索失败: ' + (e.message || e);
+      } finally { this.prodBatch.jqlSearching = false; }
     },
     // 线上批量执行：加载CSV文件列表
     async prodLoadCsvFiles() {

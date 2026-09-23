@@ -496,7 +496,7 @@ def get_wiki_node_app_token(wiki_token: str) -> str:
 
 
 def list_bitable_records(app_token: str, table_id: str,
-                         view_id: str = None, page_size: int = 100) -> list:
+                         view_id: str = None, page_size: int = 500) -> list:
     """获取多维表格所有记录（自动分页，支持 Token/Cookie 两种模式）
 
     :param app_token: 多维表格 app_token
