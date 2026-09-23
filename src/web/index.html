@@ -30,7 +30,7 @@
   /* 顶级页签铺满剩余高度：页签头固定，内容区弹性填充 */
   .root-tabs { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   .root-tabs > .el-tabs__content { flex: 1; min-height: 0; }
-  .root-tabs > .el-tabs__content > .el-tab-pane { height: 100%; }
+  .root-tabs > .el-tabs__content > .el-tab-pane { height: 100%; overflow-y: auto; }
   /* 流程执行页面内层页签：内容区超高时内部滚动 */
   .online-tabs { height: 100%; display: flex; flex-direction: column; border-radius: 10px; }
   .online-tabs > .el-tabs__content { flex: 1; overflow-y: auto; min-height: 0; }
@@ -235,7 +235,12 @@
             <el-form-item label="抽取数量" style="margin-right:0"><el-input-number v-model="batchAi.sampleCount" :min="1" :max="200" style="width:120px"></el-input-number></el-form-item>
             <el-checkbox v-model="batchAi.execMode" true-value="pc" @change="v => { if(v){batchAi.execMode='pc';setBatchMeta('batchAi','pc')} }" style="margin-right:4px">PC执行</el-checkbox>
             <el-checkbox v-model="batchAi.execMode" true-value="online" @change="v => { if(v){batchAi.execMode='online';setBatchMeta('batchAi','online')} }" style="margin-right:8px">线上执行</el-checkbox>
-            <el-form-item style="margin-right:0"><el-button type="primary" :loading="running.batchOneClick" :disabled="!batchAi.execMode" @click="batchAiOneClick">一键执行</el-button></el-form-item>
+            <el-form-item style="margin-right:0">
+              <el-button type="primary" :loading="running.batchOneClick" :disabled="!batchAi.execMode" @click="batchAiOneClick">
+                {{ batchAi.continuous ? `持续执行（${batchAi.rounds} 轮）` : '一键执行' }}
+              </el-button>
+              <el-button v-if="running.batchOneClick && batchAi.continuous" type="danger" @click="batchAiAbort && batchAiAbort.abort()">停止</el-button>
+            </el-form-item>
           </el-form>
           <el-form inline v-else style="margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
             <el-form-item label="CSV文件" style="margin-right:0">
@@ -247,7 +252,12 @@
             <el-form-item label="抽取数量" style="margin-right:0"><el-input-number v-model="batchAi.sampleCount" :min="1" :max="200" style="width:120px"></el-input-number></el-form-item>
             <el-checkbox v-model="batchAi.execMode" true-value="pc" @change="v => { if(v){batchAi.execMode='pc';setBatchMeta('batchAi','pc')} }" style="margin-right:4px">PC执行</el-checkbox>
             <el-checkbox v-model="batchAi.execMode" true-value="online" @change="v => { if(v){batchAi.execMode='online';setBatchMeta('batchAi','online')} }" style="margin-right:8px">线上执行</el-checkbox>
-            <el-form-item style="margin-right:0"><el-button type="primary" :loading="running.batchOneClick" :disabled="!batchAi.selectedCsv || !batchAi.execMode" @click="batchAiOneClick">一键执行</el-button></el-form-item>
+            <el-form-item style="margin-right:0">
+              <el-button type="primary" :loading="running.batchOneClick" :disabled="!batchAi.selectedCsv || !batchAi.execMode" @click="batchAiOneClick">
+                {{ batchAi.continuous ? `持续执行（${batchAi.rounds} 轮）` : '一键执行' }}
+              </el-button>
+              <el-button v-if="running.batchOneClick && batchAi.continuous" type="danger" @click="batchAiAbort && batchAiAbort.abort()">停止</el-button>
+            </el-form-item>
           </el-form>
           <!-- 执行参数 -->
           <div v-if="batchAi.execMode" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;font-size:12px;color:#606266">
@@ -256,11 +266,26 @@
             <span>模型:</span><el-input v-model="batchAi.model" size="small" style="width:140px"></el-input>
             <span>触发来源:</span><el-input v-model="batchAi.triggerSource" size="small" style="width:80px"></el-input>
           </div>
+          <el-form inline style="margin-bottom:8px">
+            <el-form-item style="margin-bottom:0">
+              <el-checkbox v-model="batchAi.continuous">持续执行</el-checkbox>
+            </el-form-item>
+            <template v-if="batchAi.continuous">
+              <el-form-item label="间隔(min)" style="margin-bottom:0">
+                <el-input-number v-model="batchAi.interval" :min="1" :max="120" :step="1" :precision="0" style="width:110px"></el-input-number>
+              </el-form-item>
+              <el-form-item label="执行轮数" style="margin-bottom:0">
+                <el-input-number v-model="batchAi.rounds" :min="2" :max="100" :step="1" :precision="0" style="width:110px"></el-input-number>
+              </el-form-item>
+            </template>
+          </el-form>
           <div v-if="batchAi.source==='jql'" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
             <el-button size="small" :type="batchAi.jql===p?void 0:'info'" v-for="(p,i) in batchAi.jqlPresets" :key="i" @click="batchAi.jql=p">{{ batchAi.jqlLabels[i] }}</el-button>
           </div>
           <el-alert v-if="batchAi.oneClickMsg" :type="batchAi.oneClickError ? 'error' : 'success'" :closable="false" :title="batchAi.oneClickMsg" style="margin-top:4px"></el-alert>
-          <!-- 执行进度 -->
+          <div v-if="batchAi.currentRound > 0 && batchAi.continuousRunning" style="margin-top:6px">
+            <el-tag type="info">当前轮次: {{ batchAi.currentRound }} / {{ batchAi.rounds }}</el-tag>
+          </div>
           <div v-if="running.batchOneClick || batchAi.sampleStats" style="margin-top:10px;padding:10px;background:#f5f7fa;border-radius:6px">
             <div v-if="batchAi.sampleStats" style="display:flex;gap:8px;flex-wrap:wrap">
               <el-tag type="info" size="small">搜索: {{ batchAi.sampleStats.searched || 0 }}</el-tag>
@@ -496,6 +521,7 @@
                     :disabled="!getFilteredDiagResults().filter(r => r.report && r.report.human_reason).length">
                     批量写入人工审核结果{{ troubleshoot.categoryFilter ? '（筛选）' : '' }}
                   </el-button>
+                  <el-checkbox v-model="troubleshoot.onlyEmptyReview" size="small">仅人工审核结果为空</el-checkbox>
                   <el-button size="small" type="primary" :loading="troubleshoot.batchApplyingTime" @click="batchApplyCorrectionTimes"
                     :disabled="!getApplicableCorrectionCount()">
                     一键应用正确时间（{{ getApplicableCorrectionCount() }}）
@@ -631,11 +657,14 @@
           <div v-if="dailySummary.total" style="margin-bottom:12px;padding:12px 16px;background:#f8f9fa;border-radius:8px;border:1px solid #e8e8e8">
             <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
               <span style="font-weight:700;color:#303133">汇总：</span>
-              <span>今日执行 <b>{{ dailySummary.total }}</b> 条</span>
+              <span v-if="dailySummary.report_dates && dailySummary.report_dates.length > 1" style="color:#e6a23c;font-weight:600">{{ dailySummary.report_dates[0] }} ~ {{ dailySummary.report_dates[dailySummary.report_dates.length - 1] }}</span>
+              <span>执行 <b>{{ dailySummary.total }}</b> 条</span>
               <span v-if="dailySummary.pc_count || dailySummary.online_count">💻 PC <b>{{ dailySummary.pc_count || 0 }}</b></span>
               <span v-if="dailySummary.pc_count || dailySummary.online_count">🌐 线上 <b>{{ dailySummary.online_count || 0 }}</b></span>
               <span>回归 <b style="color:#409eff">{{ dailySummary.regression || 0 }}</b> 条</span>
               <span>成功 <b style="color:#67c23a">{{ dailySummary.success }}</b> 条</span>
+              <span v-if="dailySummary.pending" >分析中 <b style="color:#e6a23c">{{ dailySummary.pending }}</b> 条</span>
+              <span v-if="dailySummary.dedup">去重 <b style="color:#909399">{{ dailySummary.dedup }}</b> 条</span>
               <span>成功率 <b :style="{color: parseFloat(dailySummary.success_rate) >= 70 ? '#67c23a' : '#e6a23c'}">{{ dailySummary.success_rate }}</b></span>
               <span>平均总耗时 <b>{{ dailySummary.avg_total_duration || '-' }}</b></span>
               <span>平均分析耗时 <b>{{ dailySummary.avg_analysis_duration || '-' }}</b><template v-if="dailySummary.too_long">，耗时过长 <b style="color:#e6a23c">{{ dailySummary.too_long }}</b> 条</template></span>
@@ -663,6 +692,54 @@
               </template>
             </el-table-column>
           </el-table>
+        </el-card>
+
+        <!-- 每周汇总卡片 -->
+        <el-card shadow="never" style="margin-top:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div class="section-title" style="margin:0">每周汇总</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <el-date-picker v-model="weeklyDate" type="date" placeholder="选择日期所在周" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:160px"></el-date-picker>
+              <el-button size="small" type="primary" :loading="weeklyLoading" @click="loadWeeklySummary">查询本周</el-button>
+            </div>
+          </div>
+          <div v-if="weeklySummary.total" style="margin-bottom:12px;padding:12px 16px;background:#f0f5ff;border-radius:8px;border:1px solid #d6e4ff">
+            <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
+              <span style="font-weight:700;color:#1d39c4">{{ weeklySummary.week_info ? weeklySummary.week_info.week_label : '' }}</span>
+              <span v-if="weeklySummary.week_info && weeklySummary.week_info.working_days.length">
+                <span style="color:#595959">{{ weeklySummary.week_info.working_days[0].slice(5) }} ~ {{ weeklySummary.week_info.working_days[weeklySummary.week_info.working_days.length-1].slice(5) }}</span>
+              </span>
+              <span>执行 <b>{{ weeklySummary.total }}</b> 条</span>
+              <span v-if="weeklySummary.pc_count || weeklySummary.online_count">💻 PC <b>{{ weeklySummary.pc_count || 0 }}</b></span>
+              <span v-if="weeklySummary.pc_count || weeklySummary.online_count">🌐 线上 <b>{{ weeklySummary.online_count || 0 }}</b></span>
+              <span>成功 <b style="color:#67c23a">{{ weeklySummary.success }}</b></span>
+              <span v-if="weeklySummary.fail">失败 <b style="color:#f56c6c">{{ weeklySummary.fail }}</b></span>
+              <span v-if="weeklySummary.pending">待分析 <b style="color:#e6a23c">{{ weeklySummary.pending }}</b></span>
+              <span v-if="weeklySummary.dedup">去重 <b style="color:#909399">{{ weeklySummary.dedup }}</b></span>
+              <span>成功率 <b :style="{color: parseFloat(weeklySummary.weekly_rate) >= 70 ? '#67c23a' : '#e6a23c'}">{{ weeklySummary.weekly_rate }}</b></span>
+            </div>
+            <div v-if="Object.keys(weeklySummary.failures || {}).length" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center">
+              <span style="font-weight:700;color:#f56c6c">失败分析：</span>
+              <el-tag v-for="(count, cat) in weeklySummary.failures" :key="cat" :type="cat==='待开发排查'?'warning':'danger'" size="small">{{ cat }} {{ count }} 条</el-tag>
+            </div>
+          </div>
+          <!-- 每日统计表 -->
+          <el-table v-if="weeklySummary.daily_breakdown && weeklySummary.daily_breakdown.length" :data="weeklySummary.daily_breakdown" size="small" stripe max-height="240" border style="margin-bottom:12px">
+            <el-table-column prop="date" label="日期" width="120"></el-table-column>
+            <el-table-column prop="total" label="总数" width="80" align="center"></el-table-column>
+            <el-table-column prop="success" label="成功" width="80" align="center">
+              <template #default="{ row }"><span style="color:#67c23a">{{ row.success }}</span></template>
+            </el-table-column>
+            <el-table-column prop="fail" label="失败" width="80" align="center">
+              <template #default="{ row }"><span :style="{color: row.fail > 0 ? '#f56c6c' : '#909399'}">{{ row.fail }}</span></template>
+            </el-table-column>
+            <el-table-column prop="dedup" label="去重" width="80" align="center">
+              <template #default="{ row }"><span style="color:#909399">{{ row.dedup || 0 }}</span></template>
+            </el-table-column>
+            <el-table-column prop="rate" label="成功率" width="100" align="center"></el-table-column>
+            <el-table-column prop="avg_analysis" label="平均分析耗时" width="130" align="center"></el-table-column>
+          </el-table>
+          <div v-if="weeklySummary.total === 0 && weeklySummary.week_info" style="color:#909399;text-align:center;padding:20px 0">本周无批量执行记录</div>
         </el-card>
       </el-tab-pane>
 
@@ -997,6 +1074,7 @@
               <el-menu-item index="prod_batch">10. 线上AI日志分析批量执行</el-menu-item>
               <el-menu-item index="online_followup">11. 线上正确执行跟进</el-menu-item>
               <el-menu-item index="ai_log_visual">12. AI日志分析可视化</el-menu-item>
+              <el-menu-item index="config_tuning">13. 配置参数调优</el-menu-item>
             </el-menu>
           </el-aside>
           <el-main style="padding:20px;display:flex;flex-direction:column">
@@ -1271,7 +1349,12 @@
                   <el-form-item label="抽取数量" style="margin-right:0"><el-input-number v-model="batchAi.sampleCount" :min="1" :max="200" style="width:120px"></el-input-number></el-form-item>
                   <el-checkbox v-model="batchAi.execMode" true-value="pc" @change="v => { if(v){batchAi.execMode='pc';setBatchMeta('batchAi','pc')} }" style="margin-right:4px">PC执行</el-checkbox>
                   <el-checkbox v-model="batchAi.execMode" true-value="online" @change="v => { if(v){batchAi.execMode='online';setBatchMeta('batchAi','online')} }" style="margin-right:8px">线上执行</el-checkbox>
-                  <el-form-item style="margin-right:0"><el-button type="primary" :loading="running.batchOneClick" :disabled="!batchAi.execMode" @click="batchAiOneClick">一键执行</el-button></el-form-item>
+                  <el-form-item style="margin-right:0">
+                    <el-button type="primary" :loading="running.batchOneClick" :disabled="!batchAi.execMode" @click="batchAiOneClick">
+                      {{ batchAi.continuous ? `持续执行（${batchAi.rounds} 轮）` : '一键执行' }}
+                    </el-button>
+                    <el-button v-if="running.batchOneClick && batchAi.continuous" type="danger" @click="batchAiAbort && batchAiAbort.abort()">停止</el-button>
+                  </el-form-item>
                 </el-form>
                 <el-form inline v-else style="margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                   <el-form-item label="CSV文件" style="margin-right:0">
@@ -1283,7 +1366,12 @@
                   <el-form-item label="抽取数量" style="margin-right:0"><el-input-number v-model="batchAi.sampleCount" :min="1" :max="200" style="width:120px"></el-input-number></el-form-item>
                   <el-checkbox v-model="batchAi.execMode" true-value="pc" @change="v => { if(v){batchAi.execMode='pc';setBatchMeta('batchAi','pc')} }" style="margin-right:4px">PC执行</el-checkbox>
                   <el-checkbox v-model="batchAi.execMode" true-value="online" @change="v => { if(v){batchAi.execMode='online';setBatchMeta('batchAi','online')} }" style="margin-right:8px">线上执行</el-checkbox>
-                  <el-form-item style="margin-right:0"><el-button type="primary" :loading="running.batchOneClick" :disabled="!batchAi.selectedCsv || !batchAi.execMode" @click="batchAiOneClick">一键执行</el-button></el-form-item>
+                  <el-form-item style="margin-right:0">
+                    <el-button type="primary" :loading="running.batchOneClick" :disabled="!batchAi.selectedCsv || !batchAi.execMode" @click="batchAiOneClick">
+                      {{ batchAi.continuous ? `持续执行（${batchAi.rounds} 轮）` : '一键执行' }}
+                    </el-button>
+                    <el-button v-if="running.batchOneClick && batchAi.continuous" type="danger" @click="batchAiAbort && batchAiAbort.abort()">停止</el-button>
+                  </el-form-item>
                 </el-form>
                 <!-- 执行参数 -->
                 <div v-if="batchAi.execMode" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;font-size:12px;color:#606266">
@@ -1292,10 +1380,26 @@
                   <span>模型:</span><el-input v-model="batchAi.model" size="small" style="width:140px"></el-input>
                   <span>触发来源:</span><el-input v-model="batchAi.triggerSource" size="small" style="width:80px"></el-input>
                 </div>
+                <el-form inline style="margin-bottom:8px">
+                  <el-form-item style="margin-bottom:0">
+                    <el-checkbox v-model="batchAi.continuous">持续执行</el-checkbox>
+                  </el-form-item>
+                  <template v-if="batchAi.continuous">
+                    <el-form-item label="间隔(min)" style="margin-bottom:0">
+                      <el-input-number v-model="batchAi.interval" :min="1" :max="120" :step="1" :precision="0" style="width:110px"></el-input-number>
+                    </el-form-item>
+                    <el-form-item label="执行轮数" style="margin-bottom:0">
+                      <el-input-number v-model="batchAi.rounds" :min="2" :max="100" :step="1" :precision="0" style="width:110px"></el-input-number>
+                    </el-form-item>
+                  </template>
+                </el-form>
                 <div v-if="batchAi.source==='jql'" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
                   <el-button size="small" :type="batchAi.jql===p?void 0:'info'" v-for="(p,i) in batchAi.jqlPresets" :key="i" @click="batchAi.jql=p">{{ batchAi.jqlLabels[i] }}</el-button>
                 </div>
                 <el-alert v-if="batchAi.oneClickMsg" :type="batchAi.oneClickError ? 'error' : 'success'" :closable="false" :title="batchAi.oneClickMsg" style="margin-top:4px"></el-alert>
+                <div v-if="batchAi.currentRound > 0 && batchAi.continuousRunning" style="margin-top:6px">
+                  <el-tag type="info">当前轮次: {{ batchAi.currentRound }} / {{ batchAi.rounds }}</el-tag>
+                </div>
                 <!-- 执行进度 -->
                 <div v-if="running.batchOneClick || batchAi.sampleStats" style="margin-top:10px;padding:10px;background:#f5f7fa;border-radius:6px">
                   <div v-if="batchAi.sampleStats" style="display:flex;gap:8px;flex-wrap:wrap">
@@ -1628,8 +1732,26 @@
               <!-- 一键执行 -->
               <el-card shadow="never" style="margin-top:12px;border:2px solid #409eff">
                 <template #header><span style="font-weight:700;color:#409eff">⚡ 一键执行（提取失败→获取时间→批量执行）</span></template>
-                <el-form inline>
-                  <el-form-item><el-button type="primary" :loading="running.failedRetryOneClick" @click="failedRetryOneClick">一键执行</el-button></el-form-item>
+                <el-form inline style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                  <el-form-item label="分析完成时间起" style="margin-bottom:0">
+                    <el-date-picker v-model="failedRetry.afterTime" type="datetime" value-format="YYYY-MM-DD HH:mm:ss"
+                      placeholder="不填则不筛选时间" clearable style="width:220px"></el-date-picker>
+                  </el-form-item>
+                  <el-form-item style="margin-bottom:0">
+                    <el-checkbox v-model="failedRetry.excludeCommon">过滤通用失败原因</el-checkbox>
+                  </el-form-item>
+                  <el-form-item style="margin-bottom:0">
+                    <el-checkbox v-model="failedRetry.excludeSuccess">过滤已成功的</el-checkbox>
+                  </el-form-item>
+                  <el-form-item label="抽取个数" style="margin-bottom:0">
+                    <el-input-number v-model="failedRetry.sampleCount" :min="0" :max="500" :step="1" style="width:120px" controls-position="right"></el-input-number>
+                    <span style="font-size:12px;color:#909399;margin-left:4px">0=全部</span>
+                  </el-form-item>
+                  <el-checkbox v-model="failedRetry.execMode" true-value="pc" @change="v => { if(v) failedRetry.execMode='pc' }" style="margin-right:4px">PC执行</el-checkbox>
+                  <el-checkbox v-model="failedRetry.execMode" true-value="online" @change="v => { if(v) failedRetry.execMode='online' }" style="margin-right:8px">线上执行</el-checkbox>
+                  <el-form-item style="margin-bottom:0">
+                    <el-button type="primary" :loading="running.failedRetryOneClick" @click="failedRetryOneClick">一键执行</el-button>
+                  </el-form-item>
                 </el-form>
                 <el-alert v-if="failedRetry.oneClickMsg" :type="failedRetry.oneClickError ? 'error' : 'success'" :closable="false" :title="failedRetry.oneClickMsg" style="margin-top:8px"></el-alert>
               </el-card>
@@ -1816,20 +1938,16 @@
                     </el-checkbox>
                   </el-checkbox-group>
                 </div>
-                <div v-if="prodBatch.prodResults.length" style="margin-top:10px">
-                  <div style="font-size:12px;color:#909399;margin-bottom:4px">执行结果文件：</div>
-                  <el-checkbox-group v-model="prodBatch.selectedCsvs">
-                    <el-checkbox v-for="f in prodBatch.prodResults" :key="f.path" :label="f.path" style="display:block;margin-bottom:4px">
-                      {{ f.name }} ({{ f.count }} 条)
-                    </el-checkbox>
-                  </el-checkbox-group>
-                </div>
                 <el-tag type="info" style="margin-top:6px" v-if="prodBatch.selectedCsvs.length">已选 {{ prodBatch.selectedCsvs.length }} 个文件</el-tag>
               </el-card>
               <!-- 执行 -->
               <el-card shadow="never" style="margin-top:12px" v-if="prodBatch.selectedCsvs.length || prodBatch.directInput.trim()">
                 <template #header><span style="font-weight:600;font-size:13px">提取触发时间 + 去重 + 批量执行</span></template>
-                <el-checkbox v-model="prodBatch.skipExisting" style="margin-bottom:8px;display:block">重复过滤（跳过多维表格中 parseFullTicket已成功 + 人工审核无效bug）</el-checkbox>
+                <el-checkbox v-model="prodBatch.skipExisting" @change="onProdFilterAllChange" style="margin-bottom:8px;display:block">重复过滤（跳过多维表格中 parseFullTicket已成功 + 人工审核无效bug）</el-checkbox>
+                <div style="display:flex;gap:16px;margin-bottom:8px;flex-wrap:wrap">
+                  <el-checkbox v-model="prodBatch.filterPcOnly" @change="onProdFilterSourceChange">过滤PC正确和通用失败的</el-checkbox>
+                  <el-checkbox v-model="prodBatch.filterOnlineOnly" @change="onProdFilterSourceChange">过滤线上正确和通用失败的</el-checkbox>
+                </div>
                 <el-form inline style="margin-bottom:8px">
                   <el-form-item label="抽取数量" style="margin-bottom:0">
                     <el-input-number v-model="prodBatch.maxCount" :min="0" :step="100" :precision="0" style="width:160px" placeholder="0=不限制">
@@ -2014,6 +2132,7 @@
                         :disabled="!getFilteredDiagResults().filter(r => r.report && r.report.human_reason).length">
                         批量写入人工审核结果{{ troubleshoot.categoryFilter ? '（筛选）' : '' }}
                       </el-button>
+                      <el-checkbox v-model="troubleshoot.onlyEmptyReview" size="small">仅人工审核结果为空</el-checkbox>
                       <el-button size="small" type="primary" :loading="troubleshoot.batchApplyingTime" @click="batchApplyCorrectionTimes"
                         :disabled="!getApplicableCorrectionCount()">
                         一键应用正确时间（{{ getApplicableCorrectionCount() }}）
@@ -2280,6 +2399,45 @@
                 </el-table>
                 <div v-if="onlineFollowup.runMsg" style="margin-top:6px;font-size:13px;color:#67c23a">{{ onlineFollowup.runMsg }}</div>
               </el-card>
+
+              <!-- ④ 错误统计查询 -->
+              <el-card shadow="never" style="margin-top:12px">
+                <template #header><span style="font-weight:700">④ 错误统计查询</span></template>
+                <el-form inline style="margin-bottom:10px">
+                  <el-form-item label="分析完成时间起点">
+                    <el-date-picker v-model="onlineFollowup.errorStats.afterTime" type="datetime" placeholder="留空则全量查询"
+                      format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DD HH:mm:ss" style="width:220px"></el-date-picker>
+                  </el-form-item>
+                  <el-form-item>
+                    <el-button type="primary" :loading="onlineFollowup.errorStats.querying" @click="queryErrorStats(true)">按时间查询</el-button>
+                    <el-button :loading="onlineFollowup.errorStats.querying" @click="queryErrorStats(false)">全量查询</el-button>
+                  </el-form-item>
+                </el-form>
+                <div v-if="onlineFollowup.errorStats.queryMsg" style="margin-bottom:8px;font-size:13px"
+                  :style="{color: onlineFollowup.errorStats.queryError ? '#f56c6c' : '#67c23a'}">{{ onlineFollowup.errorStats.queryMsg }}</div>
+                <el-table v-if="onlineFollowup.errorStats.records.length" :data="onlineFollowup.errorStats.records" size="small" stripe border max-height="400">
+                  <el-table-column type="index" label="#" width="45"></el-table-column>
+                  <el-table-column prop="jira号" label="Jira号" width="140"></el-table-column>
+                  <el-table-column prop="失败次数" label="失败次数" width="80" align="center">
+                    <template #default="{row}">
+                      <el-tag :type="row['失败次数']>=3?'danger':row['失败次数']>=2?'warning':'info'" size="small">{{ row['失败次数'] }}</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="是否有分析成功" width="110" align="center">
+                    <template #default="{row}">
+                      <el-tag :type="row['有成功记录']?'success':'danger'" size="small">{{ row['有成功记录'] ? '是' : '否' }}</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="最新人工审核原因" label="最新人工审核原因" min-width="250" show-overflow-tooltip>
+                    <template #default="{row}"><span v-if="row['最新人工审核原因']">{{ row['最新人工审核原因'] }}</span><span v-else style="color:#c0c4cc">-</span></template>
+                  </el-table-column>
+                  <el-table-column prop="gmlogger文件" label="gmlogger文件" min-width="220" show-overflow-tooltip>
+                    <template #default="{row}"><span v-if="row['gmlogger文件']" style="font-size:12px">{{ row['gmlogger文件'] }}</span><span v-else style="color:#c0c4cc">-</span></template>
+                  </el-table-column>
+                  <el-table-column prop="最新失败时间" label="最新失败时间" width="160"></el-table-column>
+                </el-table>
+                <el-empty v-else-if="!onlineFollowup.errorStats.querying && onlineFollowup.errorStats.queryMsg && !onlineFollowup.errorStats.queryError" description="无失败记录" :image-size="40"></el-empty>
+              </el-card>
             </div>
 
             <!-- 功能12：AI日志分析可视化 -->
@@ -2409,9 +2567,204 @@
               </el-card>
             </div>
 
+            <!-- 13. 配置参数调优 -->
+            <div v-else-if="testPanel === 'config_tuning'" key="config_tuning" class="test-panel">
+              <div class="section-title">配置参数调优</div>
+              <el-alert type="info" :closable="false"
+                title="选择批量执行批次，对比不同配置参数（并发数/模型）下的分析成功率和耗时表现"></el-alert>
+              <!-- 模式切换 -->
+              <el-card shadow="never" style="margin-top:14px">
+                <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+                  <el-radio-group v-model="tuning.source" @change="loadTuningBatches">
+                    <el-radio-button label="pc">PC 执行</el-radio-button>
+                    <el-radio-button label="online">线上执行</el-radio-button>
+                  </el-radio-group>
+                  <el-button type="primary" :loading="tuning.loading" @click="loadTuningBatches">加载批次</el-button>
+                  <span v-if="tuning.batches.length" style="color:#909399">共 {{ tuning.batches.length }} 个批次</span>
+                </div>
+              </el-card>
+              <!-- 批次列表 -->
+              <el-card shadow="never" style="margin-top:14px" v-if="tuning.batches.length">
+                <div style="font-weight:600;margin-bottom:10px">选择批次（可多选）</div>
+                <el-checkbox-group v-model="tuning.selected">
+                  <div v-for="b in tuning.batches" :key="b.batch_id" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                    <el-checkbox :label="b.batch_id" style="min-width:40px"></el-checkbox>
+                    <el-tag size="small" type="info">{{ b.date }}</el-tag>
+                    <span style="font-size:13px">{{ b.name }}</span>
+                    <el-tag size="small">并发{{ b.base_info['分析并发数'] || '-' }}/{{ b.base_info['下载并发数'] || '-' }}</el-tag>
+                    <el-tag size="small" type="warning">{{ b.base_info['模型'] || '-' }}</el-tag>
+                    <span style="font-size:12px;color:#909399">成功 {{ b.success }}/{{ b.total }}</span>
+                    <el-input v-if="tuning.selected.includes(b.batch_id)" v-model="tuning.versionLabels[b.batch_id]"
+                      placeholder="版本号" size="small" style="width:100px;margin-left:auto"></el-input>
+                  </div>
+                </el-checkbox-group>
+                <el-button type="success" style="margin-top:12px" :loading="tuning.analyzing"
+                  :disabled="!tuning.selected.length" @click="analyzeTuning">开始分析</el-button>
+              </el-card>
+              <!-- 分析结果 -->
+              <template v-if="tuning.results.length">
+                <el-card shadow="never" style="margin-top:14px">
+                  <div style="font-weight:600;margin-bottom:10px">分析结果</div>
+                  <el-table :data="tuning.results" stripe size="small">
+                    <el-table-column prop="date" label="日期" width="100"></el-table-column>
+                    <el-table-column label="版本" width="80">
+                      <template #default="{row}">{{ row.version }}</template>
+                    </el-table-column>
+                    <el-table-column label="基础信息" min-width="200">
+                      <template #default="{row}">并发{{ row.base_info['分析并发数'] || '-' }}/{{ row.base_info['下载并发数'] || '-' }} {{ row.base_info['模型'] || '-' }}</template>
+                    </el-table-column>
+                    <el-table-column prop="total" label="执行数" width="70"></el-table-column>
+                    <el-table-column prop="success_rate" label="成功率" width="80"></el-table-column>
+                    <el-table-column prop="avg_analysis_time" label="平均分析耗时" width="110"></el-table-column>
+                    <el-table-column prop="median_analysis_time" label="中位数分析耗时" width="120"></el-table-column>
+                  </el-table>
+                </el-card>
+                <!-- 图表 -->
+                <el-card shadow="never" style="margin-top:14px">
+                  <div style="font-weight:600;margin-bottom:10px">对比图表</div>
+                  <el-row :gutter="16">
+                    <el-col :span="12"><div ref="tuningChart1" style="height:300px"></div></el-col>
+                    <el-col :span="12"><div ref="tuningChart2" style="height:300px"></div></el-col>
+                  </el-row>
+                  <div ref="tuningChart3" style="height:300px;margin-top:16px"></div>
+                </el-card>
+                <!-- 对比结论 -->
+                <el-card shadow="never" style="margin-top:14px">
+                  <div style="font-weight:600;margin-bottom:10px">对比结论</div>
+                  <el-checkbox-group v-model="tuning.comparing">
+                    <el-checkbox v-for="r in tuning.results" :key="r.batch_id" :label="r.batch_id" style="margin-right:16px">
+                      {{ r.date }} {{ r.version !== '-' ? r.version : '' }} 并发{{ r.base_info['分析并发数'] || '-' }}/{{ r.base_info['下载并发数'] || '-' }}
+                    </el-checkbox>
+                  </el-checkbox-group>
+                  <el-button type="primary" style="margin-top:12px" :disabled="tuning.comparing.length < 2" @click="generateTuningConclusion">生成对比结论</el-button>
+                  <div v-if="tuning.conclusion" style="margin-top:12px;padding:12px;background:#f8f9fa;border-radius:6px;white-space:pre-wrap;font-size:13px;line-height:1.8">{{ tuning.conclusion }}</div>
+                </el-card>
+              </template>
+            </div>
+
             </transition>
           </el-main>
         </el-container>
+      </el-tab-pane>
+
+      <!-- 页面3：冒烟测试 -->
+      <el-tab-pane label="冒烟测试" name="smoke">
+        <div style="padding:20px;max-width:1200px;margin:0 auto">
+          <div class="section-title" style="font-size:18px;margin-bottom:16px">冒烟测试</div>
+          <el-alert type="info" :closable="false" style="margin-bottom:16px"
+            title="配置3条典型用例的Jira号，一键触发线上AI日志分析接口，并查询多维表格中的分析结果进行验证"></el-alert>
+
+          <!-- 用例配置区 -->
+          <el-card shadow="never" style="margin-bottom:16px">
+            <template #header>
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span style="font-weight:700">① 用例配置</span>
+                <el-button size="small" @click="saveSmokeTestConfig">保存配置</el-button>
+              </div>
+            </template>
+            <div v-for="(c, i) in smokeTest.cases" :key="i" style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+              <el-checkbox v-model="c.checked" style="min-width:24px"></el-checkbox>
+              <el-tag :type="['primary','success','warning'][i]" style="min-width:160px;text-align:center">{{ c.name }}</el-tag>
+              <el-input v-model="c.jiraId" :placeholder="'输入 ' + c.name + ' 的 Jira 号（如 VCU-xxxxxx）'" clearable style="flex:1"
+                @keyup.enter="runSmokeTest"></el-input>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px;margin-top:4px">
+              <el-tag style="min-width:160px;text-align:center">版本号</el-tag>
+              <el-input v-model="smokeTest.version" placeholder="输入版本号（可不填，默认 -）" clearable style="max-width:300px"></el-input>
+            </div>
+          </el-card>
+
+          <!-- 执行区 -->
+          <el-card shadow="never" style="margin-bottom:16px">
+            <template #header><span style="font-weight:700">② 一键执行线上AI分析</span></template>
+            <div style="display:flex;align-items:center;gap:12px">
+              <el-button type="primary" :loading="smokeTest.running" @click="runSmokeTest"
+                :disabled="smokeTest.cases.filter(c=>c.checked&&c.jiraId).length===0">一键执行</el-button>
+              <el-tag v-if="smokeTest.execMsg" :type="smokeTest.execError?'danger':'success'">{{ smokeTest.execMsg }}</el-tag>
+            </div>
+            <el-table v-if="smokeTest.execResults.length" :data="smokeTest.execResults" size="small" stripe border style="margin-top:12px">
+              <el-table-column type="index" label="#" width="45"></el-table-column>
+              <el-table-column prop="jira号" label="Jira号" width="140"></el-table-column>
+              <el-table-column label="执行结果" width="90" align="center">
+                <template #default="{row}">
+                  <el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="触发时间" label="触发时间" width="160"></el-table-column>
+              <el-table-column prop="执行时间" label="执行时间" width="160"></el-table-column>
+              <el-table-column prop="备注" label="备注" min-width="200" show-overflow-tooltip></el-table-column>
+            </el-table>
+          </el-card>
+
+          <!-- 多维表格查询区 -->
+          <el-card shadow="never" style="margin-bottom:16px">
+            <template #header><span style="font-weight:700">③ 多维表格查询</span></template>
+            <div style="display:flex;align-items:center;gap:12px">
+              <el-button type="success" :loading="smokeTest.querying" @click="querySmokeTestBitable"
+                :disabled="smokeTest.cases.filter(c=>c.jiraId).length===0">一键查询多维表格</el-button>
+              <el-button type="warning" :loading="smokeTest.saving" @click="saveSmokeTestRecord"
+                :disabled="!smokeTest.bitableRecords.length">生成记录</el-button>
+              <el-tag v-if="smokeTest.queryMsg" :type="smokeTest.queryError?'danger':'success'">{{ smokeTest.queryMsg }}</el-tag>
+            </div>
+            <el-table v-if="smokeTest.bitableRecords.length" :data="smokeTest.bitableRecords" size="small" stripe border style="margin-top:12px">
+              <el-table-column type="index" label="#" width="45"></el-table-column>
+              <el-table-column prop="jira号" label="Jira号" width="140"></el-table-column>
+              <el-table-column label="分析结果" width="90" align="center">
+                <template #default="{row}">
+                  <el-tag :type="row['分析结果']==='成功'?'success':row['分析结果']==='失败'?'danger':'info'" size="small">{{ row['分析结果'] || '-' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="分析耗时" width="100" align="center">
+                <template #default="{row}">{{ computeSmokeDuration(row) }}</template>
+              </el-table-column>
+              <el-table-column prop="分析问题时间" label="分析问题时间" width="160"></el-table-column>
+              <el-table-column prop="分析完成时间" label="分析完成时间" width="160"></el-table-column>
+              <el-table-column label="置信度" width="90" align="center">
+                <template #default="{row}">
+                  <el-tag v-if="row['结果置信度']" :type="parseFloat(row['结果置信度'])>=0.8?'success':parseFloat(row['结果置信度'])>=0.5?'warning':'info'" size="small">{{ row['结果置信度'] }}</el-tag>
+                  <span v-else style="color:#999">-</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="rootcause" label="问题根因" min-width="200" show-overflow-tooltip>
+                <template #default="{row}"><span v-if="row.rootcause">{{ row.rootcause }}</span><span v-else style="color:#c0c4cc">-</span></template>
+              </el-table-column>
+              <el-table-column prop="错误信息" label="错误信息" min-width="180" show-overflow-tooltip>
+                <template #default="{row}"><span v-if="row['错误信息']" style="color:#f56c6c">{{ row['错误信息'] }}</span><span v-else style="color:#c0c4cc">-</span></template>
+              </el-table-column>
+              <el-table-column prop="人工审核结果" label="人工审核" width="120" show-overflow-tooltip>
+                <template #default="{row}"><span v-if="row['人工审核结果']">{{ row['人工审核结果'] }}</span><span v-else style="color:#c0c4cc">-</span></template>
+              </el-table-column>
+              <el-table-column label="报告" width="60" align="center">
+                <template #default="{row}">
+                  <a v-if="row['飞书报告链接']" :href="row['飞书报告链接']" target="_blank" style="color:#409eff;font-size:12px">查看</a>
+                  <span v-else style="color:#c0c4cc">-</span>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div v-if="smokeTest.saveMsg" style="margin-top:8px">
+              <el-alert :type="smokeTest.saveError?'danger':'success'" :closable="false">
+                {{ smokeTest.saveMsg }}
+                <a v-if="smokeTest.saveCloudUrl" :href="smokeTest.saveCloudUrl" target="_blank" style="margin-left:8px;color:#409eff">查看云端文档</a>
+              </el-alert>
+            </div>
+            <el-table v-if="smokeTest.savedResults.length" :data="smokeTest.savedResults" size="small" stripe border style="margin-top:8px">
+              <el-table-column type="index" label="#" width="45"></el-table-column>
+              <el-table-column prop="case_name" label="用例" width="180"></el-table-column>
+              <el-table-column prop="jira_id" label="Jira号" width="140"></el-table-column>
+              <el-table-column label="是否成功" width="90" align="center">
+                <template #default="{row}">
+                  <el-tag :type="row.is_success==='是'?'success':'danger'" size="small">{{ row.is_success }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="analysis_duration" label="分析耗时" width="120" align="center"></el-table-column>
+              <el-table-column prop="total_duration" label="总耗时" width="120" align="center"></el-table-column>
+              <el-table-column prop="error_reason" label="错误原因" min-width="200" show-overflow-tooltip>
+                <template #default="{row}"><span v-if="row.error_reason && row.error_reason!=='-'" style="color:#f56c6c">{{ row.error_reason }}</span><span v-else style="color:#c0c4cc">-</span></template>
+              </el-table-column>
+            </el-table>
+            <el-empty v-else-if="!smokeTest.querying && smokeTest.queryMsg && !smokeTest.queryError" description="无匹配记录" :image-size="40"></el-empty>
+          </el-card>
+        </div>
       </el-tab-pane>
     </el-tabs>
   </div>
@@ -2469,6 +2822,7 @@
 <script src="static/vue.global.prod.js"></script>
 <script src="static/element-plus.full.min.js"></script>
 <script src="static/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script>
 const { createApp } = Vue;
 
@@ -2491,6 +2845,7 @@ createApp({
         filterLoading: false, filterInfo: '',
       },
       aiDirectAbort: null,
+      batchAiAbort: null,
       commentCompare: { bugid: '', results: [], selected: null, currentStyle: '' },
       testJiraForm: { bugid: '' },
       jiraRawResult: null,
@@ -2532,7 +2887,8 @@ createApp({
       failedRetry: {
         jiras: [], triggerTimes: {}, loadingJiras: false, loadingTimes: false,
         extractMsg: '', extractError: false, timeMsg: '', timeError: false,
-        running: false, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false
+        running: false, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false,
+        afterTime: '', excludeCommon: false, excludeSuccess: false, execMode: 'pc', sampleCount: 0,
       },
       docxCreateForm: { title: '测试文档', content: '# 测试文档\n\n这是一段测试内容。' },
       docxCreateResult: null,
@@ -2541,7 +2897,7 @@ createApp({
         afterTime: '', resultFilter: '失败', sourceFilter: '', dedup: true, noManualReview: false,
         querying: false, records: [], successRecords: [], queryingSuccess: false, successSearched: false,
         diagRunning: false, diagLoadingMap: {}, diagResults: [], categoryFilter: '',
-        writingReview: false, exportingTriggerIssues: false, batchApplyingTime: false,
+        writingReview: false, exportingTriggerIssues: false, batchApplyingTime: false, onlyEmptyReview: false,
         stopFlag: false, abortController: null,
         correctionEditor: { visible: false, row: null, time: '', note: '', humanReason: '', matchedCategory: '', saving: false },
       },
@@ -2565,8 +2921,8 @@ createApp({
       },
       // 线上AI日志分析批量执行
       prodBatch: {
-        csvFiles: [], prodResults: [], selectedCsvs: [], directInput: '',
-        skipExisting: true, maxCount: 0, msg: '', error: false, stage: '',
+        csvFiles: [], selectedCsvs: [], directInput: '',
+        skipExisting: true, filterPcOnly: false, filterOnlineOnly: false, maxCount: 0, msg: '', error: false, stage: '',
         results: [], doneMsg: '', cloudUrl: '',
         analysisConcurrency: 5, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上',
         // 持续执行参数
@@ -2584,6 +2940,10 @@ createApp({
         pcSuccessCount: 0, onlineSuccessCount: 0, diffCount: 0,
         diffRecords: [], selectedDiff: [],
         batchSize: 10, running: false, runResults: [], runDone: 0, runTotal: 0, runMsg: '',
+        // 错误统计查询
+        errorStats: {
+          afterTime: '', querying: false, records: [], queryMsg: '', queryError: false,
+        },
       },
       // AI日志分析可视化
       aiLogVisual: {
@@ -2615,7 +2975,7 @@ createApp({
       feishuDocError: '',
       feishuImQuery: { chatName: '王源泉', chatId: '', startDateTime: null, chats: null, result: null, error: '', debugResult: null },
       feishuEvents: { result: null },
-      batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"', 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED', 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")'], jqlLabels: ['远控', 'coreservice', '导航', 'VCU近期未关闭', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice', '8.25后RES1.0/1.1'], sampleCount: 5, source: 'jql', filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', csvFiles: [], selectedCsv: '', csvTriggerTimes: {}, rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '' },
+      batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"', 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED', 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")'], jqlLabels: ['远控', 'coreservice', '导航', 'VCU近期未关闭', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice', '8.25后RES1.0/1.1'], sampleCount: 5, source: 'jql', filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', csvFiles: [], selectedCsv: '', csvTriggerTimes: {}, rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false },
       verifyForm: { csvPath: '' },
       verifyMode: 'browse',
       docsFiles: [],
@@ -2674,6 +3034,7 @@ createApp({
       dailyRows: [], dailyDate: '', dailyColumns: [], dailyLoading: false, syncCloudLoading: false,
             dailyReportDate: '', dailyReportLoading: false,
             dailySummary: {},
+      weeklySummary: {}, weeklyLoading: false, weeklyDate: null,
       batchReportRows: [],
       // 多维表格全量数据
       bitableAllRecords: [], bitableAllColumns: [], bitableFilters: [], bitableLoading: false,
@@ -2697,6 +3058,30 @@ createApp({
       // 上次执行结果缓存
       lastAnalyzeRows: [],
       lastAuditRows: [],
+      // 冒烟测试
+      smokeTest: {
+        cases: [
+          { name: '分包解压', jiraId: '', checked: true },
+          { name: '完整解压', jiraId: '', checked: true },
+          { name: '无gmlogger文件报错查看', jiraId: '', checked: true },
+        ],
+        version: '',
+        running: false, execResults: [], execMsg: '', execError: false, execTime: '',
+        querying: false, bitableRecords: [], queryMsg: '', queryError: false,
+        saving: false, saveMsg: '', saveError: false, saveCloudUrl: '', savedResults: [],
+      },
+      // 配置参数调优
+      tuning: {
+        source: 'pc',
+        loading: false,
+        batches: [],
+        selected: [],
+        versionLabels: {},
+        analyzing: false,
+        results: [],
+        comparing: [],
+        conclusion: '',
+      },
     };
   },
   methods: {
@@ -2748,6 +3133,22 @@ createApp({
         ElementPlus.ElMessage.error('刷新失败: ' + e.message);
       } finally {
         this.dailyReportLoading = false;
+      }
+    },
+    async loadWeeklySummary() {
+      this.weeklyLoading = true;
+      try {
+        const query = this.weeklyDate ? `?date=${this.weeklyDate}` : '';
+        const body = await this.api(`/api/report/weekly_summary${query}`);
+        this.weeklySummary = body.data || {};
+        const wi = this.weeklySummary.week_info;
+        if (wi) {
+          ElementPlus.ElMessage.success(`${wi.week_label} 汇总: ${this.weeklySummary.total} 条`);
+        }
+      } catch (e) {
+        ElementPlus.ElMessage.error('每周汇总查询失败: ' + e.message);
+      } finally {
+        this.weeklyLoading = false;
       }
     },
     async loadDaily() {
@@ -3222,10 +3623,14 @@ createApp({
         const records = (body.data && body.data.rows) || [];
         this.flow2BitableMatched = body.data?.matched || 0;
         this.flow2Records = records;
-        // 分离失败记录（用于 Step 3 失败排查）
+        // 分离失败记录（用于 Step 3 失败排查，按 jira 号去重，同 bug 多条执行记录仅保留一条）
         const errRecords = [];
+        const errSeen = new Set();
         for (const r of records) {
           if ((r['分析结果'] || '').trim() === '失败') {
+            const id = (r['jira号'] || '').trim();
+            if (id && errSeen.has(id)) continue;
+            if (id) errSeen.add(id);
             errRecords.push({ ...r, written: false });
           }
         }
@@ -3235,7 +3640,7 @@ createApp({
         this.flow2Msg = '查询失败: ' + e.message; this.flow2Error = true;
       } finally { this.flow2Loading.query = false; }
     },
-    // 流程二：批量诊断失败记录
+    // 流程二：批量诊断失败记录（同 jira 号仅诊断一次，避免重复调用）
     async flow2DiagnoseAll() {
       const targets = this.flow2ErrorRecords;
       if (!targets.length) { ElementPlus.ElMessage.warning('无可诊断的失败记录'); return; }
@@ -3243,7 +3648,15 @@ createApp({
       this.troubleshoot.stopFlag = false;
       this.troubleshoot.abortController = new AbortController();
       this.troubleshoot.diagResults = [];
-      const queue = [...targets];
+      // 按 jira 号去重，同一 bug 仅诊断一次
+      const seen = new Set();
+      const queue = [];
+      for (const r of targets) {
+        const id = r['jira号'];
+        if (id && !seen.has(id)) { seen.add(id); queue.push(r); }
+      }
+      const dupCount = targets.length - queue.length;
+      if (dupCount) console.log(`批量诊断去重: ${targets.length} 条 → ${queue.length} 条（${dupCount} 个重复 jira 号跳过）`);
       const worker = async () => {
         while (queue.length && !this.troubleshoot.stopFlag) { await this._diagnoseRow(queue.shift()); }
       };
@@ -3252,7 +3665,8 @@ createApp({
       if (this.troubleshoot.stopFlag) {
         ElementPlus.ElMessage.warning(`已停止诊断：完成 ${this.troubleshoot.diagResults.length} 条，剩余 ${queue.length} 条未诊断`);
       } else {
-        ElementPlus.ElMessage.success(`诊断完成，共 ${this.troubleshoot.diagResults.length} 条`);
+        const dupMsg = dupCount ? `（${dupCount} 个重复 jira 号已跳过）` : '';
+        ElementPlus.ElMessage.success(`诊断完成，共 ${this.troubleshoot.diagResults.length} 条${dupMsg}`);
       }
     },
     // 置信度评测：SSE流式执行（LLM语义对比）
@@ -3676,6 +4090,13 @@ createApp({
     onFilterSourceChange() {
       if (this.batchAi.filterPcOnly || this.batchAi.filterOnlineOnly) { this.batchAi.filterAllExisting = false; }
     },
+    // 功能10过滤互斥：重复过滤与PC/线上过滤互斥
+    onProdFilterAllChange(val) {
+      if (val) { this.prodBatch.filterPcOnly = false; this.prodBatch.filterOnlineOnly = false; }
+    },
+    onProdFilterSourceChange() {
+      if (this.prodBatch.filterPcOnly || this.prodBatch.filterOnlineOnly) { this.prodBatch.skipExisting = false; }
+    },
     async batchAiFilter(forceSmartFilter = false) {
       if (!this.batchAi.rows.length) return ElementPlus.ElMessage.warning('请先执行步骤1');
       this.running.batchFilter = true;
@@ -3872,6 +4293,168 @@ createApp({
         this.onlineFollowup.runMsg = '执行失败: ' + e.message;
       } finally { this.onlineFollowup.running = false; }
     },
+    // ==================== 功能11扩展：错误统计查询 ====================
+    async queryErrorStats(useTime) {
+      const afterTime = useTime ? (this.onlineFollowup.errorStats.afterTime || '') : '';
+      if (useTime && !afterTime) return ElementPlus.ElMessage.warning('请选择分析完成时间起点');
+      this.onlineFollowup.errorStats.querying = true;
+      this.onlineFollowup.errorStats.records = [];
+      this.onlineFollowup.errorStats.queryMsg = '';
+      this.onlineFollowup.errorStats.queryError = false;
+      try {
+        const resp = await this.api('/api/test/error_stats', {
+          method: 'POST', body: JSON.stringify({ after_time: afterTime }),
+        });
+        this.onlineFollowup.errorStats.records = resp.data.rows || [];
+        this.onlineFollowup.errorStats.queryMsg = `统计到 ${resp.data.count || 0} 个 Jira 号存在失败记录`;
+      } catch (e) {
+        this.onlineFollowup.errorStats.queryMsg = '查询失败: ' + e.message;
+        this.onlineFollowup.errorStats.queryError = true;
+      } finally { this.onlineFollowup.errorStats.querying = false; }
+    },
+    // ==================== 冒烟测试 ====================
+    async runSmokeTest() {
+      const selected = this.smokeTest.cases.filter(c => c.checked && c.jiraId.trim());
+      if (!selected.length) return ElementPlus.ElMessage.warning('请勾选并填写 Jira 号');
+      const bugids = selected.map(c => c.jiraId.trim());
+      // 捕获执行时间，用于后续多维表格查询过滤
+      const now = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      this.smokeTest.execTime = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+      this.smokeTest.running = true;
+      this.smokeTest.execResults = []; this.smokeTest.execMsg = ''; this.smokeTest.execError = false;
+      this.smokeTest.savedResults = []; this.smokeTest.saveMsg = ''; this.smokeTest.saveCloudUrl = '';
+      try {
+        const resp = await fetch('/api/test/prod_batch_run', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bugids, skip_existing: false }),
+        });
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const d = JSON.parse(line.slice(6));
+              if (d.type === 'progress') {
+                this.smokeTest.execResults.push({
+                  'jira号': d.bugid || '',
+                  '执行结果': d.status || '',
+                  '触发时间': d.exec_time || '',
+                  '执行时间': d.analysis_time || '',
+                  '备注': d.msg || '',
+                });
+              }
+              else if (d.type === 'done') this.smokeTest.execMsg = d.message || d.msg || `执行完成，成功 ${d.success || 0} 条`;
+            } catch (_) {}
+          }
+        }
+        if (!this.smokeTest.execMsg) this.smokeTest.execMsg = `执行完成，共 ${this.smokeTest.execResults.length} 条`;
+      } catch (e) {
+        this.smokeTest.execMsg = '执行失败: ' + e.message;
+        this.smokeTest.execError = true;
+      } finally { this.smokeTest.running = false; }
+    },
+    async querySmokeTestBitable() {
+      const jiraIds = this.smokeTest.cases.filter(c => c.jiraId.trim()).map(c => c.jiraId.trim());
+      if (!jiraIds.length) return ElementPlus.ElMessage.warning('请填写 Jira 号');
+      this.smokeTest.querying = true;
+      this.smokeTest.bitableRecords = []; this.smokeTest.queryMsg = ''; this.smokeTest.queryError = false;
+      this.smokeTest.savedResults = []; this.smokeTest.saveMsg = ''; this.smokeTest.saveCloudUrl = '';
+      try {
+        const resp = await this.api('/api/test/smoke_test_query', {
+          method: 'POST', body: JSON.stringify({ jira_ids: jiraIds, exec_time: this.smokeTest.execTime }),
+        });
+        this.smokeTest.bitableRecords = resp.data.rows || [];
+        this.smokeTest.queryMsg = `查询到 ${resp.data.count || 0} 条记录`;
+      } catch (e) {
+        this.smokeTest.queryMsg = '查询失败: ' + e.message;
+        this.smokeTest.queryError = true;
+      } finally { this.smokeTest.querying = false; }
+    },
+    computeSmokeDuration(row) {
+      const start = row['分析问题时间'], end = row['分析完成时间'];
+      if (!start || !end) return '-';
+      try {
+        const s = new Date(start.replace(' ', 'T')), e = new Date(end.replace(' ', 'T'));
+        if (isNaN(s.getTime()) || isNaN(e.getTime())) return '-';
+        const sec = Math.round((e - s) / 1000);
+        if (sec < 0) return '-';
+        if (sec < 60) return sec + '秒';
+        return Math.floor(sec / 60) + '分' + (sec % 60) + '秒';
+      } catch (_) { return '-'; }
+    },
+    saveSmokeTestConfig() {
+      const cfg = this.smokeTest.cases.map(c => ({ name: c.name, jiraId: c.jiraId }));
+      localStorage.setItem('smoke_test_config', JSON.stringify(cfg));
+      ElementPlus.ElMessage.success('用例配置已保存');
+    },
+    loadSmokeTestConfig() {
+      try {
+        const raw = localStorage.getItem('smoke_test_config');
+        if (!raw) return;
+        const cfg = JSON.parse(raw);
+        if (Array.isArray(cfg)) {
+          cfg.forEach(saved => {
+            const c = this.smokeTest.cases.find(x => x.name === saved.name);
+            if (c && saved.jiraId) c.jiraId = saved.jiraId;
+          });
+        }
+      } catch (_) {}
+    },
+    // 冒烟测试：生成执行记录并上传云端
+    async saveSmokeTestRecord() {
+      if (!this.smokeTest.bitableRecords.length) return ElementPlus.ElMessage.warning('请先查询多维表格');
+      if (!this.smokeTest.execTime) return ElementPlus.ElMessage.warning('请先执行一键执行');
+      this.smokeTest.saving = true;
+      this.smokeTest.saveMsg = ''; this.smokeTest.saveError = false; this.smokeTest.saveCloudUrl = '';
+      // 将多维表格记录与用例名称匹配
+      const bitableMap = {};
+      for (const r of this.smokeTest.bitableRecords) bitableMap[r['jira号']] = r;
+      const results = this.smokeTest.cases.filter(c => c.jiraId.trim()).map(c => {
+        const rec = bitableMap[c.jiraId.trim().toUpperCase()] || {};
+        const dur = this.computeSmokeDuration(rec);
+        const isSuccess = rec['分析结果'] === '成功' ? '是' : '否';
+        const errorReason = isSuccess === '是' ? '-' : (rec['错误信息'] || rec['rootcause'] || '-');
+        return {
+          case_name: c.name, jira_id: c.jiraId.trim(),
+          is_success: isSuccess, analysis_duration: dur, total_duration: dur,
+          error_reason: errorReason, bitable_record: rec,
+        };
+      });
+      // 展示结果表格
+      this.smokeTest.savedResults = results.map(r => ({
+        case_name: r.case_name, jira_id: r.jira_id, is_success: r.is_success,
+        analysis_duration: r.analysis_duration, total_duration: r.total_duration,
+        error_reason: r.error_reason,
+      }));
+      try {
+        const resp = await this.api('/api/test/smoke_test_save_record', {
+          method: 'POST', body: JSON.stringify({
+            version: this.smokeTest.version || '-',
+            exec_time: this.smokeTest.execTime,
+            results: results,
+            basic_fields: {
+              analysis_concurrency: '5', download_concurrency: '2',
+              model: 'deepseek-v-pro', trigger_source: '线上',
+            },
+          }),
+        });
+        const data = resp.data;
+        this.smokeTest.saveCloudUrl = data.cloud_url || '';
+        this.smokeTest.saveMsg = `记录已保存${data.local_path ? `（本地: ${data.local_path}）` : ''}`;
+        ElementPlus.ElMessage.success('冒烟测试记录已生成');
+      } catch (e) {
+        this.smokeTest.saveMsg = '保存失败: ' + e.message;
+        this.smokeTest.saveError = true;
+      } finally { this.smokeTest.saving = false; }
+    },
     // ==================== 功能12：AI日志分析可视化 ====================
     async readAiLogVisual() {
       if (!this.aiLogVisual.jiraId) return ElementPlus.ElMessage.warning('请输入 Jira 号');
@@ -3962,10 +4545,12 @@ createApp({
         : { analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC' };
       Object.assign(this[target], defaults);
     },
-    // 一键执行批量分析（搜索/导入→过滤→抽样→执行，抽样时按需提取时间）
+    // 一键执行批量分析（支持持续执行模式：搜索/导入→过滤→[抽样→执行]×N轮）
     async batchAiOneClick() {
       this.running.batchOneClick = true;
       this.batchAi.oneClickMsg = ''; this.batchAi.oneClickError = false;
+      this.batchAi.continuousRunning = false;
+      this.batchAiAbort = new AbortController();
       try {
         // 步骤1: JQL搜索 或 CSV导入
         if (this.batchAi.source === 'csv') {
@@ -3982,20 +4567,66 @@ createApp({
           await this.batchAiFilter(false);
           if (!this.batchAi.filteredKeys.length) throw new Error('已无未执行的内容，所有候选记录均已处理完成');
         } else {
-          // 未勾选任何过滤选项，直接使用全部搜索结果
           this.batchAi.filteredKeys = this.batchAi.rows.map(r => r.key);
         }
-        // 步骤3: 随机抽样（优先云端缓存，仅对选中记录按需提取时间）
-        await this.batchAiSample();
-        if (!this.batchAi.selected.length) throw new Error('抽样结果为空');
-        // 步骤4: 根据执行模式选择接口
-        if (this.batchAi.execMode === 'online') {
-          await this.batchAiRunOnline();
+        // 单轮执行：抽样 + 执行
+        const runOneRound = async (roundLabel = '') => {
+          await this.batchAiSample();
+          if (!this.batchAi.selected.length) throw new Error(`${roundLabel}抽样结果为空`);
+          if (this.batchAi.execMode === 'online') {
+            await this.batchAiRunOnline();
+          } else {
+            await this.batchAiRun();
+          }
+        };
+        if (!this.batchAi.continuous) {
+          // 单次执行
+          await runOneRound();
+          const modeLabel = this.batchAi.execMode === 'online' ? '线上' : 'PC';
+          this.batchAi.oneClickMsg = `${modeLabel}一键执行完成: ${this.batchAi.runDone}/${this.batchAi.runTotal} 成功`;
         } else {
-          await this.batchAiRun();
+          // 持续执行：循环 rounds 轮，每轮之间等待 interval 分钟
+          this.batchAi.continuousRunning = true;
+          const totalRounds = this.batchAi.rounds;
+          const intervalMs = this.batchAi.interval * 60 * 1000;
+          for (let i = 1; i <= totalRounds; i++) {
+            this.batchAi.currentRound = i;
+            const roundLabel = `[${i}/${totalRounds}] `;
+            try {
+              await runOneRound(roundLabel);
+            } catch (e) {
+              if (e.name === 'AbortError') {
+                this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 1}/${totalRounds} 轮）`;
+                this.batchAi.oneClickError = false;
+                break;
+              }
+              this.batchAi.oneClickMsg = `${roundLabel}执行中断: ${e.message}`;
+              this.batchAi.oneClickError = true;
+              break;
+            }
+            // 最后一轮不等待
+            if (i < totalRounds) {
+              const waitUntil = Date.now() + intervalMs;
+              this.batchAi.oneClickMsg = `等待下一轮（${this.batchAi.interval} 分钟后开始第 ${i + 1}/${totalRounds} 轮）`;
+              while (Date.now() < waitUntil) {
+                if (this.batchAiAbort && this.batchAiAbort.signal.aborted) {
+                  this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i}/${totalRounds} 轮）`;
+                  this.batchAi.oneClickError = false;
+                  break;
+                }
+                const remainSec = Math.ceil((waitUntil - Date.now()) / 1000);
+                const mm = Math.floor(remainSec / 60);
+                const ss = remainSec % 60;
+                this.batchAi.oneClickMsg = `等待下一轮（${mm}:${String(ss).padStart(2, '0')} 后开始第 ${i + 1}/${totalRounds} 轮）`;
+                await new Promise(r => setTimeout(r, 1000));
+              }
+            }
+          }
+          this.batchAi.continuousRunning = false;
+          if (!this.batchAi.oneClickError && !this.batchAi.oneClickMsg.includes('已停止')) {
+            this.batchAi.oneClickMsg = `持续执行完成：共 ${totalRounds} 轮`;
+          }
         }
-        const modeLabel = this.batchAi.execMode === 'online' ? '线上' : 'PC';
-        this.batchAi.oneClickMsg = `${modeLabel}一键执行完成: ${this.batchAi.runDone}/${this.batchAi.runTotal} 成功`;
       } catch (e) {
         this.batchAi.oneClickMsg = '一键执行中断: ' + e.message;
         this.batchAi.oneClickError = true;
@@ -4984,7 +5615,7 @@ createApp({
       }
     },
     // 失败重触发：提取分析失败的Jira号
-    async loadFailedJiras() {
+    async loadFailedJiras(afterTime, excludeCommon) {
       this.failedRetry.loadingJiras = true;
       this.failedRetry.extractMsg = '';
       this.failedRetry.extractError = false;
@@ -4992,7 +5623,14 @@ createApp({
       this.failedRetry.triggerTimes = {};
       this.failedRetry.runResults = [];
       try {
-        const body = await this.api('/api/test/bitable_failed_jiras', { method: 'POST' });
+        const body = await this.api('/api/test/bitable_failed_jiras', {
+          method: 'POST',
+          body: JSON.stringify({
+            after_time: afterTime !== undefined ? afterTime : (this.failedRetry.afterTime || ''),
+            exclude_common: excludeCommon !== undefined ? excludeCommon : this.failedRetry.excludeCommon,
+            exclude_success: this.failedRetry.excludeSuccess,
+          }),
+        });
         this.failedRetry.jiras = body.data?.jiras || [];
         this.failedRetry.extractMsg = body.message;
         ElementPlus.ElMessage.success(body.message);
@@ -5019,7 +5657,7 @@ createApp({
         this.failedRetry.timeError = true;
       } finally { this.failedRetry.loadingTimes = false; }
     },
-    // 失败重触发：批量执行 AI 日志分析（复用 batch_ai_run 的 SSE 逻辑）
+    // 失败重触发：批量执行 AI 日志分析（支持 PC/线上双模式）
     async runFailedRetry() {
       if (!this.failedRetry.jiras.length) return ElementPlus.ElMessage.warning('请先提取失败Jira号');
       this.failedRetry.running = true;
@@ -5028,10 +5666,15 @@ createApp({
       this.failedRetry.runDone = 0;
       this.failedRetry.runDoneMsg = '';
       try {
-        const resp = await fetch('/api/test/batch_ai_run', {
+        const isOnline = this.failedRetry.execMode === 'online';
+        const url = isOnline ? '/api/test/prod_batch_run' : '/api/test/batch_ai_run';
+        const body = isOnline
+          ? { bugids: this.failedRetry.jiras, skip_existing: false }
+          : { bugids: this.failedRetry.jiras, trigger_times: this.failedRetry.triggerTimes };
+        const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bugids: this.failedRetry.jiras, trigger_times: this.failedRetry.triggerTimes }),
+          body: JSON.stringify(body),
         });
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
@@ -5061,17 +5704,26 @@ createApp({
       } catch (e) { ElementPlus.ElMessage.error('执行失败: ' + e.message); }
       finally { this.failedRetry.running = false; }
     },
-    // 一键执行失败重触发（提取失败Jira→获取时间→批量执行）
+    // 一键执行失败重触发（提取失败Jira→抽取→批量执行，触发时间从云端缓存自动读取）
     async failedRetryOneClick() {
       this.running.failedRetryOneClick = true;
       this.failedRetry.oneClickMsg = ''; this.failedRetry.oneClickError = false;
       try {
-        // 步骤1: 提取失败Jira号
+        // 步骤1: 提取失败Jira号（带时间和通用原因过滤）
         await this.loadFailedJiras();
         if (!this.failedRetry.jiras.length) throw new Error('未找到分析失败的 Jira 号');
-        // 步骤2: 获取触发时间
-        await this.extractFailedTimes();
-        // 步骤3: 批量执行
+        // 步骤2: 抽取（从过滤结果中随机抽样）
+        const sampleCount = this.failedRetry.sampleCount;
+        if (sampleCount > 0 && this.failedRetry.jiras.length > sampleCount) {
+          const arr = [...this.failedRetry.jiras];
+          for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+          }
+          this.failedRetry.jiras = arr.slice(0, sampleCount);
+          this.failedRetry.extractMsg += `，已抽取 ${sampleCount} 条`;
+        }
+        // 步骤3: 批量执行（触发时间由后端从云端缓存自动补全）
         await this.runFailedRetry();
         this.failedRetry.oneClickMsg = `一键执行完成: ${this.failedRetry.runDone}/${this.failedRetry.runTotal} 成功`;
       } catch (e) {
@@ -5165,7 +5817,10 @@ createApp({
           signal,
         });
         const d = body.data || {};
-        this.troubleshoot.diagResults = [...this.troubleshoot.diagResults.filter(r => r.bugid !== bugid), d];
+        // 直接操作数组避免并发 worker 读-写竞态丢失结果
+        const idx = this.troubleshoot.diagResults.findIndex(r => r.bugid === bugid);
+        if (idx >= 0) { this.troubleshoot.diagResults.splice(idx, 1, d); }
+        else { this.troubleshoot.diagResults.push(d); }
       } catch (e) {
         if (e && e.name === 'TimeoutError') {
           ElementPlus.ElMessage.warning(`${bugid} 诊断超时，请稍后重试`);
@@ -5469,9 +6124,8 @@ createApp({
       try {
         const resp = await this.api('/api/test/prod_csv_files');
         this.prodBatch.csvFiles = resp.data?.unanalyzed || [];
-        this.prodBatch.prodResults = resp.data?.prod_results || [];
         this.prodBatch.selectedCsvs = [];
-        if (!this.prodBatch.csvFiles.length && !this.prodBatch.prodResults.length)
+        if (!this.prodBatch.csvFiles.length)
           ElementPlus.ElMessage.warning('data/unanalyzed/ 下无 CSV 文件');
       } catch (e) { ElementPlus.ElMessage.error('加载失败: ' + e.message); }
       finally { this.running.prodLoadCsv = false; }
@@ -5485,6 +6139,7 @@ createApp({
         const resp = await fetch('/api/test/prod_batch_run', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ bugids: directIds, csv_files: this.prodBatch.selectedCsvs, skip_existing: this.prodBatch.skipExisting, max_count: this.prodBatch.maxCount,
+            filter_pc_only: this.prodBatch.filterPcOnly, filter_online_only: this.prodBatch.filterOnlineOnly,
             analysis_concurrency: this.prodBatch.analysisConcurrency, download_concurrency: this.prodBatch.downloadConcurrency,
             model: this.prodBatch.model, trigger_source: this.prodBatch.triggerSource }),
           signal: this.prodBatchAbort.signal,
@@ -5596,15 +6251,16 @@ createApp({
         .map(r => ({ bugid: r.bugid, done_time: r.done_time, human_reason: r.report.human_reason }));
       if (!items.length) return ElementPlus.ElMessage.warning('无有人工分析失败原因的记录');
       const scope = this.troubleshoot.categoryFilter ? `筛选「${this.troubleshoot.categoryFilter}」中 ` : '';
+      const emptyHint = this.troubleshoot.onlyEmptyReview ? '（仅写入人工审核结果为空的记录）' : '';
       try {
         await ElementPlus.ElMessageBox.confirm(
-          `将写入${scope}${items.length} 条人工审核结果到多维表格，确认？`,
+          `将写入${scope}${items.length} 条人工审核结果到多维表格${emptyHint}，确认？`,
           '确认写入', { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' });
       } catch { return; }
       this.troubleshoot.writingReview = true;
       try {
         const body = await this.api('/api/troubleshoot/batch_write_review', {
-          method: 'POST', body: JSON.stringify({ items })
+          method: 'POST', body: JSON.stringify({ items, only_empty_review: this.troubleshoot.onlyEmptyReview })
         });
         ElementPlus.ElMessage.success(body.message);
       } catch (e) {
@@ -5909,6 +6565,159 @@ createApp({
         ElementPlus.ElMessage.info('尚未执行抽查，暂无结果');
       }
     },
+    // ========== 配置参数调优 ==========
+    async loadTuningBatches() {
+      this.tuning.loading = true;
+      this.tuning.results = [];
+      this.tuning.comparing = [];
+      this.tuning.conclusion = '';
+      try {
+        const resp = await this.api(`/api/tuning/batch_list?source=${this.tuning.source}`);
+        this.tuning.batches = resp.data || [];
+        this.tuning.selected = [];
+      } catch (e) {
+        ElementPlus.ElMessage.error('加载批次列表失败: ' + (e.message || e));
+      } finally {
+        this.tuning.loading = false;
+      }
+    },
+    async analyzeTuning() {
+      if (!this.tuning.selected.length) return;
+      this.tuning.analyzing = true;
+      this.tuning.conclusion = '';
+      try {
+        const resp = await this.api('/api/tuning/analyze', {
+          method: 'POST', body: JSON.stringify({
+            batch_ids: this.tuning.selected,
+            version_labels: this.tuning.versionLabels,
+          })
+        });
+        this.tuning.results = (resp.data && resp.data.batches) || [];
+        this.$nextTick(() => this.renderTuningCharts());
+      } catch (e) {
+        ElementPlus.ElMessage.error('分析失败: ' + (e.message || e));
+      } finally {
+        this.tuning.analyzing = false;
+      }
+    },
+    renderTuningCharts() {
+      const results = this.tuning.results;
+      if (!results.length || typeof echarts === 'undefined') return;
+      // 解析 "X分Y秒" / "X秒" 格式为秒数
+      const parseDur = (s) => {
+        if (!s || s === '-') return 0;
+        const m = String(s).match(/(\d+)\s*\u5206\s*(\d+)\s*\u79d2?/);
+        if (m) return parseInt(m[1]) * 60 + parseInt(m[2]);
+        const m2 = String(s).match(/(\d+)\s*\u5206$/);
+        if (m2) return parseInt(m2[1]) * 60;
+        return parseFloat(String(s).replace(/[^\d.]/g, '')) || 0;
+      };
+      const labels = results.map(r => `${r.date} ${r.version !== '-' ? r.version + ' ' : ''}\u5e76\u53d1${r.base_info['\u5206\u6790\u5e76\u53d1\u6570'] || '-'}/${r.base_info['\u4e0b\u8f7d\u5e76\u53d1\u6570'] || '-'}`);
+      const colors = ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399'];
+      // 图1：分析耗时对比
+      const el1 = this.$refs.tuningChart1;
+      if (el1) {
+        const chart1 = echarts.init(el1);
+        chart1.setOption({
+          title: { text: '分析耗时对比', left: 'center', textStyle: { fontSize: 14 } },
+          tooltip: { trigger: 'axis' },
+          xAxis: { type: 'category', data: labels, axisLabel: { rotate: 20, fontSize: 11 } },
+          yAxis: { type: 'value', name: '秒', axisLabel: { formatter: '{value}s' } },
+          series: [
+            { name: '平均耗时', type: 'bar', data: results.map(r => parseDur(r.avg_analysis_time)), itemStyle: { color: colors[0] } },
+            { name: '中位数耗时', type: 'bar', data: results.map(r => parseDur(r.median_analysis_time)), itemStyle: { color: colors[1] } },
+          ],
+          grid: { left: 60, right: 20, bottom: 60 },
+        });
+      }
+      // 图2：成功率对比
+      const el2 = this.$refs.tuningChart2;
+      if (el2) {
+        const chart2 = echarts.init(el2);
+        chart2.setOption({
+          title: { text: '分析成功率对比', left: 'center', textStyle: { fontSize: 14 } },
+          tooltip: { trigger: 'axis', formatter: '{b}: {c}%' },
+          xAxis: { type: 'category', data: labels, axisLabel: { rotate: 20, fontSize: 11 } },
+          yAxis: { type: 'value', name: '%', min: 0, max: 100 },
+          series: [{
+            name: '成功率', type: 'bar',
+            data: results.map(r => parseFloat(r.success_rate) || 0),
+            itemStyle: { color: function(params) { return params.value >= 80 ? '#67c23a' : params.value >= 60 ? '#e6a23c' : '#f56c6c'; } },
+          }],
+          grid: { left: 60, right: 20, bottom: 60 },
+        });
+      }
+      // 图3：执行数量 vs 成功率（散点图）
+      const el3 = this.$refs.tuningChart3;
+      if (el3) {
+        const chart3 = echarts.init(el3);
+        chart3.setOption({
+          title: { text: '执行数量 vs 成功率', left: 'center', textStyle: { fontSize: 14 } },
+          tooltip: { trigger: 'item', formatter: function(p) { return `${p.data[3]}<br/>执行数量: ${p.data[0]}<br/>成功率: ${p.data[1]}%`; } },
+          xAxis: { type: 'value', name: '执行数量' },
+          yAxis: { type: 'value', name: '成功率 %', min: 0, max: 100 },
+          series: [{
+            type: 'scatter', symbolSize: 16,
+            data: results.map(r => [r.total, parseFloat(r.success_rate) || 0, r.date, labels[results.indexOf(r)]]),
+            itemStyle: { color: '#409eff' },
+            label: { show: true, formatter: function(p) { return p.data[2]; }, position: 'top', fontSize: 10 },
+          }],
+          grid: { left: 60, right: 40, bottom: 40 },
+        });
+      }
+    },
+    generateTuningConclusion() {
+      const selected = this.tuning.results.filter(r => this.tuning.comparing.includes(r.batch_id));
+      if (selected.length < 2) return;
+      const lines = [];
+      lines.push(`对比 ${selected.length} 个批次的配置参数：\n`);
+      // 列出各批次基础信息
+      selected.forEach((r, i) => {
+        const bi = r.base_info;
+        lines.push(`${i + 1}. ${r.date} ${r.version !== '-' ? '(' + r.version + ') ' : ''} - 分析并发:${bi['分析并发数'] || '-'}, 下载并发:${bi['下载并发数'] || '-'}, 模型:${bi['模型'] || '-'}`);
+        lines.push(`   执行${r.total}条, 成功${r.success}条(${r.success_rate}), 平均耗时${r.avg_analysis_time}, 中位数耗时${r.median_analysis_time}`);
+      });
+      lines.push('');
+      // 成功率对比
+      const rates = selected.map(r => parseFloat(r.success_rate) || 0);
+      const maxRate = Math.max(...rates);
+      const minRate = Math.min(...rates);
+      const bestIdx = rates.indexOf(maxRate);
+      const worstIdx = rates.indexOf(minRate);
+      lines.push(`【成功率】最高: ${maxRate}% (${selected[bestIdx].date}), 最低: ${minRate}% (${selected[worstIdx].date}), 差值: ${(maxRate - minRate).toFixed(1)}%`);
+      // 耗时对比
+      const parseDur = (s) => {
+        if (!s || s === '-') return 0;
+        const m = String(s).match(/(\d+)\s*\u5206\s*(\d+)\s*\u79d2?/);
+        if (m) return parseInt(m[1]) * 60 + parseInt(m[2]);
+        const m2 = String(s).match(/(\d+)\s*\u5206$/);
+        if (m2) return parseInt(m2[1]) * 60;
+        return parseFloat(String(s).replace(/[^\d.]/g, '')) || 0;
+      };
+      const avgTimes = selected.map(r => parseDur(r.avg_analysis_time));
+      if (avgTimes.some(t => t > 0)) {
+        const maxTime = Math.max(...avgTimes);
+        const minTime = Math.min(...avgTimes);
+        const fastIdx = avgTimes.indexOf(minTime);
+        const slowIdx = avgTimes.indexOf(maxTime);
+        lines.push(`【平均耗时】最快: ${selected[fastIdx].avg_analysis_time} (${selected[fastIdx].date}), 最慢: ${selected[slowIdx].avg_analysis_time} (${selected[slowIdx].date})`);
+      }
+      // 配置差异分析
+      const configs = selected.map(r => `${r.base_info['分析并发数']}/${r.base_info['下载并发数']}/${r.base_info['模型']}`);
+      const uniqueConfigs = [...new Set(configs)];
+      if (uniqueConfigs.length === 1) {
+        lines.push(`\n【结论】所有批次配置相同(${uniqueConfigs[0]})，成功率差异可能源于数据分布或网络环境。`);
+      } else {
+        lines.push(`\n【配置差异】共 ${uniqueConfigs.length} 种不同配置组合`);
+        // 找出最佳配置
+        if (maxRate > minRate + 5) {
+          lines.push(`【推荐】${selected[bestIdx].date} 的配置(并发${selected[bestIdx].base_info['分析并发数']}/${selected[bestIdx].base_info['下载并发数']}, 模型${selected[bestIdx].base_info['模型']})成功率最高(${maxRate}%)，建议优先采用。`);
+        } else {
+          lines.push(`【建议】各配置成功率差异不大(≤5%)，可结合耗时表现选择最优配置。`);
+        }
+      }
+      this.tuning.conclusion = lines.join('\n');
+    },
   },
   async mounted() {
     // 页面加载时仅初始化基础配置与概览，历史数据由用户手动刷新
@@ -5926,6 +6735,7 @@ createApp({
         this.loadConfig(), this.loadOverview(),
       ]);
     } catch (e) { /* 个别接口失败不影响页面展示 */ }
+    this.loadSmokeTestConfig();
     this.$nextTick(showApp);
   },
 }).use(ElementPlus).mount('#app');
