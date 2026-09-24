@@ -453,11 +453,13 @@ def _fill_confidence(bugid: str, feishu_link: str, rootcause: str, issue: dict =
     return str(confidence)
 
 
-def execute_single_flow(bugid: str, trigger_time: str = "", cancel_check=None, step_callback=None) -> dict:
+def execute_single_flow(bugid: str, trigger_time: str = "", cancel_check=None, step_callback=None,
+                          skip_time_extraction: bool = False) -> dict:
     """单 bugid 流程执行：4步流程（AI分析 → 结果查看 → 置信度判断 → 写入），返回每步详细结果
 
     cancel_check: 可选回调函数，返回 True 表示需要取消，流程会在当前步骤完成后立即停止
     step_callback: 可选回调函数，每步完成后立即调用（传入步骤结果字典），用于实时推送
+    skip_time_extraction: 忽略触发时间提取，直接执行
     """
     import time
     import pandas as pd
@@ -504,8 +506,8 @@ def execute_single_flow(bugid: str, trigger_time: str = "", cancel_check=None, s
                                error=f"Jira 状态为 [{status}]，仅 Closed 状态才进入流程"))
             failed = True
         else:
-            # 1b. 触发时间自动提取
-            if not trigger_time:
+            # 1b. 触发时间自动提取（skip_time_extraction 时跳过）
+            if not trigger_time and not skip_time_extraction:
                 try:
                     extracted = jira_client.extract_trigger_time_from_issue(issue)
                     if extracted:
