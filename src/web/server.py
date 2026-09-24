@@ -2020,6 +2020,9 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
     # 模型调用失败：第x轮LLM调用失败 / 第x轮调用失败
     if re.search(r"第\d+轮.*调用失败", err_info):
         return "模型调用失败"
+    # 磁盘空间不足：No space left on device
+    if "no space left on device" in err_info.lower() or "Errno 28" in err_info:
+        return "磁盘空间不足"
     review = (bf.get("人工审核结果", "") or "").strip()
     if not review or review in ("-", "None"):
         return "待开发排查"
@@ -4342,6 +4345,7 @@ async def flow_single(request: Request):
     body = await request.json() or {}
     bugid = str(body.get("bugid", "")).strip()
     trigger_time = str(body.get("trigger_time") or "").strip()
+    skip_time_extraction = bool(body.get("skip_time_extraction", False))  # 忽略时间参数
     if not bugid:
         return _fail("bugid 不能为空")
     # 初始化取消标志
@@ -4360,7 +4364,8 @@ async def flow_single(request: Request):
                     """每步完成后立即推入队列，实现实时推送"""
                     step_queue.put(step_result)
                 result = pipeline.execute_single_flow(
-                    bugid, trigger_time, cancel_check=cancel_check, step_callback=on_step)
+                    bugid, trigger_time, cancel_check=cancel_check, step_callback=on_step,
+                    skip_time_extraction=skip_time_extraction)
                 step_queue.put({"_done": True, "all_ok": result["all_ok"],
                                 "cancelled": result.get("cancelled", False), "row": result["row"]})
             except Exception as e:
@@ -4867,6 +4872,8 @@ def _flatten_bitable_record(fields: dict, report_field: str) -> dict:
         "错误信息": _bitable_text(pick("错误信息")),
         "分析问题时间": _bitable_text(pick("分析问题时间")),
         "分析完成时间": _bitable_text(pick("分析完成时间")),
+        "分析耗时": _bitable_text(pick("分析耗时")),
+        "总耗时": _bitable_text(pick("总耗时")),
         "飞书报告链接": report_link,
         "人工审核结果": _bitable_text(pick("人工审核结果")),
         "触发来源": _bitable_text(pick("触发来源")),
@@ -5617,6 +5624,7 @@ async def test_batch_ai_extract_times(request: Request):
             # 对未处理过的走接口提取
             done_count = cloud_hit + skip_empty
             empty_count = 0
+            skip_no_gmlogger = 0
             interrupted = False
             if need_fetch:
                 from src.clients import jira_client as _jc
@@ -5640,6 +5648,17 @@ async def test_batch_ai_extract_times(request: Request):
                         issue = await asyncio.wait_for(
                             loop.run_in_executor(None, _jc.fetch_issue, key),
                             timeout=30)
+                        # 检查是否有 gmlogger 类附件，无则标记跳过
+                        attachments = (issue.get("fields") or {}).get("attachment") or []
+                        has_gmlogger = any("gmlogger" in (att.get("filename", "") or "").lower() for att in attachments)
+                        if not has_gmlogger:
+                            status = "no_gmlogger"
+                            sources[key] = "无gmlogger"
+                            skip_no_gmlogger += 1
+                            await loop.run_in_executor(None, _save_trigger_time_to_cloud, key, "")
+                            done_count += 1
+                            yield f"data: {_json.dumps({'type': 'progress', 'index': done_count, 'total': total, 'key': key, 'status': status, 'time': ''}, ensure_ascii=False)}\n\n"
+                            continue
                         # 视频 OCR 优先级最高（当启用视频兜底时）
                         tt = ""
                         if video_fallback:
@@ -5681,12 +5700,12 @@ async def test_batch_ai_extract_times(request: Request):
                     yield f"data: {_json.dumps({'type': 'progress', 'index': done_count, 'total': total, 'key': key, 'status': status, 'time': tt_val}, ensure_ascii=False)}\n\n"
             new_count = len(trigger_times) - cloud_hit
             if interrupted:
-                logger.info("提取被 Ctrl+C 中断: 已完成 %d 条（云端命中 %d, 新提取 %d）",
-                            done_count, cloud_hit, new_count)
+                logger.info("提取被 Ctrl+C 中断: 已完成 %d 条（云端命中 %d, 新提取 %d, 无gmlogger %d）",
+                            done_count, cloud_hit, new_count, skip_no_gmlogger)
             else:
-                logger.info("批量提取触发时间: 云端命中 %d, 跳过空 %d, 新提取 %d, 本次空 %d, 共 %d/%d",
-                            cloud_hit, skip_empty, new_count, empty_count, len(trigger_times), total)
-            yield f"data: {_json.dumps({'type': 'done', 'time_count': len(trigger_times), 'total': total, 'local_hit': cloud_hit, 'new_count': new_count, 'empty_count': empty_count, 'skip_empty': skip_empty, 'skip_bitable': skip_bitable, 'skip_corrected': skip_corrected, 'interrupted': interrupted, 'trigger_times': trigger_times, 'sources': sources}, ensure_ascii=False)}\n\n"
+                logger.info("批量提取触发时间: 云端命中 %d, 跳过空 %d, 无gmlogger %d, 新提取 %d, 本次空 %d, 共 %d/%d",
+                            cloud_hit, skip_empty, skip_no_gmlogger, new_count, empty_count, len(trigger_times), total)
+            yield f"data: {_json.dumps({'type': 'done', 'time_count': len(trigger_times), 'total': total, 'local_hit': cloud_hit, 'new_count': new_count, 'empty_count': empty_count, 'skip_empty': skip_empty, 'skip_bitable': skip_bitable, 'skip_corrected': skip_corrected, 'skip_no_gmlogger': skip_no_gmlogger, 'interrupted': interrupted, 'trigger_times': trigger_times, 'sources': sources}, ensure_ascii=False)}\n\n"
         finally:
             signal.signal(signal.SIGINT, _prev_handler)
 
@@ -5915,6 +5934,7 @@ async def test_batch_ai_run(request: Request):
     body = await request.json() or {}
     bugids = body.get("bugids") or []
     trigger_times = body.get("trigger_times") or {}
+    skip_time_extraction = bool(body.get("skip_time_extraction", False))  # 忽略时间参数直接执行
     # 批量执行元数据（分析并发数、下载并发数、模型、触发来源）
     _batch_meta = {
         "分析并发数": str(body.get("analysis_concurrency", "10")),
@@ -5954,9 +5974,9 @@ async def test_batch_ai_run(request: Request):
             if stop_event.is_set():
                 return
             from src.clients.base import http_post
-            # 无触发时间的 Jira 号跳过执行
-            exec_time = trigger_times.get(bugid)
-            if not exec_time:
+            # 无触发时间的 Jira 号：skip_time_extraction 时允许执行，否则跳过
+            exec_time = trigger_times.get(bugid, "")
+            if not exec_time and not skip_time_extraction:
                 result_queue.put({"jira号": bugid, "执行结果": "失败",
                                   "报告长度": 0, "备注": "无触发时间", "触发时间": "", "执行时间": batch_start_time,
                                   "分析执行时间": batch_start_time,
@@ -7591,6 +7611,131 @@ async def test_bitable_failed_jiras(request: Request):
         return _fail(f"提取失败: {e}")
 
 
+# ==================== 无gmlogger重新排查 ====================
+
+# 需要重新排查的人工审核关键词
+_GMLOGGER_REVIEW_KEYWORDS = {"无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "无日志附件",
+                              "该jira无日志附件", "该Jira无日志附件", "该jira无日志附件，属于正常处理机制",
+                              "该Jira无日志附件，属于正常处理机制"}
+
+
+@app.post("/api/test/gmlogger_rescan")
+async def test_gmlogger_rescan(request: Request):
+    """扫描多维表格中人工审核为'无gmlogger'的失败记录，重新检查Jira附件是否已有gmlogger/main文件"""
+    from src.clients import feishu_client, jira_client
+    cfg = load_config().get("feishu_bitable", {})
+    app_token = cfg.get("app_token", "")
+    table_id = cfg.get("table_id", "")
+    bugid_field = cfg.get("bugid_field", "jira号")
+    if not app_token or not table_id:
+        return _fail("多维表格 app_token/table_id 未配置")
+    try:
+        records = feishu_client.list_bitable_records(app_token, table_id)
+        # 筛选：分析结果=失败 且 人工审核结果包含无gmlogger相关关键词
+        candidates = []
+        for rec in records:
+            fields = rec.get("fields", {})
+            result_status = _bitable_text(fields.get("分析结果", ""))
+            if result_status != "失败":
+                continue
+            human_review = _bitable_text(fields.get("人工审核结果", ""))
+            if not human_review:
+                continue
+            # 检查是否匹配无gmlogger相关关键词
+            review_lower = human_review.lower()
+            is_match = any(kw.lower() in review_lower for kw in _GMLOGGER_REVIEW_KEYWORDS)
+            if not is_match:
+                continue
+            # 提取 bugid
+            fv = fields.get(bugid_field, "")
+            if isinstance(fv, list):
+                fv = " ".join(str(v) for v in fv)
+            bugid = str(fv).strip()
+            if not bugid:
+                continue
+            candidates.append({
+                "record_id": rec.get("record_id", ""),
+                "bugid": bugid,
+                "human_review": human_review,
+            })
+        # 逐个查询Jira附件
+        results = []
+        has_file_count = 0
+        for c in candidates:
+            bugid = c["bugid"]
+            try:
+                issue = jira_client.fetch_issue(bugid)
+                attachments = (issue.get("fields") or {}).get("attachment") or []
+                matched = [att.get("filename", "") for att in attachments
+                           if "gmlogger" in (att.get("filename", "") or "").lower()
+                           or "main" in (att.get("filename", "") or "").lower()]
+                has_gmlogger = any("gmlogger" in f.lower() for f in matched)
+                has_main = any("main" in f.lower() and "gmlogger" not in f.lower() for f in matched)
+                if matched:
+                    has_file_count += 1
+                results.append({
+                    "record_id": c["record_id"],
+                    "bugid": bugid,
+                    "human_review": c["human_review"],
+                    "attachment_count": len(attachments),
+                    "matched_files": matched,
+                    "has_gmlogger": has_gmlogger,
+                    "has_main": has_main,
+                    "has_file": len(matched) > 0,
+                })
+            except Exception as e:
+                results.append({
+                    "record_id": c["record_id"],
+                    "bugid": bugid,
+                    "human_review": c["human_review"],
+                    "attachment_count": 0,
+                    "matched_files": [],
+                    "has_gmlogger": False,
+                    "has_main": False,
+                    "has_file": False,
+                    "error": str(e)[:100],
+                })
+        msg = f"扫描完成: {len(candidates)} 条无gmlogger记录，{has_file_count} 条已新增日志文件"
+        return _ok({"candidates": results, "total": len(candidates), "has_file_count": has_file_count}, msg)
+    except Exception as e:
+        logger.error("无gmlogger重新扫描失败: %s", e, exc_info=True)
+        return _fail(f"扫描失败: {e}")
+
+
+@app.post("/api/test/gmlogger_clear_review")
+async def test_gmlogger_clear_review(request: Request):
+    """批量清空选中记录的人工审核结果字段"""
+    from src.clients import feishu_client
+    body = await request.json() or {}
+    record_ids = body.get("record_ids") or []
+    if not record_ids:
+        return _fail("请选择要清空的记录")
+    cfg = load_config().get("feishu_bitable", {})
+    app_token = cfg.get("app_token", "")
+    table_id = cfg.get("table_id", "")
+    if not app_token or not table_id:
+        return _fail("多维表格 app_token/table_id 未配置")
+    try:
+        updates = [{"record_id": rid, "fields": {"人工审核结果": ""}} for rid in record_ids]
+        # 批量更新，每次最多100条
+        success = 0
+        errors = []
+        for i in range(0, len(updates), 100):
+            batch = updates[i:i + 100]
+            try:
+                feishu_client.update_bitable_records(app_token, table_id, batch)
+                success += len(batch)
+            except Exception as e:
+                errors.append(f"批次 {i // 100 + 1}: {str(e)[:80]}")
+        msg = f"已清空 {success} 条人工审核结果"
+        if errors:
+            msg += f"，{len(errors)} 批次失败"
+        return _ok({"success": success, "errors": errors}, msg)
+    except Exception as e:
+        logger.error("清空人工审核结果失败: %s", e, exc_info=True)
+        return _fail(f"清空失败: {e}")
+
+
 # ========== AI日志分析失败问题排查工具 ==========
 
 def _ts_parse_datetime(val) -> datetime:
@@ -8762,6 +8907,9 @@ def _diag_pre_classify(err_msg: str) -> str:
     # 模型调用失败：第x轮LLM调用失败 / 第x轮调用失败，无需分析直接给结论
     if re.search(r"第\d+轮.*调用失败", msg):
         return "模型调用失败"
+    # 磁盘空间不足：No space left on device，无需分析直接给结论
+    if "no space left on device" in msg.lower() or "Errno 28" in msg:
+        return "磁盘空间不足"
     if "adjudication" in msg or "未获取有效响应" in msg or "LLM 调用失败" in msg or "调用失败" in msg:
         return "接口拥堵手动中断"
     # 服务端运行异常类报错：与触发时间/日志过滤无关，直接归类避免无效下载比对
@@ -8803,6 +8951,11 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         human_reason = "模型调用失败"
         retry_result = ""
         final_category = "模型调用失败"
+    elif category == "磁盘空间不足":
+        ai_reason = msg or "No space left on device"
+        human_reason = "磁盘空间不足"
+        retry_result = ""
+        final_category = "磁盘空间不足"
     elif category == "接口拥堵手动中断" or "adjudication" in low or "llm 调用失败" in low:
         ai_reason = msg or "分析报告生成失败: LLM 调用失败或 adjudication 失败"
         human_reason = "疑似接口拥堵导致的手动中断"
@@ -10030,6 +10183,7 @@ async def test_prod_batch_run(request: Request):
     filter_pc_only = body.get("filter_pc_only", False)  # 仅过滤PC来源的正确+通用失败
     filter_online_only = body.get("filter_online_only", False)  # 仅过滤线上来源的正确+通用失败
     max_count = int(body.get("max_count") or 0)  # 抽取数量上限，0 表示不限制
+    skip_time_extraction = bool(body.get("skip_time_extraction", False))  # 忽略时间参数直接执行
     # 前端已提取的触发时间（抽样步骤已获取，优先使用避免重复提取）
     frontend_trigger_times = body.get("trigger_times") or {}
     # 批量执行元数据（默认线上值）
@@ -10116,86 +10270,81 @@ async def test_prod_batch_run(request: Request):
         # 提取触发时间（优先前端已传入 > 云端缓存 > 重新提取）
         trigger_times = {}  # bugid -> time（只包含已成功获取的时间）
         skip_empty_mark = 0
-        # 先合并前端传来的触发时间（抽样步骤已提取，包含 CSV 导入的时间）
-        for b in run_bugids:
-            if b in frontend_trigger_times and frontend_trigger_times[b]:
-                trigger_times[b] = frontend_trigger_times[b]
-        frontend_hit = len(trigger_times)
-        try:
-            cloud_times, cloud_keys = await loop.run_in_executor(None, _load_cloud_trigger_cache)
+        # skip_time_extraction 时跳过整个时间提取流程
+        if skip_time_extraction:
+            logger.info("skip_time_extraction=True，跳过触发时间提取")
+            yield f"data: {_json.dumps({'type': 'start', 'total': len(run_bugids), 'dedup': dedup_count, 'skipped': skipped_count, 'raw': len(all_bugids), 'max_count': max_count, 'frontend_hit': 0, 'cloud_hit': 0, 'skip_empty_mark': 0, 'need_fetch': 0, 'skip_time': True}, ensure_ascii=False)}\n\n"
+            yield f"data: {_json.dumps({'type': 'extract_done', 'total': len(run_bugids), 'with_time': 0, 'without_time': 0, 'skip_empty_mark': 0, 'skip_time': True}, ensure_ascii=False)}\n\n"
+        else:
+            # 先合并前端传入的触发时间（抽样步骤已提取，包含 CSV 导入的时间）
             for b in run_bugids:
-                if b not in trigger_times and b in cloud_times and cloud_times[b]:
-                    trigger_times[b] = cloud_times[b]
-                elif b not in trigger_times and b in cloud_keys:
-                    # 云端已标记空值（之前提取过但无触发时间），跳过不再重复提取
-                    skip_empty_mark += 1
-        except Exception as e:
-            logger.warning("云端触发时间加载失败: %s", e)
-            cloud_keys = set()
-        cloud_hit_count = len(trigger_times) - frontend_hit
-        # 未命中且未被标记空的进入待提取池
-        pending_pool = [b for b in run_bugids if b not in trigger_times and b not in cloud_keys]
-        logger.info("前端传入 %d 条，云端补充 %d 条，空标记跳过 %d 条，待提取池 %d 条",
-                    frontend_hit, cloud_hit_count, skip_empty_mark, len(pending_pool))
-        yield f"data: {_json.dumps({'type': 'start', 'total': len(run_bugids), 'dedup': dedup_count, 'skipped': skipped_count, 'raw': len(all_bugids), 'max_count': max_count, 'frontend_hit': frontend_hit, 'cloud_hit': cloud_hit_count, 'skip_empty_mark': skip_empty_mark, 'need_fetch': len(pending_pool)}, ensure_ascii=False)}\n\n"
-        # 逐批从待提取池提取，提取失败跳过继续下一个，直到凑够 max_count 或池子耗尽
-        extract_batch_size = 50
-        while pending_pool:
-            need = (max_count - len(trigger_times)) if max_count > 0 else len(pending_pool)
-            if need <= 0:
-                break
-            # 取一批
-            batch = pending_pool[:extract_batch_size]
-            pending_pool = pending_pool[extract_batch_size:]
-            if not batch:
-                break
-            from src.clients import jira_client as _jc
-            def _extract_one(bugid):
-                try:
-                    issue = _jc.fetch_issue(bugid)
-                    # 视频 OCR 提取优先级最高
-                    tt = _diag_extract_time_from_video_simple(issue)
-                    if tt:
-                        # 防御性处理：确保 tt 是字符串
-                        if not isinstance(tt, str):
-                            tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
-                        return bugid, tt
-                    # 视频无结果，走标准提取（标题→评论→描述→自定义字段）
-                    tt = _jc.extract_trigger_time_from_issue(issue)
-                    if tt:
-                        if not isinstance(tt, str):
-                            tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
-                        return bugid, tt
-                except Exception:
-                    pass
-                return bugid, ""
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
-                futures = {pool.submit(_extract_one, b): b for b in batch}
-                done_count = 0
-                for future in concurrent.futures.as_completed(futures):
-                    done_count += 1
+                if b in frontend_trigger_times and frontend_trigger_times[b]:
+                    trigger_times[b] = frontend_trigger_times[b]
+            frontend_hit = len(trigger_times)
+            try:
+                cloud_times, cloud_keys = await loop.run_in_executor(None, _load_cloud_trigger_cache)
+                for b in run_bugids:
+                    if b not in trigger_times and b in cloud_times and cloud_times[b]:
+                        trigger_times[b] = cloud_times[b]
+                    elif b not in trigger_times and b in cloud_keys:
+                        skip_empty_mark += 1
+            except Exception as e:
+                logger.warning("云端触发时间加载失败: %s", e)
+                cloud_keys = set()
+            cloud_hit_count = len(trigger_times) - frontend_hit
+            pending_pool = [b for b in run_bugids if b not in trigger_times and b not in cloud_keys]
+            logger.info("前端传入 %d 条，云端补充 %d 条，空标记跳过 %d 条，待提取池 %d 条",
+                        frontend_hit, cloud_hit_count, skip_empty_mark, len(pending_pool))
+            yield f"data: {_json.dumps({'type': 'start', 'total': len(run_bugids), 'dedup': dedup_count, 'skipped': skipped_count, 'raw': len(all_bugids), 'max_count': max_count, 'frontend_hit': frontend_hit, 'cloud_hit': cloud_hit_count, 'skip_empty_mark': skip_empty_mark, 'need_fetch': len(pending_pool)}, ensure_ascii=False)}\n\n"
+            extract_batch_size = 50
+            while pending_pool:
+                need = (max_count - len(trigger_times)) if max_count > 0 else len(pending_pool)
+                if need <= 0:
+                    break
+                batch = pending_pool[:extract_batch_size]
+                pending_pool = pending_pool[extract_batch_size:]
+                if not batch:
+                    break
+                from src.clients import jira_client as _jc
+                def _extract_one(bugid):
                     try:
-                        bugid, tt = future.result()
+                        issue = _jc.fetch_issue(bugid)
+                        tt = _diag_extract_time_from_video_simple(issue)
                         if tt:
-                            trigger_times[bugid] = tt
-                            # 提取成功（含视频兜底）存入云端
-                            _save_trigger_time_to_cloud(bugid, tt)
-                        else:
-                            # 提取为空，标记空值避免下次重复提取
-                            _save_trigger_time_to_cloud(bugid, "")
+                            if not isinstance(tt, str):
+                                tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
+                            return bugid, tt
+                        tt = _jc.extract_trigger_time_from_issue(issue)
+                        if tt:
+                            if not isinstance(tt, str):
+                                tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
+                            return bugid, tt
                     except Exception:
                         pass
-                    if done_count % 20 == 0 or done_count == len(batch):
-                        yield f"data: {_json.dumps({'type': 'extract_progress', 'current': done_count, 'total': len(batch), 'hit': len(trigger_times)}, ensure_ascii=False)}\n\n"
-        # 最终执行列表：只包含有触发时间的 Jira 号
-        if max_count > 0:
-            # 按原始顺序保留有时间的，最多 max_count 条
-            run_bugids = [b for b in run_bugids if b in trigger_times][:max_count]
-        else:
-            run_bugids = [b for b in run_bugids if b in trigger_times]
-        skipped_no_time = len(bugids) - len(run_bugids)
-        yield f"data: {_json.dumps({'type': 'extract_done', 'total': len(run_bugids), 'with_time': len(trigger_times), 'without_time': skipped_no_time, 'skip_empty_mark': skip_empty_mark}, ensure_ascii=False)}\n\n"
+                    return bugid, ""
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+                    futures = {pool.submit(_extract_one, b): b for b in batch}
+                    done_count = 0
+                    for future in concurrent.futures.as_completed(futures):
+                        done_count += 1
+                        try:
+                            bugid, tt = future.result()
+                            if tt:
+                                trigger_times[bugid] = tt
+                                _save_trigger_time_to_cloud(bugid, tt)
+                            else:
+                                _save_trigger_time_to_cloud(bugid, "")
+                        except Exception:
+                            pass
+                        if done_count % 20 == 0 or done_count == len(batch):
+                            yield f"data: {_json.dumps({'type': 'extract_progress', 'current': done_count, 'total': len(batch), 'hit': len(trigger_times)}, ensure_ascii=False)}\n\n"
+            if max_count > 0:
+                run_bugids = [b for b in run_bugids if b in trigger_times][:max_count]
+            else:
+                run_bugids = [b for b in run_bugids if b in trigger_times]
+            skipped_no_time = len(bugids) - len(run_bugids)
+            yield f"data: {_json.dumps({'type': 'extract_done', 'total': len(run_bugids), 'with_time': len(trigger_times), 'without_time': skipped_no_time, 'skip_empty_mark': skip_empty_mark}, ensure_ascii=False)}\n\n"
         # 批量执行线上接口
         result_queue = queue.Queue()
 
@@ -10203,16 +10352,18 @@ async def test_prod_batch_run(request: Request):
             if stop_event.is_set():
                 return
             from src.clients.base import http_post
-            # 无触发时间的 Jira 号跳过执行，不使用当前时间回退
-            exec_time = trigger_times.get(bugid)
-            if not exec_time:
+            # 无触发时间的 Jira 号：skip_time_extraction 时允许执行（不传 questionTimes），否则跳过
+            exec_time = trigger_times.get(bugid, "")
+            if not exec_time and not skip_time_extraction:
                 result_queue.put({"Jira号": bugid, "执行结果": "失败",
                                   "备注": "无触发时间", "触发时间": "",
                                   "执行时间": batch_start_time,
                                   "status": "fail", "msg": "无触发时间"})
                 return
             try:
-                payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
+                payload = {"jiraNumber": bugid}
+                if exec_time:
+                    payload["questionTimes"] = [exec_time]
                 resp = http_post(_PROD_AI_URL, payload, timeout=30)
                 if stop_event.is_set():
                     return
@@ -10257,7 +10408,8 @@ async def test_prod_batch_run(request: Request):
                                  _batch_meta["模型"], _batch_meta["触发来源"]])
         success_count = sum(1 for r in results if r["执行结果"] == "成功")
         fail_count = len(results) - success_count
-        done_msg = f"执行完成：成功 {success_count}，失败 {fail_count}，去重 {dedup_count}，重复跳过 {skipped_count}，无触发时间 {len(run_bugids) - len(trigger_times)}"
+        no_time_count = sum(1 for r in results if r.get("备注") == "无触发时间")
+        done_msg = f"执行完成：成功 {success_count}，失败 {fail_count}，去重 {dedup_count}，重复跳过 {skipped_count}，无触发时间 {no_time_count}"
         logger.info("线上批量执行完成: %s", done_msg)
         # 上传执行记录到云端
         cloud_url = ""
@@ -11012,6 +11164,412 @@ def online_followup_load(date: str = None):
     return _ok(data, f"已加载 {data.get('date', '')} 对比数据")
 
 
+# ==================== 自动检测执行 ====================
+
+# 全局停止事件，用于强制停止自动检测循环
+_auto_detect_stop = False
+
+
+@app.post("/api/test/auto_detect_stop")
+async def auto_detect_stop():
+    """强制停止自动检测执行"""
+    global _auto_detect_stop
+    _auto_detect_stop = True
+    return _ok(None, "已发送停止信号")
+
+
+@app.post("/api/test/auto_detect_run")
+async def auto_detect_run(request: Request):
+    """自动检测+执行：每轮搜索JQL→过滤→抽样→调用线上AI接口→存云端"""
+    import asyncio, json as _json, csv as _csv, random
+    global _auto_detect_stop
+    _auto_detect_stop = False
+    body = await request.json() or {}
+    jql = str(body.get("jql") or "issuetype = bug AND created >= -10m AND status != closed").strip()
+    filter_ai_init = bool(body.get("filter_ai_init", False))
+    interval_min = max(1, int(body.get("interval", 6)))
+    max_rounds = int(body.get("rounds", 0))  # 0=持续执行
+    skip_time_extraction = bool(body.get("skip_time_extraction", False))
+    _batch_meta = {
+        "分析并发数": str(body.get("analysis_concurrency", "5")),
+        "下载并发数": str(body.get("download_concurrency", "2")),
+        "模型": str(body.get("model", "deepseek-v-pro")),
+        "触发来源": str(body.get("trigger_source", "线上")),
+    }
+
+    async def event_generator():
+        global _auto_detect_stop
+        from src.clients import jira_client, feishu_client
+        from src.clients.base import http_post
+        loop = asyncio.get_event_loop()
+        round_num = 0
+        total_executed = 0
+        total_success = 0
+        total_fail = 0
+
+        while True:
+            if _auto_detect_stop:
+                yield f"data: {_json.dumps({'type': 'stopped', 'round': round_num, 'message': '已手动停止'}, ensure_ascii=False)}\n\n"
+                break
+            if await request.is_disconnected():
+                break
+            round_num += 1
+            if max_rounds > 0 and round_num > max_rounds:
+                yield f"data: {_json.dumps({'type': 'done', 'round': round_num - 1, 'total_executed': total_executed, 'total_success': total_success, 'total_fail': total_fail, 'message': f'已完成 {max_rounds} 轮'}, ensure_ascii=False)}\n\n"
+                break
+            yield f"data: {_json.dumps({'type': 'round_start', 'round': round_num}, ensure_ascii=False)}\n\n"
+            # 步骤1：JQL搜索
+            try:
+                issues = await loop.run_in_executor(None, lambda: jira_client.search_issues(jql, max_results=200))
+                bugids = [i.get("key", "") for i in issues if "VCU" in (i.get("key") or "").upper()]
+                yield f"data: {_json.dumps({'type': 'search', 'round': round_num, 'total': len(issues), 'vcu': len(bugids)}, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                yield f"data: {_json.dumps({'type': 'round_error', 'round': round_num, 'error': f'JQL搜索失败: {e}'}, ensure_ascii=False)}\n\n"
+                if max_rounds <= 0:
+                    await asyncio.sleep(interval_min * 60)
+                continue
+            if not bugids:
+                yield f"data: {_json.dumps({'type': 'round_skip', 'round': round_num, 'reason': '无新增bug'}, ensure_ascii=False)}\n\n"
+                if max_rounds <= 0:
+                    await asyncio.sleep(interval_min * 60)
+                continue
+            # 步骤2：去重过滤（查询多维表格已存在的记录）
+            try:
+                cfg_fb = load_config().get("feishu_bitable", {})
+                at, tid = cfg_fb.get("app_token", ""), cfg_fb.get("table_id", "")
+                bf = cfg_fb.get("bugid_field", "jira号")
+                existing = set()
+                if at and tid:
+                    records = await loop.run_in_executor(None, lambda: feishu_client.list_bitable_records(at, tid))
+                    for rec in records:
+                        fields = rec.get("fields", {})
+                        jn = _bitable_text(fields.get(bf, ""))
+                        if jn:
+                            existing.add(jn.upper())
+                bugids = [b for b in bugids if b.upper() not in existing]
+                yield f"data: {_json.dumps({'type': 'filter', 'round': round_num, 'after_dedup': len(bugids)}, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                logger.warning("自动检测: 去重过滤失败: %s", e)
+            if not bugids:
+                yield f"data: {_json.dumps({'type': 'round_skip', 'round': round_num, 'reason': '过滤后无新增'}, ensure_ascii=False)}\n\n"
+                if max_rounds <= 0:
+                    await asyncio.sleep(interval_min * 60)
+                continue
+            # 步骤3：AI初步分析过滤（可选）
+            if filter_ai_init:
+                try:
+                    cfg_fb = load_config().get("feishu_bitable", {})
+                    at, tid = cfg_fb.get("app_token", ""), cfg_fb.get("table_id", "")
+                    bf = cfg_fb.get("bugid_field", "jira号")
+                    ai_init_set = set()
+                    if at and tid:
+                        records = await loop.run_in_executor(None, lambda: feishu_client.list_bitable_records(at, tid))
+                        for rec in records:
+                            fields = rec.get("fields", {})
+                            jn = _bitable_text(fields.get(bf, "")).upper()
+                            ar = _bitable_text(fields.get("分析结果", ""))
+                            if jn and ar == "成功":
+                                ai_init_set.add(jn)
+                    before = len(bugids)
+                    bugids = [b for b in bugids if b.upper() not in ai_init_set]
+                    yield f"data: {_json.dumps({'type': 'ai_filter', 'round': round_num, 'before': before, 'after': len(bugids)}, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    logger.warning("自动检测: AI初步分析过滤失败: %s", e)
+            if not bugids:
+                yield f"data: {_json.dumps({'type': 'round_skip', 'round': round_num, 'reason': 'AI过滤后无新增'}, ensure_ascii=False)}\n\n"
+                if max_rounds <= 0:
+                    await asyncio.sleep(interval_min * 60)
+                continue
+            # 步骤4：智能抽样（<10全执行，>10抽10个）
+            if len(bugids) > 10:
+                bugids = random.sample(bugids, 10)
+            # 步骤5：检查gmlogger附件 + 提取触发时间
+            trigger_times = {}
+            no_gmlogger = 0
+            for bugid in list(bugids):
+                if _auto_detect_stop:
+                    break
+                try:
+                    issue = await loop.run_in_executor(None, lambda b=bugid: jira_client.fetch_issue(b))
+                    attachments = (issue.get("fields") or {}).get("attachment") or []
+                    has_gmlogger = any("gmlogger" in (att.get("filename", "") or "").lower() for att in attachments)
+                    if not has_gmlogger:
+                        bugids.remove(bugid)
+                        no_gmlogger += 1
+                        continue
+                    if not skip_time_extraction:
+                        from src.core.trigger_time import extract_trigger_time_from_issue
+                        tt = await loop.run_in_executor(None, lambda b=bugid, iss=issue: extract_trigger_time_from_issue(b, iss))
+                        if tt:
+                            trigger_times[bugid] = tt
+                            _save_trigger_time_to_cloud(bugid, tt)
+                except Exception as e:
+                    logger.warning("自动检测: 处理 %s 失败: %s", bugid, e)
+            yield f"data: {_json.dumps({'type': 'prepare', 'round': round_num, 'to_run': len(bugids), 'no_gmlogger': no_gmlogger, 'with_time': len(trigger_times)}, ensure_ascii=False)}\n\n"
+            if not bugids:
+                yield f"data: {_json.dumps({'type': 'round_skip', 'round': round_num, 'reason': '无gmlogger附件或触发时间'}, ensure_ascii=False)}\n\n"
+                if max_rounds <= 0:
+                    await asyncio.sleep(interval_min * 60)
+                continue
+            # 步骤6：调用线上AI接口
+            batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            results = []
+            batch_fail_all = False
+            for bugid in bugids:
+                if _auto_detect_stop:
+                    break
+                exec_time = trigger_times.get(bugid, "")
+                if not exec_time and not skip_time_extraction:
+                    results.append({"Jira号": bugid, "执行结果": "失败", "备注": "无触发时间"})
+                    continue
+                try:
+                    payload = {"jiraNumber": bugid}
+                    if exec_time:
+                        payload["questionTimes"] = [exec_time]
+                    resp = await loop.run_in_executor(None, lambda p=payload: http_post(_PROD_AI_URL, p, timeout=30))
+                    resp_code = resp.get("code") if isinstance(resp, dict) else None
+                    resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
+                    is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
+                    results.append({"Jira号": bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200]})
+                except Exception as e:
+                    results.append({"Jira号": bugid, "执行结果": "失败", "备注": str(e)[:200]})
+                    # 检查是否整批失败（接口完全不可用）
+                    if len(results) >= 3 and all(r["执行结果"] == "失败" for r in results):
+                        batch_fail_all = True
+                        break
+                yield f"data: {_json.dumps({'type': 'progress', 'round': round_num, 'index': len(results), 'total': len(bugids), 'bugid': bugid, 'status': results[-1]['执行结果']}, ensure_ascii=False)}\n\n"
+            # 步骤7：保存结果到云端
+            success_count = sum(1 for r in results if r["执行结果"] == "成功")
+            fail_count = len(results) - success_count
+            total_executed += len(results)
+            total_success += success_count
+            total_fail += fail_count
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            time_str = datetime.now().strftime("%H%M%S")
+            batch_csv = os.path.join(_UNANALYZED_DIR, f"auto_add_{date_str}_{time_str}.csv")
+            try:
+                with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
+                    writer = _csv.writer(f)
+                    writer.writerow(["Jira号", "执行结果", "触发时间", "执行时间", "备注",
+                                     "分析并发数", "下载并发数", "模型", "触发来源"])
+                    for r in results:
+                        writer.writerow([r["Jira号"], r["执行结果"], trigger_times.get(r["Jira号"], ""),
+                                         batch_start, r.get("备注", ""),
+                                         _batch_meta["分析并发数"], _batch_meta["下载并发数"],
+                                         _batch_meta["模型"], _batch_meta["触发来源"]])
+                doc_title = f"auto_add {date_str} {time_str} ({success_count}/{len(results)})"
+                cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
+            except Exception as e:
+                cloud_url = ""
+                logger.warning("自动检测: 保存云端失败: %s", e)
+            yield f"data: {_json.dumps({'type': 'round_done', 'round': round_num, 'total': len(results), 'success': success_count, 'fail': fail_count, 'cloud_url': cloud_url}, ensure_ascii=False)}\n\n"
+            # 整批失败时自动停止
+            if batch_fail_all:
+                yield f"data: {_json.dumps({'type': 'auto_stopped', 'round': round_num, 'reason': '接口连续失败，自动停止'}, ensure_ascii=False)}\n\n"
+                break
+            # 等待下一轮
+            if max_rounds <= 0 or round_num < max_rounds:
+                yield f"data: {_json.dumps({'type': 'waiting', 'round': round_num, 'interval': interval_min}, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(interval_min * 60)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ==================== 回归执行 ====================
+
+@app.post("/api/test/regression_run")
+async def regression_run(request: Request):
+    """回归执行：从错误统计中筛选有成功记录的Jira号，抽样后调用线上AI接口"""
+    import asyncio, json as _json, csv as _csv, random
+    body = await request.json() or {}
+    after_time = str(body.get("after_time", "")).strip()
+    sample_count = max(1, int(body.get("sample_count", 10)))
+    skip_time_extraction = bool(body.get("skip_time_extraction", False))
+    _batch_meta = {
+        "分析并发数": str(body.get("analysis_concurrency", "5")),
+        "下载并发数": str(body.get("download_concurrency", "2")),
+        "模型": str(body.get("model", "deepseek-v-pro")),
+        "触发来源": str(body.get("trigger_source", "线上")),
+    }
+
+    async def event_generator():
+        from src.clients import feishu_client, jira_client
+        from src.clients.base import http_post
+        loop = asyncio.get_event_loop()
+        # 步骤1：查询错误统计
+        try:
+            cfg = load_config().get("feishu_bitable", {})
+            at, tid = cfg.get("app_token", ""), cfg.get("table_id", "")
+            bf = cfg.get("bugid_field", "jira号")
+            if not at or not tid:
+                yield f"data: {_json.dumps({'type': 'error', 'message': '多维表格未配置'}, ensure_ascii=False)}\n\n"
+                return
+            records = await loop.run_in_executor(None, lambda: feishu_client.list_bitable_records(at, tid))
+            # 聚合：找有成功记录的Jira号
+            stats = {}
+            for rec in records:
+                fields = rec.get("fields", {})
+                jn = _bitable_text(fields.get(bf, ""))
+                if not jn:
+                    continue
+                result_status = _bitable_text(fields.get("分析结果", ""))
+                entry = stats.setdefault(jn, {"has_success": False, "fail_count": 0})
+                if result_status == "成功":
+                    entry["has_success"] = True
+                elif result_status == "失败":
+                    entry["fail_count"] += 1
+            # 过滤有成功记录的
+            candidates = [jn for jn, e in stats.items() if e["has_success"]]
+            yield f"data: {_json.dumps({'type': 'search', 'total': len(candidates)}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'查询失败: {e}'}, ensure_ascii=False)}\n\n"
+            return
+        if not candidates:
+            yield f"data: {_json.dumps({'type': 'done', 'total': 0, 'success': 0, 'fail': 0, 'message': '无有成功记录的Jira号'}, ensure_ascii=False)}\n\n"
+            return
+        # 步骤2：抽样
+        if len(candidates) > sample_count:
+            candidates = random.sample(candidates, sample_count)
+        yield f"data: {_json.dumps({'type': 'sample', 'total': len(candidates)}, ensure_ascii=False)}\n\n"
+        # 步骤3：执行
+        trigger_times = {}
+        if not skip_time_extraction:
+            cloud_times = await loop.run_in_executor(None, _load_trigger_times_from_cloud)
+            for bugid in candidates:
+                tt = cloud_times.get(bugid, "")
+                if tt:
+                    trigger_times[bugid] = tt
+        batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        results = []
+        for bugid in candidates:
+            exec_time = trigger_times.get(bugid, "")
+            if not exec_time and not skip_time_extraction:
+                results.append({"Jira号": bugid, "执行结果": "失败", "备注": "无触发时间"})
+                continue
+            try:
+                payload = {"jiraNumber": bugid}
+                if exec_time:
+                    payload["questionTimes"] = [exec_time]
+                resp = await loop.run_in_executor(None, lambda p=payload: http_post(_PROD_AI_URL, p, timeout=30))
+                resp_code = resp.get("code") if isinstance(resp, dict) else None
+                resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
+                is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
+                results.append({"Jira号": bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200]})
+            except Exception as e:
+                results.append({"Jira号": bugid, "执行结果": "失败", "备注": str(e)[:200]})
+            yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(candidates), 'bugid': bugid, 'status': results[-1]['执行结果']}, ensure_ascii=False)}\n\n"
+        # 步骤4：保存
+        success_count = sum(1 for r in results if r["执行结果"] == "成功")
+        fail_count = len(results) - success_count
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        time_str = datetime.now().strftime("%H%M%S")
+        batch_csv = os.path.join(_UNANALYZED_DIR, f"regression_{date_str}_{time_str}.csv")
+        try:
+            with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
+                writer = _csv.writer(f)
+                writer.writerow(["Jira号", "执行结果", "触发时间", "执行时间", "备注",
+                                 "分析并发数", "下载并发数", "模型", "触发来源"])
+                for r in results:
+                    writer.writerow([r["Jira号"], r["执行结果"], trigger_times.get(r["Jira号"], ""),
+                                     batch_start, r.get("备注", ""),
+                                     _batch_meta["分析并发数"], _batch_meta["下载并发数"],
+                                     _batch_meta["模型"], _batch_meta["触发来源"]])
+            doc_title = f"回归执行 {date_str} {time_str} ({success_count}/{len(results)})"
+            cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
+        except Exception as e:
+            cloud_url = ""
+            logger.warning("回归执行: 保存失败: %s", e)
+        yield f"data: {_json.dumps({'type': 'done', 'total': len(results), 'success': success_count, 'fail': fail_count, 'cloud_url': cloud_url}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ==================== AB实验 ====================
+
+@app.post("/api/test/ab_experiment")
+async def ab_experiment(request: Request):
+    """AB实验：对A/B两组配置使用相同输入进行对比验证"""
+    import asyncio, json as _json, random
+    body = await request.json() or {}
+    input_raw = str(body.get("input", "")).strip()
+    exp_a = body.get("exp_a") or {}
+    exp_b = body.get("exp_b") or {}
+    sample_count = int(body.get("sample_count", 0))  # 0=不抽样，全量执行
+    if not input_raw:
+        return _fail("请输入 Jira 号或 JQL")
+
+    async def event_generator():
+        from src.clients import jira_client
+        from src.clients.base import http_post
+        loop = asyncio.get_event_loop()
+        # 步骤1：解析输入——JQL搜索或直接Jira号
+        if input_raw.startswith("issuetype") or "ORDER BY" in input_raw.upper() or "~" in input_raw or " AND " in input_raw.upper():
+            try:
+                issues = await loop.run_in_executor(None, lambda: jira_client.search_issues(input_raw, max_results=500))
+                all_bugids = [i.get("key", "") for i in issues if "VCU" in (i.get("key") or "").upper()]
+                yield f"data: {_json.dumps({'type': 'search', 'total': len(issues), 'vcu': len(all_bugids)}, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                yield f"data: {_json.dumps({'type': 'error', 'message': f'JQL搜索失败: {e}'}, ensure_ascii=False)}\n\n"
+                return
+        else:
+            all_bugids = [b.strip() for b in input_raw.replace("，", ",").replace(";", ",").split(",") if b.strip()]
+            yield f"data: {_json.dumps({'type': 'search', 'total': len(all_bugids), 'vcu': len(all_bugids)}, ensure_ascii=False)}\n\n"
+        if not all_bugids:
+            yield f"data: {_json.dumps({'type': 'error', 'message': '无有效Jira号'}, ensure_ascii=False)}\n\n"
+            return
+        # 步骤2：统一抽样——同一份结果分给A和B
+        if sample_count > 0 and len(all_bugids) > sample_count:
+            bugids = random.sample(all_bugids, sample_count)
+            yield f"data: {_json.dumps({'type': 'sample', 'before': len(all_bugids), 'after': len(bugids)}, ensure_ascii=False)}\n\n"
+        else:
+            bugids = list(all_bugids)
+            yield f"data: {_json.dumps({'type': 'sample', 'before': len(all_bugids), 'after': len(bugids)}, ensure_ascii=False)}\n\n"
+        # 步骤3：对A和B分别用相同bugids执行
+        async def _run_exp(exp_cfg, label):
+            module = exp_cfg.get("module", "prod_batch")
+            results = []
+            start_time = datetime.now()
+            for bugid in bugids:
+                if await request.is_disconnected():
+                    break
+                try:
+                    if module == "prod_batch":
+                        payload = {"jiraNumber": bugid}
+                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(_PROD_AI_URL, p, timeout=30))
+                        resp_code = resp.get("code") if isinstance(resp, dict) else None
+                        is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
+                        results.append({"bugid": bugid, "success": is_ok})
+                    elif module == "batch_ai":
+                        cfg_ai = load_config().get("ai_log_api", {})
+                        payload = {cfg_ai.get("bugid_field", "bugid"): bugid}
+                        resp = await loop.run_in_executor(None, lambda p=payload, u=cfg_ai.get("url", ""): http_post(u, p, timeout=30))
+                        resp_code = resp.get("code") if isinstance(resp, dict) else None
+                        is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
+                        results.append({"bugid": bugid, "success": is_ok})
+                    else:
+                        results.append({"bugid": bugid, "success": True})
+                except Exception:
+                    results.append({"bugid": bugid, "success": False})
+                yield f"data: {_json.dumps({'type': f'progress_{label}', 'done': len(results), 'total': len(bugids), 'success': sum(1 for r in results if r['success']), 'fail': sum(1 for r in results if not r['success']), 'bugid': bugid, 'status': '成功' if results[-1]['success'] else '失败'}, ensure_ascii=False)}\n\n"
+            elapsed = (datetime.now() - start_time).total_seconds()
+            success = sum(1 for r in results if r["success"])
+            fail = len(results) - success
+            rate = f"{success / len(results) * 100:.1f}%" if results else "0%"
+            avg_time = f"{elapsed / len(results):.1f}s" if results else "-"
+            yield f"data: {_json.dumps({'type': f'result_{label}', 'total': len(results), 'success': success, 'fail': fail, 'rate': rate, 'avg_time': avg_time, 'elapsed': round(elapsed, 1)}, ensure_ascii=False)}\n\n"
+        # 顺序执行A和B，用同一份bugids
+        async for chunk in _run_exp(exp_a, "a"):
+            yield chunk
+        async for chunk in _run_exp(exp_b, "b"):
+            yield chunk
+        yield f"data: {_json.dumps({'type': 'done', 'message': f'AB实验完成，共用 {len(bugids)} 条数据'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 # ==================== 冒烟测试：多维表格查询 ====================
 
 @app.post("/api/test/smoke_test_query")
@@ -11096,12 +11654,14 @@ async def smoke_test_save_record(request: Request):
         jira_id = r.get("jira_id", "-")
         result_status = rec.get("分析结果", "-") or "-"
         is_success = "是" if result_status == "成功" else "否"
-        # 分析耗时：从分析问题时间和分析完成时间计算
-        start_t = rec.get("分析问题时间", "")
-        end_t = rec.get("分析完成时间", "")
-        analysis_dur = _calc_smoke_duration(start_t, end_t)
-        # 总耗时：同上（冒烟测试场景下二者等价）
-        total_dur = analysis_dur
+        # 分析耗时：优先使用多维表格自带字段，兜底用时间戳计算
+        analysis_dur = rec.get("分析耗时", "") or ""
+        if not analysis_dur or analysis_dur == "-":
+            analysis_dur = _calc_smoke_duration(rec.get("分析问题时间", ""), rec.get("分析完成时间", ""))
+        # 总耗时：同上
+        total_dur = rec.get("总耗时", "") or analysis_dur
+        if not total_dur or total_dur == "-":
+            total_dur = analysis_dur
         # 错误原因
         error_reason = ""
         if result_status != "成功":
