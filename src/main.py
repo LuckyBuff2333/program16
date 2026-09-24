@@ -8,6 +8,11 @@ import os
 import sys
 from datetime import datetime
 
+# 确保项目根目录在 sys.path 中，支持 python src/main.py 直接运行
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 from src import db, pipeline
 from src.config import get_path, setup_logger
 from src.core import audit as audit_module
@@ -60,12 +65,45 @@ def cmd_audit(args):
     print(f"随机抽查完成，人工审核表格: {report_path}")
 
 
+def _kill_port_hog(port: int):
+    """启动前自动杀掉占用指定端口的旧进程"""
+    import signal
+    import socket
+    import subprocess
+    import time
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(1)
+    result = s.connect_ex(('127.0.0.1', port))
+    s.close()
+    if result != 0:
+        return  # 端口空闲，无需处理
+
+    logger.info("端口 %d 被占用，正在清理旧进程...", port)
+    try:
+        out = subprocess.check_output(
+            ['lsof', '-ti', f':{port}'],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        pids = [int(p) for p in out.split() if p.isdigit()]
+        for pid in pids:
+            if pid != os.getpid():
+                os.kill(pid, signal.SIGKILL)
+                logger.info("已杀掉旧进程 PID=%d", pid)
+        time.sleep(1)  # 等待端口释放
+    except Exception as e:
+        logger.warning("清理端口 %d 失败: %s", port, e)
+
+
 def cmd_web(args):
     """启动前端可视化页面服务（基于 uvicorn + FastAPI，支持代码热重载）"""
     import logging
     import os
 
     import uvicorn
+
+    # 自动杀掉占用端口的旧进程
+    _kill_port_hog(args.port)
 
     # 判断是否为打包后的 exe（打包后无源码，禁用 reload）
     is_frozen = getattr(sys, 'frozen', False)
