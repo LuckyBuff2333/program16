@@ -33,36 +33,32 @@ _diag_cancel: dict = {}
 
 # 全局中断标志：Ctrl+C 时设为 True，诊断等长时间操作定期检查
 _interrupted = False
+_prev_sigint = None  # 保存 uvicorn/asyncio 的原始 SIGINT 处理器
 
 
 def _handle_sigint(signum, frame):
-    """SIGINT 处理：设置中断标志 + 取消诊断任务，5秒后强制退出整个进程树"""
+    """SIGINT 处理：设置中断标志 + 取消诊断任务，然后让 uvicorn 正常关闭"""
     global _interrupted
     if _interrupted:
         # 第二次 Ctrl+C：直接系统级退出，os._exit 无法被 asyncio 捕获
+        # reload 模式下同时终止父进程（reloader），防止自动重启
+        ppid = os.getppid()
+        if ppid > 1 and ppid != os.getpid():
+            try:
+                if sys.platform == 'win32':
+                    os.system(f'taskkill /F /T /PID {ppid} >nul 2>&1')
+                else:
+                    os.kill(ppid, signal.SIGTERM)
+            except Exception:
+                pass
         os._exit(1)
     _interrupted = True
     for bugid in list(_diag_cancel):
         _diag_cancel[bugid] = True
     logger.warning("收到 Ctrl+C，正在停止当前操作（再次按 Ctrl+C 强制退出）")
-    import threading
-    def _force_exit():
-        try:
-            logger.error("后台操作未能在 5 秒内停止，强制退出")
-            # reload 模式下同时终止父进程（reloader），防止自动重启
-            ppid = os.getppid()
-            if ppid > 0 and ppid != os.getpid():
-                try:
-                    if sys.platform == 'win32':
-                        os.system(f'taskkill /F /T /PID {ppid} >nul 2>&1')
-                    else:
-                        os.kill(ppid, 2)  # SIGINT
-                except Exception:
-                    pass
-        finally:
-            # 无论 taskkill 是否成功，必须确保本进程退出
-            os._exit(0)
-    threading.Timer(5, _force_exit).start()
+    # 调用 uvicorn/asyncio 的原始 SIGINT 处理器，触发正常关闭流程
+    if _prev_sigint and callable(_prev_sigint) and _prev_sigint not in (signal.SIG_IGN, signal.SIG_DFL):
+        _prev_sigint(signum, frame)
 
 
 def _check_interrupt():
@@ -95,8 +91,11 @@ async def _on_startup():
     # 注册 Ctrl+C 信号处理（让诊断等阻塞操作可响应中断）
     global _interrupted
     _interrupted = False
+    # 保存 uvicorn/asyncio 的原始 SIGINT 处理器，设置完中断标志后调用它
+    global _prev_sigint
+    _prev_sigint = None
     try:
-        signal.signal(signal.SIGINT, _handle_sigint)
+        _prev_sigint = signal.signal(signal.SIGINT, _handle_sigint)
     except (ValueError, OSError):
         pass  # 非主线程时忽略
 
@@ -6232,12 +6231,14 @@ async def verify_and_fill(request: Request):
 
         for file_idx, csv_path in enumerate(csv_paths):
             file_name = os.path.basename(csv_path)
-            yield f"data: {_json.dumps({'type': 'file_start', 'file_index': file_idx,
-                                        'file_name': file_name, 'file_total': len(csv_paths)}, ensure_ascii=False)}\n\n"
+            _sse_d = {'type': 'file_start', 'file_index': file_idx,
+                                        'file_name': file_name, 'file_total': len(csv_paths)}
+            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
             rows = _read_csv_rows(csv_path)
             if not rows:
-                yield f"data: {_json.dumps({'type': 'file_error', 'file_index': file_idx,
-                                            'msg': f'{file_name}: CSV 为空'}, ensure_ascii=False)}\n\n"
+                _sse_d = {'type': 'file_error', 'file_index': file_idx,
+                                            'msg': f'{file_name}: CSV 为空'}
+                yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
                 continue
             # 识别 bugid 列
             bugid_col = None
@@ -6258,8 +6259,9 @@ async def verify_and_fill(request: Request):
             base, ext = os.path.splitext(csv_path)
             compare_log_path = f"{base}_compare_log{ext}"
             total = len(rows)
-            yield f"data: {_json.dumps({'type': 'start', 'file_index': file_idx,
-                                        'total': total, 'file_name': file_name}, ensure_ascii=False)}\n\n"
+            _sse_d = {'type': 'start', 'file_index': file_idx,
+                                        'total': total, 'file_name': file_name}
+            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
             ready_count = 0
             low_conf_count = 0
             with open(compare_log_path, "w", newline="", encoding="utf-8-sig") as flog:
@@ -6278,10 +6280,11 @@ async def verify_and_fill(request: Request):
                     # 多维表格中未成功（不存在或失败）的记录跳过验证
                     if bitable_available and bugid not in bitable_success:
                         log_writer.writerow({"jira号": bugid, "达标": "否", "原因": "多维表格中未成功"})
-                        yield f"data: {_json.dumps({'type': 'progress', 'file_index': file_idx,
+                        _sse_d = {'type': 'progress', 'file_index': file_idx,
                                                     'index': idx + 1, 'total': total, 'bugid': bugid,
                                                     'status': 'skipped', 'rootcause': '', 'confidence': '',
-                                                    'comment_summary': '', 'msg': '多维表格中未成功，已跳过'}, ensure_ascii=False)}\n\n"
+                                                    'comment_summary': '', 'msg': '多维表格中未成功，已跳过'}
+                        yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
                         continue
                     # 从多维表格注入飞书报告链接（若CSV行中缺失）
                     if not row.get("AI分析结果(飞书链接)") and bugid in bitable_links:
@@ -6312,7 +6315,7 @@ async def verify_and_fill(request: Request):
                                                  "结果置信度": str(conf_val),
                                                  "达标": "是" if is_ready else "否",
                                                  "原因": "" if is_ready else reason})
-                            yield f"data: {_json.dumps({'type': 'progress', 'file_index': file_idx,
+                            _sse_d = {'type': 'progress', 'file_index': file_idx,
                                                         'index': idx + 1, 'total': total, 'bugid': bugid,
                                                         'status': 'success' if is_ready else 'low_confidence',
                                                         'rootcause': calc_rootcause[:80],
@@ -6320,34 +6323,39 @@ async def verify_and_fill(request: Request):
                                                         'comment_summary': calc_comment,
                                                         'doc_url': calc_doc_url,
                                                         'doc_path': calc_doc_path,
-                                                        'msg': '' if is_ready else reason}, ensure_ascii=False)}\n\n"
+                                                        'msg': '' if is_ready else reason}
+                            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
                         else:
                             err_msg = result.get('error', '')
                             is_skip = '根因分析内容为空' in err_msg
                             log_writer.writerow({"jira号": bugid, "达标": "否", "原因": err_msg[:200]})
-                            yield f"data: {_json.dumps({'type': 'progress', 'file_index': file_idx,
+                            _sse_d = {'type': 'progress', 'file_index': file_idx,
                                                         'index': idx + 1, 'total': total, 'bugid': bugid,
                                                         'status': 'skipped' if is_skip else 'fail',
                                                         'rootcause': '', 'confidence': '',
                                                         'comment_summary': '',
-                                                        'msg': err_msg}, ensure_ascii=False)}\n\n"
+                                                        'msg': err_msg}
+                            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
                     except Exception as e:
                         log_writer.writerow({"jira号": bugid, "达标": "否", "原因": str(e)[:200]})
-                        yield f"data: {_json.dumps({'type': 'progress', 'file_index': file_idx,
+                        _sse_d = {'type': 'progress', 'file_index': file_idx,
                                                     'index': idx + 1, 'total': total, 'bugid': bugid,
                                                     'status': 'fail', 'rootcause': '', 'confidence': '',
                                                     'comment_summary': '',
-                                                    'msg': str(e)[:200]}, ensure_ascii=False)}\n\n"
-            yield f"data: {_json.dumps({'type': 'file_done', 'file_index': file_idx,
+                                                    'msg': str(e)[:200]}
+                        yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
+            _sse_d = {'type': 'file_done', 'file_index': file_idx,
                                         'file_name': file_name, 'total': total,
                                         'ready': ready_count, 'low_conf': low_conf_count,
-                                        'compare_log': compare_log_path, 'csv_path': csv_path}, ensure_ascii=False)}\n\n"
+                                        'compare_log': compare_log_path, 'csv_path': csv_path}
+            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
         # 处理直接传入的 jira 号列表
         if bugids:
             file_idx = len(csv_paths)
             file_name = f"jira输入({len(bugids)}个)"
-            yield f"data: {_json.dumps({'type': 'file_start', 'file_index': file_idx,
-                                        'file_name': file_name, 'file_total': len(csv_paths) + 1}, ensure_ascii=False)}\n\n"
+            _sse_d = {'type': 'file_start', 'file_index': file_idx,
+                                        'file_name': file_name, 'file_total': len(csv_paths) + 1}
+            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
             rows = [{"jira号": b} for b in bugids]
             bugid_col = "jira号"
             confidence_threshold = float(load_config().get("similarity", {}).get("threshold", 0.7))
@@ -6357,8 +6365,9 @@ async def verify_and_fill(request: Request):
             os.makedirs(compare_log_dir, exist_ok=True)
             compare_log_path = os.path.join(compare_log_dir, "jira_input_compare_log.csv")
             total = len(rows)
-            yield f"data: {_json.dumps({'type': 'start', 'file_index': file_idx,
-                                        'total': total, 'file_name': file_name}, ensure_ascii=False)}\n\n"
+            _sse_d = {'type': 'start', 'file_index': file_idx,
+                                        'total': total, 'file_name': file_name}
+            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
             ready_count = 0
             low_conf_count = 0
             with open(compare_log_path, "w", newline="", encoding="utf-8-sig") as flog:
@@ -6374,10 +6383,11 @@ async def verify_and_fill(request: Request):
                     bugid = row["jira号"]
                     if bitable_available and bugid not in bitable_success:
                         log_writer.writerow({"jira号": bugid, "达标": "否", "原因": "多维表格中未成功"})
-                        yield f"data: {_json.dumps({'type': 'progress', 'file_index': file_idx,
+                        _sse_d = {'type': 'progress', 'file_index': file_idx,
                                                     'index': idx + 1, 'total': total, 'bugid': bugid,
                                                     'status': 'skipped', 'rootcause': '', 'confidence': '',
-                                                    'comment_summary': '', 'msg': '多维表格中未成功，已跳过'}, ensure_ascii=False)}\n\n"
+                                                    'comment_summary': '', 'msg': '多维表格中未成功，已跳过'}
+                        yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
                         continue
                     # 从多维表格注入飞书报告链接（jira输入模式无此字段）
                     if not row.get("AI分析结果(飞书链接)") and bugid in bitable_links:
@@ -6408,7 +6418,7 @@ async def verify_and_fill(request: Request):
                                                  "结果置信度": str(conf_val),
                                                  "达标": "是" if is_ready else "否",
                                                  "原因": "" if is_ready else reason})
-                            yield f"data: {_json.dumps({'type': 'progress', 'file_index': file_idx,
+                            _sse_d = {'type': 'progress', 'file_index': file_idx,
                                                         'index': idx + 1, 'total': total, 'bugid': bugid,
                                                         'status': 'success' if is_ready else 'low_confidence',
                                                         'rootcause': calc_rootcause[:80],
@@ -6416,28 +6426,32 @@ async def verify_and_fill(request: Request):
                                                         'comment_summary': calc_comment,
                                                         'doc_url': calc_doc_url,
                                                         'doc_path': calc_doc_path,
-                                                        'msg': '' if is_ready else reason}, ensure_ascii=False)}\n\n"
+                                                        'msg': '' if is_ready else reason}
+                            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
                         else:
                             err_msg = result.get('error', '')
                             is_skip = '根因分析内容为空' in err_msg
                             log_writer.writerow({"jira号": bugid, "达标": "否", "原因": err_msg[:200]})
-                            yield f"data: {_json.dumps({'type': 'progress', 'file_index': file_idx,
+                            _sse_d = {'type': 'progress', 'file_index': file_idx,
                                                         'index': idx + 1, 'total': total, 'bugid': bugid,
                                                         'status': 'skipped' if is_skip else 'fail',
                                                         'rootcause': '', 'confidence': '',
                                                         'comment_summary': '',
-                                                        'msg': err_msg}, ensure_ascii=False)}\n\n"
+                                                        'msg': err_msg}
+                            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
                     except Exception as e:
                         log_writer.writerow({"jira号": bugid, "达标": "否", "原因": str(e)[:200]})
-                        yield f"data: {_json.dumps({'type': 'progress', 'file_index': file_idx,
+                        _sse_d = {'type': 'progress', 'file_index': file_idx,
                                                     'index': idx + 1, 'total': total, 'bugid': bugid,
                                                     'status': 'fail', 'rootcause': '', 'confidence': '',
                                                     'comment_summary': '',
-                                                    'msg': str(e)[:200]}, ensure_ascii=False)}\n\n"
-            yield f"data: {_json.dumps({'type': 'file_done', 'file_index': file_idx,
+                                                    'msg': str(e)[:200]}
+                        yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
+            _sse_d = {'type': 'file_done', 'file_index': file_idx,
                                         'file_name': file_name, 'total': total,
                                         'ready': ready_count, 'low_conf': low_conf_count,
-                                        'compare_log': compare_log_path, 'csv_path': ''}, ensure_ascii=False)}\n\n"
+                                        'compare_log': compare_log_path, 'csv_path': ''}
+            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
         yield f"data: {_json.dumps({'type': 'all_done'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
@@ -9570,21 +9584,23 @@ async def test_confidence_batch_write(request: Request, after_time: str = "", on
                         logger.warning("bugid=%s AI文档根因获取失败: %s", bugid, e)
                 # 3. 两个根因都为空则跳过
                 if not jira_rc and not ai_rc:
-                    yield f"data: {_json.dumps({'type': 'progress', 'index': idx + 1, 'total': total,
+                    _sse_d = {'type': 'progress', 'index': idx + 1, 'total': total,
                                                 'bugid': bugid, 'status': 'skipped', 'score': 0,
                                                 'record_id': t['record_id'], 'write_fields': fields_to_write,
                                                 'conf_empty': conf_empty,
-                                                'msg': '两个根因字段均为空'}, ensure_ascii=False)}\n\n"
+                                                'msg': '两个根因字段均为空'}
+                    yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
                     fail_count += 1
                     continue
                 if not jira_rc or not ai_rc:
                     missing = 'Jira根因' if not jira_rc else 'AI根因'
-                    yield f"data: {_json.dumps({'type': 'progress', 'index': idx + 1, 'total': total,
+                    _sse_d = {'type': 'progress', 'index': idx + 1, 'total': total,
                                                 'bugid': bugid, 'status': 'skipped', 'score': 0,
                                                 'jira_rootcause': jira_rc, 'ai_rootcause': ai_rc,
                                                 'record_id': t['record_id'], 'write_fields': fields_to_write,
                                                 'conf_empty': conf_empty,
-                                                'msg': f'{missing}为空，无法对比'}, ensure_ascii=False)}\n\n"
+                                                'msg': f'{missing}为空，无法对比'}
+                    yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
                     fail_count += 1
                     continue
                 # 4. 通用/无效/重复根因：置信度写"无法判断"
@@ -9605,12 +9621,13 @@ async def test_confidence_batch_write(request: Request, after_time: str = "", on
                     fields_to_write[cf_field] = write_val
                     success_count += 1
                     logger.info("置信度跳过 bugid=%s reason=%s", bugid, skip_reason)
-                    yield f"data: {_json.dumps({'type': 'progress', 'index': idx + 1, 'total': total,
+                    _sse_d = {'type': 'progress', 'index': idx + 1, 'total': total,
                                                 'bugid': bugid, 'status': 'invalid', 'score': '无法判断',
                                                 'jira_rootcause': jira_rc, 'ai_rootcause': ai_rc,
                                                 'record_id': t['record_id'], 'write_fields': fields_to_write,
                                                 'conf_empty': conf_empty,
-                                                'msg': skip_reason}, ensure_ascii=False)}\n\n"
+                                                'msg': skip_reason}
+                    yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
                     continue
                 # 5. 多路语义对比：取最高分
                 jira_core = _extract_core_rootcause(jira_rc)
@@ -9684,23 +9701,26 @@ async def test_confidence_batch_write(request: Request, after_time: str = "", on
                 fields_to_write[cf_field] = write_val
                 if is_pass:
                     success_count += 1
-                yield f"data: {_json.dumps({'type': 'progress', 'index': idx + 1, 'total': total,
+                _sse_d = {'type': 'progress', 'index': idx + 1, 'total': total,
                                             'bugid': bugid, 'status': 'pass' if is_pass else 'low',
                                             'score': score,
                                             'jira_rootcause': jira_rc, 'ai_rootcause': ai_rc,
                                             'record_id': t['record_id'], 'write_fields': fields_to_write,
                                             'conf_empty': conf_empty,
-                                            'msg': '' if is_pass else f'相似度{score}<{threshold}'}, ensure_ascii=False)}\n\n"
+                                            'msg': '' if is_pass else f'相似度{score}<{threshold}'}
+                yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
             except Exception as e:
                 fail_count += 1
-                yield f"data: {_json.dumps({'type': 'progress', 'index': idx + 1, 'total': total,
+                _sse_d = {'type': 'progress', 'index': idx + 1, 'total': total,
                                             'bugid': bugid, 'status': 'fail', 'score': 0,
                                             'conf_empty': conf_empty,
-                                            'msg': str(e)[:120]}, ensure_ascii=False)}\n\n"
+                                            'msg': str(e)[:120]}
+                yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
         
-        yield f"data: {_json.dumps({'type': 'done', 'total': total, 'updated': 0,
+        _sse_d = {'type': 'done', 'total': total, 'updated': 0,
                                     'passed': success_count, 'failed': fail_count,
-                                    'msg': f'分析完成: {total}条, 达标{success_count}条, 未达标{total - success_count - fail_count}条, 跳过/失败{fail_count}条'}, ensure_ascii=False)}\n\n"
+                                    'msg': f'分析完成: {total}条, 达标{success_count}条, 未达标{total - success_count - fail_count}条, 跳过/失败{fail_count}条'}
+        yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -10010,6 +10030,8 @@ async def test_prod_batch_run(request: Request):
     filter_pc_only = body.get("filter_pc_only", False)  # 仅过滤PC来源的正确+通用失败
     filter_online_only = body.get("filter_online_only", False)  # 仅过滤线上来源的正确+通用失败
     max_count = int(body.get("max_count") or 0)  # 抽取数量上限，0 表示不限制
+    # 前端已提取的触发时间（抽样步骤已获取，优先使用避免重复提取）
+    frontend_trigger_times = body.get("trigger_times") or {}
     # 批量执行元数据（默认线上值）
     _batch_meta = {
         "分析并发数": str(body.get("analysis_concurrency", "5")),
@@ -10091,20 +10113,31 @@ async def test_prod_batch_run(request: Request):
         batch_start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         loop = asyncio.get_event_loop()
         run_bugids = list(bugids)  # 局部副本，避免闭包变量赋值冲突
-        yield f"data: {_json.dumps({'type': 'start', 'total': len(run_bugids), 'dedup': dedup_count, 'skipped': skipped_count, 'raw': len(all_bugids), 'max_count': max_count}, ensure_ascii=False)}\n\n"
-        # 提取触发时间（优先云端缓存，无缓存的才重新提取）
+        # 提取触发时间（优先前端已传入 > 云端缓存 > 重新提取）
         trigger_times = {}  # bugid -> time（只包含已成功获取的时间）
+        skip_empty_mark = 0
+        # 先合并前端传来的触发时间（抽样步骤已提取，包含 CSV 导入的时间）
+        for b in run_bugids:
+            if b in frontend_trigger_times and frontend_trigger_times[b]:
+                trigger_times[b] = frontend_trigger_times[b]
+        frontend_hit = len(trigger_times)
         try:
-            cloud_times = await loop.run_in_executor(None, _load_trigger_times_from_cloud)
+            cloud_times, cloud_keys = await loop.run_in_executor(None, _load_cloud_trigger_cache)
             for b in run_bugids:
-                if b in cloud_times and cloud_times[b]:
+                if b not in trigger_times and b in cloud_times and cloud_times[b]:
                     trigger_times[b] = cloud_times[b]
+                elif b not in trigger_times and b in cloud_keys:
+                    # 云端已标记空值（之前提取过但无触发时间），跳过不再重复提取
+                    skip_empty_mark += 1
         except Exception as e:
             logger.warning("云端触发时间加载失败: %s", e)
-        cloud_hit_count = len(trigger_times)
-        # 未命中云端的进入待提取池
-        pending_pool = [b for b in run_bugids if b not in trigger_times]
-        logger.info("云端命中 %d 条，待提取池 %d 条", cloud_hit_count, len(pending_pool))
+            cloud_keys = set()
+        cloud_hit_count = len(trigger_times) - frontend_hit
+        # 未命中且未被标记空的进入待提取池
+        pending_pool = [b for b in run_bugids if b not in trigger_times and b not in cloud_keys]
+        logger.info("前端传入 %d 条，云端补充 %d 条，空标记跳过 %d 条，待提取池 %d 条",
+                    frontend_hit, cloud_hit_count, skip_empty_mark, len(pending_pool))
+        yield f"data: {_json.dumps({'type': 'start', 'total': len(run_bugids), 'dedup': dedup_count, 'skipped': skipped_count, 'raw': len(all_bugids), 'max_count': max_count, 'frontend_hit': frontend_hit, 'cloud_hit': cloud_hit_count, 'skip_empty_mark': skip_empty_mark, 'need_fetch': len(pending_pool)}, ensure_ascii=False)}\n\n"
         # 逐批从待提取池提取，提取失败跳过继续下一个，直到凑够 max_count 或池子耗尽
         extract_batch_size = 50
         while pending_pool:
@@ -10162,7 +10195,7 @@ async def test_prod_batch_run(request: Request):
         else:
             run_bugids = [b for b in run_bugids if b in trigger_times]
         skipped_no_time = len(bugids) - len(run_bugids)
-        yield f"data: {_json.dumps({'type': 'extract_done', 'total': len(run_bugids), 'with_time': len(trigger_times), 'without_time': skipped_no_time}, ensure_ascii=False)}\n\n"
+        yield f"data: {_json.dumps({'type': 'extract_done', 'total': len(run_bugids), 'with_time': len(trigger_times), 'without_time': skipped_no_time, 'skip_empty_mark': skip_empty_mark}, ensure_ascii=False)}\n\n"
         # 批量执行线上接口
         result_queue = queue.Queue()
 

@@ -285,6 +285,9 @@
           <el-alert v-if="batchAi.oneClickMsg" :type="batchAi.oneClickError ? 'error' : 'success'" :closable="false" :title="batchAi.oneClickMsg" style="margin-top:4px"></el-alert>
           <div v-if="batchAi.currentRound > 0 && batchAi.continuousRunning" style="margin-top:6px">
             <el-tag type="info">当前轮次: {{ batchAi.currentRound }} / {{ batchAi.rounds }}</el-tag>
+            <el-tag v-if="batchAi.preSample" :type="batchAi.preSample.ready ? 'success' : (batchAi.preSample.error ? 'danger' : 'warning')" style="margin-left:6px">
+              下一轮预提取: {{ batchAi.preSample.ready ? '✅ 就绪' : (batchAi.preSample.error ? '❌ 失败' : '⏳ 提取中') }}
+            </el-tag>
           </div>
           <div v-if="running.batchOneClick || batchAi.sampleStats" style="margin-top:10px;padding:10px;background:#f5f7fa;border-radius:6px">
             <div v-if="batchAi.sampleStats" style="display:flex;gap:8px;flex-wrap:wrap">
@@ -1493,6 +1496,9 @@
                 <el-alert v-if="batchAi.oneClickMsg" :type="batchAi.oneClickError ? 'error' : 'success'" :closable="false" :title="batchAi.oneClickMsg" style="margin-top:4px"></el-alert>
                 <div v-if="batchAi.currentRound > 0 && batchAi.continuousRunning" style="margin-top:6px">
                   <el-tag type="info">当前轮次: {{ batchAi.currentRound }} / {{ batchAi.rounds }}</el-tag>
+                  <el-tag v-if="batchAi.preSample" :type="batchAi.preSample.ready ? 'success' : (batchAi.preSample.error ? 'danger' : 'warning')" style="margin-left:6px">
+                    下一轮预提取: {{ batchAi.preSample.ready ? '✅ 就绪' : (batchAi.preSample.error ? '❌ 失败' : '⏳ 提取中') }}
+                  </el-tag>
                 </div>
                 <!-- 执行进度 -->
                 <div v-if="running.batchOneClick || batchAi.sampleStats" style="margin-top:10px;padding:10px;background:#f5f7fa;border-radius:6px">
@@ -3143,7 +3149,7 @@ createApp({
       feishuDocError: '',
       feishuImQuery: { chatName: '王源泉', chatId: '', startDateTime: null, chats: null, result: null, error: '', debugResult: null },
       feishuEvents: { result: null },
-      batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"', 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED', 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")', 'issuetype = bug AND status != closed AND created >= "2026/09/01"'], jqlLabels: ['远控', 'coreservice', '导航', 'VCU近期未关闭', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice', '8.25后RES1.0/1.1', '9.1新增非close'], sampleCount: 5, source: 'jql', filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', csvFiles: [], selectedCsv: '', csvTriggerTimes: {}, rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false },
+      batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"', 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED', 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")', 'issuetype = bug AND status != closed AND created >= "2026/09/01"'], jqlLabels: ['远控', 'coreservice', '导航', 'VCU近期未关闭', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice', '8.25后RES1.0/1.1', '9.1新增非close'], sampleCount: 5, source: 'jql', filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', csvFiles: [], selectedCsv: '', csvTriggerTimes: {}, rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, preSample: null },
       verifyForm: { csvPath: '' },
       verifyMode: 'browse',
       docsFiles: [],
@@ -4318,28 +4324,47 @@ createApp({
         this.batchAi.filterMsg = body.message;
       } catch (e) { this.batchAi.filterMsg = e.message || '过滤失败'; this.batchAi.filterError = true; } finally { this.running.batchFilter = false; }
     },
-    async batchAiSample() {
-      if (!this.batchAi.filteredKeys.length && !this.batchAi.rows.length) return ElementPlus.ElMessage.warning('请先执行步骤1和步骤3');
-      this.running.batchSample = true;
-      this.batchAi.sampleMsg = ''; this.batchAi.sampleError = false;
-      this.batchAi.selected = []; this.batchAi.runResults = []; this.batchAi.runDoneMsg = '';
-      this.batchAi.sampleStats = null;
+    async batchAiSample(silent = false) {
+      if (!this.batchAi.filteredKeys.length && !this.batchAi.rows.length) {
+        if (!silent) ElementPlus.ElMessage.warning('请先执行步骤1和步骤3');
+        return null;
+      }
+      if (!silent) {
+        this.running.batchSample = true;
+        this.batchAi.sampleMsg = ''; this.batchAi.sampleError = false;
+        this.batchAi.selected = []; this.batchAi.runResults = []; this.batchAi.runDoneMsg = '';
+        this.batchAi.sampleStats = null;
+      }
       // 视频提取较慢，使用 10 分钟超时
       const sampleAbort = AbortSignal.timeout(600000);
       try {
         const keys = this.batchAi.filteredKeys.length ? this.batchAi.filteredKeys : this.batchAi.rows.map(r => r.key);
         const body = await this.api('/api/test/batch_ai_sample', { method: 'POST', body: JSON.stringify({ keys, count: this.batchAi.sampleCount, csv_trigger_times: this.batchAi.csvTriggerTimes }), signal: sampleAbort });
-        this.batchAi.selected = body.data.selected;
-        this.batchAi.triggerTimes = body.data.trigger_times || {};
-        this.batchAi.sampleStats = {
-          selected: body.data.selected_count || 0,
-          cloud_picked: body.data.cloud_picked || 0,
-          csv_hit: body.data.csv_hit || 0,
-          new_extracted: body.data.new_extracted || 0,
-          extract_failed: body.data.extract_failed || 0,
+        const result = {
+          selected: body.data.selected,
+          trigger_times: body.data.trigger_times || {},
+          sampleStats: {
+            selected: body.data.selected_count || 0,
+            cloud_picked: body.data.cloud_picked || 0,
+            csv_hit: body.data.csv_hit || 0,
+            new_extracted: body.data.new_extracted || 0,
+            extract_failed: body.data.extract_failed || 0,
+          },
+          message: body.message,
         };
-        this.batchAi.sampleMsg = body.message;
-      } catch (e) { this.batchAi.sampleMsg = e.message || '抽取失败'; this.batchAi.sampleError = true; } finally { this.running.batchSample = false; }
+        if (!silent) {
+          this.batchAi.selected = result.selected;
+          this.batchAi.triggerTimes = result.trigger_times;
+          this.batchAi.sampleStats = result.sampleStats;
+          this.batchAi.sampleMsg = result.message;
+        }
+        return result;
+      } catch (e) {
+        if (!silent) { this.batchAi.sampleMsg = e.message || '抽取失败'; this.batchAi.sampleError = true; }
+        return null;
+      } finally {
+        if (!silent) this.running.batchSample = false;
+      }
     },
     async batchAiRun() {
       if (!this.batchAi.selected.length) return ElementPlus.ElMessage.warning('请先执行步骤3');
@@ -4805,44 +4830,91 @@ createApp({
           const modeLabel = this.batchAi.execMode === 'online' ? '线上' : 'PC';
           this.batchAi.oneClickMsg = `${modeLabel}一键执行完成: ${this.batchAi.runDone}/${this.batchAi.runTotal} 成功`;
         } else {
-          // 持续执行：循环 rounds 轮，每轮之间等待 interval 分钟
+          // 持续执行：流水线模式——当前轮执行+等待期间，后台预提取下一轮触发时间
           this.batchAi.continuousRunning = true;
           const totalRounds = this.batchAi.rounds;
           const intervalMs = this.batchAi.interval * 60 * 1000;
-          for (let i = 1; i <= totalRounds; i++) {
+          // 第1轮：正常抽样 + 执行
+          this.batchAi.currentRound = 1;
+          try {
+            await runOneRound('[1/' + totalRounds + '] ');
+          } catch (e) {
+            if (e.name === 'AbortError') {
+              this.batchAi.oneClickMsg = `持续执行已停止（完成 0/${totalRounds} 轮）`;
+              this.batchAi.oneClickError = false;
+            } else {
+              this.batchAi.oneClickMsg = `[1/${totalRounds}] 执行中断: ${e.message}`;
+              this.batchAi.oneClickError = true;
+            }
+            this.batchAi.continuousRunning = false;
+            return;
+          }
+          // 后续轮次：预提取 + 等待 + 执行
+          for (let i = 2; i <= totalRounds; i++) {
+            if (this.batchAiAbort && this.batchAiAbort.signal.aborted) {
+              this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 2}/${totalRounds} 轮）`;
+              this.batchAi.oneClickError = false;
+              break;
+            }
+            // 后台启动下一轮抽样（不写UI状态）
+            this.batchAi.preSample = { ready: false, selected: [], trigger_times: {}, sampleStats: null, error: null };
+            this.batchAi.oneClickMsg = `第 ${i - 1} 轮完成，正在预提取第 ${i}/${totalRounds} 轮触发时间...`;
+            const preSamplePromise = this.batchAiSample(true).then(result => {
+              if (result) {
+                this.batchAi.preSample = { ready: true, selected: result.selected, trigger_times: result.trigger_times, sampleStats: result.sampleStats, error: null };
+              } else {
+                this.batchAi.preSample = { ready: false, selected: [], trigger_times: {}, sampleStats: null, error: '预提取失败' };
+              }
+            });
+            // 同时等待间隔时间
+            const waitUntil = Date.now() + intervalMs;
+            let aborted = false;
+            while (Date.now() < waitUntil) {
+              if (this.batchAiAbort && this.batchAiAbort.signal.aborted) { aborted = true; break; }
+              const remainSec = Math.ceil((waitUntil - Date.now()) / 1000);
+              const mm = Math.floor(remainSec / 60);
+              const ss = remainSec % 60;
+              const preStatus = this.batchAi.preSample.ready ? '✅ 就绪' : (this.batchAi.preSample.error ? '❌ 失败' : '⏳ 提取中');
+              this.batchAi.oneClickMsg = `等待间隔（${mm}:${String(ss).padStart(2, '0')}）| 第 ${i} 轮预提取: ${preStatus}`;
+              await new Promise(r => setTimeout(r, 1000));
+            }
+            if (aborted) {
+              this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 1}/${totalRounds} 轮）`;
+              this.batchAi.oneClickError = false;
+              break;
+            }
+            // 确保预提取完成
+            await preSamplePromise;
+            // 应用预提取结果并执行
             this.batchAi.currentRound = i;
-            const roundLabel = `[${i}/${totalRounds}] `;
+            if (this.batchAi.preSample.error || !this.batchAi.preSample.selected.length) {
+              this.batchAi.oneClickMsg = `[${i}/${totalRounds}] 预提取失败或结果为空，跳过本轮`;
+              this.batchAi.oneClickError = true;
+              break;
+            }
+            this.batchAi.selected = this.batchAi.preSample.selected;
+            this.batchAi.triggerTimes = this.batchAi.preSample.trigger_times;
+            this.batchAi.sampleStats = this.batchAi.preSample.sampleStats;
+            this.batchAi.preSample = null;
             try {
-              await runOneRound(roundLabel);
+              if (this.batchAi.execMode === 'online') {
+                await this.batchAiRunOnline();
+              } else {
+                await this.batchAiRun();
+              }
             } catch (e) {
               if (e.name === 'AbortError') {
                 this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 1}/${totalRounds} 轮）`;
                 this.batchAi.oneClickError = false;
-                break;
+              } else {
+                this.batchAi.oneClickMsg = `[${i}/${totalRounds}] 执行中断: ${e.message}`;
+                this.batchAi.oneClickError = true;
               }
-              this.batchAi.oneClickMsg = `${roundLabel}执行中断: ${e.message}`;
-              this.batchAi.oneClickError = true;
               break;
-            }
-            // 最后一轮不等待
-            if (i < totalRounds) {
-              const waitUntil = Date.now() + intervalMs;
-              this.batchAi.oneClickMsg = `等待下一轮（${this.batchAi.interval} 分钟后开始第 ${i + 1}/${totalRounds} 轮）`;
-              while (Date.now() < waitUntil) {
-                if (this.batchAiAbort && this.batchAiAbort.signal.aborted) {
-                  this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i}/${totalRounds} 轮）`;
-                  this.batchAi.oneClickError = false;
-                  break;
-                }
-                const remainSec = Math.ceil((waitUntil - Date.now()) / 1000);
-                const mm = Math.floor(remainSec / 60);
-                const ss = remainSec % 60;
-                this.batchAi.oneClickMsg = `等待下一轮（${mm}:${String(ss).padStart(2, '0')} 后开始第 ${i + 1}/${totalRounds} 轮）`;
-                await new Promise(r => setTimeout(r, 1000));
-              }
             }
           }
           this.batchAi.continuousRunning = false;
+          this.batchAi.preSample = null;
           if (!this.batchAi.oneClickError && !this.batchAi.oneClickMsg.includes('已停止')) {
             this.batchAi.oneClickMsg = `持续执行完成：共 ${totalRounds} 轮`;
           }

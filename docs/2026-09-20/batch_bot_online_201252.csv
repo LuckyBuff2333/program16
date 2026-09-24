@@ -1,0 +1,41 @@
+﻿jira号,执行结果,报告长度,备注,触发时间,执行时间
+VCU-149064,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2024-04-10 14:03:47,2026-09-20 20:12:52
+VCU-193680,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2025-03-11 20:48:00,2026-09-20 20:12:52
+VCU-163448,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2024-07-09 15:21:49,2026-09-20 20:12:52
+VCU-485514,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2026-05-10 12:07:20,2026-09-20 20:12:52
+VCU-425563,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2026-03-04 10:31:17,2026-09-20 20:12:52
+VCU-153702,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2024-05-17 17:40:00,2026-09-20 20:12:52
+VCU-498103,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2026-06-05 19:51:57,2026-09-20 20:12:52
+VCU-197050,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2025-04-21 15:46:00,2026-09-20 20:12:52
+VCU-229238,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2025-08-25 10:36:54,2026-09-20 20:12:52
+VCU-201865,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2025-04-09 20:36:00,2026-09-20 20:12:52
+VCU-478049,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2026-04-20 15:02:10,2026-09-20 20:12:52
+VCU-231471,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2025-08-06 15:12:20,2026-09-20 20:12:52
+VCU-405354,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2025-12-03 21:11:26,2026-09-20 20:12:52
+VCU-424159,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2026-02-28 12:51:40,2026-09-20 20:12:52
+VCU-478942,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2026-04-22 03:32:22,2026-09-20 20:12:52
+VCU-490241,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2026-05-20 18:09:56,2026-09-20 20:12:52
+VCU-225562,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2025-07-02 18:47:28,2026-09-20 20:12:52
+VCU-234784,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2025-09-15 14:53:11,2026-09-20 20:12:52
+VCU-203520,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2025-05-21 15:29:22,2026-09-20 20:12:52
+VCU-418362,失败,0,"Client error '405 Not Allowed' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405",2026-01-25 16:10:01,2026-09-20 20:12:52
