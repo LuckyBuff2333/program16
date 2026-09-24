@@ -1463,7 +1463,6 @@
                   <el-form-item label="抽取数量" style="margin-right:0"><el-input-number v-model="batchAi.sampleCount" :min="1" :max="200" style="width:120px"></el-input-number></el-form-item>
                   <el-checkbox v-model="batchAi.execMode" true-value="pc" @change="v => { if(v){batchAi.execMode='pc';setBatchMeta('batchAi','pc')} }" style="margin-right:4px">PC执行</el-checkbox>
                   <el-checkbox v-model="batchAi.execMode" true-value="online" @change="v => { if(v){batchAi.execMode='online';setBatchMeta('batchAi','online')} }" style="margin-right:8px">线上执行</el-checkbox>
-                  <el-checkbox v-model="batchAi.skipTimeExtraction" size="small" style="margin-right:8px">忽略时间参数</el-checkbox>
                   <el-form-item style="margin-right:0">
                     <el-button type="primary" :loading="running.batchOneClick" :disabled="!batchAi.selectedCsv || !batchAi.execMode" @click="batchAiOneClick">
                       {{ batchAi.continuous ? `持续执行（${batchAi.rounds} 轮）` : '一键执行' }}
@@ -1546,7 +1545,6 @@
                 <div style="display:flex;gap:10px;margin-top:10px;align-items:center">
                   <el-checkbox v-model="aiDirect.execMode" true-value="pc" @change="v => { if(v){aiDirect.execMode='pc';setBatchMeta('aiDirect','pc')} }" style="margin-right:4px">PC执行</el-checkbox>
                   <el-checkbox v-model="aiDirect.execMode" true-value="online" @change="v => { if(v){aiDirect.execMode='online';setBatchMeta('aiDirect','online')} }" style="margin-right:8px">线上执行</el-checkbox>
-                  <el-checkbox v-model="aiDirect.skipTimeExtraction" size="small" style="margin-right:8px">忽略时间参数</el-checkbox>
                   <el-button type="primary" :loading="running.aiDirectRun" :disabled="!aiDirect.parsed.length || !aiDirect.execMode"
                     @click="runAiDirectOneClick">一键执行（{{ aiDirect.parsed.length }} 条）</el-button>
                   <el-button v-if="running.aiDirectRun" type="danger" @click="stopAiDirectAnalyze">停止</el-button>
@@ -2170,7 +2168,6 @@
                 <div style="display:flex;gap:16px;margin-bottom:8px;flex-wrap:wrap">
                   <el-checkbox v-model="prodBatch.filterPcOnly" @change="onProdFilterSourceChange">过滤PC正确和通用失败的</el-checkbox>
                   <el-checkbox v-model="prodBatch.filterOnlineOnly" @change="onProdFilterSourceChange">过滤线上正确和通用失败的</el-checkbox>
-                  <el-checkbox v-model="prodBatch.skipTimeExtraction">忽略时间参数直接执行</el-checkbox>
                 </div>
                 <el-form inline style="margin-bottom:8px">
                   <el-form-item label="抽取数量" style="margin-bottom:0">
@@ -2641,7 +2638,6 @@
                 <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px;padding:8px 12px;background:#f5f7fa;border-radius:6px">
                   <span style="font-weight:600;font-size:13px">回归执行</span>
                   <el-form-item label="抽样数量" style="margin-bottom:0"><el-input-number v-model="onlineFollowup.regression.sampleCount" :min="1" :max="100" size="small" style="width:120px"></el-input-number></el-form-item>
-                  <el-checkbox v-model="onlineFollowup.regression.skipTimeExtraction" size="small">忽略时间参数</el-checkbox>
                   <el-button type="success" size="small" :loading="onlineFollowup.regression.running" @click="startRegressionRun">回归执行</el-button>
                   <span v-if="onlineFollowup.regression.msg" style="font-size:12px" :style="{color: onlineFollowup.regression.msg.includes('失败') ? '#f56c6c' : '#67c23a'}">{{ onlineFollowup.regression.msg }}</span>
                 </div>
@@ -2685,26 +2681,50 @@
             <div v-else-if="testPanel === 'ai_log_visual'" key="ai_log_visual" class="test-panel">
               <div class="section-title">AI日志分析自学习内容可视化</div>
               <el-alert type="info" :closable="false" style="margin-bottom:12px">
-                读取AI日志分析服务的日志，按 Jira 号过滤并按分析轮次分组展示每轮的调用细节
+                读取AI日志分析服务的日志或上传本地日志文件/压缩包，按 Jira 号过滤并按分析轮次分组展示每轮的调用细节
               </el-alert>
               <el-card shadow="never" style="margin-bottom:12px">
                 <template #header>① 查询条件</template>
+                <el-radio-group v-model="aiLogVisual.source" style="margin-bottom:12px">
+                  <el-radio-button value="remote">远程服务日志</el-radio-button>
+                  <el-radio-button value="local">本地文件上传</el-radio-button>
+                </el-radio-group>
                 <el-form inline>
                   <el-form-item label="Jira号">
                     <el-input v-model="aiLogVisual.jiraId" placeholder="输入 Jira 号（如 VCU-123456）" clearable @keyup.enter="readAiLogVisual" style="width:260px"></el-input>
                   </el-form-item>
-                  <el-form-item label="日志类型">
-                    <el-select v-model="aiLogVisual.logName" style="width:100px">
-                      <el-option label="全部" value="all"></el-option>
-                      <el-option label="应用" value="app"></el-option>
-                      <el-option label="性能" value="perf"></el-option>
-                    </el-select>
-                  </el-form-item>
-                  <el-form-item>
-                    <el-button type="primary" :loading="aiLogVisual.loading" @click="readAiLogVisual">读取日志</el-button>
-                  </el-form-item>
+                  <template v-if="aiLogVisual.source === 'remote'">
+                    <el-form-item label="日志类型">
+                      <el-select v-model="aiLogVisual.logName" style="width:100px">
+                        <el-option label="全部" value="all"></el-option>
+                        <el-option label="应用" value="app"></el-option>
+                        <el-option label="性能" value="perf"></el-option>
+                      </el-select>
+                    </el-form-item>
+                    <el-form-item>
+                      <el-button type="primary" :loading="aiLogVisual.loading" @click="readAiLogVisual">读取日志</el-button>
+                    </el-form-item>
+                  </template>
+                  <template v-else>
+                    <el-form-item>
+                      <el-upload
+                        :auto-upload="false"
+                        :show-file-list="false"
+                        :on-change="(f) => handleAiLogFileSelect(f)"
+                        accept=".log,.txt,.md,.csv,.zip,.tar.gz,.tgz,.gz">
+                        <el-button type="primary" :loading="aiLogVisual.loading">选择文件</el-button>
+                      </el-upload>
+                    </el-form-item>
+                    <el-form-item v-if="aiLogVisual.uploadFileName">
+                      <el-tag type="info" closable @close="aiLogVisual.uploadFileName='';aiLogVisual.uploadFile=null">{{ aiLogVisual.uploadFileName }}</el-tag>
+                      <el-button type="success" :loading="aiLogVisual.loading" :disabled="!aiLogVisual.uploadFile || !aiLogVisual.jiraId" @click="uploadAiLogVisual" style="margin-left:8px">解析</el-button>
+                    </el-form-item>
+                  </template>
                 </el-form>
                 <el-alert v-if="aiLogVisual.msg" :type="aiLogVisual.error?'error':'success'" :closable="false" style="margin-top:8px">{{ aiLogVisual.msg }}</el-alert>
+                <div v-if="aiLogVisual.fileInfo.length" style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+                  <el-tag v-for="fi in aiLogVisual.fileInfo" :key="fi.name" size="small" type="success">{{ fi.name }} ({{ fi.lines }}行)</el-tag>
+                </div>
               </el-card>
               <el-card v-if="aiLogVisual.rounds.length" shadow="never">
                 <template #header>
@@ -3030,7 +3050,6 @@
               </el-form-item>
               <el-form-item label="过滤选项">
                 <el-checkbox v-model="autoDetect.filterAiInit">过滤AI初步分析结果</el-checkbox>
-                <el-checkbox v-model="autoDetect.skipTimeExtraction" style="margin-left:16px">忽略时间参数直接执行</el-checkbox>
               </el-form-item>
             </el-form>
           </el-card>
@@ -3258,7 +3277,6 @@ createApp({
         analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC',
         filterPcSuccess: false, filterOnlineSuccess: false,
         filterLoading: false, filterInfo: '',
-        skipTimeExtraction: false,
       },
       aiDirectAbort: null,
       batchAiAbort: null,
@@ -3311,7 +3329,6 @@ createApp({
         extractMsg: '', extractError: false, timeMsg: '', timeError: false,
         running: false, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false,
         afterTime: '', excludeCommon: false, excludeSuccess: false, execMode: 'pc', sampleCount: 0,
-        skipTimeExtraction: false,
       },
       docxCreateForm: { title: '测试文档', content: '# 测试文档\n\n这是一段测试内容。' },
       docxCreateResult: null,
@@ -3349,7 +3366,6 @@ createApp({
         skipExisting: true, filterPcOnly: false, filterOnlineOnly: false, maxCount: 0, msg: '', error: false, stage: '',
         results: [], doneMsg: '', cloudUrl: '',
         analysisConcurrency: 5, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上',
-        skipTimeExtraction: false,
         // JQL搜索填入
         jqlInput: 'issuetype = bug AND status != closed AND created >= "2026/09/01"',
         jqlSearching: false, jqlSearchMsg: '',
@@ -3375,13 +3391,14 @@ createApp({
         },
         // 回归执行
         regression: {
-          sampleCount: 10, skipTimeExtraction: false, running: false, msg: '', abortController: null,
+          sampleCount: 10, running: false, msg: '', abortController: null,
         },
       },
       // AI日志分析可视化
       aiLogVisual: {
-        jiraId: '', logName: 'all', loading: false,
+        jiraId: '', logName: 'all', loading: false, source: 'remote',
         totalLines: 0, matchedLines: 0, rounds: [], msg: '', error: false,
+        uploadFile: null, uploadFileName: '', fileInfo: [],
       },
       // 本地文档分析（study目录）
       studyAnalysis: {
@@ -3426,7 +3443,6 @@ createApp({
       overview: { mock: {}, daily_total: 0, daily_complete: 0, daily_incomplete: 0, audited_total: 0, today: '' },
       analyzeForm: { bugids: '', triggerDate: '', triggerRaw: '' },
       flowForm: { bugid: '', triggerTime: '' }, flowTimeLoading: false,
-      flowSkipTime: false,
       flowSteps: [],
       flowResult: null,
       flowRunning: false,
@@ -3510,7 +3526,6 @@ createApp({
       autoDetect: {
         jql: 'issuetype = bug AND created >= -10m AND status != closed',
         filterAiInit: false,
-        skipTimeExtraction: false,
         interval: 6,
         rounds: 0,
         running: false,
@@ -3988,8 +4003,7 @@ createApp({
         const resp = await fetch('/api/flow/single', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bugid: this.flowForm.bugid, trigger_time: this.flowForm.triggerTime || '',
-            skip_time_extraction: this.flowSkipTime }),
+          body: JSON.stringify({ bugid: this.flowForm.bugid, trigger_time: this.flowForm.triggerTime || '' }),
           signal: this.flowAbortController.signal,
         });
         const reader = resp.body.getReader();
@@ -4670,8 +4684,7 @@ createApp({
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ bugids: this.batchAi.selected, trigger_times: this.batchAi.triggerTimes,
             analysis_concurrency: this.batchAi.analysisConcurrency, download_concurrency: this.batchAi.downloadConcurrency,
-            model: this.batchAi.model, trigger_source: this.batchAi.triggerSource,
-            skip_time_extraction: this.batchAi.skipTimeExtraction }),
+            model: this.batchAi.model, trigger_source: this.batchAi.triggerSource }),
           signal: this.batchAiAbort.signal,
         });
         const reader = resp.body.getReader();
@@ -4714,8 +4727,7 @@ createApp({
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ bugids: this.batchAi.selected, trigger_times: this.batchAi.triggerTimes, skip_existing: false,
             analysis_concurrency: this.batchAi.analysisConcurrency, download_concurrency: this.batchAi.downloadConcurrency,
-            model: this.batchAi.model, trigger_source: this.batchAi.triggerSource,
-            skip_time_extraction: this.batchAi.skipTimeExtraction }),
+            model: this.batchAi.model, trigger_source: this.batchAi.triggerSource }),
           signal: this.batchAiAbort.signal,
         });
         const reader = resp.body.getReader();
@@ -4863,7 +4875,6 @@ createApp({
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sample_count: this.onlineFollowup.regression.sampleCount,
-            skip_time_extraction: this.onlineFollowup.regression.skipTimeExtraction,
           }),
           signal: this.onlineFollowup.regression.abortController.signal,
         });
@@ -5022,7 +5033,6 @@ createApp({
             filter_ai_init: this.autoDetect.filterAiInit,
             interval: this.autoDetect.interval,
             rounds: this.autoDetect.rounds,
-            skip_time_extraction: this.autoDetect.skipTimeExtraction,
           }),
           signal: this.autoDetect.abortController.signal,
         });
@@ -5221,6 +5231,40 @@ createApp({
         this.aiLogVisual.msg = body.message;
       } catch (e) {
         this.aiLogVisual.msg = '读取失败: ' + e.message;
+        this.aiLogVisual.error = true;
+      } finally { this.aiLogVisual.loading = false; }
+    },
+    // 本地文件选择
+    handleAiLogFileSelect(fileObj) {
+      this.aiLogVisual.uploadFile = fileObj.raw;
+      this.aiLogVisual.uploadFileName = fileObj.name;
+      this.aiLogVisual.msg = '';
+      this.aiLogVisual.fileInfo = [];
+    },
+    // 上传本地日志文件并解析
+    async uploadAiLogVisual() {
+      if (!this.aiLogVisual.jiraId) return ElementPlus.ElMessage.warning('请输入 Jira 号');
+      if (!this.aiLogVisual.uploadFile) return ElementPlus.ElMessage.warning('请选择文件');
+      this.aiLogVisual.loading = true;
+      this.aiLogVisual.msg = ''; this.aiLogVisual.error = false;
+      this.aiLogVisual.rounds = []; this.aiLogVisual.totalLines = 0; this.aiLogVisual.matchedLines = 0;
+      this.aiLogVisual.fileInfo = [];
+      try {
+        const formData = new FormData();
+        formData.append('file', this.aiLogVisual.uploadFile);
+        const resp = await fetch('/api/test/ai_log_visual_upload?jira_id=' + encodeURIComponent(this.aiLogVisual.jiraId), {
+          method: 'POST', body: formData,
+        });
+        const body = await resp.json();
+        if (!body.success) throw new Error(body.message || '解析失败');
+        const d = body.data;
+        this.aiLogVisual.totalLines = d.total_lines;
+        this.aiLogVisual.matchedLines = d.matched_lines;
+        this.aiLogVisual.rounds = d.rounds || [];
+        this.aiLogVisual.fileInfo = d.file_info || [];
+        this.aiLogVisual.msg = body.message;
+      } catch (e) {
+        this.aiLogVisual.msg = '上传解析失败: ' + e.message;
         this.aiLogVisual.error = true;
       } finally { this.aiLogVisual.loading = false; }
     },
@@ -5829,8 +5873,8 @@ createApp({
     async runAiDirectAnalyze() {
       if (!this.aiDirect.parsed.length) { this.parseAiDirectBugids(); }
       if (!this.aiDirect.parsed.length) return ElementPlus.ElMessage.warning('请先输入 Jira 号');
-      // 若未获取过触发时间且未勾选忽略时间参数，先自动获取一次（优先云端）
-      if (!this.aiDirect.skipTimeExtraction && !Object.keys(this.aiDirect.triggerTimes).length) {
+      // 若未获取过触发时间，先自动获取一次（优先云端）
+      if (!Object.keys(this.aiDirect.triggerTimes).length) {
         await this.runAiDirectExtract();
       }
       this.running.aiDirectRun = true;
@@ -5894,13 +5938,11 @@ createApp({
       if (!this.aiDirect.parsed.length) { this.parseAiDirectBugids(); }
       if (!this.aiDirect.parsed.length) return ElementPlus.ElMessage.warning('请先输入 Jira 号');
       if (!this.aiDirect.execMode) return ElementPlus.ElMessage.warning('请选择执行模式');
-      // 步骤1：获取触发时间（勾选忽略时间参数时跳过）
-      if (!this.aiDirect.skipTimeExtraction) {
-        try {
-          await this.runAiDirectExtract();
-        } catch (e) {
-          return ElementPlus.ElMessage.error('获取触发时间失败: ' + (e.message || ''));
-        }
+      // 步骤1：获取触发时间
+      try {
+        await this.runAiDirectExtract();
+      } catch (e) {
+        return ElementPlus.ElMessage.error('获取触发时间失败: ' + (e.message || ''));
       }
       // 步骤2：根据执行模式调用对应接口
       this.running.aiDirectRun = true;
@@ -5915,12 +5957,10 @@ createApp({
         const body = isOnline
           ? { bugids: this.aiDirect.parsed, trigger_times: this.aiDirect.triggerTimes, skip_existing: false,
               analysis_concurrency: this.aiDirect.analysisConcurrency, download_concurrency: this.aiDirect.downloadConcurrency,
-              model: this.aiDirect.model, trigger_source: this.aiDirect.triggerSource,
-              skip_time_extraction: this.aiDirect.skipTimeExtraction }
+              model: this.aiDirect.model, trigger_source: this.aiDirect.triggerSource }
           : { bugids: this.aiDirect.parsed, trigger_times: this.aiDirect.triggerTimes,
               analysis_concurrency: this.aiDirect.analysisConcurrency, download_concurrency: this.aiDirect.downloadConcurrency,
-              model: this.aiDirect.model, trigger_source: this.aiDirect.triggerSource,
-              skip_time_extraction: this.aiDirect.skipTimeExtraction };
+              model: this.aiDirect.model, trigger_source: this.aiDirect.triggerSource };
         const resp = await fetch(url, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body), signal: this.aiDirectAbort.signal,
@@ -6529,8 +6569,8 @@ createApp({
         const isOnline = this.failedRetry.execMode === 'online';
         const url = isOnline ? '/api/test/prod_batch_run' : '/api/test/batch_ai_run';
         const body = isOnline
-          ? { bugids: this.failedRetry.jiras, skip_existing: false, skip_time_extraction: this.failedRetry.skipTimeExtraction }
-          : { bugids: this.failedRetry.jiras, trigger_times: this.failedRetry.triggerTimes, skip_time_extraction: this.failedRetry.skipTimeExtraction };
+          ? { bugids: this.failedRetry.jiras, skip_existing: false }
+          : { bugids: this.failedRetry.jiras, trigger_times: this.failedRetry.triggerTimes };
         const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -7018,8 +7058,7 @@ createApp({
           body: JSON.stringify({ bugids: directIds, csv_files: this.prodBatch.selectedCsvs, skip_existing: this.prodBatch.skipExisting, max_count: this.prodBatch.maxCount,
             filter_pc_only: this.prodBatch.filterPcOnly, filter_online_only: this.prodBatch.filterOnlineOnly,
             analysis_concurrency: this.prodBatch.analysisConcurrency, download_concurrency: this.prodBatch.downloadConcurrency,
-            model: this.prodBatch.model, trigger_source: this.prodBatch.triggerSource,
-            skip_time_extraction: this.prodBatch.skipTimeExtraction }),
+            model: this.prodBatch.model, trigger_source: this.prodBatch.triggerSource }),
           signal: this.prodBatchAbort.signal,
         });
         const reader = resp.body.getReader();
