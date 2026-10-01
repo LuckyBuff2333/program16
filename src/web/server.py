@@ -255,6 +255,56 @@ async def restart_server():
     return _ok(message="worker 正在终止，reloader 将自动重启...")
 
 
+@app.post("/api/system/git_pull")
+async def git_pull_and_restart(request: Request):
+    """远程拉取最新代码并可选重启服务
+
+    :param token: 安全令牌（与 config 中的 deploy_token 匹配，或使用默认值）
+    :param restart: 是否拉取后自动重启（默认 true）
+    """
+    import asyncio, subprocess
+    body = {}
+    try:
+        body = await request.json() or {}
+    except Exception:
+        pass
+    token = str(body.get("token", ""))
+    do_restart = body.get("restart", True)
+    # 安全校验
+    cfg = load_config()
+    expected_token = cfg.get("deploy_token", "program16")
+    if token != expected_token:
+        return _fail("安全令牌不匹配")
+    logger.info("收到远程更新请求，执行 git pull...")
+    try:
+        result = subprocess.run(
+            ["git", "pull", "origin", "master"],
+            capture_output=True, text=True, timeout=60,
+            cwd=PROJECT_ROOT
+        )
+        output = result.stdout.strip()
+        err = result.stderr.strip()
+        success = result.returncode == 0
+        if success:
+            already_up = "Already up to date" in output or "already up to date" in output
+            msg = f"代码已是最新" if already_up else f"代码更新成功"
+            logger.info("git pull 成功: %s", output[:200])
+        else:
+            msg = f"git pull 失败: {err[:200]}"
+            logger.warning("git pull 失败: %s", err[:200])
+        resp_data = {"output": output[:500], "error": err[:500], "success": success}
+        if success and do_restart and not already_up:
+            resp_data["restarting"] = True
+            msg += "\n服务正在重启..."
+            loop = asyncio.get_event_loop()
+            loop.call_later(1.0, lambda: __import__("sys").exit(0))
+        return _ok(resp_data, msg)
+    except subprocess.TimeoutExpired:
+        return _fail("git pull 超时（60秒）")
+    except Exception as e:
+        return _fail(f"git pull 异常: {str(e)[:200]}")
+
+
 def _save_user_token_to_config(user_token: str, refresh_token: str):
     """将 OAuth 授权获取的 user_access_token 保存到 config.yaml"""
     import yaml
@@ -568,6 +618,33 @@ def _process_bot_command(chat_id: str, text: str):
         else:
             feishu_client.send_bot_message(chat_id,
                 "当前无运行中的任务。\n发送「菜单」查看可用功能")
+        return
+
+    # 更新服务：远程拉取最新代码并重启
+    if text.strip() in ("更新服务", "更新代码", "拉取代码", "git pull"):
+        import subprocess as _sp
+        feishu_client.send_bot_message(chat_id, "正在拉取最新代码...")
+        try:
+            result = _sp.run(
+                ["git", "pull", "origin", "master"],
+                capture_output=True, text=True, timeout=60,
+                cwd=PROJECT_ROOT
+            )
+            output = result.stdout.strip()
+            if result.returncode == 0:
+                already_up = "Already up to date" in output or "already up to date" in output
+                if already_up:
+                    feishu_client.send_bot_message(chat_id, "代码已是最新，无需更新")
+                else:
+                    feishu_client.send_bot_message(chat_id, f"代码更新成功，正在重启服务...\n{output[:200]}")
+                    import sys as _sys
+                    import asyncio as _aio
+                    loop = _aio.get_event_loop()
+                    loop.call_later(1.0, lambda: _sys.exit(0))
+            else:
+                feishu_client.send_bot_message(chat_id, f"拉取失败:\n{result.stderr[:300]}")
+        except Exception as e:
+            feishu_client.send_bot_message(chat_id, f"更新异常: {str(e)[:200]}")
         return
 
     # 帮助/功能菜单：显示菜单并等待子功能输入
@@ -12874,16 +12951,19 @@ async def auto_detect_run(request: Request):
 
 @app.post("/api/test/regression_run")
 async def regression_run(request: Request):
-    """回归执行：从错误统计中筛选有成功记录的Jira号，抽样后调用线上AI接口"""
+    """回归执行：从错误统计中筛选有成功记录的Jira号，抽样后调用AI接口，支持PC/线上模式和多轮执行"""
     import asyncio, json as _json, csv as _csv, random
     body = await request.json() or {}
     after_time = str(body.get("after_time", "")).strip()
     sample_count = max(1, int(body.get("sample_count", 10)))
+    exec_mode = str(body.get("exec_mode", "pc")).strip()
+    interval_min = max(0, int(body.get("interval_min", 0)))
+    total_rounds = max(1, int(body.get("total_rounds", 1)))
     _batch_meta = {
         "分析并发数": str(body.get("analysis_concurrency", "5")),
         "下载并发数": str(body.get("download_concurrency", "2")),
         "模型": str(body.get("model", "deepseek-v-pro")),
-        "触发来源": str(body.get("trigger_source", "线上")),
+        "触发来源": str(body.get("trigger_source", "线上" if exec_mode == "online" else "PC")),
     }
 
     async def event_generator():
@@ -12921,59 +13001,84 @@ async def regression_run(request: Request):
         if not candidates:
             yield f"data: {_json.dumps({'type': 'done', 'total': 0, 'success': 0, 'fail': 0, 'message': '无有成功记录的Jira号'}, ensure_ascii=False)}\n\n"
             return
-        # 步骤2：抽样
-        if len(candidates) > sample_count:
-            candidates = random.sample(candidates, sample_count)
-        yield f"data: {_json.dumps({'type': 'sample', 'total': len(candidates)}, ensure_ascii=False)}\n\n"
-        # 步骤3：执行
+        # 步骤2：加载触发时间
         trigger_times = {}
         cloud_times = await loop.run_in_executor(None, _load_trigger_times_from_cloud)
         for bugid in candidates:
             tt = cloud_times.get(bugid, "")
             if tt:
                 trigger_times[bugid] = tt
-        batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        results = []
-        for bugid in candidates:
-            exec_time = trigger_times.get(bugid, "")
-            if not exec_time:
-                results.append({"Jira号": bugid, "执行结果": "失败", "备注": "无触发时间"})
-                continue
-            try:
-                payload = {"jiraNumber": bugid}
-                if exec_time:
-                    payload["questionTimes"] = [exec_time]
-                resp = await loop.run_in_executor(None, lambda p=payload: http_post(_PROD_AI_URL, p, timeout=30))
-                resp_code = resp.get("code") if isinstance(resp, dict) else None
-                resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
-                is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
-                results.append({"Jira号": bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200]})
-            except Exception as e:
-                results.append({"Jira号": bugid, "执行结果": "失败", "备注": str(e)[:200]})
-            yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(candidates), 'bugid': bugid, 'status': results[-1]['执行结果']}, ensure_ascii=False)}\n\n"
+        # 加载PC配置（如需要）
+        pc_cfg = None
+        if exec_mode != "online":
+            pc_cfg = load_config().get("ai_log_api", {})
+        # 多轮执行
+        all_results = []
+        total_success = 0
+        total_fail = 0
+        for round_num in range(1, total_rounds + 1):
+            if total_rounds > 1:
+                yield f"data: {_json.dumps({'type': 'round', 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
+            # 每轮独立抽样
+            if len(candidates) > sample_count:
+                round_candidates = random.sample(candidates, sample_count)
+            else:
+                round_candidates = list(candidates)
+            yield f"data: {_json.dumps({'type': 'sample', 'total': len(round_candidates), 'round': round_num}, ensure_ascii=False)}\n\n"
+            batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            results = []
+            for bugid in round_candidates:
+                exec_time = trigger_times.get(bugid, "")
+                if not exec_time:
+                    results.append({"Jira号": bugid, "执行结果": "失败", "备注": "无触发时间"})
+                    continue
+                try:
+                    if exec_mode == "online":
+                        payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
+                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(_PROD_AI_URL, p, timeout=30))
+                    else:
+                        payload = {pc_cfg.get("bugid_field", "jira号"): bugid}
+                        if pc_cfg.get("trigger_time_field"):
+                            payload[pc_cfg["trigger_time_field"]] = exec_time
+                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(pc_cfg.get("url", ""), p, timeout=int(pc_cfg.get("timeout", 60))))
+                    resp_code = resp.get("code") if isinstance(resp, dict) else None
+                    resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
+                    is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
+                    results.append({"Jira号": bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200]})
+                except Exception as e:
+                    results.append({"Jira号": bugid, "执行结果": "失败", "备注": str(e)[:200]})
+                yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(round_candidates), 'bugid': bugid, 'status': results[-1]['执行结果'], 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
+            round_success = sum(1 for r in results if r["执行结果"] == "成功")
+            round_fail = len(results) - round_success
+            total_success += round_success
+            total_fail += round_fail
+            all_results.extend(results)
+            # 轮次间隔
+            if round_num < total_rounds and interval_min > 0:
+                yield f"data: {_json.dumps({'type': 'waiting', 'interval_min': interval_min, 'round': round_num}, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(interval_min * 60)
         # 步骤4：保存
-        success_count = sum(1 for r in results if r["执行结果"] == "成功")
-        fail_count = len(results) - success_count
         date_str = datetime.now().strftime("%Y-%m-%d")
         time_str = datetime.now().strftime("%H%M%S")
+        mode_label = "线上" if exec_mode == "online" else "PC"
         os.makedirs(_UNANALYZED_DIR, exist_ok=True)
         batch_csv = os.path.join(_UNANALYZED_DIR, f"regression_{date_str}_{time_str}.csv")
         try:
             with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
                 writer = _csv.writer(f)
                 writer.writerow(["Jira号", "执行结果", "触发时间", "执行时间", "备注",
-                                 "分析并发数", "下载并发数", "模型", "触发来源"])
-                for r in results:
+                                 "分析并发数", "下载并发数", "模型", "触发来源", "执行模式"])
+                for r in all_results:
                     writer.writerow([r["Jira号"], r["执行结果"], trigger_times.get(r["Jira号"], ""),
-                                     batch_start, r.get("备注", ""),
+                                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"), r.get("备注", ""),
                                      _batch_meta["分析并发数"], _batch_meta["下载并发数"],
-                                     _batch_meta["模型"], _batch_meta["触发来源"]])
-            doc_title = f"回归执行 {date_str} {time_str} ({success_count}/{len(results)})"
+                                     _batch_meta["模型"], _batch_meta["触发来源"], mode_label])
+            doc_title = f"回归执行 {mode_label} {date_str} {time_str} ({total_success}/{len(all_results)}, {total_rounds}轮)"
             cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
         except Exception as e:
             cloud_url = ""
             logger.warning("回归执行: 保存失败: %s", e)
-        yield f"data: {_json.dumps({'type': 'done', 'total': len(results), 'success': success_count, 'fail': fail_count, 'cloud_url': cloud_url}, ensure_ascii=False)}\n\n"
+        yield f"data: {_json.dumps({'type': 'done', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'rounds': total_rounds, 'cloud_url': cloud_url}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
