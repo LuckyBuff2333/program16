@@ -1354,9 +1354,9 @@ def update_docx_content(document_id: str, md_content: str) -> bool:
         try:
             import json as _json
             import time as _time
-            current_count = child_count
             for _round in range(10):
-                del_body = _json.dumps({"start_index": 0, "end_index": current_count})
+                # 用足够大的 end_index 确保删除所有子块
+                del_body = _json.dumps({"start_index": 0, "end_index": max(child_count * 2, 10000)})
                 resp = httpx.request("DELETE", del_url, headers=headers, content=del_body, timeout=30, verify=False)
                 if resp.status_code in (401, 400):
                     if _refresh_user_token():
@@ -1365,8 +1365,7 @@ def update_docx_content(document_id: str, md_content: str) -> bool:
                 resp.raise_for_status()
                 rd = resp.json()
                 if rd.get("code") != 0:
-                    logger.warning("删除旧文档块失败: %s (code=%s)", rd.get("msg"), rd.get("code"))
-                    break
+                    logger.warning("删除旧文档块API返回异常: %s (code=%s)", rd.get("msg"), rd.get("code"))
                 _time.sleep(0.5)
                 # 重新检查剩余块数（分页计数）
                 remaining = 0
@@ -1381,11 +1380,10 @@ def update_docx_content(document_id: str, md_content: str) -> bool:
                     if not cd.get("data", {}).get("has_more", False):
                         break
                     check_page = cd.get("data", {}).get("page_token", "")
-                logger.info("删除文档块: 第%d轮, 原有 %d, 剩余 %d", _round + 1, current_count, remaining)
+                logger.info("删除文档块: 第%d轮, 原有 %d, 剩余 %d", _round + 1, child_count, remaining)
                 if remaining == 0:
                     delete_success = True
                     break
-                current_count = remaining
         except Exception as e:
             logger.warning("删除旧文档块异常: %s", e, exc_info=True)
         # 删除失败则不写入新内容，避免内容叠加
@@ -1394,25 +1392,34 @@ def update_docx_content(document_id: str, md_content: str) -> bool:
             return False
     # 3. 写入新内容
     blocks = _md_to_feishu_blocks(md_content)
-    if blocks:
-        add_url = f"{_FEISHU_API}/docx/v1/documents/{document_id}/blocks/{document_id}/children"
-        for start in range(0, len(blocks), 50):
-            batch = blocks[start:start + 50]
-            payload = {"children": batch, "index": -1}
-            try:
-                r = httpx.post(add_url, headers=headers, json=payload, timeout=30, verify=False)
-                if r.status_code in (401, 400):
-                    if _refresh_user_token():
-                        headers = {"Authorization": f"Bearer {_get_doc_token()}", "Content-Type": "application/json"}
-                        r = httpx.post(add_url, headers=headers, json=payload, timeout=30, verify=False)
-                r.raise_for_status()
-                rd = r.json()
-                if rd.get("code") != 0:
-                    logger.warning("添加文档块失败(批次%d): %s (code=%s)",
-                                   start // 50 + 1, rd.get("msg"), rd.get("code"))
-            except Exception as e:
-                logger.warning("添加文档块异常(批次%d): %s", start // 50 + 1, e)
-    logger.info("文档内容更新完成: doc_id=%s", document_id)
+    if not blocks:
+        logger.warning("文档内容为空，跳过写入")
+        return True
+    add_url = f"{_FEISHU_API}/docx/v1/documents/{document_id}/blocks/{document_id}/children"
+    total_batches = (len(blocks) + 49) // 50
+    write_success = 0
+    for start in range(0, len(blocks), 50):
+        batch = blocks[start:start + 50]
+        payload = {"children": batch, "index": -1}
+        try:
+            r = httpx.post(add_url, headers=headers, json=payload, timeout=30, verify=False)
+            if r.status_code in (401, 400):
+                if _refresh_user_token():
+                    headers = {"Authorization": f"Bearer {_get_doc_token()}", "Content-Type": "application/json"}
+                    r = httpx.post(add_url, headers=headers, json=payload, timeout=30, verify=False)
+            r.raise_for_status()
+            rd = r.json()
+            if rd.get("code") == 0:
+                write_success += 1
+            else:
+                logger.warning("添加文档块失败(批次%d/%d): %s (code=%s)",
+                               start // 50 + 1, total_batches, rd.get("msg"), rd.get("code"))
+        except Exception as e:
+            logger.warning("添加文档块异常(批次%d/%d): %s", start // 50 + 1, total_batches, e)
+    if write_success < total_batches:
+        logger.error("文档写入不完整: %d/%d 批次成功", write_success, total_batches)
+        return False
+    logger.info("文档内容更新完成: doc_id=%s, %d 个块", document_id, len(blocks))
     return True
 
 
