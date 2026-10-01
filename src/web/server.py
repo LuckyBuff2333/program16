@@ -583,7 +583,9 @@ def _process_bot_command(chat_id: str, text: str):
             "6.1.2 CSV批量执行（选文件后自动执行）\n"
             "6.2 单个执行（Jira号,PC/线上）\n"
             "9.1 Bug未分析提取（JQL）\n"
-            "10.1 线上批量执行（输入Jira号）\n\n"
+            "10.1 线上批量执行（输入Jira号）\n"
+            "11.1 PC成功复制到线上\n"
+            "11.2 失败重跑（CSV导入）\n\n"
             "发送「退出」可取消当前任务\n"
             "请输入子功能编号（如 0/6.1.1）唤醒对应功能（2分钟内有效）")
         return
@@ -591,10 +593,10 @@ def _process_bot_command(chat_id: str, text: str):
     if session and session.get("state") == "wait_menu":
         stripped = text.strip()
         # 支持子功能编号直接跳转（0/4/5/6/9/10，支持6.1.1等三级编号）
-        if re.match(r'^(0|4|5|6|9|10)\.\d(\.\d)?$', stripped):
+        if re.match(r'^(0|4|5|6|9|10|11)\.\d(\.\d)?$', stripped):
             _clear_bot_session(chat_id)
             text = stripped  # 继续往下执行，让子功能处理逻辑接管
-        elif stripped in ("0", "4", "5", "6", "9", "10"):
+        elif stripped in ("0", "4", "5", "6", "9", "10", "11"):
             _clear_bot_session(chat_id)
             text = stripped
         else:
@@ -872,15 +874,22 @@ def _process_bot_command(chat_id: str, text: str):
                     "☐ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
                     "☐ A2: 过滤线上正确和通用失败的\n☑ A3: 过滤AI初步分析结果\n\n"
                     "默认勾选A3，输入「默认」使用默认勾选")
+            elif cmd == "11.2":
+                _set_bot_session(chat_id, "wait_csv_filter_options", batch_meta=session.get("batch_meta", {}), cmd=cmd)
+                feishu_client.send_bot_message(chat_id,
+                    "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
+                    "☐ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
+                    "☐ A2: 过滤线上正确和通用失败的\n☑ A3: 过滤AI初步分析结果\n\n"
+                    "默认勾选A3，输入「默认」使用默认勾选")
             else:
                 feishu_client.send_bot_message(chat_id, "未知功能，请重新输入")
                 _clear_bot_session(chat_id)
             return
         elif choice == "3":
-            # 持续执行：先配置间隔和轮数
+            # 持续执行：先配置每批数量、间隔和轮数
             _set_bot_session(chat_id, "wait_continuous_config", cmd=cmd, batch_meta=session.get("batch_meta", {}))
             feishu_client.send_bot_message(chat_id,
-                "持续执行配置\n请输入：间隔分钟,执行轮数\n示例: 10,5（每10分钟执行一轮，共5轮）")
+                "持续执行配置\n请输入：每批数量,间隔分钟,执行轮数\n示例: 50,10,5（每批50条，每10分钟一轮，共5轮）")
             return
         else:
             feishu_client.send_bot_message(chat_id, "请输入 1（基础信息修改）、2（单次执行）或 3（持续执行）")
@@ -913,47 +922,49 @@ def _process_bot_command(chat_id: str, text: str):
         feishu_client.send_bot_message(chat_id, "格式错误，请输入「序号,新值」（如：1,5）或「确认」保存")
         return
 
-    # 持续执行配置（6.1.1/6.1.2/10.1共用）
+    # 持续执行配置（6.1.1/6.1.2/10.1/11.2共用）
     if session and session.get("state") == "wait_continuous_config":
         cmd = session.get("cmd", "")
         meta = session.get("batch_meta", {})
-        m = re.match(r'(\d+)\s*[,，]\s*(\d+)', text.strip())
+        m = re.match(r'(\d+)\s*[,，]\s*(\d+)\s*[,，]\s*(\d+)', text.strip())
         if not m:
-            feishu_client.send_bot_message(chat_id, "格式错误，请输入「间隔分钟,执行轮数」\n示例: 10,5")
+            feishu_client.send_bot_message(chat_id, "格式错误，请输入「每批数量,间隔分钟,执行轮数」\n示例: 50,10,5（每批50条，每10分钟一轮，共5轮）")
             return
-        interval_min = int(m.group(1))
-        total_rounds = int(m.group(2))
+        batch_count = int(m.group(1))
+        interval_min = int(m.group(2))
+        total_rounds = int(m.group(3))
+        if batch_count <= 0:
+            feishu_client.send_bot_message(chat_id, "每批数量必须大于 0")
+            return
         if interval_min < 1 or interval_min > 120:
             feishu_client.send_bot_message(chat_id, "间隔时间必须在 1~120 分钟之间")
             return
-        if total_rounds < 2 or total_rounds > 100:
-            feishu_client.send_bot_message(chat_id, "执行轮数必须在 2~100 之间")
+        if total_rounds < 1 or total_rounds > 100:
+            feishu_client.send_bot_message(chat_id, "执行轮数必须在 1~100 之间")
             return
         # 保存持续执行参数，进入过滤选项流程
+        cont_params = {"continuous": True, "batch_count": batch_count, "interval_min": interval_min, "total_rounds": total_rounds}
+        summary = f"持续执行：每批 {batch_count} 条，每 {interval_min} 分钟一轮，共 {total_rounds} 轮\n\n"
         if cmd == "6.1.1":
-            _set_bot_session(chat_id, "wait_filter_options", cmd=cmd, batch_meta=meta,
-                             continuous=True, interval_min=interval_min, total_rounds=total_rounds)
+            _set_bot_session(chat_id, "wait_filter_options", cmd=cmd, batch_meta=meta, **cont_params)
             feishu_client.send_bot_message(chat_id,
-                f"持续执行：每 {interval_min} 分钟一轮，共 {total_rounds} 轮\n\n"
-                "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
+                summary + "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
                 "☑ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
                 "☐ A2: 过滤线上正确和通用失败的\n☐ A3: 过滤AI初步分析结果\n\n"
                 "默认勾选A0，输入「默认」使用默认勾选")
         elif cmd == "6.1.2":
-            _set_bot_session(chat_id, "wait_csv_filter_options", batch_meta=meta,
-                             continuous=True, interval_min=interval_min, total_rounds=total_rounds)
+            _set_bot_session(chat_id, "wait_csv_filter_options", batch_meta=meta, **cont_params)
             feishu_client.send_bot_message(chat_id,
-                f"持续执行：每 {interval_min} 分钟一轮，共 {total_rounds} 轮\n\n"
-                "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
+                summary + "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
                 "☑ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
                 "☐ A2: 过滤线上正确和通用失败的\n☐ A3: 过滤AI初步分析结果\n\n"
                 "默认勾选A0，输入「默认」使用默认勾选")
-        elif cmd == "10.1":
-            _set_bot_session(chat_id, "wait_prod_filter_options", batch_meta=meta, skip_duplicates=True,
-                             continuous=True, interval_min=interval_min, total_rounds=total_rounds)
+        elif cmd in ("10.1", "11.2"):
+            _set_bot_session(chat_id, "wait_prod_filter_options" if cmd == "10.1" else "wait_csv_filter_options",
+                             batch_meta=meta, cmd=cmd, **cont_params,
+                             **({"skip_duplicates": True} if cmd == "10.1" else {}))
             feishu_client.send_bot_message(chat_id,
-                f"持续执行：每 {interval_min} 分钟一轮，共 {total_rounds} 轮\n\n"
-                "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
+                summary + "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
                 "☐ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
                 "☐ A2: 过滤线上正确和通用失败的\n☑ A3: 过滤AI初步分析结果\n\n"
                 "默认勾选A3，输入「默认」使用默认勾选")
@@ -971,7 +982,8 @@ def _process_bot_command(chat_id: str, text: str):
         # 传递持续执行参数（如有）
         cont_kwargs = {}
         if session.get("continuous"):
-            cont_kwargs = {"continuous": True, "interval_min": session.get("interval_min"), "total_rounds": session.get("total_rounds")}
+            cont_kwargs = {"continuous": True, "batch_count": session.get("batch_count"),
+                           "interval_min": session.get("interval_min"), "total_rounds": session.get("total_rounds")}
         _set_bot_session(chat_id, "wait_batch_jql_filter", filters=filters, batch_meta=meta, **cont_kwargs)
         feishu_client.send_bot_message(chat_id,
             f"过滤已设置：{filters.get('desc', '默认')}\n\n"
@@ -1000,12 +1012,15 @@ def _process_bot_command(chat_id: str, text: str):
         is_continuous = session.get("continuous", False)
         interval_min = session.get("interval_min", 10)
         total_rounds = session.get("total_rounds", 5)
+        # 持续模式下用 batch_count 替代输入的数量
+        if is_continuous:
+            count = session.get("batch_count", count)
         _clear_bot_session(chat_id)
         mode_label = "线上" if exec_mode == "online" else "PC"
         label = jql_presets[jql_key][0]
         if is_continuous:
             feishu_client.send_bot_message(chat_id,
-                f"{jql_key}({label}) 持续执行\n每轮抽取 {count} 条，{mode_label}模式\n"
+                f"{jql_key}({label}) 持续执行\n每轮 {count} 条，{mode_label}模式\n"
                 f"每 {interval_min} 分钟一轮，共 {total_rounds} 轮\n"
                 f"过滤：{filters.get('desc', '默认')}\n发送「退出」可中断任务")
             _set_running_task(chat_id, f"JQL持续执行({jql_key},{count}条,{mode_label},{total_rounds}轮)")
@@ -1047,10 +1062,13 @@ def _process_bot_command(chat_id: str, text: str):
             _clear_bot_session(chat_id)
             return
         file_list = "\n".join(f"{i+1}. {f['name']} ({f['count']}条)" for i, f in enumerate(csv_files))
-        # 传递持续执行参数（如有）
+        # 传递持续执行参数和cmd（如有）
         cont_kwargs = {}
+        if session.get("cmd"):
+            cont_kwargs["cmd"] = session.get("cmd")
         if session.get("continuous"):
-            cont_kwargs = {"continuous": True, "interval_min": session.get("interval_min"), "total_rounds": session.get("total_rounds")}
+            cont_kwargs.update({"continuous": True, "batch_count": session.get("batch_count"),
+                                "interval_min": session.get("interval_min"), "total_rounds": session.get("total_rounds")})
         _set_bot_session(chat_id, "wait_csv_execute", csv_files=csv_files, filters=filters, batch_meta=meta, **cont_kwargs)
         feishu_client.send_bot_message(chat_id,
             f"过滤已设置：{filters.get('desc', '默认')}\n\n"
@@ -1096,14 +1114,21 @@ def _process_bot_command(chat_id: str, text: str):
             feishu_client.send_bot_message(chat_id, "CSV 文件中无 Jira 号")
             return
         _clear_bot_session(chat_id)
-        mode_label = "线上" if exec_mode == "online" else "PC"
         is_continuous = session.get("continuous", False)
         interval_min = session.get("interval_min", 10)
         total_rounds = session.get("total_rounds", 5)
+        is_112 = session.get("cmd", "") == "11.2"
+        # 持续模式下用 batch_count 替代输入的数量
+        if is_continuous:
+            count = session.get("batch_count", count)
+        # 11.2 默认线上执行，使用 prod batch 函数
+        if is_112:
+            exec_mode = "online"
+        mode_label = "线上" if exec_mode == "online" else "PC"
         if is_continuous:
             feishu_client.send_bot_message(chat_id,
                 f"已选择: {selected['name']} ({len(bugids)}条)\n"
-                f"持续执行：每轮抽取 {count} 条，{mode_label}模式\n"
+                f"持续执行：每轮 {count} 条，{mode_label}模式\n"
                 f"每 {interval_min} 分钟一轮，共 {total_rounds} 轮\n"
                 f"过滤：{filters.get('desc', '默认')}\n发送「退出」可中断任务")
             _set_running_task(chat_id, f"CSV持续执行({selected['name']},{count}条,{mode_label},{total_rounds}轮)")
@@ -1193,7 +1218,8 @@ def _process_bot_command(chat_id: str, text: str):
         # 传递持续执行参数（如有）
         cont_kwargs = {}
         if session.get("continuous"):
-            cont_kwargs = {"continuous": True, "interval_min": session.get("interval_min"), "total_rounds": session.get("total_rounds")}
+            cont_kwargs = {"continuous": True, "batch_count": session.get("batch_count"),
+                           "interval_min": session.get("interval_min"), "total_rounds": session.get("total_rounds")}
         _set_bot_session(chat_id, "wait_prod_input", filters=filters, batch_meta=meta, **cont_kwargs)
         feishu_client.send_bot_message(chat_id,
             f"过滤已设置：{filters.get('desc', '默认')}\n\n"
@@ -1211,7 +1237,8 @@ def _process_bot_command(chat_id: str, text: str):
         # 传递持续执行参数（如有）
         cont_kwargs = {}
         if session.get("continuous"):
-            cont_kwargs = {"continuous": True, "interval_min": session.get("interval_min"), "total_rounds": session.get("total_rounds")}
+            cont_kwargs = {"continuous": True, "batch_count": session.get("batch_count"),
+                           "interval_min": session.get("interval_min"), "total_rounds": session.get("total_rounds")}
         _set_bot_session(chat_id, "wait_prod_execute", bugids=bugids, filters=filters, batch_meta=meta, **cont_kwargs)
         feishu_client.send_bot_message(chat_id,
             f"已收到 {len(bugids)} 个 Jira 号\n"
@@ -1236,12 +1263,15 @@ def _process_bot_command(chat_id: str, text: str):
         is_continuous = session.get("continuous", False)
         interval_min = session.get("interval_min", 10)
         total_rounds = session.get("total_rounds", 5)
+        # 持续模式下用 batch_count 替代输入的数量
+        if is_continuous:
+            count = session.get("batch_count", count)
         _clear_bot_session(chat_id)
         mode_label = "线上" if exec_mode == "online" else "PC"
         if is_continuous:
             feishu_client.send_bot_message(chat_id,
                 f"线上持续执行 {min(count, len(bugids))}/{len(bugids)} 条\n"
-                f"{mode_label}模式，每 {interval_min} 分钟一轮，共 {total_rounds} 轮\n"
+                f"{mode_label}模式，每轮 {count} 条，每 {interval_min} 分钟一轮，共 {total_rounds} 轮\n"
                 f"过滤：{filters.get('desc', '默认')}\n发送「退出」可中断任务")
             _set_running_task(chat_id, f"线上持续执行({min(count, len(bugids))}条,{total_rounds}轮)")
             threading.Thread(target=_bot_prod_batch_run_continuous,
@@ -1254,6 +1284,83 @@ def _process_bot_command(chat_id: str, text: str):
             _set_running_task(chat_id, f"线上批量执行({min(count, len(bugids))}条)")
             threading.Thread(target=_bot_prod_batch_run, args=(chat_id, bugids, filters, meta, exec_mode, count),
                              name="bot-prod-batch", daemon=True).start()
+        return
+
+    # ==================== 功能11：线上正确执行跟进 ====================
+
+    # 功能11主菜单
+    if text == "11":
+        feishu_client.send_bot_message(chat_id,
+            "线上正确执行跟进\n子功能：\n"
+            "11.1 PC成功复制到线上\n"
+            "11.2 失败重跑（CSV导入）\n\n请输入子功能编号")
+        return
+
+    # 11.1 PC成功复制到线上 → 等待对比触发
+    if text == "11.1":
+        _set_bot_session(chat_id, "wait_11_1_compare")
+        feishu_client.send_bot_message(chat_id,
+            "11.1 PC成功批量复制到线上\n输入 0 开始对比")
+        return
+
+    # 11.2 失败重跑 → 子菜单（复用6.1.2的CSV流程）
+    if text == "11.2":
+        _set_bot_session(chat_id, "wait_sub_menu", cmd="11.2")
+        feishu_client.send_bot_message(chat_id,
+            "11.2 失败重跑（CSV导入）\n请输入功能：\n1: 基础信息修改\n2: 单次执行\n3: 持续执行")
+        return
+
+    # 11.1 对比触发处理
+    if session and session.get("state") == "wait_11_1_compare":
+        if text.strip() != "0":
+            feishu_client.send_bot_message(chat_id, "请输入 0 开始对比")
+            return
+        feishu_client.send_bot_message(chat_id, "正在对比 PC成功 vs 线上成功，请稍候...")
+        try:
+            result = _bot_compare_pc_online()
+            diff_records = result.get("diff_records", [])
+            pc_count = result.get("pc_success_count", 0)
+            online_count = result.get("online_success_count", 0)
+            diff_count = len(diff_records)
+            if diff_count == 0:
+                feishu_client.send_bot_message(chat_id,
+                    f"对比完成：PC成功 {pc_count}，线上成功 {online_count}，差集 {diff_count}\n无差集，无需执行")
+                _clear_bot_session(chat_id)
+                return
+            # 保存差集到session，进入执行配置
+            _set_bot_session(chat_id, "wait_11_1_execute_config", diff_records=diff_records,
+                             pc_count=pc_count, online_count=online_count)
+            feishu_client.send_bot_message(chat_id,
+                f"对比完成：PC成功 {pc_count}，线上成功 {online_count}，差集 {diff_count}\n\n"
+                f"请输入：每批数量,间隔分钟,执行轮数\n示例: 50,10,3（每批50条，每10分钟一轮，共3轮，默认线上执行）")
+        except Exception as e:
+            logger.error("11.1 对比失败: %s", e)
+            feishu_client.send_bot_message(chat_id, f"对比失败: {str(e)[:200]}")
+            _clear_bot_session(chat_id)
+        return
+
+    # 11.1 执行配置处理
+    if session and session.get("state") == "wait_11_1_execute_config":
+        m = re.match(r'(\d+)\s*[,，]\s*(\d+)\s*[,，]\s*(\d+)', text.strip())
+        if not m:
+            feishu_client.send_bot_message(chat_id, "格式错误，请输入「每批数量,间隔分钟,执行轮数」\n示例: 50,10,3")
+            return
+        batch_size = int(m.group(1))
+        interval_min = int(m.group(2))
+        total_rounds = int(m.group(3))
+        if batch_size <= 0 or interval_min < 1 or total_rounds < 1:
+            feishu_client.send_bot_message(chat_id, "参数无效：每批数量>0，间隔≥1分钟，轮数≥1")
+            return
+        diff_records = session.get("diff_records", [])
+        _clear_bot_session(chat_id)
+        feishu_client.send_bot_message(chat_id,
+            f"开始执行 {len(diff_records)} 条差集\n"
+            f"每批 {batch_size} 条，每 {interval_min} 分钟一轮，共 {total_rounds} 轮（线上执行）\n"
+            f"发送「退出」可中断任务")
+        _set_running_task(chat_id, f"PC复制到线上({len(diff_records)}条,{total_rounds}轮)")
+        threading.Thread(target=_bot_run_11_1_continuous,
+                         args=(chat_id, diff_records, batch_size, interval_min, total_rounds),
+                         name="bot-11-1-cont", daemon=True).start()
         return
 
     # 未识别命令：返回功能菜单
@@ -12385,6 +12492,145 @@ async def online_followup_compare(request: Request):
         _json.dump(result_data, f, ensure_ascii=False, indent=2)
     return _ok(result_data,
                f"PC成功 {len(pc_success)} 条，线上成功 {len(online_success)} 条，差集 {len(diff_records)} 条")
+
+
+def _bot_compare_pc_online() -> dict:
+    """机器人用：对比PC成功 vs 线上成功，返回差集结果（复用 online_followup_compare 核心逻辑）"""
+    from src.clients import feishu_client
+    cfg = load_config().get("feishu_bitable", {})
+    app_token = cfg.get("app_token", "")
+    table_id = cfg.get("table_id", "")
+    if not app_token or not table_id:
+        raise ValueError("多维表格 app_token/table_id 未配置")
+    records = feishu_client.list_bitable_records(app_token, table_id)
+    pc_success = {}
+    online_success = {}
+    online_all = {}
+    for rec in records:
+        fields = rec.get("fields", {})
+        jira_no = _bitable_text(fields.get(cfg.get("bugid_field", "jira号"), ""))
+        if not jira_no:
+            continue
+        result_status = _bitable_text(fields.get("分析结果", ""))
+        source = _bitable_text(fields.get("触发来源", ""))
+        entry = {
+            "jira号": jira_no, "分析结果": result_status, "触发来源": source,
+            "分析完成时间": _bitable_text(fields.get("分析完成时间", "")),
+            "触发时间": _bitable_text(fields.get("分析问题时间", "")),
+            "错误信息": _bitable_text(fields.get("错误信息", "")),
+        }
+        if result_status == "成功":
+            if source == "jira_analyze":
+                pc_success[jira_no] = entry
+            elif source in ("parseFullTicket", "feishu_bot"):
+                online_success[jira_no] = entry
+        if source in ("parseFullTicket", "feishu_bot"):
+            online_all.setdefault(jira_no, []).append(entry)
+    pc_keys = set(pc_success.keys())
+    online_ok_keys = set(online_success.keys())
+    diff_keys = pc_keys - online_ok_keys
+    diff_records = []
+    for k in sorted(diff_keys):
+        pc_entry = pc_success[k]
+        online_recs = online_all.get(k, [])
+        online_failed = [r for r in online_recs if r["分析结果"] != "成功"]
+        if online_failed:
+            status = "线上失败"
+            err = online_failed[-1]["错误信息"][:100]
+        else:
+            status = "线上未执行"
+            err = ""
+        diff_records.append({
+            "jira号": k, "pc分析完成时间": pc_entry["分析完成时间"],
+            "触发时间": pc_entry["触发时间"],
+            "线上状态": status, "线上错误信息": err,
+        })
+    return {
+        "pc_success_count": len(pc_success),
+        "online_success_count": len(online_success),
+        "diff_count": len(diff_records),
+        "diff_records": diff_records,
+    }
+
+
+def _bot_run_11_1_continuous(chat_id: str, diff_records: list, batch_size: int,
+                             interval_min: int, total_rounds: int):
+    """11.1 持续执行：将差集记录分批在线上执行，第一轮输出结论，后续轮次静默"""
+    import time as _time
+    from src.clients import feishu_client
+    from src.clients.base import http_post
+    _reset_cancel_event(chat_id)
+    try:
+        all_bugids = [r["jira号"] for r in diff_records if r.get("jira号")]
+        if not all_bugids:
+            feishu_client.send_bot_message(chat_id, "差集无可执行的 Jira 号")
+            return
+        # 提取触发时间（从差集记录中获取）
+        trigger_times = {}
+        for r in diff_records:
+            tt = r.get("触发时间", "").strip()
+            if tt:
+                trigger_times[r["jira号"]] = tt
+        # 缺少触发时间的，尝试从云端缓存获取
+        missing = [b for b in all_bugids if b not in trigger_times]
+        if missing:
+            cloud_times, _ = _load_cloud_trigger_cache()
+            for b in missing:
+                if b in cloud_times:
+                    trigger_times[b] = cloud_times[b]
+        run_bugids = [b for b in all_bugids if b in trigger_times]
+        feishu_client.send_bot_message(chat_id,
+            f"差集 {len(all_bugids)} 条，{len(run_bugids)} 条有触发时间")
+        done_total = 0
+        total_success = 0
+        total_fail = 0
+        for round_num in range(1, total_rounds + 1):
+            if _is_cancelled(chat_id):
+                break
+            undone = run_bugids[done_total:]
+            if not undone:
+                break
+            batch = undone[:batch_size]
+            # 执行本轮
+            success = 0
+            for bugid in batch:
+                if _is_cancelled(chat_id):
+                    break
+                exec_time = trigger_times.get(bugid, "")
+                try:
+                    payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
+                    resp = http_post(_PROD_AI_URL, payload, timeout=15)
+                    resp_code = resp.get("code") if isinstance(resp, dict) else None
+                    if resp_code in (200, 0, "200"):
+                        success += 1
+                except Exception:
+                    pass
+            done_total += len(batch)
+            total_success += success
+            total_fail += len(batch) - success
+            # 第一轮输出结论，后续轮次静默
+            if round_num == 1:
+                feishu_client.send_bot_message(chat_id,
+                    f"[1/{total_rounds}] 第一轮执行完成: 成功 {success}/{len(batch)}\n"
+                    f"累计: 成功 {total_success}，失败 {total_fail}")
+            if round_num < total_rounds and done_total < len(run_bugids):
+                if not _is_cancelled(chat_id):
+                    for _ in range(interval_min * 60):
+                        if _is_cancelled(chat_id):
+                            break
+                        _time.sleep(1)
+        # 最终输出总结
+        if not _is_cancelled(chat_id):
+            feishu_client.send_bot_message(chat_id,
+                f"11.1 执行完成\n总计执行 {done_total} 条\n成功 {total_success}，失败 {total_fail}")
+        else:
+            feishu_client.send_bot_message(chat_id,
+                f"11.1 已中断（完成 {done_total} 条，成功 {total_success}）")
+    except Exception as e:
+        logger.error("11.1 持续执行失败: %s", e)
+        feishu_client.send_bot_message(chat_id, f"11.1 执行异常: {str(e)[:200]}")
+    finally:
+        _clear_running_task(chat_id)
 
 
 @app.get("/api/test/online_followup_load")
