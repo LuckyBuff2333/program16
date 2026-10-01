@@ -349,6 +349,9 @@ def _paginate_get(url: str, headers: dict, params: dict,
                 err_detail = f"HTTP {resp.status_code}: {err_body.get('msg', resp.text[:200])} (code={err_body.get('code', 'N/A')})"
             except Exception:
                 err_detail = f"HTTP {resp.status_code}: {resp.text[:300]}"
+            # 认证失败时提供重新授权引导
+            if resp.status_code in (400, 401, 403):
+                err_detail += "，请重新授权飞书应用（Web 页面点击「重新授权飞书」按钮）"
             raise ValueError(f"{log_msg}: {err_detail}")
         data = resp.json()
         # 业务层 token 过期/无效自动刷新重试一次（99991677=过期, 99991672=无效, 99991668=认证失败）
@@ -442,6 +445,8 @@ def _refresh_user_token(force: bool = False) -> str:
                 # refresh_token 已失效（20038）：清除旧 token，回退使用 tenant_access_token
                 if d2.get("code") == 20038:
                     _clear_stale_user_token()
+                    logger.error("⚠️ user_refresh_token 已失效，请重新授权飞书应用："
+                                 "访问 Web 页面点击「重新授权飞书」按钮，或调用 GET /api/auth/authorize")
                 return ""
             new_token = d2.get("data", {}).get("access_token", "")
             new_refresh = d2.get("data", {}).get("refresh_token", "")
@@ -567,13 +572,17 @@ def update_bitable_records(app_token: str, table_id: str, records: list) -> dict
     payload = {"records": [{"record_id": r["record_id"], "fields": r["fields"]} for r in records]}
     headers = _bitable_headers()
     resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
-    # HTTP 401/403：token 过期或无权限，强制刷新 user token 后重试
+    # HTTP 401/403：token 过期或无权限，尝试刷新 user token → 回退 tenant_access_token
     if resp.status_code in (401, 403):
-        logger.info("Bitable 更新收到 HTTP %d，强制刷新 token 重试", resp.status_code)
+        logger.info("Bitable 更新收到 HTTP %d，尝试刷新 token 或回退 tenant_access_token", resp.status_code)
         _token_cache["token"] = None
-        if _refresh_user_token(force=True):
-            headers = _bitable_headers()
-            resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
+        _refreshed = _refresh_user_token(force=True)
+        if not _refreshed:
+            # user token 刷新失败，清除失效 token 并强制回退 tenant_access_token
+            _clear_stale_user_token()
+            _token_cache["token"] = None
+        headers = _bitable_headers()
+        resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
     # HTTP 400：数据格式问题，提取飞书具体错误信息并抛出
     if resp.status_code == 400:
         try:
@@ -644,17 +653,19 @@ def create_bitable_table(app_token: str, name: str, fields: list) -> str:
     body = {"table": {"name": name, "default_view_name": "默认视图", "fields": fields}}
     headers = _bitable_headers()
     resp = httpx.post(url, headers=headers, json=body, timeout=30, verify=False)
-    # HTTP 401/403：token 过期或无权限，强制刷新 user token 后重试
+    # HTTP 401/403：token 过期或无权限，尝试刷新 user token → 回退 tenant_access_token
     if resp.status_code in (401, 400, 403):
         err_data = resp.json()
-        if err_data.get("code") in (99991677, 99991672, 99991668) and _refresh_user_token(force=True):
-            headers = _bitable_headers()
-            resp = httpx.post(url, headers=headers, json=body, timeout=30, verify=False)
-        elif resp.status_code == 403:
-            # 403 但业务码不是 token 相关，仍尝试强制刷新 user token
-            _refresh_user_token(force=True)
-            headers = _bitable_headers()
-            resp = httpx.post(url, headers=headers, json=body, timeout=30, verify=False)
+        _refreshed = False
+        if err_data.get("code") in (99991677, 99991672, 99991668):
+            _refreshed = _refresh_user_token(force=True)
+        if not _refreshed and resp.status_code == 403:
+            _refreshed = _refresh_user_token(force=True)
+        if not _refreshed:
+            _clear_stale_user_token()
+            _token_cache["token"] = None
+        headers = _bitable_headers()
+        resp = httpx.post(url, headers=headers, json=body, timeout=30, verify=False)
     resp.raise_for_status()
     data = resp.json()
     if data.get("code") != 0:
@@ -692,9 +703,12 @@ def batch_create_records(app_token: str, table_id: str, records: list) -> dict:
         headers = _bitable_headers()
         resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
         if resp.status_code in (401, 403):
-            logger.info("批量创建收到 HTTP %d，强制刷新 token 重试", resp.status_code)
+            logger.info("批量创建收到 HTTP %d，尝试刷新 token 或回退 tenant_access_token", resp.status_code)
             _token_cache["token"] = None
-            _refresh_user_token(force=True)
+            _refreshed = _refresh_user_token(force=True)
+            if not _refreshed:
+                _clear_stale_user_token()
+                _token_cache["token"] = None
             headers = _bitable_headers()
             resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
         resp.raise_for_status()

@@ -413,6 +413,23 @@ def _extract_from_custom_fields(issue: dict) -> str:
                                     return ts.strftime(fmt)
                             except ValueError:
                                 continue
+        # 关键词行未找到时间，对整个 Initial Setting 字段做全量时间提取（兆底 Vehicle Calibration 等子字段中的时间）
+        for regex, fmt in [(_TIMESTAMP_FULL_RE, "%Y-%m-%d %H:%M:%S"),
+                           (_TIMESTAMP_SLASH_RE, None)]:
+            for m in regex.finditer(text):
+                raw = m.group(1) if m.lastindex else m.group(0)
+                p = _parse_datetime_string(raw) if fmt is None else None
+                if p:
+                    logger.info("从字段[%s/%s] Initial Setting 全量提取到时间: %s", fid, name, p[0])
+                    return p[0]
+                if fmt:
+                    try:
+                        ts = datetime.strptime(raw, fmt)
+                        if _is_valid_date(ts.year, ts.month, ts.day):
+                            logger.info("从字段[%s/%s] Initial Setting 全量提取到时间: %s", fid, name, ts.strftime(fmt))
+                            return ts.strftime(fmt)
+                    except ValueError:
+                        continue
     # 兆底：操作顺序 / 执行结果字段中的时间
     # 支持短格式 M/D HH:MM（无年份，从 issue 创建日期推断年份）
     _SHORT_TIME_RE = re.compile(r'(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?')
