@@ -2573,29 +2573,23 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
         lines.append("无")
     lines.append("")
     md_content = "\n".join(lines)
-    # 上传：原地覆盖内容，保持链接不变，清理历史重复文档
+    # 上传：原地覆盖内容，保持链接不变
     try:
         if existing_docs:
-            # 用第一个文档原地覆盖内容
+            # 用第一个文档原地覆盖内容（全选替换）
             main_token, main_url = existing_docs[0]
             ok = feishu_client.update_docx_content(main_token, md_content)
             if ok:
                 logger.info("每日结论文档已原地覆盖: %s", main_url)
-                # 清理多余的重复文档
-                for dup_token, _ in existing_docs[1:]:
-                    feishu_client.delete_drive_file(dup_token, "docx")
-                    logger.info("已清理重复每日结论文档: %s", dup_token[:12])
                 return main_url
-            logger.warning("原地覆盖失败，回退为删除重建")
-            # 回退：删除所有旧文档，创建新的
-            for old_token, _ in existing_docs:
-                feishu_client.delete_drive_file(old_token, "docx")
-        # 无同名文档或回退：创建新文档
+            logger.warning("每日结论文档原地覆盖失败")
+            return ""
+        # 无同名文档：创建新文档
         doc_result = feishu_client.create_docx_document(
             doc_title, md_content, folder_token=_DAILY_BROADCAST_FOLDER)
         url = doc_result.get("url", "")
         if url:
-            logger.info("每日结论文档已上传云端: %s", url)
+            logger.info("每日结论文档已创建: %s", url)
         return url
     except Exception as e:
         logger.warning("每日结论文档上传失败: %s", e)
@@ -2649,12 +2643,13 @@ def _sync_daily_stats_to_bitable(report: dict, date_str: str):
         # 按日期降序排列
         sorted_dates = sorted(all_data.keys(), reverse=True)
         sorted_records = [{"fields": all_data[d]} for d in sorted_dates]
-        # 删除所有旧记录
+        # 先写入新记录，成功后再删除旧记录（避免写入失败时数据丢失）
         old_ids = [rec.get("record_id") for rec in records if rec.get("record_id")]
-        if old_ids:
-            feishu_client.batch_delete_records(app_token, stats_table_id, old_ids)
         # 按日期降序重新写入
         feishu_client.batch_create_records(app_token, stats_table_id, sorted_records)
+        # 写入成功后才删除旧记录
+        if old_ids:
+            feishu_client.batch_delete_records(app_token, stats_table_id, old_ids)
         logger.info("统计表已同步并排序: %s (total=%d, 共%d条)", date_str, total, len(sorted_records))
     except Exception as e:
         logger.warning("统计表同步失败: %s", e)
@@ -3094,16 +3089,15 @@ def _upload_weekly_report_to_cloud(report: dict, date_str: str) -> str:
             ok = feishu_client.update_docx_content(main_token, md_content)
             if ok:
                 logger.info("每周汇总文档已原地覆盖: %s", main_url)
-                for dup_token, _ in existing_docs[1:]:
-                    feishu_client.delete_drive_file(dup_token, "docx")
                 return main_url
-            for old_token, _ in existing_docs:
-                feishu_client.delete_drive_file(old_token, "docx")
+            logger.warning("每周汇总文档原地覆盖失败")
+            return ""
+        # 无同名文档：创建新文档
         doc_result = feishu_client.create_docx_document(
             doc_title, md_content, folder_token=_DAILY_BROADCAST_FOLDER)
         url = doc_result.get("url", "")
         if url:
-            logger.info("每周汇总文档已上传云端: %s", url)
+            logger.info("每周汇总文档已创建: %s", url)
         return url
     except Exception as e:
         logger.warning("每周汇总文档上传失败: %s", e)
