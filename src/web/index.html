@@ -2305,6 +2305,7 @@
                     @click="rerunManualReview">
                     待人工审核重新执行（{{ getManualReviewCount() }} 条）
                   </el-button>
+                  <el-checkbox v-model="troubleshoot.skipVideoCache" style="margin-left:8px">跳过视频缓存</el-checkbox>
                 </div>
                 <!-- 成功记录表格 -->
                 <template v-if="troubleshoot.successRecords && troubleshoot.successRecords.length">
@@ -2587,6 +2588,9 @@
                   <el-table-column type="index" label="#" width="45"></el-table-column>
                   <el-table-column prop="jira号" label="Jira号" width="130"></el-table-column>
                   <el-table-column prop="pc分析完成时间" label="PC完成时间" width="160"></el-table-column>
+                  <el-table-column prop="触发时间" label="触发时间" width="160">
+                    <template #default="{row}"><span v-if="row['触发时间']" style="color:#67c23a">{{ row['触发时间'] }}</span><span v-else style="color:#c0c4cc">-</span></template>
+                  </el-table-column>
                   <el-table-column prop="线上状态" label="线上状态" width="100">
                     <template #default="{row}">
                       <el-tag :type="row['线上状态']==='线上未执行'?'warning':'danger'" size="small">{{ row['线上状态'] }}</el-tag>
@@ -2607,6 +2611,9 @@
                   </el-form-item>
                   <el-button type="primary" :loading="onlineFollowup.running"
                     :disabled="!onlineFollowup.selectedDiff.length" @click="runOnlineFollowup">开始执行</el-button>
+                  <el-button type="success" :loading="onlineFollowup.writingTriggerTime"
+                    :disabled="!onlineFollowup.selectedDiff.length" @click="writeTriggerTimeBatch">一键写入触发时间</el-button>
+                  <el-checkbox v-model="onlineFollowup.skipCloudCache">跳过云端缓存</el-checkbox>
                   <el-tag v-if="onlineFollowup.runTotal">进度: {{ onlineFollowup.runDone }}/{{ onlineFollowup.runTotal }}</el-tag>
                 </div>
                 <el-table v-if="onlineFollowup.runResults.length" :data="onlineFollowup.runResults" size="small" stripe border max-height="260" style="margin-top:10px">
@@ -2650,6 +2657,9 @@
                   </el-select>
                   <el-button size="small" @click="copyFilteredJiras" :disabled="!filteredErrorStatsRecords.length">
                     复制 Jira 号（{{ filteredErrorStatsRecords.length }}）
+                  </el-button>
+                  <el-button type="danger" size="small" :loading="onlineFollowup.errorStats.deletingDirty" @click="deleteDirtyData">
+                    批量删除脏数据
                   </el-button>
                 </div>
                 <el-table v-if="filteredErrorStatsRecords.length" :data="filteredErrorStatsRecords" size="small" stripe border max-height="400">
@@ -3338,7 +3348,7 @@ createApp({
         querying: false, records: [], successRecords: [], queryingSuccess: false, successSearched: false,
         diagRunning: false, diagLoadingMap: {}, diagResults: [], categoryFilter: '',
         writingReview: false, exportingTriggerIssues: false, batchApplyingTime: false, onlyEmptyReview: false,
-        stopFlag: false, abortController: null,
+        stopFlag: false, abortController: null, skipVideoCache: false,
         correctionEditor: { visible: false, row: null, time: '', note: '', humanReason: '', matchedCategory: '', saving: false },
       },
       // 未分析 Bug 提取
@@ -3384,10 +3394,11 @@ createApp({
         pcSuccessCount: 0, onlineSuccessCount: 0, diffCount: 0,
         diffRecords: [], selectedDiff: [],
         batchSize: 10, running: false, runResults: [], runDone: 0, runTotal: 0, runMsg: '',
+        writingTriggerTime: false, skipCloudCache: false,
         // 错误统计查询
         errorStats: {
           afterTime: '', querying: false, records: [], queryMsg: '', queryError: false,
-          successFilter: '',
+          successFilter: '', deletingDirty: false,
         },
         // 回归执行
         regression: {
@@ -4800,7 +4811,7 @@ createApp({
       try {
         const resp = await fetch('/api/test/prod_batch_run', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bugids, skip_existing: false }),
+          body: JSON.stringify({ bugids, skip_existing: false, skip_cloud_cache: this.onlineFollowup.skipCloudCache }),
         });
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
@@ -4828,6 +4839,42 @@ createApp({
       } catch (e) {
         this.onlineFollowup.runMsg = '执行失败: ' + e.message;
       } finally { this.onlineFollowup.running = false; }
+    },
+    // 一键写入触发时间：将对比结果中已有的触发时间直接写入云端
+    async writeTriggerTimeBatch() {
+      const selected = this.onlineFollowup.selectedDiff;
+      if (!selected.length) return ElementPlus.ElMessage.warning('请先勾选要写入的记录');
+      // 从对比结果中筛选有触发时间的记录
+      const withTime = selected.filter(r => r['触发时间']);
+      if (!withTime.length) return ElementPlus.ElMessage.warning('勾选的记录均无触发时间（多维表格中 PC 成功记录无“分析问题时间”）');
+      const triggerTimes = {};
+      withTime.forEach(r => { triggerTimes[r['jira号']] = r['触发时间']; });
+      const noTimeCount = selected.length - withTime.length;
+      const skipCache = this.onlineFollowup.skipCloudCache;
+      const skipMsg = skipCache ? '云端已有的自动跳过，仅写入缺失的' : '将强制覆盖云端所有触发时间';
+      try {
+        await ElementPlus.ElMessageBox.confirm(
+          `将把 ${withTime.length} 个有触发时间的记录写入云端缓存（${skipMsg}），不会重新提取。${noTimeCount ? '\n另有 ' + noTimeCount + ' 条无触发时间将被忽略。' : ''}`,
+          '确认写入触发时间', { type: 'info', confirmButtonText: '确认写入', cancelButtonText: '取消' }
+        );
+      } catch { return; }
+      this.onlineFollowup.writingTriggerTime = true;
+      try {
+        const body = await this.api('/api/test/write_trigger_time', {
+          method: 'POST',
+          body: JSON.stringify({ trigger_times: triggerTimes, skip_cloud_cache: skipCache })
+        });
+        const d = body.data || {};
+        const parts = [];
+        if (d.written_count) parts.push(`写入 ${d.written_count} 条`);
+        if (d.skipped_count) parts.push(`跳过已有 ${d.skipped_count} 条`);
+        if (d.failed_count) parts.push(`失败 ${d.failed_count} 条`);
+        ElementPlus.ElMessage.success(`写入完成: ${parts.join(', ') || '无变化'}`);
+      } catch (e) {
+        ElementPlus.ElMessage.error('写入失败: ' + (e.message || '未知错误'));
+      } finally {
+        this.onlineFollowup.writingTriggerTime = false;
+      }
     },
     // ==================== 功能11扩展：错误统计查询 ====================
     async queryErrorStats(useTime) {
@@ -4863,6 +4910,40 @@ createApp({
         document.body.appendChild(ta); ta.select(); document.execCommand('copy');
         document.body.removeChild(ta);
         ElementPlus.ElMessage.success(`已复制 ${records.length} 个 Jira 号`);
+      }
+    },
+    // 批量删除脏数据：删除有分析成功且审核原因包含“时间添加为”的 Jira 号的失败记录
+    async deleteDirtyData() {
+      const records = this.filteredErrorStatsRecords;
+      // 筛选符合条件的 Jira 号：有分析成功 且 最新人工审核原因包含“时间添加为”
+      const targetRecords = records.filter(r => 
+        r['有成功记录'] && r['最新人工审核原因'] && r['最新人工审核原因'].includes('时间添加为')
+      );
+      if (!targetRecords.length) {
+        return ElementPlus.ElMessage.warning('无符合条件的数据（需要有分析成功且审核原因包含“时间添加为”）');
+      }
+      const jiraIds = targetRecords.map(r => r['jira号']);
+      try {
+        await ElementPlus.ElMessageBox.confirm(
+          `将从飞书多维表格中删除 ${jiraIds.length} 个 Jira 号的所有失败记录（此操作不可撤销），是否继续？`,
+          '确认删除多维表格数据', { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+        );
+      } catch { return; }
+      this.onlineFollowup.errorStats.deletingDirty = true;
+      try {
+        const body = await this.api('/api/test/delete_dirty_data', {
+          method: 'POST',
+          body: JSON.stringify({ jira_ids: jiraIds })
+        });
+        ElementPlus.ElMessage.success(body.message || `已删除 ${body.data?.deleted_count || 0} 条记录`);
+        // 刷新错误统计
+        if (this.onlineFollowup.errorStats.afterTime) {
+          await this.queryErrorStats();
+        }
+      } catch (e) {
+        ElementPlus.ElMessage.error('删除失败: ' + (e.message || '未知错误'));
+      } finally {
+        this.onlineFollowup.errorStats.deletingDirty = false;
       }
     },
     // 回归执行
@@ -6698,7 +6779,7 @@ createApp({
       finally { this.troubleshoot.queryingSuccess = false; }
     },
     // 诊断单条记录：调后端诊断接口，结果写入归类列表（同 bugid 覆盖）
-    async _diagnoseRow(row, force = false) {
+    async _diagnoseRow(row, force = false, skipVideoCache = false) {
       const bugid = row['jira号'];
       this.troubleshoot.diagLoadingMap = { ...this.troubleshoot.diagLoadingMap, [bugid]: true };
       try {
@@ -6713,7 +6794,7 @@ createApp({
         }
         const body = await this.api('/api/troubleshoot/diagnose', {
           method: 'POST',
-          body: JSON.stringify({ bugid, err_msg: row['错误信息'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析完成时间'] || '', force }),
+          body: JSON.stringify({ bugid, err_msg: row['错误信息'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析完成时间'] || '', force, skip_video_cache: skipVideoCache }),
           signal,
         });
         const d = body.data || {};
@@ -7188,6 +7269,7 @@ createApp({
     async exportTriggerTimeIssues() {
       const triggerIssues = this.troubleshoot.diagResults
         .filter(r => r.category === '触发时间问题' || r.category?.includes('触发时间') || r.category?.includes('解压问题'))
+        .filter(r => r.verify_status !== 'manual')  // 排除未分析出正确时间的“待人工审核”记录
         .map(r => ({
           jira号: r.bugid,
           问题归类: r.category,
@@ -7252,7 +7334,7 @@ createApp({
           const d = queue.shift();
           const origRow = this.troubleshoot.records.find(r => r['jira号'] === d.bugid);
           const row = origRow || { 'jira号': d.bugid, '错误信息': '', '分析问题时间': d.problem_time || '', '分析完成时间': d.done_time || '' };
-          await this._diagnoseRow(row, true);
+          await this._diagnoseRow(row, true, this.troubleshoot.skipVideoCache);
         }
       };
       await Promise.all([worker(), worker(), worker()]);
