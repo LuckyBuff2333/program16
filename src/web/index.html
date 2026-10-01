@@ -2642,9 +2642,15 @@
                   </el-form-item>
                 </el-form>
                 <!-- 回归执行 -->
-                <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px;padding:8px 12px;background:#f5f7fa;border-radius:6px">
+                <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px;padding:8px 12px;background:#f5f7fa;border-radius:6px;flex-wrap:wrap">
                   <span style="font-weight:600;font-size:13px">回归执行</span>
-                  <el-form-item label="抽样数量" style="margin-bottom:0"><el-input-number v-model="onlineFollowup.regression.sampleCount" :min="1" :max="100" size="small" style="width:120px"></el-input-number></el-form-item>
+                  <el-radio-group v-model="onlineFollowup.regression.execMode" size="small">
+                    <el-radio-button label="pc">PC执行</el-radio-button>
+                    <el-radio-button label="online">线上执行</el-radio-button>
+                  </el-radio-group>
+                  <el-form-item label="抽样数量" style="margin-bottom:0"><el-input-number v-model="onlineFollowup.regression.sampleCount" :min="1" :max="500" size="small" style="width:120px"></el-input-number></el-form-item>
+                  <el-form-item label="抽取间隔(分钟)" style="margin-bottom:0"><el-input-number v-model="onlineFollowup.regression.intervalMin" :min="0" :max="120" size="small" style="width:120px"></el-input-number></el-form-item>
+                  <el-form-item label="抽取次数" style="margin-bottom:0"><el-input-number v-model="onlineFollowup.regression.totalRounds" :min="1" :max="50" size="small" style="width:100px"></el-input-number></el-form-item>
                   <el-button type="success" size="small" :loading="onlineFollowup.regression.running" @click="startRegressionRun">回归执行</el-button>
                   <span v-if="onlineFollowup.regression.msg" style="font-size:12px" :style="{color: onlineFollowup.regression.msg.includes('失败') ? '#f56c6c' : '#67c23a'}">{{ onlineFollowup.regression.msg }}</span>
                 </div>
@@ -3402,7 +3408,8 @@ createApp({
         },
         // 回归执行
         regression: {
-          sampleCount: 10, running: false, msg: '', abortController: null,
+          sampleCount: 10, execMode: 'pc', intervalMin: 0, totalRounds: 1,
+          running: false, msg: '', abortController: null,
         },
       },
       // AI日志分析可视化
@@ -4956,6 +4963,9 @@ createApp({
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sample_count: this.onlineFollowup.regression.sampleCount,
+            exec_mode: this.onlineFollowup.regression.execMode,
+            interval_min: this.onlineFollowup.regression.intervalMin,
+            total_rounds: this.onlineFollowup.regression.totalRounds,
           }),
           signal: this.onlineFollowup.regression.abortController.signal,
         });
@@ -4974,10 +4984,15 @@ createApp({
               const evt = JSON.parse(line.slice(6));
               if (evt.type === 'search') {
                 this.onlineFollowup.regression.msg = `找到 ${evt.total} 个有成功记录的Jira号`;
+              } else if (evt.type === 'round') {
+                this.onlineFollowup.regression.msg = `=== 第 ${evt.round}/${evt.total_rounds} 轮 ===`;
               } else if (evt.type === 'sample') {
                 this.onlineFollowup.regression.msg = `抽样 ${evt.total} 个执行`;
               } else if (evt.type === 'progress') {
-                this.onlineFollowup.regression.msg = `进度: ${evt.index}/${evt.total} (${evt.bugid} ${evt.status})`;
+                const roundInfo = evt.round ? `[${evt.round}/${evt.total_rounds}] ` : '';
+                this.onlineFollowup.regression.msg = `${roundInfo}进度: ${evt.index}/${evt.total} (${evt.bugid} ${evt.status})`;
+              } else if (evt.type === 'waiting') {
+                this.onlineFollowup.regression.msg = `等待 ${evt.interval_min} 分钟后开始下一轮...`;
               } else if (evt.type === 'done') {
                 this.onlineFollowup.regression.msg = `回归执行完成: 成功 ${evt.success}，失败 ${evt.fail}`;
               } else if (evt.type === 'error') {
