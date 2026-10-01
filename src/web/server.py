@@ -4272,8 +4272,15 @@ def _load_trigger_times_from_local() -> dict:
     return result
 
 
+# 飞书创建 bitable 时自动生成的默认空表名称模式
+_DEFAULT_TABLE_NAMES = {"数据表", "表格", "Table", "Sheet", "数据表1"}
+
+
 def _delete_default_bitable_table(app_token: str, keep_table_id: str, keep_table_ids: set = None):
     """删除飞书创建 bitable 时自动生成的默认空数据表（保留我们自己创建的表）
+
+    只删除名称匹配默认模式的表（如"数据表"），绝不删除以"触发时间"开头的自定义表。
+    keep_table_id 和 keep_table_ids 作为双重保险。
 
     :param keep_table_ids: 额外的合法表 ID 集合，这些表也会被保留
     """
@@ -4289,10 +4296,19 @@ def _delete_default_bitable_table(app_token: str, keep_table_id: str, keep_table
         tables = resp.json().get("data", {}).get("items", [])
         for t in tables:
             tid = t.get("table_id", "")
-            if tid and tid not in all_keep:
-                del_url = f"{_FEISHU_API}/bitable/v1/apps/{app_token}/tables/{tid}"
-                _httpx.delete(del_url, headers=headers, timeout=15, verify=False)
-                logger.info("已删除默认数据表: %s", tid)
+            tname = t.get("name", "")
+            if not tid or tid in all_keep:
+                continue
+            # 安全检查：只删除名称匹配默认模式的表，绝不删除自定义表
+            if tname.startswith("触发时间"):
+                logger.info("跳过自定义触发时间表: %s (%s)", tname, tid)
+                continue
+            if tname not in _DEFAULT_TABLE_NAMES:
+                logger.info("跳过非默认表（可能是用户手动创建）: %s (%s)", tname, tid)
+                continue
+            del_url = f"{_FEISHU_API}/bitable/v1/apps/{app_token}/tables/{tid}"
+            _httpx.delete(del_url, headers=headers, timeout=15, verify=False)
+            logger.info("已删除默认数据表: %s (%s)", tname, tid)
     except Exception as e:
         logger.warning("删除默认数据表失败: %s", e)
 
