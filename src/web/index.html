@@ -1602,22 +1602,32 @@
                   <el-button size="small" :type="batchTrigger.jql===p?void 0:'info'" v-for="(p,i) in batchAi.jqlPresets" :key="i" @click="batchTrigger.jql=p">{{ batchAi.jqlLabels[i] }}</el-button>
                 </div>
                 <el-alert v-if="batchTrigger.searchMsg" :type="batchTrigger.searchError ? 'error' : 'success'" :closable="false" :title="batchTrigger.searchMsg" style="margin-top:8px"></el-alert>
-                <el-table v-if="batchTrigger.rows.length" :data="batchTrigger.rows" size="small" stripe max-height="240" border style="margin-top:10px">
-                  <el-table-column prop="key" label="Jira号" width="130"></el-table-column>
-                  <el-table-column prop="status" label="状态" width="100"></el-table-column>
-                  <el-table-column prop="created" label="创建时间" width="120"></el-table-column>
-                  <el-table-column prop="summary" label="摘要" show-overflow-tooltip></el-table-column>
-                </el-table>
+                <!-- 搜索结果多表格展示（每张表格最多2000条，支持勾选提取） -->
+                <div v-if="batchTrigger.rowTables.length" style="margin-top:10px">
+                  <div v-for="(tbl, tIdx) in batchTrigger.rowTables" :key="tIdx" style="margin-bottom:12px;border:1px solid #e4e7ed;border-radius:4px;padding:10px">
+                    <el-checkbox v-model="tbl.selected" style="margin-bottom:6px">
+                      <span style="font-weight:700">表格 {{ tIdx + 1 }}</span>
+                      <el-tag size="small" style="margin-left:6px">{{ tbl.rows.length }} 条</el-tag>
+                    </el-checkbox>
+                    <el-table :data="tbl.rows" size="small" stripe max-height="240" border>
+                      <el-table-column prop="key" label="Jira号" width="130"></el-table-column>
+                      <el-table-column prop="status" label="状态" width="100"></el-table-column>
+                      <el-table-column prop="created" label="创建时间" width="120"></el-table-column>
+                      <el-table-column prop="summary" label="摘要" show-overflow-tooltip></el-table-column>
+                    </el-table>
+                  </div>
+                </div>
                 <!-- 步骤2：批量提取触发时间 -->
-                <div v-if="batchTrigger.rows.length" style="margin-top:12px">
+                <div v-if="batchTrigger.rowTables.length" style="margin-top:12px">
                   <div style="display:flex;align-items:center;gap:18px;margin-bottom:8px">
                     <el-checkbox v-model="batchTrigger.filterExisting"><span>过滤多维表格中已有数据</span></el-checkbox>
                     <el-checkbox v-model="batchTrigger.videoFallback"><span>用视频提取兜底</span></el-checkbox>
                     <el-checkbox v-model="batchTrigger.refreshCache"><span>云端缓存更新</span></el-checkbox>
                     <el-checkbox v-model="batchTrigger.reExtractEmpty"><span>空标记重新提取</span></el-checkbox>
+                    <el-checkbox v-model="batchTrigger.parallelExtract"><span>并行提取</span></el-checkbox>
                   </div>
                   <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
-                    <el-button type="success" :loading="running.batchTriggerExtract" @click="batchTriggerExtract" :disabled="running.batchTriggerExtractStop">提取触发时间（{{ batchTrigger.rows.length }} 条）</el-button>
+                    <el-button type="success" :loading="running.batchTriggerExtract" @click="batchTriggerExtract" :disabled="running.batchTriggerExtractStop || !batchTrigger.rowTables.filter(t=>t.selected).length">提取触发时间（{{ batchTrigger.rowTables.filter(t=>t.selected).reduce((s,t)=>s+t.rows.length, 0) }} 条）</el-button>
                     <el-button type="danger" :loading="running.batchTriggerExtractStop" @click="batchTriggerStop" :disabled="!running.batchTriggerExtract || running.batchTriggerExtractStop">停止提取</el-button>
                   </div>
                 </div>
@@ -3304,13 +3314,14 @@ createApp({
       // 时间批量提取
       batchTrigger: {
         jql: 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED',
-        rows: [], searchMsg: '', searchError: false,
+        rowTables: [], searchMsg: '', searchError: false,
         results: [], currentIndex: 0, total: 0, hasTime: 0, empty: 0, errorCount: 0,
         doneMsg: '',
         filterExisting: false,  // 过滤多维表格中已有数据
         videoFallback: true,    // 视频提取优先级最高（默认启用）
         refreshCache: false,    // 云端缓存更新：有缓存也重新提取，提取不到则保留旧值
         reExtractEmpty: false,  // 空标记重新提取：已标记空的也重新提取
+        parallelExtract: false, // 并行提取：同时处理 3 条（视频下载+分析+处理）
       },
       bitableWriteForm: { bugid: '', rootcause: '', comment: '', confidence: 0.95, docUrl: '' },
       bitableWriteResult: null,
@@ -6131,15 +6142,20 @@ createApp({
       const bt = this.batchTrigger;
       if (!bt.jql.trim()) return ElementPlus.ElMessage.warning('请输入 JQL');
       this.running.batchTriggerSearch = true;
-      bt.searchMsg = ''; bt.searchError = false; bt.rows = [];
+      bt.searchMsg = ''; bt.searchError = false; bt.rowTables = [];
       bt.results = []; bt.doneMsg = ''; bt.currentIndex = 0; bt.total = 0; bt.hasTime = 0; bt.empty = 0; bt.errorCount = 0;
       try {
         const body = await this.api('/api/test/batch_ai_search', {
           method: 'POST', body: JSON.stringify({ jql: bt.jql })
         });
-        bt.rows = body.data?.rows || [];
-        bt.searchMsg = body.message || `搜索到 ${bt.rows.length} 条 VCU`;
-        bt.searchError = !bt.rows.length;
+        const allRows = body.data?.rows || [];
+        const TABLE_SIZE = 2000;
+        bt.rowTables = [];
+        for (let i = 0; i < allRows.length; i += TABLE_SIZE) {
+          bt.rowTables.push({ selected: true, rows: allRows.slice(i, i + TABLE_SIZE) });
+        }
+        bt.searchMsg = body.message || `搜索到 ${allRows.length} 条 VCU`;
+        bt.searchError = !allRows.length;
       } catch (e) {
         bt.searchMsg = '搜索失败: ' + e.message;
         bt.searchError = true;
@@ -6148,15 +6164,16 @@ createApp({
     // 时间批量提取：步骤2-批量提取触发时间（SSE流式）
     async batchTriggerExtract() {
       const bt = this.batchTrigger;
-      const keys = bt.rows.map(r => r.key);
-      if (!keys.length) return ElementPlus.ElMessage.warning('请先执行搜索');
+      const selectedTables = bt.rowTables.filter(t => t.selected);
+      const keys = selectedTables.flatMap(t => t.rows.map(r => r.key));
+      if (!keys.length) return ElementPlus.ElMessage.warning('请先勾选要提取的表格');
       this.running.batchTriggerExtract = true;
       bt.results = []; bt.doneMsg = ''; bt.currentIndex = 0; bt.total = keys.length;
       bt.hasTime = 0; bt.empty = 0; bt.errorCount = 0;
       try {
         const resp = await fetch('/api/test/batch_ai_extract_times', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keys, filter_existing: bt.filterExisting, video_fallback: bt.videoFallback, refresh_cache: bt.refreshCache, re_extract_empty: bt.reExtractEmpty }),
+          body: JSON.stringify({ keys, filter_existing: bt.filterExisting, video_fallback: bt.videoFallback, refresh_cache: bt.refreshCache, re_extract_empty: bt.reExtractEmpty, parallel: bt.parallelExtract }),
         });
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
