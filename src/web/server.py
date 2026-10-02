@@ -6129,7 +6129,7 @@ async def test_batch_ai_search(request: Request):
         return _fail("JQL 查询语句不能为空")
     try:
         from src.clients import jira_client
-        issues = jira_client.search_issues(jql, max_results=2000)
+        issues = jira_client.search_issues(jql, max_results=5000)
         vcu_issues = [i for i in issues if "VCU" in (i.get("key") or "").upper()]
         rows = []
         for i in vcu_issues:
@@ -6208,6 +6208,7 @@ async def test_batch_ai_extract_times(request: Request):
     video_fallback = body.get("video_fallback", False)    # 用视频提取兜底
     refresh_cache = body.get("refresh_cache", False)      # 云端缓存更新：有缓存也重新提取
     re_extract_empty = body.get("re_extract_empty", False) # 空标记重新提取
+    parallel = body.get("parallel", False)                   # 并行提取（3路并发）
     if not keys:
         return _fail("候选列表为空，请先执行步骤1")
 
@@ -6304,46 +6305,31 @@ async def test_batch_ai_extract_times(request: Request):
                     need_fetch.append(key)
             cloud_hit = len(trigger_times)
             total = len(keys)
-            yield f"data: {_json.dumps({'type': 'start', 'total': total, 'local_hit': cloud_hit, 'need_fetch': len(need_fetch), 'skip_empty': skip_empty, 'skip_bitable': skip_bitable, 'skip_corrected': skip_corrected, 'refresh_cache': refresh_cache, 're_extract_empty': re_extract_empty}, ensure_ascii=False)}\n\n"
+            yield f"data: {_json.dumps({'type': 'start', 'total': total, 'local_hit': cloud_hit, 'need_fetch': len(need_fetch), 'skip_empty': skip_empty, 'skip_bitable': skip_bitable, 'skip_corrected': skip_corrected, 'refresh_cache': refresh_cache, 're_extract_empty': re_extract_empty, 'parallel': parallel}, ensure_ascii=False)}\n\n"
             # 对未处理过的走接口提取
             done_count = cloud_hit + skip_empty
             empty_count = 0
             skip_no_gmlogger = 0
             interrupted = False
+            # 预加载 bugid 缓存 + 初始化批量写入缓冲区（避免逐条写入和重复加载云端表）
+            await loop.run_in_executor(None, _ensure_trigger_time_bugid_cache)
+            _write_buffer = []  # [(bugid, trigger_time)] 缓冲 20 条批量写入
+            _WRITE_BATCH_SIZE = 20
             if need_fetch:
                 from src.clients import jira_client as _jc
-                for i, key in enumerate(need_fetch):
-                    if _batch_extract_stop_event.is_set():
-                        logger.info("前端停止信号触发，优雅中断（已完成 %d/%d）", i, len(need_fetch))
-                        interrupted = True
-                        break
-                    if stop_event.is_set():
-                        logger.info("Ctrl+C 中断提取（已完成 %d/%d）", i, len(need_fetch))
-                        interrupted = True
-                        break
-                    if await request.is_disconnected():
-                        logger.info("客户端已断开，提取中断（已完成 %d/%d）", i, len(need_fetch))
-                        interrupted = True
-                        break
-                    await asyncio.sleep(0)
+
+                async def _process_one(key):
+                    """处理单条触发时间提取，返回 (key, status, tt_val)"""
                     status = "success"
                     tt_val = ""
                     try:
                         issue = await asyncio.wait_for(
                             loop.run_in_executor(None, _jc.fetch_issue, key),
                             timeout=30)
-                        # 检查是否有 gmlogger 类附件，无则标记跳过
                         attachments = (issue.get("fields") or {}).get("attachment") or []
                         has_gmlogger = any("gmlogger" in (att.get("filename", "") or "").lower() for att in attachments)
                         if not has_gmlogger:
-                            status = "no_gmlogger"
-                            sources[key] = "无gmlogger"
-                            skip_no_gmlogger += 1
-                            await loop.run_in_executor(None, _save_trigger_time_to_cloud, key, "")
-                            done_count += 1
-                            yield f"data: {_json.dumps({'type': 'progress', 'index': done_count, 'total': total, 'key': key, 'status': status, 'time': ''}, ensure_ascii=False)}\n\n"
-                            continue
-                        # 视频 OCR 优先级最高（当启用视频兜底时）
+                            return key, "no_gmlogger", ""
                         tt = ""
                         if video_fallback:
                             video_tt = await loop.run_in_executor(
@@ -6351,7 +6337,6 @@ async def test_batch_ai_extract_times(request: Request):
                             if video_tt:
                                 tt = video_tt
                                 sources[key] = "视频提取"
-                        # 视频未提取到 → 正常提取流程（标题→评论→描述→自定义字段）
                         if not tt:
                             tt = _jc.extract_trigger_time_from_issue(issue)
                             if tt:
@@ -6359,29 +6344,110 @@ async def test_batch_ai_extract_times(request: Request):
                         if tt:
                             trigger_times[key] = tt
                             tt_val = tt
-                            await loop.run_in_executor(None, _save_trigger_time_to_cloud, key, tt)
+                            _write_buffer.append((key, tt))
                         else:
-                            # 提取为空：检查是否有旧缓存可回退
                             if key in old_cache:
                                 trigger_times[key] = old_cache[key]
                                 sources[key] = "旧缓存"
                                 tt_val = old_cache[key]
                             else:
                                 status = "empty"
-                                empty_count += 1
                                 sources[key] = "空标记"
-                                await loop.run_in_executor(None, _save_trigger_time_to_cloud, key, "")
+                                _write_buffer.append((key, ""))
                     except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
                         status = "error"
                         logger.warning("提取触发时间超时 %s", key)
                     except Exception as e:
-                        if stop_event.is_set():
-                            interrupted = True
-                            break
                         status = "error"
                         logger.warning("提取触发时间失败 %s: %s", key, e)
-                    done_count += 1
-                    yield f"data: {_json.dumps({'type': 'progress', 'index': done_count, 'total': total, 'key': key, 'status': status, 'time': tt_val}, ensure_ascii=False)}\n\n"
+                    return key, status, tt_val
+
+                if parallel and len(need_fetch) > 1:
+                    # ── 并行模式：Semaphore(3) 控制并发 ──
+                    sem = asyncio.Semaphore(3)
+                    async def _sem_process(key):
+                        async with sem:
+                            if interrupted or _batch_extract_stop_event.is_set() or stop_event.is_set():
+                                return key, "skipped", ""
+                            return await _process_one(key)
+                    tasks = [asyncio.ensure_future(_sem_process(k)) for k in need_fetch]
+                    for coro in asyncio.as_completed(tasks):
+                        if _batch_extract_stop_event.is_set() or stop_event.is_set():
+                            interrupted = True
+                            for t in tasks:
+                                t.cancel()
+                            break
+                        if await request.is_disconnected():
+                            interrupted = True
+                            for t in tasks:
+                                t.cancel()
+                            break
+                        key, status, tt_val = await coro
+                        if status == "skipped":
+                            continue
+                        if status == "no_gmlogger":
+                            sources[key] = "无gmlogger"
+                            skip_no_gmlogger += 1
+                        elif status == "empty":
+                            empty_count += 1
+                        elif status == "error":
+                            pass
+                        done_count += 1
+                        yield f"data: {_json.dumps({'type': 'progress', 'index': done_count, 'total': total, 'key': key, 'status': status, 'time': tt_val}, ensure_ascii=False)}\n\n"
+                        if len(_write_buffer) >= _WRITE_BATCH_SIZE:
+                            try:
+                                batch_items = dict(_write_buffer)
+                                await loop.run_in_executor(None, _batch_save_trigger_times_to_cloud, batch_items)
+                                for bid, btt in _write_buffer:
+                                    _save_trigger_time_to_csv(bid, btt)
+                                logger.info("并行批量写入触发时间: %d 条", len(_write_buffer))
+                            except Exception as e:
+                                logger.warning("并行批量写入触发时间失败: %s", e)
+                            _write_buffer.clear()
+                else:
+                    # ── 串行模式：逐条处理 ──
+                    for i, key in enumerate(need_fetch):
+                        if _batch_extract_stop_event.is_set():
+                            logger.info("前端停止信号触发，优雅中断（已完成 %d/%d）", i, len(need_fetch))
+                            interrupted = True
+                            break
+                        if stop_event.is_set():
+                            logger.info("Ctrl+C 中断提取（已完成 %d/%d）", i, len(need_fetch))
+                            interrupted = True
+                            break
+                        if await request.is_disconnected():
+                            logger.info("客户端已断开，提取中断（已完成 %d/%d）", i, len(need_fetch))
+                            interrupted = True
+                            break
+                        key, status, tt_val = await _process_one(key)
+                        if status == "no_gmlogger":
+                            sources[key] = "无gmlogger"
+                            skip_no_gmlogger += 1
+                        elif status == "empty":
+                            empty_count += 1
+                        done_count += 1
+                        yield f"data: {_json.dumps({'type': 'progress', 'index': done_count, 'total': total, 'key': key, 'status': status, 'time': tt_val}, ensure_ascii=False)}\n\n"
+                        if len(_write_buffer) >= _WRITE_BATCH_SIZE:
+                            try:
+                                batch_items = dict(_write_buffer)
+                                await loop.run_in_executor(None, _batch_save_trigger_times_to_cloud, batch_items)
+                                for bid, btt in _write_buffer:
+                                    _save_trigger_time_to_csv(bid, btt)
+                                logger.info("批量写入触发时间: %d 条", len(_write_buffer))
+                            except Exception as e:
+                                logger.warning("批量写入触发时间失败: %s", e)
+                            _write_buffer.clear()
+            # 最终批量写入缓冲区剩余数据
+            if _write_buffer:
+                try:
+                    batch_items = dict(_write_buffer)
+                    await loop.run_in_executor(None, _batch_save_trigger_times_to_cloud, batch_items)
+                    for bid, btt in _write_buffer:
+                        _save_trigger_time_to_csv(bid, btt)
+                    logger.info("最终批量写入触发时间: %d 条", len(_write_buffer))
+                except Exception as e:
+                    logger.warning("最终批量写入触发时间失败: %s", e)
+                _write_buffer.clear()
             new_count = len(trigger_times) - cloud_hit
             if interrupted:
                 logger.info("提取被 Ctrl+C 中断: 已完成 %d 条（云端命中 %d, 新提取 %d, 无gmlogger %d）",
