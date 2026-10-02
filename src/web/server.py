@@ -4423,6 +4423,19 @@ def _get_trigger_time_table_cfg() -> tuple:
             table_ids = [old_id]
     folder = cfg.get("trigger_time_folder", "NgdFfKVhtlg3RPdPiqAcUStNnop")
     if app_token and table_ids:
+        # 自动发现云端所有触发时间表，补全 config 中缺失的
+        try:
+            cloud_tables = feishu_client.list_bitable_tables(app_token)
+            for t in cloud_tables:
+                tname = t.get("name", "")
+                tid = t.get("table_id", "")
+                if tid and tname.startswith("触发时间") and tid not in table_ids:
+                    table_ids.append(tid)
+                    logger.warning("自动发现云端触发时间表: [%s] %s", tname, tid)
+            if len(table_ids) > len(cfg.get("trigger_time_table_ids", [])):
+                _update_config_table_ids(app_token, table_ids)
+        except Exception as e:
+            logger.warning("查询云端表列表失败，仅使用 config 中的 %d 张表: %s", len(table_ids), e)
         cache["app_token"], cache["table_ids"], cache["inited"] = app_token, list(table_ids), True
         return app_token, list(table_ids)
     # 首次运行：自动创建多维表格
@@ -4473,8 +4486,8 @@ def _migrate_local_trigger_times_to_cloud(app_token: str, table_id: str):
 def _load_cloud_trigger_cache() -> tuple:
     """一次加载云端触发时间缓存，返回 (times_dict, keys_set)
 
-    自动发现云端所有触发时间表（不依赖 config 中可能不完整的列表），
-    发现新表时自动补全 config。云端不可用时降级读本地 CSV。
+    合并加载有触发时间的记录和已标记空的记录，避免两次 API 调用。
+    云端不可用时降级读本地 CSV。
 
     :return: ({jira号: 触发时间}, {已记录的jira号})
     """
@@ -4487,24 +4500,6 @@ def _load_cloud_trigger_cache() -> tuple:
     from src.clients import feishu_client
     try:
         app_token, table_ids = _get_trigger_time_table_cfg()
-        # 自动发现云端所有触发时间表，补全 config 中缺失的
-        try:
-            cloud_tables = feishu_client.list_bitable_tables(app_token)
-            cloud_tids = set()
-            for t in cloud_tables:
-                tname = t.get("name", "")
-                tid = t.get("table_id", "")
-                if tid and (tname.startswith("触发时间") or tid in table_ids):
-                    cloud_tids.add(tid)
-            missing_tids = [tid for tid in cloud_tids if tid not in table_ids]
-            if missing_tids:
-                logger.warning("发现云端 %d 张触发时间表未在 config 中，自动补全: %s",
-                               len(missing_tids), missing_tids)
-                table_ids.extend(missing_tids)
-                _trigger_time_table_cache["table_ids"] = list(table_ids)
-                _update_config_table_ids(app_token, table_ids)
-        except Exception as e:
-            logger.warning("查询云端表列表失败，仅使用 config 中的 %d 张表: %s", len(table_ids), e)
         times = {}
         keys = set()
         for tid in table_ids:
@@ -4660,19 +4655,6 @@ def _ensure_trigger_time_bugid_cache():
         return  # 缓存已填充
     from src.clients import feishu_client
     app_token, table_ids = _get_trigger_time_table_cfg()
-    # 自动发现云端所有触发时间表
-    try:
-        cloud_tables = feishu_client.list_bitable_tables(app_token)
-        for t in cloud_tables:
-            tname = t.get("name", "")
-            tid = t.get("table_id", "")
-            if tid and tname.startswith("触发时间") and tid not in table_ids:
-                table_ids.append(tid)
-        if len(table_ids) > len(_get_trigger_time_table_cfg()[1]):
-            _trigger_time_table_cache["table_ids"] = list(table_ids)
-            _update_config_table_ids(app_token, table_ids)
-    except Exception:
-        pass
     for tid in table_ids:
         try:
             records = feishu_client.list_bitable_records(app_token, tid)
@@ -4729,19 +4711,6 @@ def _batch_save_trigger_times_to_cloud(items: dict) -> bool:
         return True
     try:
         app_token, table_ids = _get_trigger_time_table_cfg()
-        # 自动发现云端所有触发时间表，补全 config 中缺失的
-        try:
-            cloud_tables = feishu_client.list_bitable_tables(app_token)
-            for t in cloud_tables:
-                tname = t.get("name", "")
-                tid = t.get("table_id", "")
-                if tid and tname.startswith("触发时间") and tid not in table_ids:
-                    table_ids.append(tid)
-            if len(table_ids) > len(_get_trigger_time_table_cfg()[1]):
-                _trigger_time_table_cache["table_ids"] = list(table_ids)
-                _update_config_table_ids(app_token, table_ids)
-        except Exception:
-            pass
         # 一次性加载所有表数据
         all_records = {}  # {table_id: [records]}
         table_counts = {}
