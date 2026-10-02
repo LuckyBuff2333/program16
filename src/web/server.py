@@ -3736,23 +3736,41 @@ def _bot_run_csv_batch_ai_continuous(chat_id: str, bugids: list, csv_name: str =
     _reset_cancel_event(chat_id)
     mode_label = "线上" if exec_mode == "online" else "PC"
     try:
-        # 只提取一次触发时间
-        feishu_client.send_bot_message(chat_id, f"提取触发时间（{len(bugids)} 个）...")
-        trigger_times = _bot_get_trigger_times(bugids)
+        feishu_client.send_bot_message(chat_id, f"CSV导入 {len(bugids)} 条 [{csv_name}]\n步骤1/4：过滤记录...")
+        # 步骤1：多维表格去重过滤
+        filtered = _bot_apply_bitable_filter(bugids, filters)
+        logger.info("CSV持续过滤: 导入%d→剩余%d", len(bugids), len(filtered))
+        if not filtered:
+            feishu_client.send_bot_message(chat_id, f"CSV {len(bugids)} 条均已被过滤，无需执行")
+            return
         if _is_cancelled(chat_id):
             feishu_client.send_bot_message(chat_id, "任务已被用户取消")
             return
-        has_time = sum(1 for b in bugids if b in trigger_times)
-        feishu_client.send_bot_message(chat_id, f"提取完成: {has_time}/{len(bugids)} 有触发时间")
-        # 过滤
-        feishu_client.send_bot_message(chat_id, "多维表格去重...")
-        filtered = _bot_apply_bitable_filter(bugids, filters)
-        filtered = [b for b in filtered if b in trigger_times]
-        feishu_client.send_bot_message(chat_id, f"过滤后剩余 {len(filtered)} 个")
-        if not filtered:
-            feishu_client.send_bot_message(chat_id, "所有记录均已被过滤，无需执行")
+        # 步骤2：去除已测试
+        tested = _load_all_doc_jira_keys()
+        available = [k for k in filtered if k not in tested]
+        if not available:
+            feishu_client.send_bot_message(chat_id, f"过滤后 {len(filtered)} 条均已测试过，无可抽取")
             return
-        # 循环执行 N 轮
+        feishu_client.send_bot_message(chat_id,
+            f"过滤后 {len(filtered)} 条，步骤2/4：剩余 {len(available)} 条未测试")
+        if _is_cancelled(chat_id):
+            feishu_client.send_bot_message(chat_id, "任务已被用户取消")
+            return
+        # 步骤3：仅对可用列表提取触发时间
+        feishu_client.send_bot_message(chat_id, f"步骤3/4：提取触发时间（{len(available)} 条）...")
+        trigger_times = _bot_get_trigger_times(available)
+        has_time = sum(1 for b in available if b in trigger_times)
+        if _is_cancelled(chat_id):
+            feishu_client.send_bot_message(chat_id, "任务已被用户取消")
+            return
+        feishu_client.send_bot_message(chat_id, f"提取完成: {has_time}/{len(available)} 有触发时间")
+        # 仅保留有触发时间的
+        filtered = [b for b in available if b in trigger_times]
+        if not filtered:
+            feishu_client.send_bot_message(chat_id, "抽取的记录均无触发时间，无法执行")
+            return
+        # 步骤4：循环执行 N 轮
         done_total = 0
         for round_num in range(1, total_rounds + 1):
             if _is_cancelled(chat_id):
