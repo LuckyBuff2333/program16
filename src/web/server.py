@@ -3460,11 +3460,7 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "
             feishu_client.send_bot_message(chat_id, "任务已被用户取消")
             return
         # 步骤3+4：优先缓存抽样+提取触发时间
-        tested = _load_all_doc_jira_keys()
-        remaining = [k for k in filtered if k not in tested]
-        if not remaining:
-            feishu_client.send_bot_message(chat_id, f"过滤后 {len(filtered)} 条均已测试过，无可抽取")
-            return
+        remaining = list(filtered)
         # 先查缓存，将候选分为「有缓存」和「无缓存」两组
         cloud_times, cloud_keys = _load_cloud_trigger_cache()
         cached_candidates = [k for k in remaining if k in cloud_times]
@@ -3639,11 +3635,7 @@ def _bot_run_batch_ai_single_round(chat_id: str, jql_key: str, count: int, exec_
         if _is_cancelled(chat_id):
             return
         # 步骤3+4：优先缓存抽样+提取触发时间
-        tested = _load_all_doc_jira_keys()
-        remaining = [k for k in filtered if k not in tested]
-        if not remaining:
-            feishu_client.send_bot_message(chat_id, f"过滤后 {len(filtered)} 条均已测试过，无可抽取")
-            return
+        remaining = list(filtered)
         # 先查缓存，将候选分为「有缓存」和「无缓存」两组
         cloud_times, cloud_keys = _load_cloud_trigger_cache()
         cached_candidates = [k for k in remaining if k in cloud_times]
@@ -3714,12 +3706,8 @@ def _bot_run_csv_batch_ai(chat_id: str, bugids: list, csv_name: str = "",
         if _is_cancelled(chat_id):
             feishu_client.send_bot_message(chat_id, "任务已被用户取消")
             return
-        # 步骤2：随机抽样
-        tested = _load_all_doc_jira_keys()
-        available = [k for k in filtered if k not in tested]
-        if not available:
-            feishu_client.send_bot_message(chat_id, f"过滤后 {len(filtered)} 条均已测试过，无可抽取")
-            return
+        # 步骤2：提取触发时间
+        available = list(filtered)
         selected = list(available)
         feishu_client.send_bot_message(chat_id,
             f"过滤后 {len(filtered)} 条，步骤2/4：抽取 {len(selected)} 条")
@@ -3772,14 +3760,10 @@ def _bot_run_csv_batch_ai_continuous(chat_id: str, bugids: list, csv_name: str =
         if _is_cancelled(chat_id):
             feishu_client.send_bot_message(chat_id, "任务已被用户取消")
             return
-        # 步骤2：去除已测试
-        tested = _load_all_doc_jira_keys()
-        available = [k for k in filtered if k not in tested]
-        if not available:
-            feishu_client.send_bot_message(chat_id, f"过滤后 {len(filtered)} 条均已测试过，无可抽取")
-            return
+        # 步骤2：提取触发时间
+        available = list(filtered)
         feishu_client.send_bot_message(chat_id,
-            f"过滤后 {len(filtered)} 条，步骤2/4：剩余 {len(available)} 条未测试")
+            f"过滤后 {len(filtered)} 条，步骤2/4：提取触发时间...")
         if _is_cancelled(chat_id):
             feishu_client.send_bot_message(chat_id, "任务已被用户取消")
             return
