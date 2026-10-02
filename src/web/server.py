@@ -3421,8 +3421,7 @@ def _bot_run_ai_analysis(chat_id: str, bugids: list):
 
 def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "pc",
                       filters: dict = None, batch_meta: dict = None):
-    """功能6.1.1后台执行：JQL搜索→过滤→随机抽样→提取时间→执行"""
-    import random
+    """功能6.1.1后台执行：JQL搜索→过滤→优先缓存抽样→提取时间→执行"""
     from src.clients import feishu_client
     from src.clients import jira_client as _jc
     from src.clients.base import http_post
@@ -3460,32 +3459,47 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "
         if _is_cancelled(chat_id):
             feishu_client.send_bot_message(chat_id, "任务已被用户取消")
             return
-        # 步骤3+4：增量抽样+提取触发时间（凑够 count 个有触发时间的才停止）
+        # 步骤3+4：优先缓存抽样+提取触发时间
         tested = _load_all_doc_jira_keys()
         remaining = [k for k in filtered if k not in tested]
         if not remaining:
             feishu_client.send_bot_message(chat_id, f"过滤后 {len(filtered)} 条均已测试过，无可抽取")
             return
+        # 先查缓存，将候选分为「有缓存」和「无缓存」两组
+        cloud_times, cloud_keys = _load_cloud_trigger_cache()
+        cached_candidates = [k for k in remaining if k in cloud_times]
+        uncached_candidates = [k for k in remaining if k not in cloud_times]
+        logger.info("抽样分组: 有缓存 %d, 无缓存 %d, 总计 %d",
+                    len(cached_candidates), len(uncached_candidates), len(remaining))
+        # 优先从有缓存的候选中随机抽取，不够再从无缓存中抽取
+        import random as _rand
         selected = []
         trigger_times = {}
-        batch_num = 0
-        while len(trigger_times) < count and remaining:
-            batch_num += 1
-            need = count - len(trigger_times)
-            batch_size = min(need, len(remaining))
-            batch = random.sample(remaining, batch_size)
-            remaining = [k for k in remaining if k not in batch]
+        if cached_candidates:
+            _rand.shuffle(cached_candidates)
+            take_cached = min(count, len(cached_candidates))
+            selected = cached_candidates[:take_cached]
+            trigger_times = {b: cloud_times[b] for b in selected}
             feishu_client.send_bot_message(chat_id,
-                f"步骤3/5：第{batch_num}批抽取 {len(batch)} 条，已收集 {len(trigger_times)}/{count} 条触发时间...")
+                f"步骤3/5：缓存命中 {len(trigger_times)}/{count} 条触发时间")
+        # 缓存不够时，从无缓存候选中提取
+        if len(trigger_times) < count and uncached_candidates:
+            _rand.shuffle(uncached_candidates)
+            need = count - len(trigger_times)
+            batch_size = min(need, len(uncached_candidates))
+            batch = uncached_candidates[:batch_size]
+            feishu_client.send_bot_message(chat_id,
+                f"步骤4/5：缓存不足，新提取 {len(batch)} 条...")
             batch_times = _bot_get_trigger_times(batch)
             trigger_times.update(batch_times)
             selected.extend(b for b in batch if b in batch_times)
-            if _is_cancelled(chat_id):
-                feishu_client.send_bot_message(chat_id, "任务已被用户取消")
-                return
+        if _is_cancelled(chat_id):
+            feishu_client.send_bot_message(chat_id, "任务已被用户取消")
+            return
         selected = selected[:count]
+        has_cached = sum(1 for b in selected if b in cloud_times)
         feishu_client.send_bot_message(chat_id,
-            f"提取完成: 收集到 {len(selected)} 条触发时间（共提取 {batch_num} 批）")
+            f"提取完成: {len(selected)} 条有触发时间（缓存 {has_cached} + 新提取 {len(selected) - has_cached}）")
         # 步骤5：执行（PC或线上）
         run_bugids = [b for b in selected if b in trigger_times]
         if not run_bugids:
@@ -3591,7 +3605,6 @@ def _bot_run_batch_ai_continuous(chat_id: str, jql_key: str, count: int, exec_mo
 def _bot_run_batch_ai_single_round(chat_id: str, jql_key: str, count: int, exec_mode: str,
                                    filters: dict, batch_meta: dict, round_num: int, total_rounds: int):
     """6.1.1 持续执行的单轮逻辑（复用 _bot_run_batch_ai 的核心流程，但不操作 running task）"""
-    import random
     from src.clients import feishu_client
     from src.clients import jira_client as _jc
     from src.clients.base import http_post
@@ -3625,29 +3638,42 @@ def _bot_run_batch_ai_single_round(chat_id: str, jql_key: str, count: int, exec_
             return
         if _is_cancelled(chat_id):
             return
-        # 步骤3+4：增量抽样+提取触发时间
+        # 步骤3+4：优先缓存抽样+提取触发时间
         tested = _load_all_doc_jira_keys()
         remaining = [k for k in filtered if k not in tested]
         if not remaining:
             feishu_client.send_bot_message(chat_id, f"过滤后 {len(filtered)} 条均已测试过，无可抽取")
             return
+        # 先查缓存，将候选分为「有缓存」和「无缓存」两组
+        cloud_times, cloud_keys = _load_cloud_trigger_cache()
+        cached_candidates = [k for k in remaining if k in cloud_times]
+        uncached_candidates = [k for k in remaining if k not in cloud_times]
+        import random as _rand
         selected = []
         trigger_times = {}
-        batch_num = 0
-        while len(trigger_times) < count and remaining:
-            batch_num += 1
-            need = count - len(trigger_times)
-            batch_size = min(need, len(remaining))
-            batch = random.sample(remaining, batch_size)
-            remaining = [k for k in remaining if k not in batch]
+        if cached_candidates:
+            _rand.shuffle(cached_candidates)
+            take_cached = min(count, len(cached_candidates))
+            selected = cached_candidates[:take_cached]
+            trigger_times = {b: cloud_times[b] for b in selected}
             feishu_client.send_bot_message(chat_id,
-                f"步骤3/5：第{batch_num}批抽取 {len(batch)} 条，已收集 {len(trigger_times)}/{count} 条触发时间...")
+                f"[{round_num}/{total_rounds}] 步骤3/5：缓存命中 {len(trigger_times)}/{count} 条触发时间")
+        if len(trigger_times) < count and uncached_candidates:
+            _rand.shuffle(uncached_candidates)
+            need = count - len(trigger_times)
+            batch_size = min(need, len(uncached_candidates))
+            batch = uncached_candidates[:batch_size]
+            feishu_client.send_bot_message(chat_id,
+                f"[{round_num}/{total_rounds}] 步骤4/5：缓存不足，新提取 {len(batch)} 条...")
             batch_times = _bot_get_trigger_times(batch)
             trigger_times.update(batch_times)
             selected.extend(b for b in batch if b in batch_times)
-            if _is_cancelled(chat_id):
-                return
+        if _is_cancelled(chat_id):
+            return
         selected = selected[:count]
+        has_cached = sum(1 for b in selected if b in cloud_times)
+        feishu_client.send_bot_message(chat_id,
+            f"提取完成: {len(selected)} 条（缓存 {has_cached} + 新提取 {len(selected) - has_cached}）")
         # 步骤5：执行
         run_bugids = [b for b in selected if b in trigger_times]
         if not run_bugids:
