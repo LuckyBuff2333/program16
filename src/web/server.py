@@ -1874,6 +1874,7 @@ def _timestudy_analyze() -> dict:
     source_counts = {}
     success_count = 0
     fail_count = 0
+    skip_count = 0  # 前置过滤跳过（无gmlogger等）
     corrected_count = 0
     h12_count = 0
     for rec in records:
@@ -1881,6 +1882,12 @@ def _timestudy_analyze() -> dict:
         src = rec.get("提取来源", "").strip()
         result = rec.get("提取结果", "").strip()
         h12 = rec.get("12h转换", "").strip()
+        # 前置过滤跳过的记录不参与错误分析
+        if src == "skipped":
+            skip_count += 1
+            if src:
+                source_counts[src] = source_counts.get(src, 0) + 1
+            continue
         if err:
             error_counts[err] = error_counts.get(err, 0) + 1
         if src:
@@ -1894,10 +1901,13 @@ def _timestudy_analyze() -> dict:
         if h12 == "yes":
             h12_count += 1
     sorted_errors = sorted(error_counts.items(), key=lambda x: x[1], reverse=True)
-    # ===== 重复错误检测：同一 Jira 多次失败 =====
+    # ===== 重复错误检测：同一 Jira 多次失败（排除前置跳过的记录）=====
     from collections import defaultdict
     jira_errors = defaultdict(list)  # {jira号: [record, ...]}
     for rec in records:
+        src = rec.get("提取来源", "").strip()
+        if src == "skipped":
+            continue  # 前置跳过的不参与顽固检测
         err = rec.get("错误类型", "").strip()
         bugid = rec.get("jira号", "").strip()
         if err and bugid:
@@ -1907,6 +1917,9 @@ def _timestudy_analyze() -> dict:
     # ===== 共性特征分析：每种错误类型的失败记录是否共享特征 =====
     error_records_by_type = defaultdict(list)
     for rec in records:
+        src = rec.get("提取来源", "").strip()
+        if src == "skipped":
+            continue  # 前置跳过的不参与错误分析
         err = rec.get("错误类型", "").strip()
         if err:
             error_records_by_type[err].append(rec)
@@ -1972,6 +1985,9 @@ def _timestudy_analyze() -> dict:
     # 统计完整流水线路径
     trace_pattern_counts = defaultdict(int)
     for rec in records:
+        src = rec.get("提取来源", "").strip()
+        if src == "skipped":
+            continue  # 前置跳过的不参与断点分析
         trace_str = rec.get("trace_steps", "").strip()
         if not trace_str:
             continue
@@ -2019,11 +2035,13 @@ def _timestudy_analyze() -> dict:
     # 生成 error_patterns.json
     patterns = {
         "total_records": total,
+        "skip_count": skip_count,
+        "effective_total": total - skip_count,
         "success_count": success_count,
         "fail_count": fail_count,
         "corrected_count": corrected_count,
         "h12_count": h12_count,
-        "success_rate": round(success_count / total * 100, 1) if total else 0,
+        "success_rate": round(success_count / max(total - skip_count, 1) * 100, 1),
         "error_distribution": dict(sorted_errors),
         "source_distribution": dict(sorted(source_counts.items(), key=lambda x: x[1], reverse=True)),
         "stubborn_jiras": {bid: len(recs) for bid, recs in stubborn_jiras.items()},
@@ -2052,6 +2070,8 @@ def _timestudy_analyze() -> dict:
         f"| 指标 | 值 |",
         f"|------|------|",
         f"| 总记录数 | {total} |",
+        f"| 前置跳过(无gmlogger) | {skip_count} |",
+        f"| 有效提取 | {total - skip_count} |",
         f"| 提取成功 | {success_count} ({patterns['success_rate']}%) |",
         f"| 提取失败 | {fail_count} |",
         f"| 用户修正 | {corrected_count} |",
@@ -2225,6 +2245,15 @@ def _bot_get_trigger_times(bugids: list) -> dict:
     for bugid in need_fetch:
         try:
             issue = _jc.fetch_issue(bugid)
+            # gmlogger 前置检查：无 gmlogger 附件的 Jira 直接跳过（与批量提取保持一致）
+            attachments = (issue.get("fields") or {}).get("attachment") or []
+            has_gmlogger = any("gmlogger" in (att.get("filename", "") or "").lower() for att in attachments)
+            if not has_gmlogger:
+                logger.info("触发时间: %s 无gmlogger附件，跳过", bugid)
+                _timestudy_record(bugid, "", "skipped", error_type="no_gmlogger",
+                                  error_detail="无gmlogger附件，前置过滤跳过",
+                                  ctx={"trace": ["gm:0", "skip:no_gmlogger"]})
+                continue
             # 初始化自学习上下文（视频提取前）
             _timestudy_init_ctx(bugid)
             # 提取 jira 创建时间用于自学习分析
@@ -2233,30 +2262,24 @@ def _bot_get_trigger_times(bugids: list) -> dict:
             # 视频 OCR 优先级最高
             tt = _diag_extract_time_from_video_simple(issue)
             if tt:
-                # 视频提取成功，追加结果步骤
-                _timestudy_trace(bugid, "result:video_hit")
-            else:
-                # 视频未提取到，回退到标题/评论/描述/自定义字段
-                _timestudy_trace(bugid, "text:try")
-                tt = _jc.extract_trigger_time_from_issue(issue)
-                if tt:
-                    _timestudy_trace(bugid, "text:hit")
-                else:
-                    _timestudy_trace(bugid, "text:empty")
-            ctx = _timestudy_get_ctx(bugid)  # 获取并清除上下文
-            if tt:
                 # 视频提取成功
+                _timestudy_trace(bugid, "result:video_hit")
+                ctx = _timestudy_get_ctx(bugid)
                 source = ctx.get("source", "") or "video_ocr"
                 _timestudy_record(bugid, str(tt), source, ctx=ctx)
             else:
                 # 视频未提取到，回退到标题/评论/描述/自定义字段
+                _timestudy_trace(bugid, "text:try")
                 tt = _jc.extract_trigger_time_from_issue(issue)
+                ctx = _timestudy_get_ctx(bugid)
                 if tt:
+                    _timestudy_trace(bugid, "text:hit")
                     _timestudy_record(bugid, str(tt), "text_fallback",
                                       error_type="no_video" if ctx.get("error_type") == "no_video" else "video_failed_text_fallback",
                                       error_detail=f"视频提取失败({ctx.get('error_type','')})→文本回退成功",
                                       ctx=ctx)
                 else:
+                    _timestudy_trace(bugid, "text:empty")
                     _timestudy_record(bugid, "", "empty",
                                       error_type=ctx.get("error_type") or "all_sources_empty",
                                       error_detail=ctx.get("error_detail") or "所有来源均未提取到触发时间",
