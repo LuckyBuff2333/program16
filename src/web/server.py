@@ -682,7 +682,6 @@ def _process_bot_command(chat_id: str, text: str):
             "5.1 失败批量排查（按时间）\n"
             "5.2 单个Jira诊断归类\n"
             "6.1.1 JQL批量执行（JQL编号,数量,PC/线上）\n"
-            "6.1.2 CSV批量执行（选文件后自动执行）\n"
             "6.2 单个执行（Jira号,PC/线上）\n"
             "9.1 Bug未分析提取（JQL）\n"
             "10.1 线上批量执行（输入Jira号）\n"
@@ -915,7 +914,6 @@ def _process_bot_command(chat_id: str, text: str):
             "PC侧AI日志分析批量执行\n"
             "子功能：\n"
             "6.1.1 JQL批量执行（JQL编号,数量,PC/线上）\n"
-            "6.1.2 CSV批量执行（选文件后自动执行）\n"
             "6.2 单个执行（Jira号,PC/线上）\n\n"
             "请输入子功能编号")
         return
@@ -927,16 +925,14 @@ def _process_bot_command(chat_id: str, text: str):
             "6.1.1 JQL批量执行\n请输入功能：\n1: 基础信息修改\n2: 单次执行\n3: 持续执行")
         return
 
-    # 6.1.2 CSV批量执行 → 子菜单
+    # 6.1.2 已移除
     if text == "6.1.2":
-        _set_bot_session(chat_id, "wait_sub_menu", cmd="6.1.2")
-        feishu_client.send_bot_message(chat_id,
-            "6.1.2 CSV批量执行\n请输入功能：\n1: 基础信息修改\n2: 单次执行\n3: 持续执行")
+        feishu_client.send_bot_message(chat_id, "6.1.2 CSV批量执行功能已移除，请使用 6.1.1 或 11.2")
         return
 
     # ========== 共享状态处理器：子菜单/基础信息修改/过滤选项 ==========
 
-    # 子菜单选择（6.1.1/6.1.2/10.1共用）
+    # 子菜单选择（6.1.1/10.1/11.2共用）
     if session and session.get("state") == "wait_sub_menu":
         cmd = session.get("cmd", "")
         choice = text.strip()
@@ -957,13 +953,6 @@ def _process_bot_command(chat_id: str, text: str):
             # 单次执行
             if cmd == "6.1.1":
                 _set_bot_session(chat_id, "wait_filter_options", cmd=cmd, batch_meta=session.get("batch_meta", {}))
-                feishu_client.send_bot_message(chat_id,
-                    "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
-                    "☑ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
-                    "☐ A2: 过滤线上正确和通用失败的\n☐ A3: 过滤AI初步分析结果\n\n"
-                    "默认勾选A0，输入「默认」使用默认勾选")
-            elif cmd == "6.1.2":
-                _set_bot_session(chat_id, "wait_csv_filter_options", batch_meta=session.get("batch_meta", {}))
                 feishu_client.send_bot_message(chat_id,
                     "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
                     "☑ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
@@ -1024,7 +1013,7 @@ def _process_bot_command(chat_id: str, text: str):
         feishu_client.send_bot_message(chat_id, "格式错误，请输入「序号,新值」（如：1,5）或「确认」保存")
         return
 
-    # 持续执行配置（6.1.1/6.1.2/10.1/11.2共用）
+    # 持续执行配置（6.1.1/10.1/11.2共用）
     if session and session.get("state") == "wait_continuous_config":
         cmd = session.get("cmd", "")
         meta = session.get("batch_meta", {})
@@ -1049,13 +1038,6 @@ def _process_bot_command(chat_id: str, text: str):
         summary = f"持续执行：每批 {batch_count} 条，每 {interval_min} 分钟一轮，共 {total_rounds} 轮\n\n"
         if cmd == "6.1.1":
             _set_bot_session(chat_id, "wait_filter_options", cmd=cmd, batch_meta=meta, **cont_params)
-            feishu_client.send_bot_message(chat_id,
-                summary + "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
-                "☑ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
-                "☐ A2: 过滤线上正确和通用失败的\n☐ A3: 过滤AI初步分析结果\n\n"
-                "默认勾选A0，输入「默认」使用默认勾选")
-        elif cmd == "6.1.2":
-            _set_bot_session(chat_id, "wait_csv_filter_options", batch_meta=meta, **cont_params)
             feishu_client.send_bot_message(chat_id,
                 summary + "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
                 "☑ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
@@ -1472,7 +1454,6 @@ def _process_bot_command(chat_id: str, text: str):
         "5.1 失败批量排查（发送 5.1）\n"
         "5.2 单个Jira诊断（发送 5.2）\n"
         "6.1.1 JQL批量执行（发送 6.1.1）\n"
-        "6.1.2 CSV批量执行（发送 6.1.2）\n"
         "6.2 单个执行（发送 6.2）\n"
         "9.1 Bug未分析提取（发送 9.1）\n"
         "10.1 线上批量执行（发送 10.1）\n\n"
