@@ -4459,10 +4459,14 @@ _trigger_time_bugid_cache = {}
 _bitable_bulk_cache = {}  # key -> (timestamp, data)
 _BITABLE_CACHE_TTL = 300  # 5分钟
 
+# 云端缓存部分加载标记：当任一子表加载失败时为 True，此时禁止写入空值
+_last_cache_load_partial = False
+
 def _invalidate_bitable_cache():
     """清除批量加载缓存，在数据写入时调用"""
-    global _bitable_bulk_cache
+    global _bitable_bulk_cache, _last_cache_load_partial
     _bitable_bulk_cache = {}
+    _last_cache_load_partial = False
 
 # 单表记录上限
 _TRIGGER_TIME_TABLE_LIMIT = 500
@@ -4552,10 +4556,13 @@ def _load_cloud_trigger_cache() -> tuple:
 
     合并加载有触发时间的记录和已标记空的记录，避免两次 API 调用。
     云端不可用时降级读本地 CSV。
+    当任一子表加载失败时，设置 _last_cache_load_partial 标记，
+    不缓存结果，并禁止上层写入空值。
 
     :return: ({jira号: 触发时间}, {已记录的jira号})
     """
     import time
+    global _last_cache_load_partial
     _ck = "cloud_trigger_cache"
     cached = _bitable_bulk_cache.get(_ck)
     if cached and time.time() - cached[0] < _BITABLE_CACHE_TTL:
@@ -4566,6 +4573,7 @@ def _load_cloud_trigger_cache() -> tuple:
         app_token, table_ids = _get_trigger_time_table_cfg()
         times = {}
         keys = set()
+        partial = False  # 部分子表加载失败标记
         for tid in table_ids:
             try:
                 records = feishu_client.list_bitable_records(app_token, tid)
@@ -4583,11 +4591,20 @@ def _load_cloud_trigger_cache() -> tuple:
                         _trigger_time_bugid_cache[jira_no] = (tid, rec.get("record_id", ""), tt)
             except Exception as e:
                 logger.warning("加载触发时间表 %s 失败，已跳过: %s", tid, e)
-        logger.info("云端触发时间缓存加载完成: %d 条有触发时间, %d 条已记录", len(times), len(keys))
-        _bitable_bulk_cache[_ck] = (time.time(), (times, keys))
+                partial = True
+        logger.info("云端触发时间缓存加载完成: %d 条有触发时间, %d 条已记录%s",
+                    len(times), len(keys), " (部分加载)" if partial else "")
+        # 部分加载时不缓存结果，避免上层误判"云端没有"而触发空值覆盖
+        if partial:
+            _last_cache_load_partial = True
+            logger.warning("云端触发时间缓存为部分加载，已跳过缓存写入，禁止本轮空值写入")
+        else:
+            _last_cache_load_partial = False
+            _bitable_bulk_cache[_ck] = (time.time(), (times, keys))
         return times, keys
     except Exception as e:
         logger.warning("云端触发时间缓存加载失败，降级读本地 CSV: %s", e)
+        _last_cache_load_partial = True
         return _load_trigger_times_from_local(), set()
 
 
@@ -4735,6 +4752,19 @@ def _ensure_trigger_time_bugid_cache():
 
 def _save_trigger_time_to_cloud(bugid: str, trigger_time: str):
     """将单条触发时间写入云端 bitable（有则更新，无则新建），云端成功后再写本地 CSV"""
+    # 空值保护：不覆盖已有的非空触发时间
+    if not trigger_time:
+        _ensure_trigger_time_bugid_cache()
+        cached = _trigger_time_bugid_cache.get(bugid)
+        if cached and isinstance(cached, tuple) and len(cached) >= 3:
+            existing_time = cached[2]
+            if existing_time:
+                logger.warning("跳过空值写入，bugid=%s 云端已有触发时间: %s", bugid, existing_time)
+                return
+        # 缓存不完整时也禁止写入空值
+        if _last_cache_load_partial:
+            logger.warning("跳过空值写入，bugid=%s 云端缓存为部分加载，无法确认是否已有值", bugid)
+            return
     # 懒加载缓存
     _ensure_trigger_time_bugid_cache()
     # 单条更新：优先用缓存直接定位，避免全表扫描
@@ -4807,6 +4837,17 @@ def _batch_save_trigger_times_to_cloud(items: dict) -> bool:
         updates_by_table = {}  # {tid: [{"record_id":..., "fields":...}]}
         new_items = []  # [(bugid, trigger_time)] 需要新建的
         for bugid, trigger_time in items.items():
+            # 空值保护：不覆盖已有的非空触发时间
+            if not trigger_time and bugid in jira_index:
+                tid_check, rec_check = jira_index[bugid]
+                existing_tt = _bitable_text(rec_check.get("fields", {}).get("触发时间", ""))
+                if existing_tt:
+                    logger.warning("跳过空值写入，bugid=%s 云端已有触发时间: %s", bugid, existing_tt)
+                    continue
+            # 缓存不完整时禁止写入空值
+            if not trigger_time and _last_cache_load_partial:
+                logger.warning("跳过空值写入，bugid=%s 云端缓存为部分加载", bugid)
+                continue
             if bugid in jira_index:
                 tid, rec = jira_index[bugid]
                 updates_by_table.setdefault(tid, []).append({
@@ -9218,6 +9259,8 @@ _VIDEO_SUFFIXES = (".mp4", ".avi", ".mov", ".mkv")
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")
 _easyocr_reader = None
 _easyocr_lock = __import__('threading').Lock()  # 防止并发初始化
+# 视频时间缓存读写锁：防止多线程并发覆盖写 video_time_cache.json 导致文件内容交错/截断损坏
+_video_time_cache_lock = threading.Lock()
 
 
 _OCR_UNAVAILABLE = object()  # OCR 不可用哨兵值
@@ -9673,8 +9716,8 @@ _VIDEO_CACHE_MAX_SIZE = 50000  # 最大缓存条目数
 _VIDEO_CACHE_MAX_AGE_DAYS = 90  # 缓存过期天数
 
 
-def _clean_video_time_cache():
-    """清理过期和超出上限的缓存条目"""
+def _clean_video_time_cache_locked():
+    """清理过期和超出上限的缓存条目（内部实现，调用方须已持有 _video_time_cache_lock）"""
     global _video_time_cache
     if not _video_time_cache:
         return
@@ -9707,6 +9750,12 @@ def _clean_video_time_cache():
         logger.info("视频时间缓存清理：已清理 %d 条超出上限的最早条目", overflow)
 
 
+def _clean_video_time_cache():
+    """清理过期和超出上限的缓存条目（线程安全）"""
+    with _video_time_cache_lock:
+        _clean_video_time_cache_locked()
+
+
 def _load_video_time_cache() -> dict:
     """加载视频提取时间缓存，自动清理旧的空时间缓存条目"""
     global _video_time_cache
@@ -9734,15 +9783,25 @@ def _load_video_time_cache() -> dict:
 
 
 def _save_video_time_cache():
-    """保存视频提取时间缓存到本地文件"""
+    """保存视频提取时间缓存到本地文件（线程安全，原子写入）"""
     import json
-    try:
-        os.makedirs(os.path.dirname(_VIDEO_TIME_CACHE_FILE), exist_ok=True)
-        _clean_video_time_cache()
-        with open(_VIDEO_TIME_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(_video_time_cache, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.warning("视频时间缓存保存失败: %s", e)
+    with _video_time_cache_lock:
+        cache_path = _VIDEO_TIME_CACHE_FILE
+        tmp_path = cache_path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            # 写入前先清理过期/超限条目（调用内部方法，避免重复加锁导致死锁）
+            _clean_video_time_cache_locked()
+            # 先写同目录临时文件，再原子替换，避免并发/中断产生半截文件
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(_video_time_cache, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, cache_path)
+        except Exception as e:
+            logger.warning("视频时间缓存保存失败: %s", e)
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def _get_video_cache_key(bugid: str, video_filename: str) -> str:
@@ -9813,6 +9872,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     避免重复下载和 OCR。缓存命中时直接使用已提取时间进行匹配。
     """
     import tempfile
+    import shutil
     import httpx as _httpx
     from datetime import datetime as _dt, timedelta
     fields = issue.get("fields") or {}
@@ -9898,30 +9958,26 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
             return ""
         # 下载视频（流式下载，避免一次性加载到内存）
         video_path = None
+        tmp_dir = None
         try:
-            logger.info("视频兜底提取：开始下载视频 %s%s", video_label,
-                        "（单视频）" if single_video else "")
-            tmp_dir = tempfile.mkdtemp()
-            video_path = os.path.join(tmp_dir, "video.bin")
-            with _httpx.stream("GET", video_url, headers=headers, timeout=120, verify=False, follow_redirects=True) as resp:
-                resp.raise_for_status()
-                with open(video_path, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                        f.write(chunk)
-            logger.info("视频兜底提取：下载完成 %s", video_label)
-        except Exception as e:
-            logger.warning("视频兜底提取：下载失败 %s: %s", video_name, e)
-            if video_path and os.path.exists(video_path):
-                try:
-                    os.remove(video_path)
-                    os.rmdir(os.path.dirname(video_path))
-                except Exception:
-                    pass
-            continue
-        if not video_path or not os.path.exists(video_path):
-            logger.warning("视频兜底提取：视频文件不存在 %s", video_label)
-            continue
-        try:
+            # 下载子块：单独捕获下载异常，失败则跳过当前视频（临时目录由外层 finally 统一清理）
+            try:
+                logger.info("视频兜底提取：开始下载视频 %s%s", video_label,
+                            "（单视频）" if single_video else "")
+                tmp_dir = tempfile.mkdtemp()
+                video_path = os.path.join(tmp_dir, "video.bin")
+                with _httpx.stream("GET", video_url, headers=headers, timeout=120, verify=False, follow_redirects=True) as resp:
+                    resp.raise_for_status()
+                    with open(video_path, "wb") as f:
+                        for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                            f.write(chunk)
+                logger.info("视频兜底提取：下载完成 %s", video_label)
+            except Exception as e:
+                logger.warning("视频兜底提取：下载失败 %s: %s", video_name, e)
+                continue
+            if not video_path or not os.path.exists(video_path):
+                logger.warning("视频兜底提取：视频文件不存在 %s", video_label)
+                continue
             # 步骤1：提取封面帧
             cover_frames = _extract_video_frames_gpu(video_path, positions=[0], use_gpu=True) or []
             if not cover_frames:
@@ -10113,6 +10169,10 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                 logger.info("视频兜底提取(%s)：未识别到时间，尝试下一个视频", video_label)
         except Exception as e:
             logger.warning("视频兜底提取：处理视频 %s 时异常: %s", video_label, e)
+        finally:
+            # 统一清理临时目录：无论成功、失败、命中返回还是 continue，都删除下载的视频文件
+            if tmp_dir:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
     # 保存缓存（所有视频处理完后统一保存）
     if cache_updated:
         _save_video_time_cache()
@@ -10143,6 +10203,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     - 超过1小时 → 返回空，触发解压
     """
     import tempfile
+    import shutil
     import httpx as _httpx
     from datetime import datetime as _dt, timedelta
     fields = issue.get("fields") or {}
@@ -10212,30 +10273,26 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
             continue  # 缓存无时间，也跳过处理
         # 下载视频（流式下载，避免一次性加载到内存）
         video_path = None
+        tmp_dir = None
         try:
-            logger.info("视频帧提取：开始下载视频 %s%s", video_label,
-                        "（单视频）" if single_video else "")
-            tmp_dir = tempfile.mkdtemp()
-            video_path = os.path.join(tmp_dir, "video.bin")
-            with _httpx.stream("GET", video_url, headers=headers, timeout=timeout, verify=False, follow_redirects=True) as resp:
-                resp.raise_for_status()
-                with open(video_path, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                        f.write(chunk)
-            logger.info("视频帧提取：下载完成 %s", video_label)
-        except Exception as e:
-            logger.warning("视频帧提取：下载失败 %s: %s", video_name, e)
-            if video_path and os.path.exists(video_path):
-                try:
-                    os.remove(video_path)
-                    os.rmdir(os.path.dirname(video_path))
-                except Exception:
-                    pass
-            continue  # 下载失败，尝试下一个视频
-        if not video_path or not os.path.exists(video_path):
-            logger.warning("视频帧提取：视频文件不存在 %s", video_label)
-            continue
-        try:
+            # 下载子块：单独捕获下载异常，失败则跳过当前视频（临时目录由外层 finally 统一清理）
+            try:
+                logger.info("视频帧提取：开始下载视频 %s%s", video_label,
+                            "（单视频）" if single_video else "")
+                tmp_dir = tempfile.mkdtemp()
+                video_path = os.path.join(tmp_dir, "video.bin")
+                with _httpx.stream("GET", video_url, headers=headers, timeout=timeout, verify=False, follow_redirects=True) as resp:
+                    resp.raise_for_status()
+                    with open(video_path, "wb") as f:
+                        for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                            f.write(chunk)
+                logger.info("视频帧提取：下载完成 %s", video_label)
+            except Exception as e:
+                logger.warning("视频帧提取：下载失败 %s: %s", video_name, e)
+                continue  # 下载失败，尝试下一个视频
+            if not video_path or not os.path.exists(video_path):
+                logger.warning("视频帧提取：视频文件不存在 %s", video_label)
+                continue
             # 截帧 + OCR：先封面，再第1/3/6秒
             cover_frames = _extract_video_frames_gpu(video_path, positions=[0], use_gpu=True) or []
             if not cover_frames:
@@ -10459,6 +10516,10 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                 logger.info("视频帧提取(%s)：未识别到时间，尝试下一个视频", video_label)
         except Exception as e:
             logger.warning("视频帧提取：处理视频 %s 时异常: %s", video_label, e)
+        finally:
+            # 统一清理临时目录：无论成功、失败、命中返回还是 continue，都删除下载的视频文件
+            if tmp_dir:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
     if cache_updated:
         _save_video_time_cache()
     # fallback 机制：所有视频都未严格命中，但存在 fallback 候选（15分钟~1小时）
