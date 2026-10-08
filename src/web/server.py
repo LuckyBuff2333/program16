@@ -6317,6 +6317,7 @@ async def test_batch_ai_extract_times(request: Request):
             _WRITE_BATCH_SIZE = 20
             if need_fetch:
                 from src.clients import jira_client as _jc
+                _ocr_sem = asyncio.Semaphore(2)  # OCR 并发限制：最多 2 路同时 GPU 推理，避免显存争抢
 
                 async def _process_one(key):
                     """处理单条触发时间提取，返回 (key, status, tt_val)"""
@@ -6332,8 +6333,9 @@ async def test_batch_ai_extract_times(request: Request):
                             return key, "no_gmlogger", ""
                         tt = ""
                         if video_fallback:
-                            video_tt = await loop.run_in_executor(
-                                None, _diag_extract_time_from_video_simple, issue)
+                            async with _ocr_sem:
+                                video_tt = await loop.run_in_executor(
+                                    None, _diag_extract_time_from_video_simple, issue)
                             if video_tt:
                                 tt = video_tt
                                 sources[key] = "视频提取"
@@ -6363,8 +6365,8 @@ async def test_batch_ai_extract_times(request: Request):
                     return key, status, tt_val
 
                 if parallel and len(need_fetch) > 1:
-                    # ── 并行模式：Semaphore(3) 控制并发 ──
-                    sem = asyncio.Semaphore(3)
+                    # ── 并行模式：Semaphore(8) 控制并发 ──
+                    sem = asyncio.Semaphore(8)
                     async def _sem_process(key):
                         async with sem:
                             if interrupted or _batch_extract_stop_event.is_set() or stop_event.is_set():
