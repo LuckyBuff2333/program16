@@ -685,8 +685,7 @@ def _process_bot_command(chat_id: str, text: str):
             "6.2 单个执行（Jira号,PC/线上）\n"
             "9.1 Bug未分析提取（JQL）\n"
             "10.1 线上批量执行（输入Jira号）\n"
-            "11.1 PC成功复制到线上\n"
-            "11.2 失败重跑（CSV导入）\n\n"
+            "11.1 PC成功复制到线上\n\n"
             "发送「退出」可取消当前任务\n"
             "请输入子功能编号（如 0/6.1.1）唤醒对应功能（2分钟内有效）")
         return
@@ -927,12 +926,12 @@ def _process_bot_command(chat_id: str, text: str):
 
     # 6.1.2 已移除
     if text == "6.1.2":
-        feishu_client.send_bot_message(chat_id, "6.1.2 CSV批量执行功能已移除，请使用 6.1.1 或 11.2")
+        feishu_client.send_bot_message(chat_id, "6.1.2 CSV批量执行功能已移除，请使用 6.1.1")
         return
 
     # ========== 共享状态处理器：子菜单/基础信息修改/过滤选项 ==========
 
-    # 子菜单选择（6.1.1/10.1/11.2共用）
+    # 子菜单选择（6.1.1/10.1共用）
     if session and session.get("state") == "wait_sub_menu":
         cmd = session.get("cmd", "")
         choice = text.strip()
@@ -960,13 +959,6 @@ def _process_bot_command(chat_id: str, text: str):
                     "默认勾选A0，输入「默认」使用默认勾选")
             elif cmd == "10.1":
                 _set_bot_session(chat_id, "wait_prod_filter_options", batch_meta=session.get("batch_meta", {}), skip_duplicates=True)
-                feishu_client.send_bot_message(chat_id,
-                    "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
-                    "☐ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
-                    "☐ A2: 过滤线上正确和通用失败的\n☑ A3: 过滤AI初步分析结果\n\n"
-                    "默认勾选A3，输入「默认」使用默认勾选")
-            elif cmd == "11.2":
-                _set_bot_session(chat_id, "wait_csv_filter_options", batch_meta=session.get("batch_meta", {}), cmd=cmd)
                 feishu_client.send_bot_message(chat_id,
                     "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
                     "☐ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
@@ -1013,7 +1005,7 @@ def _process_bot_command(chat_id: str, text: str):
         feishu_client.send_bot_message(chat_id, "格式错误，请输入「序号,新值」（如：1,5）或「确认」保存")
         return
 
-    # 持续执行配置（6.1.1/10.1/11.2共用）
+    # 持续执行配置（6.1.1/10.1共用）
     if session and session.get("state") == "wait_continuous_config":
         cmd = session.get("cmd", "")
         meta = session.get("batch_meta", {})
@@ -1043,10 +1035,9 @@ def _process_bot_command(chat_id: str, text: str):
                 "☑ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
                 "☐ A2: 过滤线上正确和通用失败的\n☐ A3: 过滤AI初步分析结果\n\n"
                 "默认勾选A0，输入「默认」使用默认勾选")
-        elif cmd in ("10.1", "11.2"):
-            _set_bot_session(chat_id, "wait_prod_filter_options" if cmd == "10.1" else "wait_csv_filter_options",
-                             batch_meta=meta, cmd=cmd, **cont_params,
-                             **({"skip_duplicates": True} if cmd == "10.1" else {}))
+        elif cmd == "10.1":
+            _set_bot_session(chat_id, "wait_prod_filter_options",
+                             batch_meta=meta, cmd=cmd, **cont_params, skip_duplicates=True)
             feishu_client.send_bot_message(chat_id,
                 summary + "请选择过滤（多个用逗号分隔，如A1,A3）：\n"
                 "☐ A0: 过滤表中所有记录\n☐ A1: 过滤PC正确和通用失败的\n"
@@ -1118,115 +1109,6 @@ def _process_bot_command(chat_id: str, text: str):
             _set_running_task(chat_id, f"JQL批量执行({jql_key},{count}条,{mode_label})")
             threading.Thread(target=_bot_run_batch_ai, args=(chat_id, jql_key, count, exec_mode, filters, meta),
                              name=f"bot-batch-{jql_key}", daemon=True).start()
-        return
-
-    # 6.1.2 CSV过滤选项处理
-    if session and session.get("state") == "wait_csv_filter_options":
-        filters = _parse_filter_input(text)
-        meta = session.get("batch_meta", {})
-        # 自动扫描CSV文件
-        import csv as _csv
-        csv_files = []
-        if os.path.isdir(_UNANALYZED_DIR):
-            for fname in sorted(os.listdir(_UNANALYZED_DIR), reverse=True):
-                if not fname.endswith(".csv"):
-                    continue
-                fpath = os.path.join(_UNANALYZED_DIR, fname)
-                count = 0
-                try:
-                    with open(fpath, "r", encoding="utf-8-sig") as f:
-                        reader = _csv.reader(f)
-                        next(reader, None)
-                        count = sum(1 for _ in reader)
-                except Exception:
-                    pass
-                csv_files.append({"name": fname, "path": fpath, "count": count})
-        if not csv_files:
-            feishu_client.send_bot_message(chat_id, "data/unanalyzed/ 目录下无 CSV 文件")
-            _clear_bot_session(chat_id)
-            return
-        file_list = "\n".join(f"{i+1}. {f['name']} ({f['count']}条)" for i, f in enumerate(csv_files))
-        # 传递持续执行参数和cmd（如有）
-        cont_kwargs = {}
-        if session.get("cmd"):
-            cont_kwargs["cmd"] = session.get("cmd")
-        if session.get("continuous"):
-            cont_kwargs.update({"continuous": True, "batch_count": session.get("batch_count"),
-                                "interval_min": session.get("interval_min"), "total_rounds": session.get("total_rounds")})
-        _set_bot_session(chat_id, "wait_csv_execute", csv_files=csv_files, filters=filters, batch_meta=meta, **cont_kwargs)
-        feishu_client.send_bot_message(chat_id,
-            f"过滤已设置：{filters.get('desc', '默认')}\n\n"
-            f"可用CSV文件：\n{file_list}\n\n"
-            f"请输入：文件序号,抽取数量,PC/线上\n示例: 1,50,PC")
-        return
-
-    # 6.1.2 CSV执行输入处理
-    if session and session.get("state") == "wait_csv_execute":
-        csv_files = session.get("csv_files", [])
-        m = re.match(r'(\d+)\s*[,，]\s*(\d+)\s*[,，]\s*(pc|线上|online)', text, re.I)
-        if not m:
-            feishu_client.send_bot_message(chat_id, f"格式错误，请输入「序号,数量,PC/线上」\n示例: 1,50,PC")
-            return
-        idx = int(m.group(1)) - 1
-        count = int(m.group(2))
-        exec_mode = "online" if m.group(3).lower() in ("online", "线上") else "pc"
-        if idx < 0 or idx >= len(csv_files):
-            feishu_client.send_bot_message(chat_id, f"序号无效，请输入1-{len(csv_files)}")
-            return
-        if count <= 0:
-            feishu_client.send_bot_message(chat_id, "抽取数量必须大于 0")
-            return
-        selected = csv_files[idx]
-        filters = session.get("filters", {})
-        meta = session.get("batch_meta", {})
-        # 读取 CSV 中 Jira 号
-        import csv as _csv
-        try:
-            bugids = []
-            seen = set()
-            with open(selected["path"], "r", encoding="utf-8-sig") as f:
-                reader = _csv.DictReader(f)
-                for row in reader:
-                    jira = (row.get("Jira号") or row.get("jira号") or row.get("JIRA号") or "").strip()
-                    if jira and jira not in seen:
-                        seen.add(jira)
-                        bugids.append(jira)
-        except Exception as e:
-            feishu_client.send_bot_message(chat_id, f"读取 CSV 失败: {e}")
-            return
-        if not bugids:
-            feishu_client.send_bot_message(chat_id, "CSV 文件中无 Jira 号")
-            return
-        _clear_bot_session(chat_id)
-        is_continuous = session.get("continuous", False)
-        interval_min = session.get("interval_min", 10)
-        total_rounds = session.get("total_rounds", 5)
-        is_112 = session.get("cmd", "") == "11.2"
-        # 持续模式下用 batch_count 替代输入的数量
-        if is_continuous:
-            count = session.get("batch_count", count)
-        # 11.2 默认线上执行，使用 prod batch 函数
-        if is_112:
-            exec_mode = "online"
-        mode_label = "线上" if exec_mode == "online" else "PC"
-        if is_continuous:
-            feishu_client.send_bot_message(chat_id,
-                f"已选择: {selected['name']} ({len(bugids)}条)\n"
-                f"持续执行：每轮 {count} 条，{mode_label}模式\n"
-                f"每 {interval_min} 分钟一轮，共 {total_rounds} 轮\n"
-                f"过滤：{filters.get('desc', '默认')}\n发送「退出」可中断任务")
-            _set_running_task(chat_id, f"CSV持续执行({selected['name']},{count}条,{mode_label},{total_rounds}轮)")
-            threading.Thread(target=_bot_run_csv_batch_ai_continuous,
-                             args=(chat_id, bugids, selected["name"], exec_mode, filters, meta, interval_min, total_rounds),
-                             name="bot-csv-batch-cont", daemon=True).start()
-        else:
-            feishu_client.send_bot_message(chat_id,
-                f"已选择: {selected['name']} ({len(bugids)}条)\n"
-                f"抽取 {count} 条，{mode_label}模式\n"
-                f"过滤：{filters.get('desc', '默认')}\n发送「退出」可中断任务")
-            _set_running_task(chat_id, f"CSV批量执行({selected['name']},{count}条,{mode_label})")
-            threading.Thread(target=_bot_run_csv_batch_ai, args=(chat_id, bugids, selected["name"], exec_mode, filters, meta),
-                             name="bot-csv-batch", daemon=True).start()
         return
 
     # 6.2 单个执行（输入Jira号+执行模式）
@@ -1376,8 +1258,7 @@ def _process_bot_command(chat_id: str, text: str):
     if text == "11":
         feishu_client.send_bot_message(chat_id,
             "线上正确执行跟进\n子功能：\n"
-            "11.1 PC成功复制到线上\n"
-            "11.2 失败重跑（CSV导入）\n\n请输入子功能编号")
+            "11.1 PC成功复制到线上\n\n请输入子功能编号")
         return
 
     # 11.1 PC成功复制到线上 → 等待对比触发
@@ -1387,11 +1268,9 @@ def _process_bot_command(chat_id: str, text: str):
             "11.1 PC成功批量复制到线上\n输入 0 开始对比")
         return
 
-    # 11.2 失败重跑 → 子菜单（复用6.1.2的CSV流程）
+    # 11.2 已移除
     if text == "11.2":
-        _set_bot_session(chat_id, "wait_sub_menu", cmd="11.2")
-        feishu_client.send_bot_message(chat_id,
-            "11.2 失败重跑（CSV导入）\n请输入功能：\n1: 基础信息修改\n2: 单次执行\n3: 持续执行")
+        feishu_client.send_bot_message(chat_id, "11.2 失败重跑功能已移除，请使用 10.1 线上批量执行")
         return
 
     # 11.1 对比触发处理
@@ -3692,141 +3571,6 @@ def _bot_run_batch_ai_single_round(chat_id: str, jql_key: str, count: int, exec_
     except Exception as e:
         logger.error("6.1.1 第 %d 轮执行异常: %s", round_num, e)
         feishu_client.send_bot_message(chat_id, f"[{round_num}/{total_rounds}] 执行异常: {str(e)[:200]}")
-
-
-def _bot_run_csv_batch_ai(chat_id: str, bugids: list, csv_name: str = "",
-                         exec_mode: str = "pc", filters: dict = None, batch_meta: dict = None):
-    """功能6.1.2后台执行：CSV导入→过滤→随机抽样→提取时间→执行"""
-    import random as _rand
-    from src.clients import feishu_client
-    from src.clients.base import http_post
-    _reset_cancel_event(chat_id)
-    try:
-        mode_label = "线上" if exec_mode == "online" else "PC"
-        feishu_client.send_bot_message(chat_id, f"CSV导入 {len(bugids)} 条 [{csv_name}]\n步骤1/4：过滤记录...")
-        # 步骤1：多维表格去重过滤
-        filtered = _bot_apply_bitable_filter(bugids, filters)
-        logger.info("CSV过滤: 导入%d→剩余%d", len(bugids), len(filtered))
-        if not filtered:
-            feishu_client.send_bot_message(chat_id, f"CSV {len(bugids)} 条均已被过滤，无需执行")
-            return
-        if _is_cancelled(chat_id):
-            feishu_client.send_bot_message(chat_id, "任务已被用户取消")
-            return
-        # 步骤2：提取触发时间
-        available = list(filtered)
-        selected = list(available)
-        feishu_client.send_bot_message(chat_id,
-            f"过滤后 {len(filtered)} 条，步骤2/4：抽取 {len(selected)} 条")
-        if _is_cancelled(chat_id):
-            feishu_client.send_bot_message(chat_id, "任务已被用户取消")
-            return
-        # 步骤3：仅对抽样结果提取触发时间
-        feishu_client.send_bot_message(chat_id, f"步骤3/4：提取触发时间（{len(selected)} 条）...")
-        trigger_times = _bot_get_trigger_times(selected)
-        has_time = sum(1 for b in selected if b in trigger_times)
-        if _is_cancelled(chat_id):
-            feishu_client.send_bot_message(chat_id, "任务已被用户取消")
-            return
-        feishu_client.send_bot_message(chat_id, f"提取完成: {has_time}/{len(selected)} 有触发时间")
-        # 步骤4：执行（PC或线上）
-        run_bugids = [b for b in selected if b in trigger_times]
-        if not run_bugids:
-            feishu_client.send_bot_message(chat_id, "抽取的记录均无触发时间，无法执行")
-            return
-        feishu_client.send_bot_message(chat_id, f"步骤4/4：{mode_label}执行 {len(run_bugids)} 条...")
-        success, lines, results = _bot_trigger_and_reply(chat_id, run_bugids, trigger_times,
-                                                         realtime=False, exec_mode=exec_mode)
-        if _is_cancelled(chat_id):
-            return
-        try:
-            _save_bot_execution_results(results, batch_name=f"csv_{datetime.now().strftime('%H%M%S')}", batch_meta=batch_meta)
-        except Exception as e:
-            logger.warning("CSV批量结果保存失败: %s", e)
-        feishu_client.send_bot_message(chat_id, f"批量执行{len(run_bugids)}个，成功{success}个，失败{len(run_bugids)-success}个，均在分析中。")
-    finally:
-        _clear_running_task(chat_id)
-
-
-def _bot_run_csv_batch_ai_continuous(chat_id: str, bugids: list, csv_name: str = "",
-                                     exec_mode: str = "pc", filters: dict = None,
-                                     batch_meta: dict = None, interval_min: int = 10, total_rounds: int = 5):
-    """6.1.2 CSV持续执行：循环执行 N 轮，每轮间隔 interval_min 分钟"""
-    import time as _time
-    from src.clients import feishu_client
-    _reset_cancel_event(chat_id)
-    mode_label = "线上" if exec_mode == "online" else "PC"
-    try:
-        feishu_client.send_bot_message(chat_id, f"CSV导入 {len(bugids)} 条 [{csv_name}]\n步骤1/4：过滤记录...")
-        # 步骤1：多维表格去重过滤
-        filtered = _bot_apply_bitable_filter(bugids, filters)
-        logger.info("CSV持续过滤: 导入%d→剩余%d", len(bugids), len(filtered))
-        if not filtered:
-            feishu_client.send_bot_message(chat_id, f"CSV {len(bugids)} 条均已被过滤，无需执行")
-            return
-        if _is_cancelled(chat_id):
-            feishu_client.send_bot_message(chat_id, "任务已被用户取消")
-            return
-        # 步骤2：提取触发时间
-        available = list(filtered)
-        feishu_client.send_bot_message(chat_id,
-            f"过滤后 {len(filtered)} 条，步骤2/4：提取触发时间...")
-        if _is_cancelled(chat_id):
-            feishu_client.send_bot_message(chat_id, "任务已被用户取消")
-            return
-        # 步骤3：仅对可用列表提取触发时间
-        feishu_client.send_bot_message(chat_id, f"步骤3/4：提取触发时间（{len(available)} 条）...")
-        trigger_times = _bot_get_trigger_times(available)
-        has_time = sum(1 for b in available if b in trigger_times)
-        if _is_cancelled(chat_id):
-            feishu_client.send_bot_message(chat_id, "任务已被用户取消")
-            return
-        feishu_client.send_bot_message(chat_id, f"提取完成: {has_time}/{len(available)} 有触发时间")
-        # 仅保留有触发时间的
-        filtered = [b for b in available if b in trigger_times]
-        if not filtered:
-            feishu_client.send_bot_message(chat_id, "抽取的记录均无触发时间，无法执行")
-            return
-        # 步骤4：循环执行 N 轮
-        done_total = 0
-        for round_num in range(1, total_rounds + 1):
-            if _is_cancelled(chat_id):
-                feishu_client.send_bot_message(chat_id, f"任务已被用户取消（完成 {round_num - 1}/{total_rounds} 轮）")
-                break
-            undone = filtered[done_total:]
-            if not undone:
-                feishu_client.send_bot_message(chat_id, f"所有 {len(filtered)} 条已执行完毕，提前结束")
-                break
-            batch_size = min(len(undone), max(1, len(filtered) // total_rounds))
-            batch = undone[:batch_size]
-            feishu_client.send_bot_message(chat_id,
-                f"=== 第 {round_num}/{total_rounds} 轮 [{mode_label}] ===\n执行 {len(batch)} 个...")
-            success, lines, results = _bot_trigger_and_reply(chat_id, batch, trigger_times,
-                                                             realtime=False, exec_mode=exec_mode)
-            done_total += len(batch)
-            if _is_cancelled(chat_id):
-                break
-            try:
-                _save_bot_execution_results(results, batch_name=f"csv_r{round_num}_{datetime.now().strftime('%H%M%S')}",
-                                            batch_meta=batch_meta)
-            except Exception as e:
-                logger.warning("CSV批量结果保存失败: %s", e)
-            feishu_client.send_bot_message(chat_id,
-                f"[{round_num}/{total_rounds}] 执行完成: {success}/{len(batch)} 成功（累计 {done_total}/{len(filtered)}）")
-            if round_num < total_rounds and done_total < len(filtered):
-                feishu_client.send_bot_message(chat_id,
-                    f"等待 {interval_min} 分钟后开始下一轮...\n发送「退出」可中断")
-                for _ in range(interval_min * 60):
-                    if _is_cancelled(chat_id):
-                        break
-                    _time.sleep(1)
-        if not _is_cancelled(chat_id):
-            feishu_client.send_bot_message(chat_id, f"持续执行完成（共 {total_rounds} 轮，累计执行 {done_total} 条）")
-    except Exception as e:
-        logger.error("6.1.2 CSV持续执行失败: %s", e)
-        feishu_client.send_bot_message(chat_id, f"CSV持续执行异常中断: {str(e)[:200]}")
-    finally:
-        _clear_running_task(chat_id)
 
 
 def _get_unanalyzed_jql_presets() -> dict:
