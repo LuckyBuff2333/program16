@@ -370,10 +370,10 @@
                   <span v-else style="color:#c0c4cc">-</span>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="80" align="center">
+              <el-table-column label="附件名称" width="180" show-overflow-tooltip>
                 <template #default="{row}">
-                  <el-button v-if="row['分析结果']==='失败'" size="small" type="primary" link
-                    :loading="troubleshoot.diagLoadingMap[row['jira号']]" @click="diagnoseOne(row)">诊断</el-button>
+                  <span v-if="getMainEntries(row) !== '-'" style="color:#67c23a">{{ getMainEntries(row) }}</span>
+                  <span v-else style="color:#c0c4cc">-</span>
                 </template>
               </el-table-column>
             </el-table>
@@ -2296,10 +2296,10 @@
                       <span v-else style="color:#c0c4cc">-</span>
                     </template>
                   </el-table-column>
-                  <el-table-column label="操作" width="80" align="center">
+                  <el-table-column label="附件名称" width="180" show-overflow-tooltip>
                     <template #default="{row}">
-                      <el-button size="small" type="primary" link :loading="troubleshoot.diagLoadingMap[row['jira号']]"
-                        @click="diagnoseOne(row)">诊断</el-button>
+                      <span v-if="getMainEntries(row) !== '-'" style="color:#67c23a">{{ getMainEntries(row) }}</span>
+                      <span v-else style="color:#c0c4cc">-</span>
                     </template>
                   </el-table-column>
                 </el-table>
@@ -2342,6 +2342,12 @@
                     <el-table-column prop="人工审核结果" label="人工" width="100" show-overflow-tooltip>
                       <template #default="{row}">
                         <span v-if="row['人工审核结果']" style="color:#67c23a">{{ row['人工审核结果'] }}</span>
+                        <span v-else style="color:#c0c4cc">-</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="附件名称" width="180" show-overflow-tooltip>
+                      <template #default="{row}">
+                        <span v-if="getMainEntries(row) !== '-'" style="color:#67c23a">{{ getMainEntries(row) }}</span>
                         <span v-else style="color:#c0c4cc">-</span>
                       </template>
                     </el-table-column>
@@ -2538,10 +2544,10 @@
                       <span v-else style="color:#c0c4cc">-</span>
                     </template>
                   </el-table-column>
-                  <el-table-column label="操作" width="80" align="center">
+                  <el-table-column label="附件名称" width="180" show-overflow-tooltip>
                     <template #default="{row}">
-                      <el-button size="small" type="primary" link :loading="singleTroubleshoot.diagnosing"
-                        @click="diagnoseSingleTroubleshoot(row)">诊断</el-button>
+                      <span v-if="getMainEntries(row) !== '-'" style="color:#67c23a">{{ getMainEntries(row) }}</span>
+                      <span v-else style="color:#c0c4cc">-</span>
                     </template>
                   </el-table-column>
                 </el-table>
@@ -3612,6 +3618,16 @@ createApp({
     },
   },
   methods: {
+    // 获取诊断结果中的 main_entries（gmlogger 文件解压后的 main 文件名称）
+    getMainEntries(row) {
+      const bugid = row['jira号'] || row['bugid'];
+      if (!bugid) return '-';
+      const diag = this.troubleshoot.diagResults.find(r => r.bugid === bugid);
+      if (diag && diag.main_entries && diag.main_entries.length > 0) {
+        return diag.main_entries.join(', ');
+      }
+      return '-';
+    },
     // 统一请求封装：失败时弹出错误提示
     async api(url, options = {}) {
       // 未指定 signal 时加 2 分钟超时，避免后端卡死时前端无限等待
@@ -6839,6 +6855,13 @@ createApp({
           ElementPlus.ElMessage.warning(`${bugid} 诊断超时，请稍后重试`);
         }
         /* 其他错误已由 api() 提示或用户主动停止（AbortError） */
+        // 超时或异常时也要更新 diagResults，避免前端状态一直卡在"诊断中"
+        const idx = this.troubleshoot.diagResults.findIndex(r => r.bugid === bugid);
+        const fallback = { bugid, category: '诊断超时/异常', problem_time: row['分析问题时间'] || '',
+                           archive_files: [], detail: `诊断请求异常: ${e?.message || e?.name || '未知错误'}`,
+                           verify_status: '', suggested_time: '', report: {}, done_time: row['分析完成时间'] || '' };
+        if (idx >= 0) { this.troubleshoot.diagResults.splice(idx, 1, fallback); }
+        else { this.troubleshoot.diagResults.push(fallback); }
       }
       finally { this.troubleshoot.diagLoadingMap = { ...this.troubleshoot.diagLoadingMap, [bugid]: false }; }
     },
@@ -7001,7 +7024,7 @@ createApp({
         { value: '问题重复，无需排查', category: '问题重复', keywords: ['重复', '问题重复'] },
         { value: '问题未复现', category: '问题未复现', keywords: ['未复现', '问题未复现', '不复现'] },
         { value: '触发时间无日志', category: '触发时间问题', keywords: ['触发时间', '时间无日志', '时间问题'] },
-        { value: '该Jira无日志附件，属于正常处理机制', category: '正常处理机制，无需分析', keywords: ['无日志', '无附件', '无日志附件', '正常处理'] },
+        { value: '该Jira无日志附件，属于正常处理机制', category: '无gmlogger文件', keywords: ['无日志', '无附件', '无日志附件', '正常处理'] },
         { value: 'JIRA 分析任务执行超时', category: '分析任务执行超时，跳过排查', keywords: ['超时', '执行超时', '任务超时'] },
         { value: '服务有报错', category: '服务运行问题', keywords: ['服务', '服务报错', '服务有报错'] },
         { value: '接口无响应，待源泉排查', category: '接口响应问题', keywords: ['接口', '无响应', '连接失败'] },
@@ -7379,7 +7402,10 @@ createApp({
     },
     // 归类结果去重后的类别列表（供筛选下拉）
     getTroubleshootCategories() {
-      return [...new Set(this.troubleshoot.diagResults.map(r => r.category).filter(Boolean))];
+      const cats = [...new Set(this.troubleshoot.diagResults.map(r => r.category).filter(Boolean))];
+      // 增加"待人工审核"选项（用于筛选触发时间问题但未分析出正确时间的记录）
+      cats.unshift('待人工审核');
+      return cats;
     },
     // 归类结果筛选后的列表（按分析完成时间正序排列：越早的越靠上，越靠近当前时间的越靠下）
     getFilteredDiagResults() {
@@ -7391,13 +7417,17 @@ createApp({
         return ta - tb;
       });
       if (!this.troubleshoot.categoryFilter) return sorted;
+      // 特殊处理"待人工审核"筛选：显示触发时间问题且 verify_status=manual 的记录
+      if (this.troubleshoot.categoryFilter === '待人工审核') {
+        return sorted.filter(r => r.category === '触发时间问题' && r.verify_status === 'manual');
+      }
       return sorted.filter(r => r.category === this.troubleshoot.categoryFilter);
     },
     // 归类标签颜色映射
     diagCategoryTagType(cat) {
       if (cat === '触发时间问题') return 'warning';
       if (cat === '日志过滤逻辑') return 'danger';
-      if (cat === '正常处理机制，无需分析') return 'success';
+      if (cat === '待人工审核') return 'danger';
       if (cat === '接口并发响应问题') return 'info';
       if (cat === '接口连接问题') return 'info';
       if (cat === '服务运行问题') return 'warning';
