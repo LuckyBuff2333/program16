@@ -1773,7 +1773,7 @@ _TIMESTUDY_CSV_HEADERS = [
     "jira号", "记录时间", "提取来源", "提取结果", "是否正确",
     "错误类型", "错误详情", "修正后时间",
     "视频数量", "gmlogger数量", "参考时间",
-    "OCR原文", "匹配差秒", "12h转换"
+    "OCR原文", "匹配差秒", "12h转换", "jira创建时间"
 ]
 # 提取上下文（线程安全，每次提取前初始化）
 _timestudy_ctx: dict = {}
@@ -1787,7 +1787,8 @@ def _timestudy_init_ctx(bugid: str):
         _timestudy_ctx[bugid] = {
             "source": "", "error_type": "", "error_detail": "",
             "video_count": 0, "gm_count": 0, "ref_times": "",
-            "ocr_text": "", "match_diff": "", "h12": "no"
+            "ocr_text": "", "match_diff": "", "h12": "no",
+            "jira_created": ""
         }
 
 
@@ -1823,6 +1824,7 @@ def _timestudy_record(bugid: str, result: str, source: str,
         ctx.get("ocr_text", ""),
         ctx.get("match_diff", ""),
         ctx.get("h12", "no"),
+        ctx.get("jira_created", ""),
     ]
     try:
         with _record_write_lock:
@@ -1836,10 +1838,17 @@ def _timestudy_record(bugid: str, result: str, source: str,
 
 
 def _timestudy_analyze() -> dict:
-    """分析 records.csv，生成 error_patterns.json 和 optimization_log.md"""
+    """深度分析 records.csv，生成 error_patterns.json 和 optimization_log.md
+
+    分析维度：
+    1. 基础统计：成功率、来源分布、错误类型分布
+    2. 重复错误检测：同一 Jira 反复失败 = 系统性问题
+    3. 共性特征分析：同类型错误是否共享特征（无视频/无gmlogger/特定时间段）
+    4. 分类判定：偶发问题 vs 系统性逻辑缺陷
+    """
     import csv as _csv
     if not os.path.exists(_TIMESTUDY_RECORDS):
-        return {"total": 0, "error_patterns": {}}
+        return {"total_records": 0, "error_patterns": {}}
     # 读取所有记录
     records = []
     with open(_TIMESTUDY_RECORDS, "r", encoding="utf-8-sig") as f:
@@ -1847,9 +1856,9 @@ def _timestudy_analyze() -> dict:
         for row in reader:
             records.append(row)
     if not records:
-        return {"total": 0, "error_patterns": {}}
+        return {"total_records": 0, "error_patterns": {}}
     total = len(records)
-    # 统计错误类型分布
+    # ===== 基础统计 =====
     error_counts = {}
     source_counts = {}
     success_count = 0
@@ -1873,8 +1882,64 @@ def _timestudy_analyze() -> dict:
             corrected_count += 1
         if h12 == "yes":
             h12_count += 1
-    # 错误类型按数量降序
     sorted_errors = sorted(error_counts.items(), key=lambda x: x[1], reverse=True)
+    # ===== 重复错误检测：同一 Jira 多次失败 =====
+    from collections import defaultdict
+    jira_errors = defaultdict(list)  # {jira号: [record, ...]}
+    for rec in records:
+        err = rec.get("错误类型", "").strip()
+        bugid = rec.get("jira号", "").strip()
+        if err and bugid:
+            jira_errors[bugid].append(rec)
+    # 分类：顽固 Jira（2+次失败）
+    stubborn_jiras = {bid: recs for bid, recs in jira_errors.items() if len(recs) >= 2}
+    # ===== 共性特征分析：每种错误类型的失败记录是否共享特征 =====
+    error_records_by_type = defaultdict(list)
+    for rec in records:
+        err = rec.get("错误类型", "").strip()
+        if err:
+            error_records_by_type[err].append(rec)
+    # 对每种错误类型分析共性
+    error_analysis = {}
+    for err_type, err_recs in error_records_by_type.items():
+        n = len(err_recs)
+        # 统计特征
+        no_video = sum(1 for r in err_recs if r.get("视频数量", "0").strip() == "0")
+        no_gm = sum(1 for r in err_recs if r.get("gmlogger数量", "0").strip() == "0")
+        has_h12 = sum(1 for r in err_recs if r.get("12h转换", "").strip() == "yes")
+        # 涉及的独立 Jira 数
+        unique_jiras = len(set(r.get("jira号", "").strip() for r in err_recs if r.get("jira号", "").strip()))
+        # 时间范围分析
+        dates = sorted(set(r.get("jira创建时间", "")[:10] for r in err_recs if r.get("jira创建时间", "")))
+        # 共性特征判定
+        features = []
+        if no_video / n > 0.7:
+            features.append(f"{round(no_video/n*100)}%无视频附件")
+        if no_gm / n > 0.7:
+            features.append(f"{round(no_gm/n*100)}%无gmlogger")
+        if has_h12 / n > 0.5:
+            features.append(f"{round(has_h12/n*100)}%使用12h转换")
+        if len(dates) >= 2 and dates[0] != dates[-1]:
+            features.append(f"时间范围: {dates[0]}~{dates[-1]}")
+        # 分类判定
+        if unique_jiras >= 3 and len(features) >= 1:
+            classification = "系统性问题"
+        elif unique_jiras == 1 and n >= 3:
+            classification = "顽固问题"
+        else:
+            classification = "偶发问题"
+        error_analysis[err_type] = {
+            "count": n,
+            "unique_jiras": unique_jiras,
+            "stubborn_jiras": [bid for bid in stubborn_jiras if any(r.get("错误类型", "").strip() == err_type for r in stubborn_jiras[bid])],
+            "no_video_pct": round(no_video / n * 100, 1) if n else 0,
+            "no_gm_pct": round(no_gm / n * 100, 1) if n else 0,
+            "h12_pct": round(has_h12 / n * 100, 1) if n else 0,
+            "date_range": f"{dates[0]}~{dates[-1]}" if dates else "",
+            "common_features": features,
+            "classification": classification,
+            "example_jiras": list(set(r.get("jira号", "").strip() for r in err_recs[:5] if r.get("jira号", "").strip()))[:3],
+        }
     # 生成 error_patterns.json
     patterns = {
         "total_records": total,
@@ -1885,13 +1950,15 @@ def _timestudy_analyze() -> dict:
         "success_rate": round(success_count / total * 100, 1) if total else 0,
         "error_distribution": dict(sorted_errors),
         "source_distribution": dict(sorted(source_counts.items(), key=lambda x: x[1], reverse=True)),
+        "stubborn_jiras": {bid: len(recs) for bid, recs in stubborn_jiras.items()},
+        "error_analysis": error_analysis,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
     patterns_path = os.path.join(_TIMESTUDY_DIR, "error_patterns.json")
     with open(patterns_path, "w", encoding="utf-8") as f:
         import json as _json2
         _json2.dump(patterns, f, ensure_ascii=False, indent=2)
-    # 生成 optimization_log.md
+    # ===== 生成 optimization_log.md =====
     log_lines = [
         f"# 触发时间提取优化日志",
         f"",
@@ -1906,6 +1973,7 @@ def _timestudy_analyze() -> dict:
         f"| 提取失败 | {fail_count} |",
         f"| 用户修正 | {corrected_count} |",
         f"| 12h转换使用 | {h12_count} |",
+        f"| 顽固Jira(2+次失败) | {len(stubborn_jiras)} 个 |",
         f"",
         f"## 提取来源分布",
         f"",
@@ -1915,38 +1983,71 @@ def _timestudy_analyze() -> dict:
     for src, cnt in patterns["source_distribution"].items():
         pct = round(cnt / total * 100, 1) if total else 0
         log_lines.append(f"| {src} | {cnt} | {pct}% |")
-    log_lines.extend([
-        f"",
-        f"## 错误类型分布",
-        f"",
-        f"| 错误类型 | 次数 | 占比 |",
-        f"|----------|------|------|",
-    ])
-    for err, cnt in sorted_errors:
-        pct = round(cnt / total * 100, 1) if total else 0
-        log_lines.append(f"| {err} | {cnt} | {pct}% |")
-    log_lines.extend([f"", f"## 优化建议", f""])
-    # 基于错误模式生成具体建议
+    # ===== 错误深度分析（核心部分）=====
+    log_lines.extend(["", f"## 错误深度分析", ""])
+    # 按分类分组
+    systematic_errors = {k: v for k, v in error_analysis.items() if v["classification"] == "系统性问题"}
+    stubborn_errors = {k: v for k, v in error_analysis.items() if v["classification"] == "顽固问题"}
+    sporadic_errors = {k: v for k, v in error_analysis.items() if v["classification"] == "偶发问题"}
+    if systematic_errors:
+        log_lines.extend([f"### 系统性逻辑缺陷（需优先修复）", ""])
+        for err_type, info in sorted(systematic_errors.items(), key=lambda x: x[1]["count"], reverse=True):
+            log_lines.extend([
+                f"#### {err_type} ({info['count']}次, {info['unique_jiras']}个Jira)",
+                f"",
+                f"- **分类**: 系统性问题 — 多个Jira共享相同失败特征",
+                f"- **共性特征**: {', '.join(info['common_features']) or '无明显共性'}",
+                f"- **无视频占比**: {info['no_video_pct']}% | **无gmlogger占比**: {info['no_gm_pct']}% | **12h转换占比**: {info['h12_pct']}%",
+                f"- **时间范围**: {info['date_range'] or '无'}",
+                f"- **示例Jira**: {', '.join(info['example_jiras'])}",
+                "",
+            ])
+    if stubborn_errors:
+        log_lines.extend([f"### 顽固问题（同一Jira反复失败）", ""])
+        for err_type, info in sorted(stubborn_errors.items(), key=lambda x: x[1]["count"], reverse=True):
+            stubborn_list = ', '.join(info['stubborn_jiras'][:5])
+            log_lines.extend([
+                f"#### {err_type} ({info['count']}次, {info['unique_jiras']}个Jira)",
+                f"",
+                f"- **分类**: 顽固问题 — 同一Jira多次提取均失败",
+                f"- **顽固Jira**: {stubborn_list or '无'}",
+                f"- **共性特征**: {', '.join(info['common_features']) or '无明显共性'}",
+                f"- **示例Jira**: {', '.join(info['example_jiras'])}",
+                "",
+            ])
+    if sporadic_errors:
+        log_lines.extend([f"### 偶发问题（个别失败，无需优先处理）", ""])
+        for err_type, info in sorted(sporadic_errors.items(), key=lambda x: x[1]["count"], reverse=True):
+            log_lines.append(f"- **{err_type}** ({info['count']}次, {info['unique_jiras']}个Jira): {', '.join(info['common_features']) or '无明显特征'}")
+        log_lines.append("")
+    # ===== 优化建议（基于分析结果）=====
+    log_lines.extend([f"## 优化建议", f""])
     suggestions = []
-    if total > 0:
-        for err, cnt in sorted_errors:
-            ratio = cnt / total
-            if err == "video_download_failed" and ratio > 0.05:
-                suggestions.append(f"- **视频下载失败** ({cnt}次, {round(ratio*100,1)}%): 建议增大 httpx 超时时间或增加下载重试机制")
-            elif err == "ocr_no_time_pattern" and ratio > 0.05:
-                suggestions.append(f"- **OCR无时间模式** ({cnt}次, {round(ratio*100,1)}%): 建议优化 OCR 正则表达式或增加新的时间格式匹配")
-            elif err == "12h_ambiguity" and ratio > 0.03:
-                suggestions.append(f"- **12h歧义** ({cnt}次, {round(ratio*100,1)}%): 建议引入更多上下文判断 AM/PM，如 Jira 创建时间")
-            elif err == "time_no_match_gmlogger" and ratio > 0.05:
-                suggestions.append(f"- **时间不匹配gmlogger** ({cnt}次, {round(ratio*100,1)}%): 建议调整匹配阈值或改进 gmlogger 文件名解析")
-            elif err == "no_video" and ratio > 0.1:
-                suggestions.append(f"- **无视频附件** ({cnt}次, {round(ratio*100,1)}%): 大量记录无视频，建议优化标题/评论/描述的提取逻辑")
-            elif err == "gmlogger_missing" and ratio > 0.05:
-                suggestions.append(f"- **无gmlogger参考** ({cnt}次, {round(ratio*100,1)}%): 建议增强无 gmlogger 场景下的时间验证逻辑")
-            elif err == "all_sources_empty" and ratio > 0.03:
-                suggestions.append(f"- **全部来源失败** ({cnt}次, {round(ratio*100,1)}%): 需分析这些 Jira 的附件类型，考虑新增提取来源")
-            elif err == "user_corrected" and ratio > 0.02:
-                suggestions.append(f"- **用户修正** ({cnt}次, {round(ratio*100,1)}%): 分析修正前后的规律，自动调整提取策略")
+    # 系统性问题优先建议
+    for err_type, info in systematic_errors.items():
+        features_str = ", ".join(info["common_features"])
+        if err_type == "video_download_failed":
+            suggestions.append(f"- **视频下载失败** ({info['count']}次): 建议增大 httpx 超时时间或增加重试机制")
+        elif err_type == "ocr_no_time_pattern":
+            suggestions.append(f"- **OCR无时间模式** ({info['count']}次, {info['unique_jiras']}个Jira): 建议优化 OCR 正则或增加新的时间匹配模式，共性: {features_str}")
+        elif err_type == "12h_ambiguity":
+            suggestions.append(f"- **12h歧义** ({info['count']}次): 建议引入 Jira 创建时间等上下文判断 AM/PM")
+        elif err_type == "time_no_match_gmlogger":
+            suggestions.append(f"- **时间不匹配gmlogger** ({info['count']}次): 建议调整匹配阈值或改进 gmlogger 解析，共性: {features_str}")
+        elif err_type == "no_video":
+            suggestions.append(f"- **无视频附件** ({info['count']}次): 建议优化标题/评论/描述的文本提取逻辑")
+        elif err_type == "gmlogger_missing":
+            suggestions.append(f"- **无gmlogger参考** ({info['count']}次): 建议增强无 gmlogger 场景的时间验证")
+        elif err_type == "all_sources_empty":
+            suggestions.append(f"- **全部来源失败** ({info['count']}次): 需分析这些Jira的附件类型，考虑新增提取来源")
+        elif err_type == "user_corrected":
+            suggestions.append(f"- **用户修正** ({info['count']}次): 分析修正前后规律，自动调整提取策略")
+        else:
+            suggestions.append(f"- **{err_type}** ({info['count']}次, 系统性): {features_str}")
+    # 顽固问题建议
+    if stubborn_errors:
+        stubborn_list = ', '.join(list(stubborn_errors.keys())[:3])
+        suggestions.append(f"- **顽固失败** ({len(stubborn_errors)}种类型): {stubborn_list}，建议人工检查这些Jira的附件内容")
     if not suggestions:
         suggestions.append("暂无明显优化方向，建议积累更多数据后再分析")
     log_lines.extend(suggestions)
@@ -1954,7 +2055,8 @@ def _timestudy_analyze() -> dict:
     log_path = os.path.join(_TIMESTUDY_DIR, "optimization_log.md")
     with open(log_path, "w", encoding="utf-8") as f:
         f.write("\n".join(log_lines))
-    logger.info("自学习分析完成: %d 条记录, %d 种错误类型", total, len(error_counts))
+    logger.info("自学习分析完成: %d 条记录, %d 种错误类型, 系统性问题 %d 种, 顽固问题 %d 种",
+                total, len(error_counts), len(systematic_errors), len(stubborn_errors))
     return patterns
 
 
@@ -2003,6 +2105,9 @@ def _bot_get_trigger_times(bugids: list) -> dict:
             issue = _jc.fetch_issue(bugid)
             # 初始化自学习上下文（视频提取前）
             _timestudy_init_ctx(bugid)
+            # 提取 jira 创建时间用于自学习分析
+            jira_created = (issue.get("fields") or {}).get("created", "") or ""
+            _timestudy_update_ctx(bugid, jira_created=jira_created[:19])
             # 视频 OCR 优先级最高
             tt = _diag_extract_time_from_video_simple(issue)
             ctx = _timestudy_get_ctx(bugid)  # 获取并清除上下文
