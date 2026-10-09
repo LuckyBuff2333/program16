@@ -27,6 +27,23 @@ except ImportError:
     print("❌ 需要安装 watchdog: pip install watchdog")
     sys.exit(1)
 
+# git status porcelain 行解析：XY + 空格分隔 + PATH
+_STATUS_RE = re.compile(r'^(.{2}) ?(.+)$')
+
+
+def _parse_status_line(line: str):
+    """解析 git status --porcelain 行，返回 (status, filepath)"""
+    m = _STATUS_RE.match(line)
+    if not m:
+        return None, None
+    status = m.group(1).strip()
+    path_part = m.group(2)
+    # 重命名时格式为 "ORIG -> NEW"，取新路径
+    if ' -> ' in path_part:
+        path_part = path_part.split(' -> ', 1)[1]
+    return status, path_part.strip()
+
+
 # ──── 配置 ────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 GIT_AUTHOR = "2063795530 <2063795530@qq.com>"
@@ -49,7 +66,7 @@ IGNORE_PATTERNS = [
     r'dist/',
     r'build/',
     r'\.egg-info/',
-    r'auto_commit\.py$',
+    # auto_commit.py 仅在 watch 模式下忽略（防止递归提交）
     # 大文件 / 临时文件
     r'\.(zip|rar|7z|tar|gz|exe|bin|mp4|avi|mov)$',
     r'\.swp$',
@@ -87,6 +104,9 @@ class ChangeCollector(FileSystemEventHandler):
             return
         path = event.src_path
         if _should_ignore(path):
+            return
+        # watch 模式下忽略自身，防止递归提交
+        if os.path.abspath(path) == os.path.abspath(__file__):
             return
         rel = os.path.relpath(path, PROJECT_ROOT)
         with self._lock:
@@ -255,8 +275,9 @@ def main():
         for line in result.stdout.strip().split("\n"):
             if not line:
                 continue
-            status = line[:2].strip()
-            filepath = line[3:].strip()
+            status, filepath = _parse_status_line(line)
+            if not filepath:
+                continue
             full = os.path.join(PROJECT_ROOT, filepath)
             if _should_ignore(full):
                 continue
