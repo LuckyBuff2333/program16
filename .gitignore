@@ -30,3 +30,8 @@ config/config.yaml
 # 临时文件
 *.tmp
 screenshot_*.png
+
+# 触发时间自学习（运行时生成）
+timestudy/records.csv
+timestudy/error_patterns.json
+timestudy/optimization_log.md
