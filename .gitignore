@@ -21,7 +21,8 @@ __pycache__/
 
 # 日志和数据（运行时生成）
 logs/
-data/
+data/*
+!data/daily_broadcast_config.json
 *.egg-info/
 
 # 配置文件（含密钥，不提交）
