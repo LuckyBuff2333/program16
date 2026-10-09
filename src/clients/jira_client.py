@@ -211,6 +211,10 @@ _UTC8_OFFSET = timedelta(hours=8)
 
 # 紧凑日期格式：前缀+YYYYMMDD_HHMM（如 HMI:20240708_1556）
 _TIMESTAMP_HMI_RE = re.compile(r"[A-Za-z]+:(20\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})")
+# 独立时间格式：HH:MM 或 HH:MM:SS（无日期，如 "8:44" 或 "08:44:30"，需在标题/描述末尾或紧跟中文上下文）
+_TIMESTAMP_TIME_ONLY_RE = re.compile(r"(?<![\d/:\-.])"  # 前面不是数字/斜杠/冒号/横杠/点
+                                      r"(\d{1,2}:\d{2}(?::\d{2})?)"  # 捕获 HH:MM 或 HH:MM:SS
+                                      r"(?![\d/:\-.])")  # 后面不是数字/斜杠/冒号/横杠/点
 # 附件文件名时间正则
 _GMLOGGER_RE = re.compile(r"gmlogger[_\-](\d{4})[_\-](\d{1,2})[_\-](\d{1,2})[_\-](\d{1,2})[_\-](\d{1,2})(?:[_\-](\d{1,2}))?")
 _US_DATE_RE = re.compile(r"(\d{1,2})-(\d{1,2})-(\d{4})\s+(\d{1,2})-(\d{1,2})(?:-(\d{1,2}))?\s*(am|pm)?", re.IGNORECASE)
@@ -220,12 +224,15 @@ _COMPACT_RE = re.compile(r"(20\d{2})[\-_.]?(\d{2})[\-_.]?(\d{2})[\-_./T ]?(\d{2}
 def _normalize_datetime_text(text: str) -> str:
     """标准化非标准日期时间文本，提升提取兼容性
 
-    处理两类常见异常格式：
+    处理三类常见异常格式：
     1. 破折号分隔符：YYYY/MM/DD——HH:MM → YYYY/MM/DD HH:MM（全角/半角破折号替换为空格）
     2. 冒号空格：HH: MM → HH:MM（去除时间冒号旁的空格）
+    3. 分号冒号化：8；44 / 8;44 → 8:44（中文/半角分号在数字间替换为冒号）
     """
     # 破折号/全角横线替换为空格（U+2013 en-dash, U+2014 em-dash, U+2015 horizontal bar, U+FF0D fullwidth hyphen-minus）
     text = re.sub(r'[\u2013\u2014\u2015\uFF0D]+', ' ', text)
+    # 数字间的中文分号/半角分号替换为冒号（8；44 → 8:44, 8;44 → 8:44）
+    text = re.sub(r'(\d)\s*[;；]\s*(\d)', r'\1:\2', text)
     # 时间冒号旁空格去除（14: 57 → 14:57，不影响日期部分）
     text = re.sub(r'(\d)\s*:\s*(\d)', r'\1:\2', text)
     return text
@@ -672,10 +679,11 @@ def _pick_best_time(text: str, times: list) -> tuple:
     return best
 
 
-def _extract_times_from_text(text: str, year: str = "") -> list:
+def _extract_times_from_text(text: str, year: str = "", date_str: str = "") -> list:
     """从文本中提取时间，返回 [(time_str, datetime), ...]
 
     支持格式：YYYY-MM-DD HH:MM:SS, MM-DD HH:MM:SS, YYYY/MM/DD HH:MM(:SS), ISO 8601
+    当提供 date_str (YYYY-MM-DD) 时，还支持独立时间格式 HH:MM(:SS)（如 "8:44"）
     """
     times = []
     # 标准化非标准分隔符和冒号空格，确保后续正则命中
@@ -741,6 +749,20 @@ def _extract_times_from_text(text: str, year: str = "") -> list:
                     times.append((full_str, ts))
             except ValueError:
                 continue
+    # 独立时间格式 HH:MM 或 HH:MM:SS（无日期，仅当提供 date_str 时补充）
+    if date_str:
+        for match in _TIMESTAMP_TIME_ONLY_RE.finditer(text):
+            time_str = match.group(1)
+            try:
+                if len(time_str) <= 5:  # HH:MM
+                    ts = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+                else:  # HH:MM:SS
+                    ts = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+                fmt_str = ts.strftime("%Y-%m-%d %H:%M:%S")
+                if fmt_str not in [t[0] for t in times]:
+                    times.append((fmt_str, ts))
+            except ValueError:
+                continue
     return times
 
 
@@ -755,10 +777,13 @@ def extract_trigger_time_from_issue(issue: dict) -> str:
     附件文件名仅用于补充不完整时间的年月日，不直接作为触发时间
     """
     fields = issue.get("fields") or {}
+    # 提取创建日期，用于补充独立时间格式（如 "8:44"）的年月日
+    created_str = fields.get("created") or ""
+    created_date = created_str[:10] if len(created_str) >= 10 else ""  # "YYYY-MM-DD"
     # ---- 1. 标题(summary)中提取（最高优先级）----
     summary = fields.get("summary") or ""
     if summary:
-        summary_times = _extract_times_from_text(summary)
+        summary_times = _extract_times_from_text(summary, date_str=created_date)
         if summary_times:
             best = _pick_best_time(summary, summary_times)
             if best:
@@ -797,7 +822,7 @@ def extract_trigger_time_from_issue(issue: dict) -> str:
     if isinstance(description, dict):
         description = _extract_adf_text(description)
     if description:
-        desc_times = _extract_times_from_text(description)
+        desc_times = _extract_times_from_text(description, date_str=created_date)
         if desc_times:
             best = _pick_best_time(description, desc_times)
             if best:
