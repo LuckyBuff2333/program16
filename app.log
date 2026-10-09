@@ -578073,3 +578073,400 @@ redis.exceptions.TimeoutError: Timeout connecting to server
 2026-10-08 14:24:01 - log_analysis_tool.llm - INFO - [-] Agent: HTTP 客户端连接池已关闭
 2026-10-08 14:24:01 - log_analysis_tool - INFO - [-] [ARQ] Redis 连接池已关闭
 2026-10-08 14:24:01 - log_analysis_tool - INFO - [-] 日志分析工具关闭
+2026-10-08 16:39:19 - log_analysis_tool.llm - INFO - [-] 知识库加载完成: 327 个知识库, 共 4119077 字符
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-] 报告文件服务已挂载: /reports/ -> /home/ai-agent-ladt/文档/LogAnalysisBackend/reports
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-] 日志分析工具启动中...
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-] 调试模式: True
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-] 监听端口: 8001
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-] 解压引擎自检:
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-]   ✅ libarchive-c
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-]   ✅ 7z-cli
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-]   ✅ py7zr
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-]   ✅ rarfile
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-]   ✅ unrar-cli
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-]   ✅ unrar-cffi
+2026-10-08 16:39:20 - log_analysis_tool.batch - INFO - [-] 定时清理: 无超过 15 天的目录需要删除
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-] [ARQ] Redis 连接池已创建: redis://localhost:6379/0
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-] [ARQ] 嵌入式 Worker 已启动 (concurrency=10)
+2026-10-08 16:39:20 - log_analysis_tool - INFO - [-] ARQ 嵌入式 Worker 已启动
+2026-10-08 16:39:22 - log_analysis_tool - INFO - [-] [飞书Bot] WebSocket 长连接已在后台启动
+2026-10-08 16:39:22 - log_analysis_tool - INFO - [-] 飞书机器人 WebSocket 长连接已启动
+2026-10-08 16:39:22 - log_analysis_tool - INFO - [-] [ARQ] Worker 主循环开始
+2026-10-08 16:39:22 - log_analysis_tool - INFO - [-] [ARQ] 看门狗已启动 (interval=60s)
+2026-10-08 16:39:22 - log_analysis_tool - INFO - [-] [ARQ Worker] 启动: concurrency=10, jira_limit=10, download_limit=4, extract_limit=1, llm_limit=10, job_timeout=3600s
+2026-10-08 16:39:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.9%, process_cpu=0.7%, memory=9.5%, process_rss=279.3MB, disk_read=0.5MB/30s, disk_write=198.1MB/30s
+2026-10-08 16:39:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.9|process_cpu=0.7|memory_percent=9.5|process_rss_mb=279.3|disk_read_mb=0.5|disk_write_mb=198.1|interval=30s
+2026-10-08 16:40:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.5%, process_cpu=0.5%, memory=9.4%, process_rss=279.3MB, disk_read=0.0MB/30s, disk_write=5.6MB/30s
+2026-10-08 16:40:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.5|process_cpu=0.5|memory_percent=9.4|process_rss_mb=279.3|disk_read_mb=0.0|disk_write_mb=5.6|interval=30s
+2026-10-08 16:40:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.9%, process_cpu=0.4%, memory=9.4%, process_rss=279.4MB, disk_read=0.0MB/30s, disk_write=89.0MB/30s
+2026-10-08 16:40:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.9|process_cpu=0.4|memory_percent=9.4|process_rss_mb=279.4|disk_read_mb=0.0|disk_write_mb=89.0|interval=30s
+2026-10-08 16:41:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.5%, process_cpu=0.4%, memory=9.3%, process_rss=279.4MB, disk_read=0.0MB/30s, disk_write=2.7MB/30s
+2026-10-08 16:41:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.5|process_cpu=0.4|memory_percent=9.3|process_rss_mb=279.4|disk_read_mb=0.0|disk_write_mb=2.7|interval=30s
+2026-10-08 16:41:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=3.5%, process_cpu=0.5%, memory=10.9%, process_rss=279.4MB, disk_read=767.8MB/30s, disk_write=262.5MB/30s
+2026-10-08 16:41:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=3.5|process_cpu=0.5|memory_percent=10.9|process_rss_mb=279.4|disk_read_mb=767.8|disk_write_mb=262.5|interval=30s
+2026-10-08 16:42:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=3.9%, process_cpu=0.4%, memory=10.6%, process_rss=279.4MB, disk_read=0.0MB/30s, disk_write=450.7MB/30s
+2026-10-08 16:42:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=3.9|process_cpu=0.4|memory_percent=10.6|process_rss_mb=279.4|disk_read_mb=0.0|disk_write_mb=450.7|interval=30s
+2026-10-08 16:42:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.7%, process_cpu=0.5%, memory=10.4%, process_rss=279.4MB, disk_read=0.0MB/30s, disk_write=211.0MB/30s
+2026-10-08 16:42:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.7|process_cpu=0.5|memory_percent=10.4|process_rss_mb=279.4|disk_read_mb=0.0|disk_write_mb=211.0|interval=30s
+2026-10-08 16:43:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.8%, process_cpu=0.4%, memory=10.4%, process_rss=279.4MB, disk_read=0.0MB/30s, disk_write=2.6MB/30s
+2026-10-08 16:43:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.8|process_cpu=0.4|memory_percent=10.4|process_rss_mb=279.4|disk_read_mb=0.0|disk_write_mb=2.6|interval=30s
+2026-10-08 16:43:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.7%, process_cpu=0.4%, memory=10.4%, process_rss=279.4MB, disk_read=0.0MB/30s, disk_write=90.6MB/30s
+2026-10-08 16:43:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.7|process_cpu=0.4|memory_percent=10.4|process_rss_mb=279.4|disk_read_mb=0.0|disk_write_mb=90.6|interval=30s
+2026-10-08 16:44:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.5%, process_cpu=0.5%, memory=10.4%, process_rss=279.4MB, disk_read=0.4MB/30s, disk_write=4.8MB/30s
+2026-10-08 16:44:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.5|process_cpu=0.5|memory_percent=10.4|process_rss_mb=279.4|disk_read_mb=0.4|disk_write_mb=4.8|interval=30s
+2026-10-08 16:44:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.1%, process_cpu=0.4%, memory=10.8%, process_rss=279.4MB, disk_read=0.0MB/30s, disk_write=353.2MB/30s
+2026-10-08 16:44:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.1|process_cpu=0.4|memory_percent=10.8|process_rss_mb=279.4|disk_read_mb=0.0|disk_write_mb=353.2|interval=30s
+2026-10-08 16:45:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.8%, process_cpu=0.5%, memory=10.5%, process_rss=279.4MB, disk_read=0.0MB/30s, disk_write=91.1MB/30s
+2026-10-08 16:45:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.8|process_cpu=0.5|memory_percent=10.5|process_rss_mb=279.4|disk_read_mb=0.0|disk_write_mb=91.1|interval=30s
+2026-10-08 16:45:30 - log_analysis_tool - INFO - [-] [JIRA] 收到分析请求，启动后台任务: VCU-547799
+2026-10-08 16:45:30 - log_analysis_tool - INFO - [-] [ARQ] JIRA 分析任务已入队: VCU-547799 → job=jira:VCU-547799:direct
+2026-10-08 16:45:30 - log_analysis_tool - INFO - [-] [JIRA] 任务已通过 ARQ 入队: jira_analysis_task → job=jira:VCU-547799:direct
+2026-10-08 16:45:30 - log_analysis_tool - INFO - [-] [ARQ Task] jira_analysis_task 开始: VCU-547799 (task=None)
+2026-10-08 16:45:30 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 开始分析: VCU-547799 (trace_id=0b20b6c4b1374fcc)
+2026-10-08 16:45:30 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 获取到并发槽位，开始执行: VCU-547799（排队耗时: 0.0s）
+2026-10-08 16:45:30 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] 飞书 tenant_access_token 获取成功
+2026-10-08 16:45:31 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] Wiki 节点解析成功: wiki_token=VSWFwwkLTiZC6QkeZY4csbwUnjd → bitable app_token=HOARbsrB0aSViFs5AjNchSQ0nAf
+2026-10-08 16:45:33 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] Step 1: 获取 Issue VCU-547799 详情
+2026-10-08 16:45:34 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] Issue 标题: [Setting][E2YB MY27][PPV][0909][R7]英文模式下，车辆界面油耗英文显示错误
+2026-10-08 16:45:34 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] Step 2: 发现自定义字段 ID
+2026-10-08 16:45:34 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 发现字段映射: {'执行结果 Actual Result': 'customfield_10349', '操作顺序 Operation Schedule': 'customfield_10340', '初始设定 Initial Setting': 'customfield_10335', '预期结果 Expect Result': 'customfield_10336'}
+2026-10-08 16:45:34 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 问题描述:
+【Bug标题】[Setting][E2YB MY27][PPV][0909][R7]英文模式下，车辆界面油耗英文显示错误
+
+问题发生时间:
+(未填写)
+
+初始设定 Initial Setting:
+System Power mode=RUN
+Vehicle /Bench number:大台架
+Software Part:E2NCLB-LOCAL8155_R7-UQB27C-20260909-47
+Vehicle Calibration:1SD+FWDUQGUKZ_VCU_PLUS（0910）
+Time：2026/09/16  STE:Liu Tao 
+
+操作顺序 Operation Schedule:
+Action:
+1.英文模式，能耗卡片油耗英文为Economy，观察车辆界面油耗显示
+
+
+
+预期结果 Expect Result:
+After step1：车辆界面油耗英文为“Economy”与能耗卡片油耗的英文一致
+
+执行结果 Actual Result:
+After step1：车辆界面油耗英文为“Econemy”，显示错误
+
+2026-10-08 16:45:34 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] Step 3: 下载附件
+2026-10-08 16:45:34 - log_analysis_tool.perf - INFO - [0b20b6c4b1374fcc] PERF|resource_slot|resource=download|wait=0.000s
+2026-10-08 16:45:34 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 跳过非日志附件: ['1d9dfcfae180c228b1609ebd04d311b7.mp4', '2b777fdc76ab43c61bd21b3c5baac486.jpg', 'e07756c675c0b173ba8c9b3848f99c21.jpg', '屏幕截图 2026-09-16 171004.jpg', '追溯.png', '追溯2.png']
+2026-10-08 16:45:34 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 待下载日志附件: ['gmlogger_2026_9_16_11_8_45.z01', 'gmlogger_2026_9_16_11_8_45.zip']
+2026-10-08 16:45:34 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 下载附件: gmlogger_2026_9_16_11_8_45.z01 (200.0MB)
+2026-10-08 16:45:35 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 下载进度: gmlogger_2026_9_16_11_8_45.z01 (50.0MB)
+2026-10-08 16:45:36 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 下载进度: gmlogger_2026_9_16_11_8_45.z01 (100.0MB)
+2026-10-08 16:45:36 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 下载进度: gmlogger_2026_9_16_11_8_45.z01 (150.0MB)
+2026-10-08 16:45:37 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 下载进度: gmlogger_2026_9_16_11_8_45.z01 (200.0MB)
+2026-10-08 16:45:37 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 附件下载完成并原子提交: uploads/jira/VCU-547799/gmlogger_2026_9_16_11_8_45.z01
+2026-10-08 16:45:37 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 大文件下载完成，冷却 5 秒后下载下一个附件
+2026-10-08 16:45:42 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 下载附件: gmlogger_2026_9_16_11_8_45.zip (102.9MB)
+2026-10-08 16:45:43 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 下载进度: gmlogger_2026_9_16_11_8_45.zip (50.0MB)
+2026-10-08 16:45:43 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 下载进度: gmlogger_2026_9_16_11_8_45.zip (100.0MB)
+2026-10-08 16:45:43 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 附件下载完成并原子提交: uploads/jira/VCU-547799/gmlogger_2026_9_16_11_8_45.zip
+2026-10-08 16:45:43 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 共下载 2/2 个日志附件
+2026-10-08 16:45:43 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 检测到分卷压缩包，将在解压阶段自动合并: ['gmlogger_2026_9_16_11_8_45.z01', 'gmlogger_2026_9_16_11_8_45.zip']
+2026-10-08 16:45:43 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] Step 4: 处理日志文件
+2026-10-08 16:45:43 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 基准时间: 2026-09-16 13:07:00, 前5分钟 ~ 后5分钟
+2026-10-08 16:45:43 - log_analysis_tool.perf - INFO - [0b20b6c4b1374fcc] PERF|resource_slot|resource=extract|wait=0.000s
+2026-10-08 16:45:43 - log_analysis_tool.file - ERROR - [0b20b6c4b1374fcc] 分卷不完整，跳过: gmlogger_2026_9_16_11_8_45.zip: 缺少 WinZip 中央目录 gmlogger_2026_9_16_11_8_45.zip
+2026-10-08 16:45:43 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] .zip 文件 magic bytes 异常，7z 探测为 split_zip: gmlogger_2026_9_16_11_8_45.zip
+2026-10-08 16:45:43 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] .zip 文件 magic bytes 异常，7z 探测为 split_zip: gmlogger_2026_9_16_11_8_45.zip
+2026-10-08 16:45:43 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 检测到格式: split_zip, 文件: gmlogger_2026_9_16_11_8_45.zip
+2026-10-08 16:45:43 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 格式=split_zip, 分卷=False, 文件=gmlogger_2026_9_16_11_8_45.zip
+2026-10-08 16:45:43 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [7z-cli] 开始全量提取: gmlogger_2026_9_16_11_8_45.zip
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [7z-cli] 全量提取后收集到 176 个日志相关文件
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 解嵌套(depth=1): var_log_needCompressedfolder_sm52screen.tar.gz
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 格式=tar_gz, 分卷=False, 文件=var_log_needCompressedfolder_sm52screen.tar.gz
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [libarchive] 提取了 0 个目标文件，跳过 1 个非目标成员
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [7z-cli] 开始全量提取: var_log_needCompressedfolder_sm52screen.tar.gz
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [7z-cli] 全量提取后收集到 1 个日志相关文件
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 解嵌套(depth=1): var_log_needCompressedfolder_sm52screen.tar
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 格式=tar, 分卷=False, 文件=var_log_needCompressedfolder_sm52screen.tar
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [libarchive] 提取了 0 个目标文件，跳过 1 个非目标成员
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [7z-cli] 开始全量提取: var_log_needCompressedfolder_sm52screen.tar
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [7z-cli] 全量提取后收集到 0 个日志相关文件
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 解嵌套(depth=1): var_log_needCompressedfolder_middleware_log.tar.gz
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 格式=tar_gz, 分卷=False, 文件=var_log_needCompressedfolder_middleware_log.tar.gz
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [libarchive] 提取了 17 个目标文件
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 解嵌套(depth=1): var_log_needCompressedfolder_ota_master_log.tar.gz
+2026-10-08 16:45:46 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 格式=tar_gz, 分卷=False, 文件=var_log_needCompressedfolder_ota_master_log.tar.gz
+2026-10-08 16:45:47 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [libarchive] 提取了 5 个目标文件，跳过 249 个非目标成员
+2026-10-08 16:45:47 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 解嵌套(depth=1): bugreport-patacvcuplus-UQ1A.240205.002-2026-09-16-11-08-46.zip
+2026-10-08 16:45:47 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 格式=zip, 分卷=False, 文件=bugreport-patacvcuplus-UQ1A.240205.002-2026-09-16-11-08-46.zip
+2026-10-08 16:45:47 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [zipfile] 开始提取: bugreport-patacvcuplus-UQ1A.240205.002-2026-09-16-11-08-46.zip
+2026-10-08 16:45:47 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [zipfile] 提取完成，共 294 个文件
+2026-10-08 16:45:47 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 解嵌套(depth=1): visible_windows.zip
+2026-10-08 16:45:47 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 格式=zip, 分卷=False, 文件=visible_windows.zip
+2026-10-08 16:45:47 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [zipfile] 开始提取: visible_windows.zip
+2026-10-08 16:45:47 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [zipfile] 提取完成，共 4 个文件
+2026-10-08 16:45:47 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 解嵌套(depth=1): var_log_needCompressedfolder_audio_dump.tar.gz
+2026-10-08 16:45:47 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 格式=tar_gz, 分卷=False, 文件=var_log_needCompressedfolder_audio_dump.tar.gz
+2026-10-08 16:45:48 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [libarchive] 提取了 1 个目标文件，跳过 21 个非目标成员
+2026-10-08 16:45:48 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 深度收集: 从子目录提升 25 个日志文件到根级
+2026-10-08 16:45:49 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 并行解压 11 个 .gz 文件
+2026-10-08 16:45:49 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] 找到备用文件: main.log
+2026-10-08 16:45:49 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] [ExtractionEngine] 解压完成，44 个日志文件，耗时 5.953s
+2026-10-08 16:45:49 - log_analysis_tool.file - INFO - [0b20b6c4b1374fcc] 压缩包提取文本日志: gmlogger_2026_9_16_11_8_45.zip，提取到 44 个文件
+2026-10-08 16:45:49 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 解压后得到 43 个日志文件
+2026-10-08 16:45:49 - log_analysis_tool.analysis - INFO - [0b20b6c4b1374fcc] 开始时间过滤: log_type=text, files=43, base_time=2026-09-16 13:07:00, window=(5,5), enable_process_filter=False, keywords=[]
+2026-10-08 16:45:50 - log_analysis_tool.analysis - INFO - [0b20b6c4b1374fcc] 时间过滤阶段2完成: log_type=text, 命中分组数=0, 输出候选行数=0
+2026-10-08 16:45:50 - log_analysis_tool.analysis - INFO - [0b20b6c4b1374fcc] 时间过滤结果写入完成: /home/ai-agent-ladt/文档/LogAnalysisBackend/filtered/jira/VCU-547799/filtered_time_only.log, 行数=0, log_type=text, 样例分组=[]
+2026-10-08 16:45:50 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 时间过滤完成: /home/ai-agent-ladt/文档/LogAnalysisBackend/filtered/jira/VCU-547799/filtered_time_only.log, 共 0 行
+2026-10-08 16:45:50 - log_analysis_tool - WARNING - [0b20b6c4b1374fcc] [JIRA] 时间过滤后日志为空（0行），请检查问题时间是否正确
+2026-10-08 16:45:50 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [JIRA] 任务结束，已释放并发槽位: VCU-547799（排队: 0.0s, 分析: 19.96s, 总计: ?s）
+2026-10-08 16:45:52 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] 多维表格记录写入成功: VCU-547799
+2026-10-08 16:45:52 - log_analysis_tool.batch - INFO - [0b20b6c4b1374fcc] [清理] 已删除 VCU-547799 会话目录: uploads/jira/VCU-547799
+2026-10-08 16:45:52 - log_analysis_tool.batch - INFO - [0b20b6c4b1374fcc] [清理] 已删除 VCU-547799 会话目录: unzipped/jira/VCU-547799
+2026-10-08 16:45:52 - log_analysis_tool.batch - INFO - [0b20b6c4b1374fcc] [清理] 已删除 VCU-547799 会话目录: filtered/jira/VCU-547799
+2026-10-08 16:45:52 - log_analysis_tool - INFO - [0b20b6c4b1374fcc] [ARQ Task] jira_analysis_task 完成: VCU-547799, success=False
+2026-10-08 16:45:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.5%, process_cpu=25.2%, memory=11.2%, process_rss=293.1MB, disk_read=5.6MB/30s, disk_write=274.6MB/30s
+2026-10-08 16:45:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.5|process_cpu=25.2|memory_percent=11.2|process_rss_mb=293.1|disk_read_mb=5.6|disk_write_mb=274.6|interval=30s
+2026-10-08 16:46:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.8%, process_cpu=0.4%, memory=10.8%, process_rss=293.1MB, disk_read=0.0MB/30s, disk_write=6.6MB/30s
+2026-10-08 16:46:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.8|process_cpu=0.4|memory_percent=10.8|process_rss_mb=293.1|disk_read_mb=0.0|disk_write_mb=6.6|interval=30s
+2026-10-08 16:46:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.5%, process_cpu=0.4%, memory=10.5%, process_rss=293.1MB, disk_read=0.0MB/30s, disk_write=2.7MB/30s
+2026-10-08 16:46:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.5|process_cpu=0.4|memory_percent=10.5|process_rss_mb=293.1|disk_read_mb=0.0|disk_write_mb=2.7|interval=30s
+2026-10-08 16:47:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=2.3%, process_cpu=0.4%, memory=11.4%, process_rss=293.1MB, disk_read=37.0MB/30s, disk_write=16.2MB/30s
+2026-10-08 16:47:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=2.3|process_cpu=0.4|memory_percent=11.4|process_rss_mb=293.1|disk_read_mb=37.0|disk_write_mb=16.2|interval=30s
+2026-10-08 16:47:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=2.8%, process_cpu=0.5%, memory=12.4%, process_rss=293.1MB, disk_read=21.6MB/30s, disk_write=275.4MB/30s
+2026-10-08 16:47:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=2.8|process_cpu=0.5|memory_percent=12.4|process_rss_mb=293.1|disk_read_mb=21.6|disk_write_mb=275.4|interval=30s
+2026-10-08 16:48:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.8%, process_cpu=0.4%, memory=13.0%, process_rss=293.1MB, disk_read=119.7MB/30s, disk_write=69.1MB/30s
+2026-10-08 16:48:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.8|process_cpu=0.4|memory_percent=13.0|process_rss_mb=293.1|disk_read_mb=119.7|disk_write_mb=69.1|interval=30s
+2026-10-08 16:48:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.0%, process_cpu=0.4%, memory=12.8%, process_rss=293.1MB, disk_read=0.1MB/30s, disk_write=464.8MB/30s
+2026-10-08 16:48:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.0|process_cpu=0.4|memory_percent=12.8|process_rss_mb=293.1|disk_read_mb=0.1|disk_write_mb=464.8|interval=30s
+2026-10-08 16:49:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.5%, process_cpu=0.5%, memory=13.4%, process_rss=293.1MB, disk_read=0.2MB/30s, disk_write=569.1MB/30s
+2026-10-08 16:49:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.5|process_cpu=0.5|memory_percent=13.4|process_rss_mb=293.1|disk_read_mb=0.2|disk_write_mb=569.1|interval=30s
+2026-10-08 16:49:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.9%, process_cpu=0.4%, memory=12.5%, process_rss=293.1MB, disk_read=0.0MB/30s, disk_write=4.5MB/30s
+2026-10-08 16:49:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.9|process_cpu=0.4|memory_percent=12.5|process_rss_mb=293.1|disk_read_mb=0.0|disk_write_mb=4.5|interval=30s
+2026-10-08 16:50:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.0%, process_cpu=0.5%, memory=12.4%, process_rss=293.1MB, disk_read=2.0MB/30s, disk_write=8.4MB/30s
+2026-10-08 16:50:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.0|process_cpu=0.5|memory_percent=12.4|process_rss_mb=293.1|disk_read_mb=2.0|disk_write_mb=8.4|interval=30s
+2026-10-08 16:50:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.2%, process_cpu=0.4%, memory=11.5%, process_rss=293.1MB, disk_read=2.2MB/30s, disk_write=10.7MB/30s
+2026-10-08 16:50:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.2|process_cpu=0.4|memory_percent=11.5|process_rss_mb=293.1|disk_read_mb=2.2|disk_write_mb=10.7|interval=30s
+2026-10-08 16:51:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.0%, process_cpu=0.5%, memory=11.5%, process_rss=293.1MB, disk_read=0.4MB/30s, disk_write=5.7MB/30s
+2026-10-08 16:51:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.0|process_cpu=0.5|memory_percent=11.5|process_rss_mb=293.1|disk_read_mb=0.4|disk_write_mb=5.7|interval=30s
+2026-10-08 16:51:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.0%, process_cpu=0.5%, memory=11.5%, process_rss=293.1MB, disk_read=5.3MB/30s, disk_write=5.4MB/30s
+2026-10-08 16:51:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.0|process_cpu=0.5|memory_percent=11.5|process_rss_mb=293.1|disk_read_mb=5.3|disk_write_mb=5.4|interval=30s
+2026-10-08 16:52:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=2.0%, process_cpu=0.4%, memory=11.7%, process_rss=293.1MB, disk_read=3.5MB/30s, disk_write=16.7MB/30s
+2026-10-08 16:52:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=2.0|process_cpu=0.4|memory_percent=11.7|process_rss_mb=293.1|disk_read_mb=3.5|disk_write_mb=16.7|interval=30s
+2026-10-08 16:52:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.9%, process_cpu=0.5%, memory=11.7%, process_rss=293.1MB, disk_read=0.6MB/30s, disk_write=13.8MB/30s
+2026-10-08 16:52:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.9|process_cpu=0.5|memory_percent=11.7|process_rss_mb=293.1|disk_read_mb=0.6|disk_write_mb=13.8|interval=30s
+2026-10-08 16:53:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.3%, process_cpu=0.4%, memory=12.4%, process_rss=293.1MB, disk_read=0.0MB/30s, disk_write=265.6MB/30s
+2026-10-08 16:53:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.3|process_cpu=0.4|memory_percent=12.4|process_rss_mb=293.1|disk_read_mb=0.0|disk_write_mb=265.6|interval=30s
+2026-10-08 16:53:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.0%, process_cpu=0.5%, memory=11.8%, process_rss=293.1MB, disk_read=0.1MB/30s, disk_write=4.4MB/30s
+2026-10-08 16:53:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.0|process_cpu=0.5|memory_percent=11.8|process_rss_mb=293.1|disk_read_mb=0.1|disk_write_mb=4.4|interval=30s
+2026-10-08 16:54:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.1%, process_cpu=0.4%, memory=12.3%, process_rss=293.1MB, disk_read=0.1MB/30s, disk_write=182.6MB/30s
+2026-10-08 16:54:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.1|process_cpu=0.4|memory_percent=12.3|process_rss_mb=293.1|disk_read_mb=0.1|disk_write_mb=182.6|interval=30s
+2026-10-08 16:54:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.3%, process_cpu=0.4%, memory=12.4%, process_rss=293.1MB, disk_read=0.1MB/30s, disk_write=369.3MB/30s
+2026-10-08 16:54:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.3|process_cpu=0.4|memory_percent=12.4|process_rss_mb=293.1|disk_read_mb=0.1|disk_write_mb=369.3|interval=30s
+2026-10-08 16:55:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.2%, process_cpu=0.4%, memory=12.4%, process_rss=293.1MB, disk_read=0.1MB/30s, disk_write=269.5MB/30s
+2026-10-08 16:55:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.2|process_cpu=0.4|memory_percent=12.4|process_rss_mb=293.1|disk_read_mb=0.1|disk_write_mb=269.5|interval=30s
+2026-10-08 16:55:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.7%, process_cpu=0.8%, memory=12.2%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=18.4MB/30s
+2026-10-08 16:55:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.7|process_cpu=0.8|memory_percent=12.2|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=18.4|interval=30s
+2026-10-08 16:56:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.8%, process_cpu=0.4%, memory=12.3%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=99.1MB/30s
+2026-10-08 16:56:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.8|process_cpu=0.4|memory_percent=12.3|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=99.1|interval=30s
+2026-10-08 16:56:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=2.2%, process_cpu=0.4%, memory=12.7%, process_rss=293.4MB, disk_read=0.2MB/30s, disk_write=273.3MB/30s
+2026-10-08 16:56:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=2.2|process_cpu=0.4|memory_percent=12.7|process_rss_mb=293.4|disk_read_mb=0.2|disk_write_mb=273.3|interval=30s
+2026-10-08 16:57:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.9%, process_cpu=0.4%, memory=12.7%, process_rss=293.4MB, disk_read=0.1MB/30s, disk_write=185.8MB/30s
+2026-10-08 16:57:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.9|process_cpu=0.4|memory_percent=12.7|process_rss_mb=293.4|disk_read_mb=0.1|disk_write_mb=185.8|interval=30s
+2026-10-08 16:57:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.7%, process_cpu=0.4%, memory=12.6%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=6.7MB/30s
+2026-10-08 16:57:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.7|process_cpu=0.4|memory_percent=12.6|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=6.7|interval=30s
+2026-10-08 16:58:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=2.8%, process_cpu=0.5%, memory=13.0%, process_rss=293.4MB, disk_read=0.1MB/30s, disk_write=191.3MB/30s
+2026-10-08 16:58:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=2.8|process_cpu=0.5|memory_percent=13.0|process_rss_mb=293.4|disk_read_mb=0.1|disk_write_mb=191.3|interval=30s
+2026-10-08 16:58:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.5%, process_cpu=0.4%, memory=12.2%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=9.5MB/30s
+2026-10-08 16:58:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.5|process_cpu=0.4|memory_percent=12.2|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=9.5|interval=30s
+2026-10-08 16:59:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.3%, process_cpu=0.4%, memory=12.3%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=91.5MB/30s
+2026-10-08 16:59:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.3|process_cpu=0.4|memory_percent=12.3|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=91.5|interval=30s
+2026-10-08 16:59:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.5%, process_cpu=0.5%, memory=12.2%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=93.2MB/30s
+2026-10-08 16:59:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.5|process_cpu=0.5|memory_percent=12.2|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=93.2|interval=30s
+2026-10-08 17:00:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.4%, process_cpu=0.4%, memory=12.5%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=93.7MB/30s
+2026-10-08 17:00:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.4|process_cpu=0.4|memory_percent=12.5|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=93.7|interval=30s
+2026-10-08 17:00:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.2%, process_cpu=0.4%, memory=12.0%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=3.8MB/30s
+2026-10-08 17:00:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.2|process_cpu=0.4|memory_percent=12.0|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=3.8|interval=30s
+2026-10-08 17:01:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=4.2%, process_cpu=0.4%, memory=11.3%, process_rss=293.4MB, disk_read=0.1MB/30s, disk_write=133.8MB/30s
+2026-10-08 17:01:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=4.2|process_cpu=0.4|memory_percent=11.3|process_rss_mb=293.4|disk_read_mb=0.1|disk_write_mb=133.8|interval=30s
+2026-10-08 17:01:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=2.5%, process_cpu=0.4%, memory=11.1%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=17.4MB/30s
+2026-10-08 17:01:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=2.5|process_cpu=0.4|memory_percent=11.1|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=17.4|interval=30s
+2026-10-08 17:02:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=2.6%, process_cpu=0.4%, memory=11.5%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=213.5MB/30s
+2026-10-08 17:02:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=2.6|process_cpu=0.4|memory_percent=11.5|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=213.5|interval=30s
+2026-10-08 17:02:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.8%, process_cpu=0.4%, memory=11.1%, process_rss=293.4MB, disk_read=1.4MB/30s, disk_write=33.9MB/30s
+2026-10-08 17:02:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.8|process_cpu=0.4|memory_percent=11.1|process_rss_mb=293.4|disk_read_mb=1.4|disk_write_mb=33.9|interval=30s
+2026-10-08 17:03:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.7%, process_cpu=0.4%, memory=11.4%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=115.7MB/30s
+2026-10-08 17:03:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.7|process_cpu=0.4|memory_percent=11.4|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=115.7|interval=30s
+2026-10-08 17:03:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.2%, process_cpu=0.4%, memory=11.3%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=9.5MB/30s
+2026-10-08 17:03:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.2|process_cpu=0.4|memory_percent=11.3|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=9.5|interval=30s
+2026-10-08 17:04:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.9%, process_cpu=0.5%, memory=11.3%, process_rss=293.4MB, disk_read=0.0MB/30s, disk_write=104.9MB/30s
+2026-10-08 17:04:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.9|process_cpu=0.5|memory_percent=11.3|process_rss_mb=293.4|disk_read_mb=0.0|disk_write_mb=104.9|interval=30s
+2026-10-08 17:04:52 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.9%, process_cpu=0.7%, memory=11.1%, process_rss=293.8MB, disk_read=0.0MB/30s, disk_write=19.1MB/30s
+2026-10-08 17:04:52 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.9|process_cpu=0.7|memory_percent=11.1|process_rss_mb=293.8|disk_read_mb=0.0|disk_write_mb=19.1|interval=30s
+2026-10-08 17:05:22 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=2.0%, process_cpu=0.5%, memory=11.3%, process_rss=293.8MB, disk_read=0.0MB/30s, disk_write=109.3MB/30s
+2026-10-08 17:05:22 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=2.0|process_cpu=0.5|memory_percent=11.3|process_rss_mb=293.8|disk_read_mb=0.0|disk_write_mb=109.3|interval=30s
+2026-10-08 17:05:53 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.8%, process_cpu=0.4%, memory=11.2%, process_rss=293.8MB, disk_read=0.0MB/30s, disk_write=13.7MB/30s
+2026-10-08 17:05:53 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.8|process_cpu=0.4|memory_percent=11.2|process_rss_mb=293.8|disk_read_mb=0.0|disk_write_mb=13.7|interval=30s
+2026-10-08 17:06:23 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.7%, process_cpu=0.4%, memory=11.4%, process_rss=293.8MB, disk_read=0.0MB/30s, disk_write=99.5MB/30s
+2026-10-08 17:06:23 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.7|process_cpu=0.4|memory_percent=11.4|process_rss_mb=293.8|disk_read_mb=0.0|disk_write_mb=99.5|interval=30s
+2026-10-08 17:06:53 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.6%, process_cpu=0.4%, memory=11.1%, process_rss=293.8MB, disk_read=0.0MB/30s, disk_write=2.8MB/30s
+2026-10-08 17:06:53 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.6|process_cpu=0.4|memory_percent=11.1|process_rss_mb=293.8|disk_read_mb=0.0|disk_write_mb=2.8|interval=30s
+2026-10-08 17:07:23 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.6%, process_cpu=0.6%, memory=11.3%, process_rss=293.9MB, disk_read=0.0MB/30s, disk_write=101.0MB/30s
+2026-10-08 17:07:23 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.6|process_cpu=0.6|memory_percent=11.3|process_rss_mb=293.9|disk_read_mb=0.0|disk_write_mb=101.0|interval=30s
+2026-10-08 17:07:53 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.5%, process_cpu=0.4%, memory=11.1%, process_rss=293.9MB, disk_read=0.0MB/30s, disk_write=3.7MB/30s
+2026-10-08 17:07:53 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.5|process_cpu=0.4|memory_percent=11.1|process_rss_mb=293.9|disk_read_mb=0.0|disk_write_mb=3.7|interval=30s
+2026-10-08 17:08:23 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.6%, process_cpu=0.4%, memory=11.1%, process_rss=293.9MB, disk_read=0.0MB/30s, disk_write=99.1MB/30s
+2026-10-08 17:08:23 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.6|process_cpu=0.4|memory_percent=11.1|process_rss_mb=293.9|disk_read_mb=0.0|disk_write_mb=99.1|interval=30s
+2026-10-08 17:08:53 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.7%, process_cpu=0.4%, memory=10.8%, process_rss=293.9MB, disk_read=0.0MB/30s, disk_write=3.6MB/30s
+2026-10-08 17:08:53 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.7|process_cpu=0.4|memory_percent=10.8|process_rss_mb=293.9|disk_read_mb=0.0|disk_write_mb=3.6|interval=30s
+2026-10-08 17:09:23 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.6%, process_cpu=0.6%, memory=11.2%, process_rss=294.1MB, disk_read=0.0MB/30s, disk_write=100.2MB/30s
+2026-10-08 17:09:23 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.6|process_cpu=0.6|memory_percent=11.2|process_rss_mb=294.1|disk_read_mb=0.0|disk_write_mb=100.2|interval=30s
+2026-10-08 17:09:53 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.6%, process_cpu=0.4%, memory=11.0%, process_rss=294.1MB, disk_read=0.0MB/30s, disk_write=4.1MB/30s
+2026-10-08 17:09:53 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.6|process_cpu=0.4|memory_percent=11.0|process_rss_mb=294.1|disk_read_mb=0.0|disk_write_mb=4.1|interval=30s
+2026-10-08 17:10:23 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.7%, process_cpu=0.4%, memory=11.2%, process_rss=294.1MB, disk_read=0.0MB/30s, disk_write=197.0MB/30s
+2026-10-08 17:10:23 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.7|process_cpu=0.4|memory_percent=11.2|process_rss_mb=294.1|disk_read_mb=0.0|disk_write_mb=197.0|interval=30s
+2026-10-08 17:10:24 - log_analysis_tool - INFO - [-] [ARQ] 看门狗已停止
+2026-10-08 17:10:24 - log_analysis_tool - INFO - [-] [ARQ] 正在关闭 Worker...
+2026-10-08 17:10:24 - log_analysis_tool - INFO - [-] [ARQ Worker] 关闭
+2026-10-08 17:10:24 - log_analysis_tool - INFO - [-] [系统状态] 资源监控已停止
+2026-10-08 17:10:24 - log_analysis_tool - INFO - [-] [ARQ] Worker 主循环已取消
+2026-10-08 17:10:24 - log_analysis_tool - INFO - [-] [ARQ] Redis 连接池已关闭
+2026-10-08 17:10:24 - log_analysis_tool - INFO - [-] 日志分析工具关闭
+2026-10-08 17:10:34 - log_analysis_tool.llm - INFO - [-] 知识库加载完成: 327 个知识库, 共 4119077 字符
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-] 报告文件服务已挂载: /reports/ -> /home/ai-agent-ladt/文档/LogAnalysisBackend/reports
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-] 日志分析工具启动中...
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-] 调试模式: True
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-] 监听端口: 8001
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-] 解压引擎自检:
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-]   ✅ libarchive-c
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-]   ✅ 7z-cli
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-]   ✅ py7zr
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-]   ✅ rarfile
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-]   ✅ unrar-cli
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-]   ✅ unrar-cffi
+2026-10-08 17:10:35 - log_analysis_tool.batch - INFO - [-] 定时清理: 无超过 15 天的目录需要删除
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-] [ARQ] Redis 连接池已创建: redis://localhost:6379/0
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-] [ARQ] 嵌入式 Worker 已启动 (concurrency=10)
+2026-10-08 17:10:35 - log_analysis_tool - INFO - [-] ARQ 嵌入式 Worker 已启动
+2026-10-08 17:10:37 - log_analysis_tool - INFO - [-] [飞书Bot] WebSocket 长连接已在后台启动
+2026-10-08 17:10:37 - log_analysis_tool - INFO - [-] 飞书机器人 WebSocket 长连接已启动
+2026-10-08 17:10:37 - log_analysis_tool - INFO - [-] [ARQ] Worker 主循环开始
+2026-10-08 17:10:37 - log_analysis_tool - INFO - [-] [ARQ] 看门狗已启动 (interval=60s)
+2026-10-08 17:10:37 - log_analysis_tool - INFO - [-] [ARQ Worker] 启动: concurrency=10, jira_limit=10, download_limit=4, extract_limit=1, llm_limit=10, job_timeout=3600s
+2026-10-08 17:11:07 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.7%, process_cpu=0.5%, memory=11.1%, process_rss=279.1MB, disk_read=1.5MB/30s, disk_write=12.0MB/30s
+2026-10-08 17:11:07 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.7|process_cpu=0.5|memory_percent=11.1|process_rss_mb=279.1|disk_read_mb=1.5|disk_write_mb=12.0|interval=30s
+2026-10-08 17:11:37 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.9%, process_cpu=0.4%, memory=11.1%, process_rss=279.1MB, disk_read=0.0MB/30s, disk_write=101.7MB/30s
+2026-10-08 17:11:37 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.9|process_cpu=0.4|memory_percent=11.1|process_rss_mb=279.1|disk_read_mb=0.0|disk_write_mb=101.7|interval=30s
+2026-10-08 17:12:07 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.9%, process_cpu=0.5%, memory=11.1%, process_rss=279.6MB, disk_read=0.0MB/30s, disk_write=9.9MB/30s
+2026-10-08 17:12:07 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.9|process_cpu=0.5|memory_percent=11.1|process_rss_mb=279.6|disk_read_mb=0.0|disk_write_mb=9.9|interval=30s
+2026-10-08 17:12:36 - log_analysis_tool.llm - INFO - [-] 知识库加载完成: 327 个知识库, 共 4119077 字符
+2026-10-08 17:12:37 - log_analysis_tool - INFO - [-] 报告文件服务已挂载: /reports/ -> /home/ai-agent-ladt/文档/LogAnalysisBackend/reports
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-] 日志分析工具启动中...
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-] 调试模式: True
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-] 监听端口: 8001
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-] 解压引擎自检:
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-]   ✅ libarchive-c
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-]   ✅ 7z-cli
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-]   ✅ py7zr
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-]   ✅ rarfile
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-]   ✅ unrar-cli
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-]   ✅ unrar-cffi
+2026-10-08 17:12:48 - log_analysis_tool.batch - INFO - [-] 定时清理: 无超过 15 天的目录需要删除
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-] [ARQ] Redis 连接池已创建: redis://localhost:6379/0
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-] [ARQ] 嵌入式 Worker 已启动 (concurrency=10)
+2026-10-08 17:12:48 - log_analysis_tool - INFO - [-] ARQ 嵌入式 Worker 已启动
+2026-10-08 17:12:50 - log_analysis_tool - INFO - [-] [飞书Bot] WebSocket 长连接已在后台启动
+2026-10-08 17:12:50 - log_analysis_tool - INFO - [-] 飞书机器人 WebSocket 长连接已启动
+2026-10-08 17:12:50 - log_analysis_tool - INFO - [-] [ARQ] Worker 主循环开始
+2026-10-08 17:12:50 - log_analysis_tool - INFO - [-] [ARQ] 看门狗已启动 (interval=60s)
+2026-10-08 17:12:50 - log_analysis_tool - INFO - [-] [ARQ Worker] 启动: concurrency=10, jira_limit=10, download_limit=4, extract_limit=1, llm_limit=10, job_timeout=3600s
+2026-10-08 17:13:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.5%, process_cpu=0.7%, memory=11.1%, process_rss=279.5MB, disk_read=0.0MB/30s, disk_write=292.7MB/30s
+2026-10-08 17:13:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.5|process_cpu=0.7|memory_percent=11.1|process_rss_mb=279.5|disk_read_mb=0.0|disk_write_mb=292.7|interval=30s
+2026-10-08 17:13:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.0%, process_cpu=0.5%, memory=10.8%, process_rss=279.6MB, disk_read=0.0MB/30s, disk_write=8.9MB/30s
+2026-10-08 17:13:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.0|process_cpu=0.5|memory_percent=10.8|process_rss_mb=279.6|disk_read_mb=0.0|disk_write_mb=8.9|interval=30s
+2026-10-08 17:14:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.1%, process_cpu=0.4%, memory=11.1%, process_rss=279.6MB, disk_read=0.0MB/30s, disk_write=99.8MB/30s
+2026-10-08 17:14:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.1|process_cpu=0.4|memory_percent=11.1|process_rss_mb=279.6|disk_read_mb=0.0|disk_write_mb=99.8|interval=30s
+2026-10-08 17:14:39 - log_analysis_tool - INFO - [-] [JIRA] 收到分析请求，启动后台任务: VCU-547799
+2026-10-08 17:14:39 - log_analysis_tool - WARNING - [-] [ARQ] 任务已存在，跳过去重: jira:VCU-547799:direct
+2026-10-08 17:14:39 - log_analysis_tool - INFO - [-] [JIRA] 任务已通过 ARQ 入队: jira_analysis_task → job=jira:VCU-547799:direct
+2026-10-08 17:14:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.5%, process_cpu=0.6%, memory=11.1%, process_rss=280.6MB, disk_read=0.6MB/30s, disk_write=103.6MB/30s
+2026-10-08 17:14:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.5|process_cpu=0.6|memory_percent=11.1|process_rss_mb=280.6|disk_read_mb=0.6|disk_write_mb=103.6|interval=30s
+2026-10-08 17:15:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.5%, process_cpu=0.4%, memory=11.0%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=208.0MB/30s
+2026-10-08 17:15:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.5|process_cpu=0.4|memory_percent=11.0|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=208.0|interval=30s
+2026-10-08 17:15:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.2%, process_cpu=0.4%, memory=10.8%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=3.6MB/30s
+2026-10-08 17:15:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.2|process_cpu=0.4|memory_percent=10.8|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=3.6|interval=30s
+2026-10-08 17:16:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.3%, process_cpu=0.4%, memory=11.0%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=197.6MB/30s
+2026-10-08 17:16:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.3|process_cpu=0.4|memory_percent=11.0|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=197.6|interval=30s
+2026-10-08 17:16:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.1%, process_cpu=0.4%, memory=10.8%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=4.8MB/30s
+2026-10-08 17:16:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.1|process_cpu=0.4|memory_percent=10.8|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=4.8|interval=30s
+2026-10-08 17:17:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.2%, process_cpu=0.4%, memory=11.1%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=104.9MB/30s
+2026-10-08 17:17:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.2|process_cpu=0.4|memory_percent=11.1|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=104.9|interval=30s
+2026-10-08 17:17:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.0%, process_cpu=0.5%, memory=11.0%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=3.0MB/30s
+2026-10-08 17:17:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.0|process_cpu=0.5|memory_percent=11.0|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=3.0|interval=30s
+2026-10-08 17:18:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.8%, process_cpu=0.4%, memory=11.2%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=111.8MB/30s
+2026-10-08 17:18:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.8|process_cpu=0.4|memory_percent=11.2|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=111.8|interval=30s
+2026-10-08 17:18:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.3%, process_cpu=0.4%, memory=10.8%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=6.2MB/30s
+2026-10-08 17:18:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.3|process_cpu=0.4|memory_percent=10.8|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=6.2|interval=30s
+2026-10-08 17:19:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.4%, process_cpu=0.4%, memory=11.0%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=103.8MB/30s
+2026-10-08 17:19:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.4|process_cpu=0.4|memory_percent=11.0|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=103.8|interval=30s
+2026-10-08 17:19:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.9%, process_cpu=0.5%, memory=10.8%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=2.4MB/30s
+2026-10-08 17:19:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.9|process_cpu=0.5|memory_percent=10.8|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=2.4|interval=30s
+2026-10-08 17:20:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.1%, process_cpu=0.4%, memory=10.9%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=102.7MB/30s
+2026-10-08 17:20:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.1|process_cpu=0.4|memory_percent=10.9|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=102.7|interval=30s
+2026-10-08 17:20:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.7%, process_cpu=0.4%, memory=11.1%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=10.8MB/30s
+2026-10-08 17:20:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.7|process_cpu=0.4|memory_percent=11.1|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=10.8|interval=30s
+2026-10-08 17:21:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.0%, process_cpu=0.5%, memory=10.9%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=99.7MB/30s
+2026-10-08 17:21:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.0|process_cpu=0.5|memory_percent=10.9|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=99.7|interval=30s
+2026-10-08 17:21:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.8%, process_cpu=0.4%, memory=10.7%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=1.8MB/30s
+2026-10-08 17:21:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.8|process_cpu=0.4|memory_percent=10.7|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=1.8|interval=30s
+2026-10-08 17:22:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.2%, process_cpu=0.4%, memory=11.0%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=98.8MB/30s
+2026-10-08 17:22:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.2|process_cpu=0.4|memory_percent=11.0|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=98.8|interval=30s
+2026-10-08 17:22:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.3%, process_cpu=0.4%, memory=10.8%, process_rss=280.6MB, disk_read=0.2MB/30s, disk_write=7.6MB/30s
+2026-10-08 17:22:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.3|process_cpu=0.4|memory_percent=10.8|process_rss_mb=280.6|disk_read_mb=0.2|disk_write_mb=7.6|interval=30s
+2026-10-08 17:23:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.1%, process_cpu=0.4%, memory=11.1%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=99.4MB/30s
+2026-10-08 17:23:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.1|process_cpu=0.4|memory_percent=11.1|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=99.4|interval=30s
+2026-10-08 17:23:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.0%, process_cpu=0.4%, memory=10.8%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=4.7MB/30s
+2026-10-08 17:23:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.0|process_cpu=0.4|memory_percent=10.8|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=4.7|interval=30s
+2026-10-08 17:24:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.2%, process_cpu=0.4%, memory=11.1%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=105.9MB/30s
+2026-10-08 17:24:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.2|process_cpu=0.4|memory_percent=11.1|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=105.9|interval=30s
+2026-10-08 17:24:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.2%, process_cpu=0.4%, memory=10.8%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=99.0MB/30s
+2026-10-08 17:24:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.2|process_cpu=0.4|memory_percent=10.8|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=99.0|interval=30s
+2026-10-08 17:25:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.3%, process_cpu=0.4%, memory=10.9%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=99.3MB/30s
+2026-10-08 17:25:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.3|process_cpu=0.4|memory_percent=10.9|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=99.3|interval=30s
+2026-10-08 17:25:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.9%, process_cpu=0.4%, memory=10.7%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=3.3MB/30s
+2026-10-08 17:25:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.9|process_cpu=0.4|memory_percent=10.7|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=3.3|interval=30s
+2026-10-08 17:26:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.2%, process_cpu=0.4%, memory=11.1%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=100.6MB/30s
+2026-10-08 17:26:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.2|process_cpu=0.4|memory_percent=11.1|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=100.6|interval=30s
+2026-10-08 17:26:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.9%, process_cpu=0.5%, memory=10.8%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=7.7MB/30s
+2026-10-08 17:26:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.9|process_cpu=0.5|memory_percent=10.8|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=7.7|interval=30s
+2026-10-08 17:27:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=2.2%, process_cpu=0.5%, memory=11.0%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=102.6MB/30s
+2026-10-08 17:27:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=2.2|process_cpu=0.5|memory_percent=11.0|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=102.6|interval=30s
+2026-10-08 17:27:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.7%, process_cpu=0.5%, memory=10.7%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=5.9MB/30s
+2026-10-08 17:27:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.7|process_cpu=0.5|memory_percent=10.7|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=5.9|interval=30s
+2026-10-08 17:28:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.6%, process_cpu=0.5%, memory=11.0%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=99.5MB/30s
+2026-10-08 17:28:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.6|process_cpu=0.5|memory_percent=11.0|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=99.5|interval=30s
+2026-10-08 17:28:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.8%, process_cpu=0.4%, memory=10.9%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=10.2MB/30s
+2026-10-08 17:28:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.8|process_cpu=0.4|memory_percent=10.9|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=10.2|interval=30s
+2026-10-08 17:29:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.9%, process_cpu=0.5%, memory=11.1%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=102.4MB/30s
+2026-10-08 17:29:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.9|process_cpu=0.5|memory_percent=11.1|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=102.4|interval=30s
+2026-10-08 17:29:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.8%, process_cpu=0.4%, memory=10.8%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=3.8MB/30s
+2026-10-08 17:29:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.8|process_cpu=0.4|memory_percent=10.8|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=3.8|interval=30s
+2026-10-08 17:30:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.2%, process_cpu=0.4%, memory=11.1%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=101.0MB/30s
+2026-10-08 17:30:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.2|process_cpu=0.4|memory_percent=11.1|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=101.0|interval=30s
+2026-10-08 17:30:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.9%, process_cpu=0.4%, memory=10.7%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=4.2MB/30s
+2026-10-08 17:30:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.9|process_cpu=0.4|memory_percent=10.7|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=4.2|interval=30s
+2026-10-08 17:31:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.4%, process_cpu=0.5%, memory=11.3%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=293.5MB/30s
+2026-10-08 17:31:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.4|process_cpu=0.5|memory_percent=11.3|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=293.5|interval=30s
+2026-10-08 17:31:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.9%, process_cpu=0.4%, memory=10.8%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=3.5MB/30s
+2026-10-08 17:31:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.9|process_cpu=0.4|memory_percent=10.8|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=3.5|interval=30s
+2026-10-08 17:32:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=0.9%, process_cpu=0.5%, memory=11.0%, process_rss=280.6MB, disk_read=0.0MB/30s, disk_write=100.5MB/30s
+2026-10-08 17:32:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=0.9|process_cpu=0.5|memory_percent=11.0|process_rss_mb=280.6|disk_read_mb=0.0|disk_write_mb=100.5|interval=30s
+2026-10-08 17:32:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.1%, process_cpu=0.4%, memory=10.7%, process_rss=280.6MB, disk_read=1.2MB/30s, disk_write=4.5MB/30s
+2026-10-08 17:32:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.1|process_cpu=0.4|memory_percent=10.7|process_rss_mb=280.6|disk_read_mb=1.2|disk_write_mb=4.5|interval=30s
+2026-10-08 17:33:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.2%, process_cpu=0.4%, memory=11.1%, process_rss=280.6MB, disk_read=0.3MB/30s, disk_write=101.5MB/30s
+2026-10-08 17:33:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.2|process_cpu=0.4|memory_percent=11.1|process_rss_mb=280.6|disk_read_mb=0.3|disk_write_mb=101.5|interval=30s
+2026-10-08 17:33:50 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.1%, process_cpu=0.4%, memory=10.9%, process_rss=280.6MB, disk_read=1.3MB/30s, disk_write=4.0MB/30s
+2026-10-08 17:33:50 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.1|process_cpu=0.4|memory_percent=10.9|process_rss_mb=280.6|disk_read_mb=1.3|disk_write_mb=4.0|interval=30s
+2026-10-08 17:34:20 - log_analysis_tool - INFO - [-] [系统状态] host_cpu=1.8%, process_cpu=0.4%, memory=11.1%, process_rss=280.7MB, disk_read=2.5MB/30s, disk_write=106.0MB/30s
+2026-10-08 17:34:20 - log_analysis_tool.perf - INFO - [-] PERF|system_resource|host_cpu=1.8|process_cpu=0.4|memory_percent=11.1|process_rss_mb=280.7|disk_read_mb=2.5|disk_write_mb=106.0|interval=30s
