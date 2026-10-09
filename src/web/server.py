@@ -420,6 +420,9 @@ def _process_feishu_message_event(event_data: dict):
     sender_id = sender.get("sender_id", {}).get("open_id", "")
     sender_type = sender.get("sender_type", "")
     create_time = msg.get("create_time", "")
+    # 自动记录创建者 P2P 会话（供前端触发的批量执行完成通知默认使用）
+    if msg.get("chat_type", "") == "p2p" and chat_id:
+        _ensure_notify_chat(chat_id)
     logger.info("飞书消息事件: chat_id=%s, type=%s, sender=%s(%s)", chat_id, msg_type, sender_id[:12], sender_type)
     # 记录所有收到的消息（调试用）
     content_preview = content_str[:200] if content_str else ""
@@ -491,6 +494,12 @@ def _feishu_ws_event_handler(data):
     try:
         msg = data.event.message
         msg_type = msg.message_type
+        # 自动记录机器人创建者(P2P 私聊)会话，供前端触发的批量执行完成通知默认发给创建者
+        try:
+            if getattr(msg, "chat_type", "") == "p2p" and msg.chat_id:
+                _ensure_notify_chat(msg.chat_id)
+        except Exception:
+            pass
         if msg_type == "text":
             content = json.loads(msg.content or "{}")
             raw_text = content.get("text", "")
@@ -2299,8 +2308,7 @@ def _bot_get_trigger_times(bugids: list) -> dict:
             issue = _jc.fetch_issue(bugid)
             # gmlogger 前置检查：无 gmlogger 附件的 Jira 直接跳过（与批量提取保持一致）
             attachments = (issue.get("fields") or {}).get("attachment") or []
-            has_gmlogger = any("gmlogger" in (att.get("filename", "") or "").lower() for att in attachments)
-            if not has_gmlogger:
+            if not _has_gmlogger_logs(attachments, bugid):
                 logger.info("触发时间: %s 无gmlogger附件，跳过", bugid)
                 _timestudy_record(bugid, "", "skipped", error_type="no_gmlogger",
                                   error_detail="无gmlogger附件，前置过滤跳过",
@@ -3867,6 +3875,7 @@ def _bot_run_single_execute(chat_id: str, bugids: list, exec_mode: str = "pc"):
         lines = []
         results = []
         batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _before_ids = _bitable_snapshot_ids()  # 提交前快照，完成后按'触发来源'统计新增行
         for bugid in run_bugids:
             if _is_cancelled(chat_id):
                 lines.append(f"⊘ 任务已被用户取消，剩余 {len(run_bugids) - run_bugids.index(bugid)} 条未执行")
@@ -3907,6 +3916,7 @@ def _bot_run_single_execute(chat_id: str, bugids: list, exec_mode: str = "pc"):
         except Exception as e:
             logger.warning("机器人单个执行结果保存失败: %s", e)
         feishu_client.send_bot_message(chat_id, f"批量执行{len(run_bugids)}个，成功{success}个，失败{len(run_bugids)-success}个，均在分析中。")
+        _start_analysis_completion_monitor(chat_id, f"{mode_label}批量执行", success, _before_ids, _bitable_source_of_mode(exec_mode))
     finally:
         _clear_running_task(chat_id)
 
@@ -3928,6 +3938,102 @@ def _bot_run_ai_analysis(chat_id: str, bugids: list):
     except Exception as e:
         logger.warning("机器人执行结果保存本地失败: %s", e)
     feishu_client.send_bot_message(chat_id, f"全部执行完成：成功 {success}/{len(bugids)}")
+
+
+def _bitable_source_of_mode(exec_mode: str) -> str:
+    """批量执行模式 → 数据沉淀表'触发来源'字段值：PC=jira_analyze, 线上=parseFullTicket"""
+    return "parseFullTicket" if exec_mode == "online" else "jira_analyze"
+
+
+def _ensure_notify_chat(chat_id: str):
+    """记录机器人创建者(P2P 私聊)会话到 config.feishu_bot.notify_chat_id（仅当为空时）。
+    前端触发的批量执行无会话上下文，完成通知默认发到该创建者会话。"""
+    import yaml
+    cfg = load_config()
+    fb = cfg.get("feishu_bot") or {}
+    if fb.get("notify_chat_id"):
+        return
+    fb["notify_chat_id"] = chat_id
+    cfg["feishu_bot"] = fb
+    try:
+        with open(cfg_module.CONFIG_PATH, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+        load_config(cfg_module.CONFIG_PATH)
+        logger.info("已记录批量执行完成通知默认会话(P2P创建者): %s", chat_id)
+    except Exception as e:
+        logger.warning("保存 notify_chat_id 失败: %s", e)
+
+
+def _bitable_snapshot_ids() -> set:
+    """快照数据沉淀表当前所有 record_id 集合（用于完成后统计新增行）"""
+    from src.clients import feishu_client
+    cfg = load_config().get("feishu_bitable", {})
+    app_token = cfg.get("app_token", "")
+    table_id = cfg.get("table_id", "")
+    if not app_token or not table_id:
+        return set()
+    try:
+        recs = feishu_client.list_bitable_records(app_token, table_id)
+        return {r.get("record_id", "") for r in recs if r.get("record_id")}
+    except Exception as e:
+        logger.warning("数据沉淀表快照失败: %s", e)
+        return set()
+
+
+def _start_analysis_completion_monitor(chat_id: str, label: str, n_expected: int,
+                                       before_ids: set, source_value: str,
+                                       poll_interval: int = 30, max_wait_min: int = 60):
+    """后台守护线程轮询数据沉淀表：当'触发来源==source_value 的新增行' >= n_expected 时，
+    用飞书机器人发一条'分析完毕'通知。按'触发来源'过滤以隔离 PC/线上 并发批次。"""
+    import threading
+    import time as _time
+    from src.clients import feishu_client
+    cfg = load_config().get("feishu_bitable", {})
+    app_token = cfg.get("app_token", "")
+    table_id = cfg.get("table_id", "")
+    if not chat_id or n_expected <= 0 or not app_token or not table_id:
+        logger.info("分析完成监控未启动(chat_id=%s, n=%d, table=%s)", bool(chat_id), n_expected, bool(table_id))
+        return
+
+    def _count_new_match():
+        recs = feishu_client.list_bitable_records(app_token, table_id)
+        cnt = 0
+        for r in recs:
+            rid = r.get("record_id", "")
+            if not rid or rid in before_ids:
+                continue
+            src = _bitable_text((r.get("fields") or {}).get("触发来源", ""))
+            if src == source_value:
+                cnt += 1
+        return cnt
+
+    def _run():
+        start = _time.time()
+        max_wait = max_wait_min * 60
+        while True:
+            _time.sleep(poll_interval)
+            try:
+                cnt = _count_new_match()
+            except Exception as e:
+                logger.warning("分析完成监控轮询异常(%s): %s", label, e)
+                cnt = 0
+            logger.info("分析完成监控(%s/%s): 新增匹配 %d/%d", label, source_value, cnt, n_expected)
+            if cnt >= n_expected:
+                try:
+                    feishu_client.send_bot_message(
+                        chat_id, f"✅ {label} 分析完毕（本次新增 {cnt} 条，触发来源={source_value}）")
+                except Exception as e:
+                    logger.warning("分析完毕通知发送失败: %s", e)
+                return
+            if _time.time() - start > max_wait:
+                try:
+                    feishu_client.send_bot_message(
+                        chat_id, f"⏱️ {label} 分析完成监控超时：已新增 {cnt}/{n_expected} 条")
+                except Exception:
+                    pass
+                return
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "pc",
@@ -4017,6 +4123,7 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "
         lines = []
         results = []
         batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _before_ids = _bitable_snapshot_ids()  # 提交前快照，完成后按'触发来源'统计新增行
         for bugid in run_bugids:
             if _is_cancelled(chat_id):
                 lines.append(f"⊘ 任务已被用户取消，剩余 {len(run_bugids) - run_bugids.index(bugid)} 条未执行")
@@ -4067,6 +4174,7 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "
         except Exception as e:
             logger.warning("机器人批量结果保存失败: %s", e)
         feishu_client.send_bot_message(chat_id, f"批量执行{len(run_bugids)}个，成功{success}个，失败{len(run_bugids)-success}个，均在分析中。")
+        _start_analysis_completion_monitor(chat_id, f"{mode_label}批量执行", success, _before_ids, _bitable_source_of_mode(exec_mode))
     finally:
         _clear_running_task(chat_id)
 
@@ -4082,6 +4190,7 @@ def _bot_run_batch_ai_continuous(chat_id: str, jql_key: str, count: int, exec_mo
     total_success = 0
     total_fail = 0
     executed_set = set()  # 跨轮已执行 Jira 号跟踪，避免重复执行
+    _before_ids = _bitable_snapshot_ids()  # 持续执行整体快照，全部轮次完成后统一监控
     try:
         for round_num in range(1, total_rounds + 1):
             if _is_cancelled(chat_id):
@@ -4109,6 +4218,8 @@ def _bot_run_batch_ai_continuous(chat_id: str, jql_key: str, count: int, exec_mo
         if not _is_cancelled(chat_id):
             feishu_client.send_bot_message(chat_id,
                 f"持续执行完成（共 {total_rounds} 轮，累计执行 {len(executed_set)} 条不重复）")
+            # 全部轮次提交完毕后，统一启动一个监控（新增'触发来源'匹配行 >= 累计执行数时通知）
+            _start_analysis_completion_monitor(chat_id, f"持续执行[{mode_label}]", len(executed_set), _before_ids, _bitable_source_of_mode(exec_mode))
     except Exception as e:
         logger.error("6.1.1 持续执行失败: %s", e)
         feishu_client.send_bot_message(chat_id, f"持续执行异常中断: {str(e)[:200]}")
@@ -4388,6 +4499,7 @@ def _bot_prod_batch_run(chat_id: str, bugids: list, filters: dict = None,
             return
         # 步骤3：调用接口执行
         feishu_client.send_bot_message(chat_id, f"步骤3/3：{mode_label}执行 {len(remaining)} 个...")
+        _before_ids = _bitable_snapshot_ids()  # 提交前快照，完成后按'触发来源'统计新增行
         success, lines, results = _bot_trigger_and_reply(chat_id, remaining, trigger_times,
                                                          realtime=False, exec_mode=exec_mode)
         if _is_cancelled(chat_id):
@@ -4398,6 +4510,7 @@ def _bot_prod_batch_run(chat_id: str, bugids: list, filters: dict = None,
         except Exception as e:
             logger.warning("机器人线上批量结果保存失败: %s", e)
         _bot_send_batch_results(chat_id, success, len(remaining), lines)
+        _start_analysis_completion_monitor(chat_id, f"{mode_label}批量执行", success, _before_ids, _bitable_source_of_mode(exec_mode))
     except Exception as e:
         logger.error("机器人功能10.1执行失败: %s", e)
         feishu_client.send_bot_message(chat_id, f"批量执行失败: {str(e)[:200]}")
@@ -4441,6 +4554,8 @@ def _bot_prod_batch_run_continuous(chat_id: str, bugids: list, filters: dict = N
             return
         # 循环执行 N 轮
         done_total = 0
+        total_success = 0
+        _before_ids = _bitable_snapshot_ids()  # 持续执行整体快照，全部轮次完成后统一监控
         for round_num in range(1, total_rounds + 1):
             if _is_cancelled(chat_id):
                 feishu_client.send_bot_message(chat_id, f"任务已被用户取消（完成 {round_num - 1}/{total_rounds} 轮）")
@@ -4457,6 +4572,7 @@ def _bot_prod_batch_run_continuous(chat_id: str, bugids: list, filters: dict = N
             success, lines, results = _bot_trigger_and_reply(chat_id, batch, trigger_times,
                                                              realtime=False, exec_mode=exec_mode)
             done_total += len(batch)
+            total_success += success
             if _is_cancelled(chat_id):
                 break
             try:
@@ -4475,6 +4591,8 @@ def _bot_prod_batch_run_continuous(chat_id: str, bugids: list, filters: dict = N
                     _time.sleep(1)
         if not _is_cancelled(chat_id):
             feishu_client.send_bot_message(chat_id, f"持续执行完成（共 {total_rounds} 轮，累计执行 {done_total} 条）")
+            # 全部轮次提交完毕后，统一启动一个监控（新增'触发来源'匹配行 >= 累计成功数时通知）
+            _start_analysis_completion_monitor(chat_id, f"持续执行[{mode_label}]", total_success, _before_ids, _bitable_source_of_mode(exec_mode))
     except Exception as e:
         logger.error("10.1 持续执行失败: %s", e)
         feishu_client.send_bot_message(chat_id, f"持续执行异常中断: {str(e)[:200]}")
@@ -6807,8 +6925,10 @@ async def test_batch_ai_extract_times(request: Request):
                             loop.run_in_executor(None, _jc.fetch_issue, key),
                             timeout=30)
                         attachments = (issue.get("fields") or {}).get("attachment") or []
-                        has_gmlogger = any("gmlogger" in (att.get("filename", "") or "").lower() for att in attachments)
-                        if not has_gmlogger:
+                        _has_log = await loop.run_in_executor(None, _has_gmlogger_logs, attachments, key)
+                        if not _has_log:
+                            # 无gmlogger且包内无main → 写空标记，下次自动按"已标记空"跳过（勾"空标记重新提取"可重来）
+                            _write_buffer.append((key, ""))
                             return key, "no_gmlogger", ""
                         tt = ""
                         if video_fallback:
@@ -7292,6 +7412,8 @@ async def test_batch_ai_run(request: Request):
                                   "分析执行时间": batch_start_time})
 
         # 并行启动所有任务
+        _notify_chat = load_config().get("feishu_bot", {}).get("notify_chat_id", "")
+        _before_ids = await loop.run_in_executor(None, _bitable_snapshot_ids)  # 提交前快照
         for bugid in bugids:
             loop.run_in_executor(None, _run_one, bugid)
 
@@ -7347,6 +7469,8 @@ async def test_batch_ai_run(request: Request):
         done_msg = f"执行完成：成功 {success_count} 条，失败 {fail_count} 条"
         if skipped_jiras:
             done_msg += f"，已跳过 {len(skipped_jiras)} 条（多维表格已成功）"
+        # 启动分析完成监控（web 触发无会话，用配置的 feishu_bot.notify_chat_id；未配置则自动跳过）
+        _start_analysis_completion_monitor(_notify_chat, "PC批量执行(web)", success_count, _before_ids, "jira_analyze")
         yield f"data: {_json.dumps({'type': 'done', 'total': len(results), 'success': success_count, 'fail': fail_count, 'skipped': len(skipped_jiras), 'message': done_msg, 'csv_path': batch_csv, 'cloud_url': cloud_url}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
@@ -8899,7 +9023,10 @@ _GMLOGGER_REVIEW_KEYWORDS = {"无gmlogger", "无gmlogger文件", "无gmlogger日
 
 @app.post("/api/test/gmlogger_rescan")
 async def test_gmlogger_rescan(request: Request):
-    """扫描多维表格中人工审核为'无gmlogger'的失败记录，重新检查Jira附件是否已有gmlogger/main文件"""
+    """扫描人工审核为'无gmlogger'的失败记录，重新检查Jira附件是否已有gmlogger/main文件
+    （SSE 流式：逐个候选边扫边推进度，避免下载压缩包探测导致前端超时）"""
+    import asyncio
+    import json as _json
     from src.clients import feishu_client, jira_client
     cfg = load_config().get("feishu_bitable", {})
     app_token = cfg.get("app_token", "")
@@ -8907,77 +9034,74 @@ async def test_gmlogger_rescan(request: Request):
     bugid_field = cfg.get("bugid_field", "jira号")
     if not app_token or not table_id:
         return _fail("多维表格 app_token/table_id 未配置")
-    try:
+    loop = asyncio.get_event_loop()
+
+    def _collect_candidates():
         records = feishu_client.list_bitable_records(app_token, table_id)
-        # 筛选：分析结果=失败 且 人工审核结果包含无gmlogger相关关键词
-        candidates = []
+        cands = []
         for rec in records:
             fields = rec.get("fields", {})
-            result_status = _bitable_text(fields.get("分析结果", ""))
-            if result_status != "失败":
+            if _bitable_text(fields.get("分析结果", "")) != "失败":
                 continue
             human_review = _bitable_text(fields.get("人工审核结果", ""))
             if not human_review:
                 continue
-            # 检查是否匹配无gmlogger相关关键词
-            review_lower = human_review.lower()
-            is_match = any(kw.lower() in review_lower for kw in _GMLOGGER_REVIEW_KEYWORDS)
-            if not is_match:
+            if not any(kw.lower() in human_review.lower() for kw in _GMLOGGER_REVIEW_KEYWORDS):
                 continue
-            # 提取 bugid
             fv = fields.get(bugid_field, "")
             if isinstance(fv, list):
                 fv = " ".join(str(v) for v in fv)
             bugid = str(fv).strip()
             if not bugid:
                 continue
-            candidates.append({
-                "record_id": rec.get("record_id", ""),
-                "bugid": bugid,
-                "human_review": human_review,
-            })
-        # 逐个查询Jira附件
-        results = []
+            cands.append({"record_id": rec.get("record_id", ""), "bugid": bugid, "human_review": human_review})
+        return cands
+
+    def _check_one(c):
+        bugid = c["bugid"]
+        issue = jira_client.fetch_issue(bugid)
+        attachments = (issue.get("fields") or {}).get("attachment") or []
+        matched = [att.get("filename", "") for att in attachments
+                   if "gmlogger" in (att.get("filename", "") or "").lower()
+                   or "main" in (att.get("filename", "") or "").lower()]
+        has_gmlogger = any("gmlogger" in f.lower() for f in matched)
+        has_main = any("main" in f.lower() and "gmlogger" not in f.lower() for f in matched)
+        # 新逻辑：文件名无 gmlogger/main 线索时，下载压缩包探测包内是否有 main 文件
+        has_file = _has_gmlogger_logs(attachments, bugid)
+        return {
+            "record_id": c["record_id"], "bugid": bugid, "human_review": c["human_review"],
+            "attachment_count": len(attachments), "matched_files": matched,
+            "has_gmlogger": has_gmlogger, "has_main": has_main, "has_file": has_file,
+        }
+
+    async def event_generator():
+        try:
+            candidates = await loop.run_in_executor(None, _collect_candidates)
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'读取多维表格失败: {e}'}, ensure_ascii=False)}\n\n"
+            return
+        total = len(candidates)
+        yield f"data: {_json.dumps({'type': 'start', 'total': total}, ensure_ascii=False)}\n\n"
         has_file_count = 0
+        done = 0
         for c in candidates:
-            bugid = c["bugid"]
+            if await request.is_disconnected():
+                break
             try:
-                issue = jira_client.fetch_issue(bugid)
-                attachments = (issue.get("fields") or {}).get("attachment") or []
-                matched = [att.get("filename", "") for att in attachments
-                           if "gmlogger" in (att.get("filename", "") or "").lower()
-                           or "main" in (att.get("filename", "") or "").lower()]
-                has_gmlogger = any("gmlogger" in f.lower() for f in matched)
-                has_main = any("main" in f.lower() and "gmlogger" not in f.lower() for f in matched)
-                if matched:
-                    has_file_count += 1
-                results.append({
-                    "record_id": c["record_id"],
-                    "bugid": bugid,
-                    "human_review": c["human_review"],
-                    "attachment_count": len(attachments),
-                    "matched_files": matched,
-                    "has_gmlogger": has_gmlogger,
-                    "has_main": has_main,
-                    "has_file": len(matched) > 0,
-                })
+                res = await loop.run_in_executor(None, _check_one, c)
             except Exception as e:
-                results.append({
-                    "record_id": c["record_id"],
-                    "bugid": bugid,
-                    "human_review": c["human_review"],
-                    "attachment_count": 0,
-                    "matched_files": [],
-                    "has_gmlogger": False,
-                    "has_main": False,
-                    "has_file": False,
-                    "error": str(e)[:100],
-                })
-        msg = f"扫描完成: {len(candidates)} 条无gmlogger记录，{has_file_count} 条已新增日志文件"
-        return _ok({"candidates": results, "total": len(candidates), "has_file_count": has_file_count}, msg)
-    except Exception as e:
-        logger.error("无gmlogger重新扫描失败: %s", e, exc_info=True)
-        return _fail(f"扫描失败: {e}")
+                res = {"record_id": c["record_id"], "bugid": c["bugid"], "human_review": c["human_review"],
+                       "attachment_count": 0, "matched_files": [], "has_gmlogger": False,
+                       "has_main": False, "has_file": False, "error": str(e)[:100]}
+            if res.get("has_file"):
+                has_file_count += 1
+            done += 1
+            res["index"] = done
+            yield f"data: {_json.dumps({'type': 'progress', **res}, ensure_ascii=False)}\n\n"
+        msg = f"扫描完成: {total} 条无gmlogger记录，{has_file_count} 条已新增日志文件"
+        yield f"data: {_json.dumps({'type': 'done', 'total': total, 'has_file_count': has_file_count, 'message': msg}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.post("/api/test/gmlogger_clear_review")
@@ -9715,6 +9839,68 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
     return {"status": "failed", "reason": last_reason, "main_entries": [], "main_times": []}
 
 
+# 压缩包附件名匹配（支持 .zip/.tar.gz/.rar 及 .001/.002 分卷后缀）
+_ARCHIVE_NAME_RE = re.compile(r"\.(zip|7z|rar|tar|gz|bz2|xz)(\.\d{2,3})?$", re.I)
+# 分卷压缩包后缀（如 xxx.7z.001 / xxx.zip.002）：多卷无法只读目录且体积极大，探测时一律跳过
+_SPLIT_ARCHIVE_RE = re.compile(r"\.\d{2,3}$")
+# 包内 main 探测的单包体积上限（80MB）：超过则不下载探测，退回文件名判定
+_ARCHIVE_PROBE_MAX_BYTES = 80 * 1024 * 1024
+
+
+def _jira_att_auth() -> tuple:
+    """构造下载 Jira 压缩包附件的认证头与超时，返回 (headers, timeout)"""
+    jcfg = load_config().get("jira_api", {})
+    headers = {}
+    token = jcfg.get("token", "")
+    if token:
+        if jcfg.get("auth_type", "bearer").lower() == "bearer":
+            headers["Authorization"] = f"Bearer {token}"
+        elif jcfg.get("username"):
+            import base64
+            headers["Authorization"] = "Basic " + base64.b64encode(
+                f"{jcfg['username']}:{token}".encode()).decode()
+    timeout = max(int(jcfg.get("timeout", 30)), 120)
+    return headers, timeout
+
+
+def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
+    """判断 Jira 是否含可用日志（gmlogger）。智能回退：
+
+    1) 附件文件名含 gmlogger/main → 直接判定有（快，不下载）；
+    2) 否则仅对≤ 80MB 的单卷压缩包下载探测包内是否有 main 文件；
+       分卷压缩包(.001/.002 等)或超大包一律跳过（避免 GB 级下载拖垮）。
+    """
+    names = [(a.get("filename", "") or "").lower() for a in attachments]
+    if any("gmlogger" in n or "main" in n for n in names):
+        return True
+    headers, timeout = _jira_att_auth()
+    for att in attachments:
+        fn = (att.get("filename", "") or "").lower()
+        if not _ARCHIVE_NAME_RE.search(fn):
+            continue
+        # 跳过：分卷压缩包（如 xxx.7z.001），多卷无法只读目录且体积极大
+        if _SPLIT_ARCHIVE_RE.search(fn):
+            continue
+        # 跳过：超过探测上限的包，避免整包下载
+        if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
+            continue
+        res = _diag_list_archive_entries(att.get("content", ""), headers, timeout, bugid)
+        if res.get("ok") and any("main" in os.path.basename(e).lower() for e in res.get("entries", [])):
+            logger.info("无gmlogger文件名，但压缩包 %s 内含 main 文件，判定有日志 (%s)", fn, bugid)
+            return True
+    return False
+
+
+def _gmlogger_main_date_refs(attachments: list, headers: dict, timeout: int, bugid: str = "") -> list:
+    """文件名解析不到 gmlogger 日期时，下载 gmlogger 压缩包取包内 main 权威日期，返回 [datetime]"""
+    try:
+        probe = _diag_gmlogger_main_times(attachments, headers, timeout, bugid)
+        return [dt for _, dt in (probe.get("main_times") or [])]
+    except Exception as e:
+        logger.warning("gmlogger main 日期回退失败 %s: %s", bugid, e)
+        return []
+
+
 # ---- 视频帧 OCR 提取触发时间（兆底机制）----
 _VIDEO_SUFFIXES = (".mp4", ".avi", ".mov", ".mkv")
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")
@@ -10395,6 +10581,15 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         auth_type = cfg.get("auth_type", "bearer").lower()
         if auth_type == "bearer":
             headers["Authorization"] = f"Bearer {token}"
+    # 智能回退：文件名解析不到 gmlogger 日期时，下载 gmlogger 压缩包取包内 main 权威日期，
+    # 使已读到的时钟（如 10.32/13.52）能落地，减少"封面及1/3/6秒全失败"
+    if not gm_dates:
+        _timeout = max(int(cfg.get("timeout", 30)), 120)
+        _main_dts = _gmlogger_main_date_refs(attachments, headers, _timeout, bugid)
+        if _main_dts:
+            gm_dates = [(dt.year, dt.month, dt.day) for dt in _main_dts]
+            ref_pool = list(_main_dts)
+            logger.info("视频兜底提取(%s)：文件名无 gmlogger 日期，回退包内 main 日期 %d 个", bugid, len(_main_dts))
     best_partial = ""
     # 12h 制兜底候选（延迟决策）
     best_12h_cand = None  # (time_str, ext_dt)
@@ -13260,6 +13455,8 @@ async def test_prod_batch_run(request: Request):
                                   "执行时间": batch_start_time,
                                   "status": "fail", "msg": str(e)[:100]})
 
+        _notify_chat = load_config().get("feishu_bot", {}).get("notify_chat_id", "")
+        _before_ids = await loop.run_in_executor(None, _bitable_snapshot_ids)  # 提交前快照
         for bugid in run_bugids:
             loop.run_in_executor(None, _run_one, bugid)
 
@@ -13299,6 +13496,8 @@ async def test_prod_batch_run(request: Request):
             cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
         except Exception as e:
             logger.warning("线上批量执行记录上传云端失败: %s", e)
+        # 启动分析完成监控（web 触发无会话，默认发到配置的 feishu_bot.notify_chat_id=创建者P2P）
+        _start_analysis_completion_monitor(_notify_chat, f"{mode_label}批量执行(web)", success_count, _before_ids, _bitable_source_of_mode(exec_mode))
         yield f"data: {_json.dumps({'type': 'done', 'total': len(results), 'success': success_count, 'fail': fail_count, 'dedup': dedup_count, 'skipped': skipped_count, 'csv_path': batch_csv, 'cloud_url': cloud_url, 'message': done_msg}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
