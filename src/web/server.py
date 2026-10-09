@@ -9063,9 +9063,9 @@ async def test_gmlogger_rescan(request: Request):
         attachments = (issue.get("fields") or {}).get("attachment") or []
         matched = [att.get("filename", "") for att in attachments
                    if "gmlogger" in (att.get("filename", "") or "").lower()
-                   or "main" in (att.get("filename", "") or "").lower()]
+                   or "main.log" in (att.get("filename", "") or "").lower()]
         has_gmlogger = any("gmlogger" in f.lower() for f in matched)
-        has_main = any("main" in f.lower() and "gmlogger" not in f.lower() for f in matched)
+        has_main = any("main.log" in f.lower() and "gmlogger" not in f.lower() for f in matched)
         # 新逻辑：文件名无 gmlogger/main 线索时，下载压缩包探测包内是否有 main 文件
         has_file = _has_gmlogger_logs(attachments, bugid)
         return {
@@ -9106,7 +9106,7 @@ async def test_gmlogger_rescan(request: Request):
 
 @app.post("/api/test/gmlogger_clear_review")
 async def test_gmlogger_clear_review(request: Request):
-    """批量清空选中记录的人工审核结果字段"""
+    """批量将选中记录的人工审核结果替换为'gmlogger文件已上传'（标记日志已上传，非通用失败，可被重新分析）"""
     from src.clients import feishu_client
     body = await request.json() or {}
     record_ids = body.get("record_ids") or []
@@ -9118,7 +9118,7 @@ async def test_gmlogger_clear_review(request: Request):
     if not app_token or not table_id:
         return _fail("多维表格 app_token/table_id 未配置")
     try:
-        updates = [{"record_id": rid, "fields": {"人工审核结果": ""}} for rid in record_ids]
+        updates = [{"record_id": rid, "fields": {"人工审核结果": "gmlogger文件已上传"}} for rid in record_ids]
         # 批量更新，每次最多100条
         success = 0
         errors = []
@@ -9129,13 +9129,61 @@ async def test_gmlogger_clear_review(request: Request):
                 success += len(batch)
             except Exception as e:
                 errors.append(f"批次 {i // 100 + 1}: {str(e)[:80]}")
-        msg = f"已清空 {success} 条人工审核结果"
+        msg = f"已将 {success} 条人工审核结果替换为'gmlogger文件已上传'"
         if errors:
             msg += f"，{len(errors)} 批次失败"
         return _ok({"success": success, "errors": errors}, msg)
     except Exception as e:
         logger.error("清空人工审核结果失败: %s", e, exc_info=True)
         return _fail(f"清空失败: {e}")
+
+
+@app.post("/api/test/gmlogger_clear_empty_mark")
+async def test_gmlogger_clear_empty_mark(request: Request):
+    """清除指定 jira 号在云端触发时间表的'空标签'（触发时间为空的记录）。
+    删除后该 jira 不再命中'已标记空'，下次批量提取会重新提取其触发时间。"""
+    from src.clients import feishu_client
+    body = await request.json() or {}
+    bugids = [str(b).strip() for b in (body.get("bugids") or []) if str(b).strip()]
+    if not bugids:
+        return _fail("请选择要清除空标签的记录")
+    target = set(bugids)
+    try:
+        app_token, table_ids = _get_trigger_time_table_cfg()
+        if not app_token or not table_ids:
+            return _fail("触发时间表 app_token/table_ids 未配置")
+        deleted = 0
+        errors = []
+        for tid in table_ids:
+            try:
+                records = feishu_client.list_bitable_records(app_token, tid)
+                # 仅删除触发时间为空（空标签）且命中目标 jira 的记录，不动已有有效时间
+                del_ids = []
+                for rec in records:
+                    fields = rec.get("fields", {})
+                    jira_no = _bitable_text(fields.get("jira号", ""))
+                    tt = _bitable_text(fields.get("触发时间", ""))
+                    if jira_no in target and not tt:
+                        rid = rec.get("record_id", "")
+                        if rid:
+                            del_ids.append(rid)
+                if del_ids:
+                    feishu_client.batch_delete_records(app_token, tid, del_ids)
+                    deleted += len(del_ids)
+            except Exception as e:
+                errors.append(f"表 {tid}: {str(e)[:60]}")
+        # 清理内存缓存，确保下次加载读到最新（否则 TTL 内仍会命中旧的"已标记空"）
+        _bitable_bulk_cache.pop("cloud_trigger_cache", None)
+        _bitable_bulk_cache.pop("trigger_times_cloud", None)
+        for b in target:
+            _trigger_time_bugid_cache.pop(b, None)
+        msg = f"已清除 {deleted} 条云端空标签（候选 {len(target)} 个 jira）"
+        if errors:
+            msg += f"，{len(errors)} 个表失败"
+        return _ok({"deleted": deleted, "errors": errors}, msg)
+    except Exception as e:
+        logger.error("清除云端空标签失败: %s", e, exc_info=True)
+        return _fail(f"清除失败: {e}")
 
 
 # ========== AI日志分析失败问题排查工具 ==========
@@ -9866,12 +9914,12 @@ def _jira_att_auth() -> tuple:
 def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
     """判断 Jira 是否含可用日志（gmlogger）。智能回退：
 
-    1) 附件文件名含 gmlogger/main → 直接判定有（快，不下载）；
-    2) 否则仅对≤ 80MB 的单卷压缩包下载探测包内是否有 main 文件；
+    1) 附件文件名含 gmlogger/main.log → 直接判定有（快，不下载）；
+    2) 否则仅对≤ 80MB 的单卷压缩包下载探测包内是否有 main.log 文件；
        分卷压缩包(.001/.002 等)或超大包一律跳过（避免 GB 级下载拖垮）。
     """
     names = [(a.get("filename", "") or "").lower() for a in attachments]
-    if any("gmlogger" in n or "main" in n for n in names):
+    if any("gmlogger" in n or "main.log" in n for n in names):
         return True
     headers, timeout = _jira_att_auth()
     for att in attachments:
@@ -9885,8 +9933,8 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
         if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
             continue
         res = _diag_list_archive_entries(att.get("content", ""), headers, timeout, bugid)
-        if res.get("ok") and any("main" in os.path.basename(e).lower() for e in res.get("entries", [])):
-            logger.info("无gmlogger文件名，但压缩包 %s 内含 main 文件，判定有日志 (%s)", fn, bugid)
+        if res.get("ok") and any("main.log" in os.path.basename(e).lower() for e in res.get("entries", [])):
+            logger.info("无gmlogger文件名，但压缩包 %s 内含 main.log 文件，判定有日志 (%s)", fn, bugid)
             return True
     return False
 
