@@ -6628,6 +6628,7 @@ async def test_batch_ai_extract_times(request: Request):
     refresh_cache = body.get("refresh_cache", False)      # 云端缓存更新：有缓存也重新提取
     re_extract_empty = body.get("re_extract_empty", False) # 空标记重新提取
     parallel = body.get("parallel", False)                   # 并行提取（3路并发）
+    filter_ai_init = body.get("filter_ai_init", False)       # 过滤AI初步分析结果：已有 customfield_13714 的跳过（与功能9一致）
     if not keys:
         return _fail("候选列表为空，请先执行步骤1")
 
@@ -6674,6 +6675,14 @@ async def test_batch_ai_extract_times(request: Request):
                     logger.info("多维表格过滤: 排除 %d 个已有Jira号", len(bitable_exclude))
                 except Exception as e:
                     logger.warning("多维表格过滤查询失败（跳过）: %s", e)
+            # 过滤AI初步分析结果：查询 Jira customfield_13714，已有分析结果的跳过（与功能9逻辑一致）
+            ai_init_exclude = set()
+            if filter_ai_init:
+                try:
+                    ai_init_exclude = await loop.run_in_executor(None, _batch_check_ai_init_field, keys)
+                    logger.info("AI初步分析过滤: 排除 %d 个已有分析结果的Jira号", len(ai_init_exclude))
+                except Exception as e:
+                    logger.warning("AI初步分析过滤查询失败（跳过）: %s", e)
             # 加载已修正/已确认的诊断缓存记录（缓存更新时跳过这些）
             corrected_jiras = set()
             _cache_dir = os.path.join(PROJECT_ROOT, "data", "troubleshoot")
@@ -6694,8 +6703,14 @@ async def test_batch_ai_extract_times(request: Request):
             skip_empty = 0
             skip_bitable = 0
             skip_corrected = 0
+            skip_ai_init = 0
             old_cache = {}  # refresh_cache 时保存旧缓存，提取失败时回退
             for key in keys:
+                if key in ai_init_exclude:
+                    # 已有AI初步分析结果，跳过（与功能9逻辑一致）
+                    sources[key] = "已AI分析(跳过)"
+                    skip_ai_init += 1
+                    continue
                 if key in bitable_exclude:
                     # 多维表格中已有，直接跳过
                     sources[key] = "已存在(多维表)"
@@ -6724,7 +6739,7 @@ async def test_batch_ai_extract_times(request: Request):
                     need_fetch.append(key)
             cloud_hit = len(trigger_times)
             total = len(keys)
-            yield f"data: {_json.dumps({'type': 'start', 'total': total, 'local_hit': cloud_hit, 'need_fetch': len(need_fetch), 'skip_empty': skip_empty, 'skip_bitable': skip_bitable, 'skip_corrected': skip_corrected, 'refresh_cache': refresh_cache, 're_extract_empty': re_extract_empty, 'parallel': parallel}, ensure_ascii=False)}\n\n"
+            yield f"data: {_json.dumps({'type': 'start', 'total': total, 'local_hit': cloud_hit, 'need_fetch': len(need_fetch), 'skip_empty': skip_empty, 'skip_bitable': skip_bitable, 'skip_corrected': skip_corrected, 'skip_ai_init': skip_ai_init, 'refresh_cache': refresh_cache, 're_extract_empty': re_extract_empty, 'parallel': parallel}, ensure_ascii=False)}\n\n"
             # 对未处理过的走接口提取
             done_count = cloud_hit + skip_empty
             empty_count = 0
@@ -6876,7 +6891,7 @@ async def test_batch_ai_extract_times(request: Request):
             else:
                 logger.info("批量提取触发时间: 云端命中 %d, 跳过空 %d, 无gmlogger %d, 新提取 %d, 本次空 %d, 共 %d/%d",
                             cloud_hit, skip_empty, skip_no_gmlogger, new_count, empty_count, len(trigger_times), total)
-            yield f"data: {_json.dumps({'type': 'done', 'time_count': len(trigger_times), 'total': total, 'local_hit': cloud_hit, 'new_count': new_count, 'empty_count': empty_count, 'skip_empty': skip_empty, 'skip_bitable': skip_bitable, 'skip_corrected': skip_corrected, 'skip_no_gmlogger': skip_no_gmlogger, 'interrupted': interrupted, 'trigger_times': trigger_times, 'sources': sources}, ensure_ascii=False)}\n\n"
+            yield f"data: {_json.dumps({'type': 'done', 'time_count': len(trigger_times), 'total': total, 'local_hit': cloud_hit, 'new_count': new_count, 'empty_count': empty_count, 'skip_empty': skip_empty, 'skip_bitable': skip_bitable, 'skip_corrected': skip_corrected, 'skip_ai_init': skip_ai_init, 'skip_no_gmlogger': skip_no_gmlogger, 'interrupted': interrupted, 'trigger_times': trigger_times, 'sources': sources}, ensure_ascii=False)}\n\n"
         finally:
             signal.signal(signal.SIGINT, _prev_handler)
 
