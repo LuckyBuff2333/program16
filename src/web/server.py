@@ -1777,6 +1777,17 @@ _TIMESTUDY_CSV_HEADERS = [
     "OCR原文", "匹配差秒", "12h转换", "jira创建时间",
     "trace_steps"
 ]
+# 已实施的优化/修复记录（持久化，驱动每次分析快照中的"已实施优化记录"区块，可按时间追加）
+_TIMESTUDY_FIX_LOG = [
+    {
+        "date": "2026-10-09",
+        "title": "封面帧小字时钟 OCR 识别修复",
+        "problem": "封面帧(position=0)确有清晰时钟(如10:14/10:12)，但 EasyOCR 默认 canvas_size=1280 会把宽幅画面下采样，小字号、浅粉底低对比度的时钟被读成乱码(如 10,? / 10:1?)，分钟位变成非数字导致时间正则匹配失败，被误判为'未识别到时间'。",
+        "root_cause": "EasyOCR 默认画布过小导致大图下采样 + 检测阈值偏高，对小字/低对比度时钟识别能力不足。区别于'首帧黑屏/转场导致无时钟'的正常情况。",
+        "fix": "新增 _ocr_readtext(reader, image) helper：readtext 使用 canvas_size=2560、mag_ratio=1.5、text_threshold=0.25、low_text=0.3，参数不兼容时回退默认调用；统一应用到 simple/非simple 两处视频帧OCR 与图片OCR 共三个调用点。",
+        "verify": "VCU-553755：修复前封面读'10,?'失败(未识别到时间)；修复后封面第1秒读出'10,12'→经 _fix_ocr_missing_colon 转'10:12'→配合 gmlogger 日期(10:16参考,差240s<300s)成功命中 2026-10-09 10:12:00。",
+    },
+]
 # 提取上下文（线程安全，每次提取前初始化）
 _timestudy_ctx: dict = {}
 _timestudy_lock = threading.Lock()
@@ -1849,6 +1860,34 @@ def _timestudy_record(bugid: str, result: str, source: str,
         logger.warning("自学习记录写入失败 %s: %s", bugid, e)
 
 
+def _timestudy_fixlog_lines() -> list:
+    """渲染"已实施优化记录"区块的 markdown 行（完整分析与空记录兜底共用）。"""
+    lines = ["", "## 已实施优化记录", ""]
+    for i, fx in enumerate(_TIMESTUDY_FIX_LOG, 1):
+        lines.extend([
+            f"### {i}. {fx['title']}（{fx['date']}）",
+            "",
+            f"- **问题现象**: {fx['problem']}",
+            f"- **根因**: {fx['root_cause']}",
+            f"- **修复方案**: {fx['fix']}",
+            f"- **验证结果**: {fx['verify']}",
+            "",
+        ])
+    return lines
+
+
+def _timestudy_append_doc(body: str):
+    """把一段 markdown 追加到 optimization_log.md；文件不存在则创建并加 H1 标题。"""
+    log_path = os.path.join(_TIMESTUDY_DIR, "optimization_log.md")
+    os.makedirs(_TIMESTUDY_DIR, exist_ok=True)
+    if os.path.exists(log_path):
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write("\n\n---\n\n" + body)
+    else:
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write("# 触发时间提取优化日志\n\n" + body)
+
+
 def _timestudy_analyze(after_time: str = "") -> dict:
     """深度分析 records.csv，生成 error_patterns.json 和 optimization_log.md
 
@@ -1856,14 +1895,18 @@ def _timestudy_analyze(after_time: str = "") -> dict:
         after_time: 可选，只分析该时间之后的记录（格式: YYYY-MM-DD HH:MM:SS）
     """
     import csv as _csv
-    if not os.path.exists(_TIMESTUDY_RECORDS):
-        return {"total_records": 0, "error_patterns": {}}
-    # 读取所有记录
+    # 读取所有记录（records.csv 可能不存在，如批量提取路径不写记录）
     records = []
-    with open(_TIMESTUDY_RECORDS, "r", encoding="utf-8-sig") as f:
-        reader = _csv.DictReader(f)
-        for row in reader:
-            records.append(row)
+    if os.path.exists(_TIMESTUDY_RECORDS):
+        with open(_TIMESTUDY_RECORDS, "r", encoding="utf-8-sig") as f:
+            reader = _csv.DictReader(f)
+            for row in reader:
+                records.append(row)
+    # 无分析记录时：仅在文档不存在时创建（含"已实施优化记录"），避免重复点击产生重复快照
+    if not records:
+        if not os.path.exists(os.path.join(_TIMESTUDY_DIR, "optimization_log.md")):
+            _timestudy_append_doc("\n".join(_timestudy_fixlog_lines()))
+        return {"total_records": 0, "error_patterns": {}}
     # 按时间过滤（记录时间字段）
     if after_time:
         after_time = after_time.strip()
@@ -2068,7 +2111,7 @@ def _timestudy_analyze(after_time: str = "") -> dict:
         _json2.dump(patterns, f, ensure_ascii=False, indent=2)
     # ===== 生成 optimization_log.md =====
     log_lines = [
-        f"# 触发时间提取优化日志",
+        f"## 分析快照 {patterns['generated_at']}",
         f"",
         f"生成时间: {patterns['generated_at']}",
         f"",
@@ -2093,6 +2136,9 @@ def _timestudy_analyze(after_time: str = "") -> dict:
     for src, cnt in patterns["source_distribution"].items():
         pct = round(cnt / total * 100, 1) if total else 0
         log_lines.append(f"| {src} | {cnt} | {pct}% |")
+    # ===== 已实施优化记录（持久化）=====
+    if _TIMESTUDY_FIX_LOG:
+        log_lines.extend(_timestudy_fixlog_lines())
     # ===== 错误深度分析（核心部分）=====
     log_lines.extend(["", f"## 错误深度分析", ""])
     # 按分类分组
@@ -2198,9 +2244,8 @@ def _timestudy_analyze(after_time: str = "") -> dict:
         suggestions.append("暂无明显优化方向，建议积累更多数据后再分析")
     log_lines.extend(suggestions)
     log_lines.append("")
-    log_path = os.path.join(_TIMESTUDY_DIR, "optimization_log.md")
-    with open(log_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(log_lines))
+    # 追加模式：每次分析新增一个快照区块，保留历史记录，不覆盖旧内容
+    _timestudy_append_doc("\n".join(log_lines))
     logger.info("自学习分析完成: %d 条记录, %d 种错误类型, 系统性问题 %d 种, 顽固问题 %d 种",
                 total, len(error_counts), len(systematic_errors), len(stubborn_errors))
     return patterns
@@ -10124,6 +10169,22 @@ def _extract_video_frames_gpu(video_path: str, positions: list = None, num_frame
     return frames
 
 
+def _ocr_readtext(reader, image):
+    """统一 OCR 调用，针对宽幅画面中的小字号/低对比度时钟做优化。
+
+    EasyOCR 默认 canvas_size=1280 会把大图下采样，使本就细小的时钟更糊；
+    这里提高画布上限并放大图像、调低阈值，提升小字识别率。
+    参数不兼容时自动回退默认调用，保证稳定。
+    返回 readtext 结果列表（每项 [bbox, text, conf]）。
+    """
+    try:
+        return reader.readtext(image, canvas_size=2560, mag_ratio=1.5,
+                               text_threshold=0.25, low_text=0.3)
+    except Exception as e:
+        logger.warning("OCR 参数化调用失败，回退默认: %s", e)
+        return reader.readtext(image)
+
+
 
 # ==================== 视频提取时间缓存 ====================
 _VIDEO_TIME_CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "video_time_cache.json")
@@ -10421,7 +10482,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
             for _phase in [0, 1]:
                 if _phase == 0:
                     frames = cover_frames
-                    logger.info("视频兜底提取(%s %s)：截取 1 帧（封面）", bugid, video_label)
+                    logger.info("视频兜底提取(%s)：截取 1 帧（封面）", video_label)
                 else:
                     if first_full or first_partial:
                         break
@@ -10429,15 +10490,17 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                     if not other_frames:
                         break
                     frames = other_frames
-                    logger.info("视频兜底提取(%s %s)：封面未识别到时间，继续截取第1/3/6秒", bugid, video_label)
+                    logger.info("视频兜底提取(%s)：封面未识别到时间，继续截取第1/3/6秒", video_label)
                 
                 for sec, frame in frames:
                     try:
-                        results = reader.readtext(frame)
+                        results = _ocr_readtext(reader, frame)
                     except Exception as e:
                         logger.warning("视频兜底提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
                         continue
                     all_text = " ".join(r[1] for r in results)
+                    # 诊断日志：打印 OCR 实际读到的原文，便于定位"读到但未用"还是"根本没读到"
+                    logger.info("视频兜底提取(%s)：第%d秒 OCR 原文: %s", video_label, sec + 1, (all_text[:120] or "(空)"))
                     if all_text.strip():
                         _timestudy_trace(bugid, "ocr:text")
                     else:
@@ -10769,7 +10832,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                 
                 for sec, frame in frames:
                     try:
-                        results = reader.readtext(frame)
+                        results = _ocr_readtext(reader, frame)
                     except Exception as e:
                         logger.warning("视频帧提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
                         continue
@@ -11045,7 +11108,7 @@ def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bug
                         for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
                             f.write(chunk)
                 # OCR 识别（返回 bbox + 文字 + 置信度）
-                results = reader.readtext(img_path)
+                results = _ocr_readtext(reader, img_path)
                 if not results:
                     continue
                 # 收集完整文本用于时间正则匹配
