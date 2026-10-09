@@ -882,6 +882,32 @@
                         <span class="field-del-btn" title="删除字段" @click="removeField(item.key, field)">&#x2715;</span>
                       </div>
                     </el-form-item>
+                    <!-- 数组类型（每行一个元素） -->
+                    <el-form-item v-else-if="Array.isArray(val)">
+                      <template #label><el-tooltip :content="field" placement="top" :disabled="field.length < 8"><span>{{ fieldLabel(field) }}</span></el-tooltip></template>
+                      <div class="cfg-field-row" style="flex-direction:column;align-items:stretch">
+                        <el-input type="textarea" :rows="Math.min(val.length + 1, 6)"
+                          :model-value="(val || []).join('\n')"
+                          @update:model-value="v => config[item.key][field] = v.split('\n').map(s => s.trim()).filter(Boolean)"
+                          placeholder="每行一个"></el-input>
+                        <span class="field-del-btn" title="删除字段" @click="removeField(item.key, field)" style="align-self:flex-end">&#x2715;</span>
+                      </div>
+                    </el-form-item>
+                    <!-- 对象/字典类型（展开子字段） -->
+                    <el-form-item v-else-if="val !== null && typeof val === 'object' && !Array.isArray(val)">
+                      <template #label><el-tooltip :content="field" placement="top" :disabled="field.length < 8"><span>{{ fieldLabel(field) }}</span></el-tooltip></template>
+                      <div style="width:100%;border:1px solid #e4e7ed;border-radius:4px;padding:6px;background:#fafafa">
+                        <div v-for="(subVal, subKey) in val" :key="subKey" v-show="subKey !== '_newKey'" style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+                          <span style="min-width:50px;font-size:11px;color:#606266">{{ subKey }}</span>
+                          <el-input v-model="config[item.key][field][subKey]" size="small" :placeholder="subVal || '可选'"></el-input>
+                          <span class="field-del-btn" title="删除子项" @click="delete config[item.key][field][subKey]">&#x2715;</span>
+                        </div>
+                        <div style="display:flex;gap:4px;margin-top:4px">
+                          <el-input v-model="config[item.key][field]._newKey" size="small" placeholder="新键名" style="width:100px" @keyup.enter="addSubField(item.key, field)"></el-input>
+                          <el-button size="small" link type="primary" @click="addSubField(item.key, field)">+ 添加</el-button>
+                        </div>
+                      </div>
+                    </el-form-item>
                     <!-- 普通字符串 -->
                     <el-form-item v-else>
                       <template #label><el-tooltip :content="field" placement="top" :disabled="field.length < 8"><span>{{ fieldLabel(field) }}</span></el-tooltip></template>
@@ -2434,7 +2460,100 @@
                       <span v-else>-</span>
                     </template>
                   </el-table-column>
+                  <el-table-column label="提取根因" width="180" show-overflow-tooltip>
+                    <template #default="{row}">
+                      <template v-if="troubleshoot.rootCauses[row.bugid]">
+                        <div style="display:flex;align-items:center;gap:4px">
+                          <el-tag :type="troubleshoot.rootCauses[row.bugid].result ? 'success' : (troubleshoot.rootCauses[row.bugid].error_type ? 'danger' : 'info')" size="small">
+                            {{ troubleshoot.rootCauses[row.bugid].root_cause }}
+                          </el-tag>
+                          <el-popover v-if="troubleshoot.rootCauses[row.bugid].trace" placement="left" :width="380" trigger="hover">
+                            <template #reference><el-button link size="small" type="primary" style="font-size:11px">详情</el-button></template>
+                            <div style="font-size:12px;word-break:break-all;line-height:1.6">
+                              <div style="margin-bottom:4px"><b>来源:</b> {{ troubleshoot.rootCauses[row.bugid].source }}</div>
+                              <div style="margin-bottom:4px"><b>错误类型:</b> {{ troubleshoot.rootCauses[row.bugid].error_type || '-' }}</div>
+                              <div style="margin-bottom:4px"><b>提取结果:</b> {{ troubleshoot.rootCauses[row.bugid].result || '无' }}</div>
+                              <div><b>Trace:</b> {{ troubleshoot.rootCauses[row.bugid].trace }}</div>
+                            </div>
+                          </el-popover>
+                        </div>
+                      </template>
+                      <span v-else style="color:#c0c4cc">-</span>
+                    </template>
+                  </el-table-column>
                 </el-table>
+              </el-card>
+              <!-- ③ 触发时间提取质量分析（自学习） -->
+              <el-card shadow="never" style="margin-top:12px;border:2px solid #722ed1">
+                <template #header>
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <span style="font-weight:700;color:#722ed1">③ 触发时间提取质量分析</span>
+                    <div style="display:flex;gap:8px;align-items:center">
+                      <el-tag v-if="troubleshoot.afterTime" type="info" size="small">{{ troubleshoot.afterTime }} 之后</el-tag>
+                      <el-tag v-else type="warning" size="small">全量历史</el-tag>
+                      <el-button size="small" type="primary" :loading="troubleshoot.timestudy.loading" @click="runTimestudyAnalysis">运行分析</el-button>
+                    </div>
+                  </div>
+                </template>
+                <div v-if="!troubleshoot.timestudy.summary" style="text-align:center;padding:20px;color:#909399">
+                  点击「运行分析」查看提取质量统计、错误分类和流水线断点溯源
+                </div>
+                <div v-else>
+                  <!-- 概览卡片 -->
+                  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+                    <div style="flex:1;min-width:120px;padding:10px;background:#f6ffed;border-radius:6px;text-align:center">
+                      <div style="font-size:22px;font-weight:700;color:#389e0d">{{ troubleshoot.timestudy.summary.effective_total || 0 }}</div>
+                      <div style="font-size:12px;color:#606266">有效提取</div>
+                    </div>
+                    <div style="flex:1;min-width:120px;padding:10px;background:#e6f7ff;border-radius:6px;text-align:center">
+                      <div style="font-size:22px;font-weight:700;color:#1677ff">{{ troubleshoot.timestudy.summary.success_rate || 0 }}%</div>
+                      <div style="font-size:12px;color:#606266">成功率</div>
+                    </div>
+                    <div style="flex:1;min-width:120px;padding:10px;background:#fff7e6;border-radius:6px;text-align:center">
+                      <div style="font-size:22px;font-weight:700;color:#d48806">{{ troubleshoot.timestudy.summary.skip_count || 0 }}</div>
+                      <div style="font-size:12px;color:#606266">前置跳过</div>
+                    </div>
+                    <div style="flex:1;min-width:120px;padding:10px;background:#fff2f0;border-radius:6px;text-align:center">
+                      <div style="font-size:22px;font-weight:700;color:#ff4d4f">{{ troubleshoot.timestudy.summary.fail_count || 0 }}</div>
+                      <div style="font-size:12px;color:#606266">提取失败</div>
+                    </div>
+                  </div>
+                  <!-- 错误分析表 -->
+                  <div v-if="troubleshoot.timestudy.summary.error_analysis">
+                    <div style="font-weight:600;margin-bottom:6px;font-size:13px">错误深度分析</div>
+                    <el-table :data="Object.entries(troubleshoot.timestudy.summary.error_analysis).map(([k,v]) => ({error_type:k,...v}))" size="small" stripe border max-height="240">
+                      <el-table-column prop="error_type" label="错误类型" width="180"></el-table-column>
+                      <el-table-column prop="classification" label="分类" width="120">
+                        <template #default="{row}">
+                          <el-tag :type="row.classification==='系统性问题'?'danger':(row.classification==='顽固问题'?'warning':'info')" size="small">{{ row.classification }}</el-tag>
+                        </template>
+                      </el-table-column>
+                      <el-table-column prop="count" label="次数" width="70"></el-table-column>
+                      <el-table-column prop="unique_jiras" label="Jira数" width="70"></el-table-column>
+                      <el-table-column prop="main_breakpoint" label="主断点" width="160"></el-table-column>
+                      <el-table-column label="共性特征" min-width="200">
+                        <template #default="{row}">{{ (row.common_features || []).join(', ') || '-' }}</template>
+                      </el-table-column>
+                    </el-table>
+                  </div>
+                  <!-- 断点溯源表 -->
+                  <div v-if="troubleshoot.timestudy.summary.breakpoint_summary && troubleshoot.timestudy.summary.breakpoint_summary.length" style="margin-top:12px">
+                    <div style="font-weight:600;margin-bottom:6px;font-size:13px">流水线断点分布</div>
+                    <el-table :data="troubleshoot.timestudy.summary.breakpoint_summary" size="small" stripe border max-height="180">
+                      <el-table-column prop="step" label="步骤代码" width="120"></el-table-column>
+                      <el-table-column prop="desc" label="含义" width="160"></el-table-column>
+                      <el-table-column prop="count" label="失败次数" width="100"></el-table-column>
+                    </el-table>
+                  </div>
+                  <!-- 常见路径 -->
+                  <div v-if="troubleshoot.timestudy.summary.common_trace_patterns && troubleshoot.timestudy.summary.common_trace_patterns.length" style="margin-top:12px">
+                    <div style="font-weight:600;margin-bottom:6px;font-size:13px">常见提取路径 (Top5)</div>
+                    <el-table :data="troubleshoot.timestudy.summary.common_trace_patterns" size="small" stripe border max-height="180">
+                      <el-table-column prop="trace" label="路径" min-width="400" show-overflow-tooltip></el-table-column>
+                      <el-table-column prop="count" label="次数" width="80"></el-table-column>
+                    </el-table>
+                  </div>
+                </div>
               </el-card>
               <!-- 修正建议编辑对话框 -->
               <el-dialog v-model="troubleshoot.correctionEditor.visible" title="编辑修正建议" width="480px" destroy-on-close>
@@ -2471,11 +2590,11 @@
                   <el-button size="small" type="primary" :loading="troubleshoot.correctionEditor.saving" @click="saveSuggestion">保存</el-button>
                 </template>
               </el-dialog>
-              <!-- 步骤3：报告内容（按截图飞书文档格式生成） -->
+              <!-- 步骤④：报告内容（按截图飞书文档格式生成） -->
               <el-card v-if="troubleshoot.diagResults.length" shadow="never" style="margin-top:12px">
                 <template #header>
                   <div style="display:flex;justify-content:space-between;align-items:center">
-                    <span style="font-weight:700">③ 报告内容</span>
+                    <span style="font-weight:700">④ 报告内容</span>
                     <el-button size="small" type="primary" link @click="copyAllReports">全部复制</el-button>
                   </div>
                 </template>
@@ -2973,8 +3092,12 @@
 
           <!-- 执行区 -->
           <el-card shadow="never" style="margin-bottom:16px">
-            <template #header><span style="font-weight:700">② 一键执行线上AI分析</span></template>
+            <template #header><span style="font-weight:700">② 一键执行AI分析</span></template>
             <div style="display:flex;align-items:center;gap:12px">
+              <el-radio-group v-model="smokeTest.execMode" size="small">
+                <el-radio-button label="online">线上执行</el-radio-button>
+                <el-radio-button label="pc">PC执行</el-radio-button>
+              </el-radio-group>
               <el-button type="primary" :loading="smokeTest.running" @click="runSmokeTest"
                 :disabled="smokeTest.cases.filter(c=>c.checked&&c.jiraId).length===0">一键执行</el-button>
               <el-tag v-if="smokeTest.execMsg" :type="smokeTest.execError?'danger':'success'">{{ smokeTest.execMsg }}</el-tag>
@@ -3373,6 +3496,8 @@ createApp({
         writingReview: false, exportingTriggerIssues: false, batchApplyingTime: false, onlyEmptyReview: false,
         stopFlag: false, abortController: null, skipVideoCache: false,
         correctionEditor: { visible: false, row: null, time: '', note: '', humanReason: '', matchedCategory: '', saving: false },
+        rootCauses: {},  // {bugid: {root_cause, trace, error_type, source, result}}
+        timestudy: { loading: false, summary: null },  // 自学习分析结果
       },
       // 未分析 Bug 提取
       unanalyzedPast: {
@@ -3510,10 +3635,14 @@ createApp({
         reExtractScan: false, reExtractRun: false, batchAssess: false,
         unanalyzedPast: false,
         prodLoadCsv: false, prodBatchRun: false },
-      config: { ai_log_api: {}, jira_api: {}, knowledge_base_api: {}, similarity: {}, audit: {}, database: {} },
+      config: { prod_ai: {}, ai_log_api: {}, jira_api: {}, diana: {}, feishu_bitable: {}, feishu_bot: {}, knowledge_base_api: {}, similarity: {}, audit: {}, database: {} },
       apiSections: [
-        { key: 'ai_log_api', title: 'AI 日志分析工具接口' },
+        { key: 'prod_ai', title: '线上AI日志分析接口' },
+        { key: 'ai_log_api', title: 'AI日志分析工具接口(PC)' },
         { key: 'jira_api', title: 'Jira RESTAPI' },
+        { key: 'diana', title: 'Diana大模型接口' },
+        { key: 'feishu_bitable', title: '飞书多维表格' },
+        { key: 'feishu_bot', title: '飞书机器人' },
         { key: 'knowledge_base_api', title: '知识库入库接口' },
       ],
       dailyRows: [], dailyDate: '', dailyColumns: [], dailyLoading: false, syncCloudLoading: false,
@@ -3554,6 +3683,7 @@ createApp({
           { name: '无gmlogger文件报错查看', jiraId: '', checked: true },
         ],
         version: '',
+        execMode: 'online',
         running: false, execResults: [], execMsg: '', execError: false, execTime: '',
         querying: false, bitableRecords: [], queryMsg: '', queryError: false,
         saving: false, saveMsg: '', saveError: false, saveCloudUrl: '', savedResults: [],
@@ -5054,7 +5184,7 @@ createApp({
       try {
         const resp = await fetch('/api/test/prod_batch_run', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bugids, skip_existing: false }),
+          body: JSON.stringify({ bugids, skip_existing: false, exec_mode: this.smokeTest.execMode }),
         });
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
@@ -7357,6 +7487,7 @@ createApp({
       this.troubleshoot.stopFlag = false;
       this.troubleshoot.abortController = new AbortController();
       this.troubleshoot.diagResults = [];
+      this.troubleshoot.rootCauses = {};
       const queue = [...targets];
       const worker = async () => {
         while (queue.length && !this.troubleshoot.stopFlag) { await this._diagnoseRow(queue.shift()); }
@@ -7367,6 +7498,39 @@ createApp({
         ElementPlus.ElMessage.warning(`已停止诊断：完成 ${this.troubleshoot.diagResults.length} 条，剩余 ${queue.length} 条未诊断`);
       } else {
         ElementPlus.ElMessage.success(`诊断完成，共 ${this.troubleshoot.diagResults.length} 条`);
+      }
+      // 诊断完成后自动加载根因
+      if (this.troubleshoot.diagResults.length) {
+        await this.loadRootCauses();
+      }
+    },
+    // 加载诊断结果中每个 Jira 的提取根因
+    async loadRootCauses() {
+      const bugids = this.troubleshoot.diagResults.map(r => r.bugid).filter(Boolean);
+      if (!bugids.length) return;
+      try {
+        const resp = await this.api('/api/timestudy/root-causes', { method: 'POST', body: JSON.stringify({ bugids }) });
+        if (resp && resp.data) {
+          this.troubleshoot.rootCauses = resp.data;
+        }
+      } catch (e) {
+        console.warn('加载根因失败:', e);
+      }
+    },
+    // 运行自学习分析并加载摘要
+    async runTimestudyAnalysis() {
+      this.troubleshoot.timestudy.loading = true;
+      try {
+        const payload = {};
+        if (this.troubleshoot.afterTime) payload.after_time = this.troubleshoot.afterTime;
+        const resp = await this.api('/api/timestudy/analyze', { method: 'POST', body: JSON.stringify(payload) });
+        if (resp && resp.data) {
+          this.troubleshoot.timestudy.summary = resp.data;
+        }
+      } catch (e) {
+        ElementPlus.ElMessage.error('分析失败: ' + e);
+      } finally {
+        this.troubleshoot.timestudy.loading = false;
       }
     },
     // 可诊断的失败记录数（供按钮展示）
@@ -7512,15 +7676,20 @@ createApp({
       try {
         const payload = {};
         this.apiSections.forEach(s => {
-          payload[s.key] = this.config[s.key] || {};
+          payload[s.key] = JSON.parse(JSON.stringify(this.config[s.key] || {}));
           // 含 enabled 字段的配置段：mock 开关同步 enabled
           if (payload[s.key].enabled !== undefined) {
             payload[s.key].enabled = !payload[s.key].mock;
           }
+          // 清理对象子字段的临时 _newKey
+          Object.values(payload[s.key]).forEach(v => {
+            if (v && typeof v === 'object' && !Array.isArray(v)) delete v._newKey;
+          });
         });
         payload.similarity = this.config.similarity;
         payload.database = this.config.database;
         payload.audit = this.config.audit;
+        payload.output = this.config.output;
         const body = await this.api('/api/config', { method: 'POST', body: JSON.stringify(payload) });
         ElementPlus.ElMessage.success(body.message);
         await this.loadOverview();
@@ -7543,9 +7712,25 @@ createApp({
         analysis_process_column: '分析流程列', custom_header: '自定义头',
         /* 飞书多维表格字段 */
         app_id: 'App ID', app_secret: 'App Secret', cookie: '浏览器 Cookie', domain: '飞书域名',
-        wiki_token: 'Wiki Token',
+        wiki_token: 'Wiki Token', app_token: '多维表格 Token',
         table_id: '数据表 ID', view_id: '视图 ID', report_field: '报告字段名',
         poll_interval: '轮询间隔(秒)',
+        batch_folder_token: '批次文件夹 Token',
+        trigger_time_app_token: '触发表 Token',
+        trigger_time_table_ids: '触发表 ID列表',
+        user_access_token: '用户 Access Token',
+        user_refresh_token: '用户 Refresh Token',
+        /* Diana 大模型字段 */
+        client_id: 'Client ID', client_secret: 'Client Secret',
+        token_url: 'Token地址', prod_url: '生产接口地址',
+        prod_token_url: '生产Token地址',
+        prod_client_id: '生产Client ID', prod_client_secret: '生产Client Secret',
+        prod_model: '生产模型', env: '环境',
+        /* 飞书机器人字段 */
+        jqls: 'JQL查询列表',
+        /* 输出目录 */
+        doc_dir: '文档目录', log_dir: '日志目录', report_dir: '报告目录',
+        auth_type: '认证方式', root_cause_field: '根因字段',
       };
       return labels[field] || field;
     },
@@ -7581,6 +7766,16 @@ createApp({
         this.config[sectionKey] = { ...this.config[sectionKey] };
         ElementPlus.ElMessage.success(`已删除字段 "${fieldName}"`);
       }).catch(() => {});
+    },
+    // 向对象类型字段添加子键
+    addSubField(sectionKey, fieldName) {
+      const obj = this.config[sectionKey][fieldName];
+      const newKey = (obj._newKey || '').trim();
+      if (!newKey) return;
+      if (obj[newKey] !== undefined) return ElementPlus.ElMessage.warning(`子键 "${newKey}" 已存在`);
+      obj[newKey] = '';
+      delete obj._newKey;
+      this.config[sectionKey][fieldName] = { ...obj };
     },
     // 表格列宽：长文本列加宽
     colWidth(col) {
