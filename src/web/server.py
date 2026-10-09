@@ -10343,7 +10343,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         video_name = video_att.get("filename", "")
         if not video_url:
             continue
-        video_label = f"[{vi+1}/{len(ranked_videos)}] {video_name}"
+        video_label = f"{bugid} [{vi+1}/{len(ranked_videos)}] {video_name}"
         # 为当前视频找到最接近的 gmlogger（按接近度排序 ref_pool）
         closest_gm = _find_closest_gmlogger(video_att, gm_info_list)
         # 按接近度构建 ref_pool：最近的排前面
@@ -10381,7 +10381,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         # 需要 OCR：先确保 reader 可用
         reader = _get_ocr_reader()
         if reader is None:
-            logger.warning("视频兜底提取：OCR 不可用，跳过")
+            logger.warning("视频兜底提取(%s)：OCR 不可用，跳过", bugid)
             return ""
         # 下载视频（流式下载，避免一次性加载到内存）
         video_path = None
@@ -10399,7 +10399,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
             logger.info("视频兜底提取：下载完成 %s", video_label)
             _timestudy_trace(bugid, "dl:ok")
         except Exception as e:
-            logger.warning("视频兜底提取：下载失败 %s: %s", video_name, e)
+            logger.warning("视频兜底提取：下载失败 %s: %s", video_label, e)
             _timestudy_update_ctx(bugid, error_type="video_download_failed",
                                   error_detail=f"{video_name}: {e}")
             _timestudy_trace(bugid, "dl:fail")
@@ -10421,7 +10421,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
             for _phase in [0, 1]:
                 if _phase == 0:
                     frames = cover_frames
-                    logger.info("视频兜底提取：截取 1 帧（封面）")
+                    logger.info("视频兜底提取(%s %s)：截取 1 帧（封面）", bugid, video_label)
                 else:
                     if first_full or first_partial:
                         break
@@ -10429,13 +10429,13 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                     if not other_frames:
                         break
                     frames = other_frames
-                    logger.info("视频兜底提取：封面未识别到时间，继续截取第1/3/6秒")
+                    logger.info("视频兜底提取(%s %s)：封面未识别到时间，继续截取第1/3/6秒", bugid, video_label)
                 
                 for sec, frame in frames:
                     try:
                         results = reader.readtext(frame)
                     except Exception as e:
-                        logger.warning("视频兜底提取：OCR 第%d秒失败: %s", sec, e)
+                        logger.warning("视频兜底提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
                         continue
                     all_text = " ".join(r[1] for r in results)
                     if all_text.strip():
@@ -10621,23 +10621,24 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     # 12h 制兜底：所有视频原始时间均未命中，尝试 12h 转换取差值最小的
     if best_12h_cand:
         cand_time, cand_dt = best_12h_cand
-        logger.info("视频兜底提取(12h兜底): 使用 12h 候选 %s（差值 %.0f 秒）", cand_time, best_12h_diff)
+        logger.info("视频兜底提取(%s, 12h兜底): 使用 12h 候选 %s（差值 %.0f 秒）", bugid, cand_time, best_12h_diff)
         _timestudy_update_ctx(bugid, source="video_ocr", h12="yes", match_diff=str(int(best_12h_diff)))
         _timestudy_trace(bugid, "12h:fallback")
         return cand_time
     # 单视频兜底
     if single_video and best_partial:
-        logger.info("视频兜底提取(单视频兜底): %s", best_partial)
+        logger.info("视频兜底提取(%s, 单视频兜底): %s", bugid, best_partial)
         _timestudy_update_ctx(bugid, source="video_ocr", error_type="time_no_match_gmlogger",
                               error_detail=f"单视频兜底: {best_partial}")
         _timestudy_trace(bugid, "partial:single")
         return best_partial
     if best_partial:
-        logger.info("视频兜底提取(多视频均未命中，返回第一个部分结果): %s", best_partial)
+        logger.info("视频兜底提取(%s, 多视频均未命中，返回第一个部分结果): %s", bugid, best_partial)
         _timestudy_update_ctx(bugid, source="video_ocr", error_type="time_no_match_gmlogger",
                               error_detail=f"多视频均未命中兜底: {best_partial}")
         _timestudy_trace(bugid, "partial:multi")
         return best_partial
+    logger.info("视频兜底提取(%s)：所有视频封面及1/3/6秒均未识别到时间", bugid)
     _timestudy_update_ctx(bugid, error_type="ocr_no_time_pattern", error_detail="所有视频OCR均未识别到时间")
     _timestudy_trace(bugid, "ocr:no_pattern")
     return ""
@@ -10684,7 +10685,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     # 初始化 OCR reader（只初始化一次）
     reader = _get_ocr_reader()
     if reader is None:
-        logger.warning("视频帧提取：OCR 不可用，跳过")
+        logger.warning("视频帧提取(%s)：OCR 不可用，跳过", bugid)
         return "", ""
     from src.clients.jira_client import _parse_datetime_string
     best_full = ""      # 全局兜底：第一个完整日期时间
@@ -10702,7 +10703,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
         video_name = video_att.get("filename", "")
         if not video_url:
             continue
-        video_label = f"[{vi+1}/{len(ranked_videos)}] {video_name}"
+        video_label = f"{bugid} [{vi+1}/{len(ranked_videos)}] {video_name}"
         cache_key = _get_video_cache_key(bugid, video_name)
         # 检查缓存：命中则跳过下载+OCR
         cached_entry = cache.get(cache_key)
@@ -10740,7 +10741,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                             f.write(chunk)
                 logger.info("视频帧提取：下载完成 %s", video_label)
             except Exception as e:
-                logger.warning("视频帧提取：下载失败 %s: %s", video_name, e)
+                logger.warning("视频帧提取：下载失败 %s: %s", video_label, e)
                 continue  # 下载失败，尝试下一个视频
             if not video_path or not os.path.exists(video_path):
                 logger.warning("视频帧提取：视频文件不存在 %s", video_label)
@@ -10756,7 +10757,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
             for _phase in [0, 1]:
                 if _phase == 0:
                     frames = cover_frames
-                    logger.info("视频帧提取：截取 %d 帧（封面）", len(frames))
+                    logger.info("视频帧提取(%s)：截取 %d 帧（封面）", video_label, len(frames))
                 else:
                     if first_full or first_partial:
                         break
@@ -10764,13 +10765,13 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     if not other_frames:
                         break
                     frames = other_frames
-                    logger.info("视频帧提取：封面未识别到时间，继续截取第1/3/6秒")
+                    logger.info("视频帧提取(%s)：封面未识别到时间，继续截取第1/3/6秒", video_label)
                 
                 for sec, frame in frames:
                     try:
                         results = reader.readtext(frame)
                     except Exception as e:
-                        logger.warning("视频帧提取：OCR 第%d秒失败: %s", sec, e)
+                        logger.warning("视频帧提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
                         continue
                     all_text = " ".join(r[1] for r in results)
                     logger.info("视频帧提取(%s)：第%d秒 OCR: %s", video_label, sec + 1,
@@ -10823,7 +10824,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                             alt_match = validation_pool and any(abs((dt - dt_alt).total_seconds()) <= strict_tol for dt in validation_pool)
                             if alt_match and not orig_match:
                                 detail = f"从视频{video_label}第{sec+1}秒 OCR 识别到 {extracted_time}，12h制转换为 {ts_alt}，与 gmlogger 时间前后{strict_tol//60}分钟命中"
-                                logger.info("视频帧提取命中(12h转换): %s -> %s", extracted_time, ts_alt)
+                                logger.info("视频帧提取命中(%s, 12h转换): %s -> %s", video_label, extracted_time, ts_alt)
                                 cache[cache_key] = {"time": ts_alt, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
                                 _save_video_time_cache()
                                 return ts_alt, detail
@@ -10865,14 +10866,14 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                             if orig_match and not alt_match:
                                 detail = (f"从视频{video_label}第{sec+1}秒 OCR 识别到 {time_str}，"
                                           f"用 gmlogger 日期补充为 {extracted_time}，与 gmlogger 时间前后{strict_tol//60}分钟命中")
-                                logger.info("视频帧提取命中(日期补充): %s", extracted_time)
+                                logger.info("视频帧提取命中(%s, 日期补充): %s", video_label, extracted_time)
                                 cache[cache_key] = {"time": extracted_time, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
                                 _save_video_time_cache()
                                 return extracted_time, detail
                             if alt_match and not orig_match:
                                 detail = (f"从视频{video_label}第{sec+1}秒 OCR 识别到 {time_str}，"
                                           f"12h制转换为 {ts_alt}，与 gmlogger 时间前后{strict_tol//60}分钟命中")
-                                logger.info("视频帧提取命中(日期补充+12h): %s", ts_alt)
+                                logger.info("视频帧提取命中(%s, 日期补充+12h): %s", video_label, ts_alt)
                                 cache[cache_key] = {"time": ts_alt, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
                                 _save_video_time_cache()
                                 return ts_alt, detail
@@ -10955,7 +10956,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                 cache_updated = True
             # 当前视频有完整日期时间 → 直接返回，无需验证
             if first_full:
-                logger.info("视频帧提取(完整日期时间): %s", first_full)
+                logger.info("视频帧提取(%s, 完整日期时间): %s", video_label, first_full)
                 _save_video_time_cache()
                 return first_full, first_detail
             # 当前视频有部分时间但未命中验证 → 保存为全局兜底，尝试下一个视频
@@ -10976,12 +10977,12 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
         _save_video_time_cache()
     # fallback 机制：所有视频都未严格命中，但存在 fallback 候选（15分钟~1小时）
     if fallback_candidate:
-        logger.info("视频帧提取(fallback): 所有视频均未在±15分钟内命中，使用最接近候选 %s（差值 %.0f 秒）", fallback_candidate, fallback_diff)
+        logger.info("视频帧提取(%s, fallback): 所有视频均未在±15分钟内命中，使用最接近候选 %s（差值 %.0f 秒）", bugid, fallback_candidate, fallback_diff)
         return fallback_candidate, f"所有视频均未在±15分钟内命中，使用最接近候选 {fallback_candidate}（差值 {fallback_diff:.0f} 秒）"
     # 12h 制兜底：所有视频原始时间均未严格命中，尝试 12h 转换取差值最小的
     if best_12h_cand:
         cand_time, cand_dt, is_time_only = best_12h_cand
-        logger.info("视频帧提取(12h兜底): 所有视频原始时间均未命中，使用 12h 候选 %s（差值 %.0f 秒，%s）", cand_time, best_12h_diff, "仅时间差" if is_time_only else "完整差值")
+        logger.info("视频帧提取(%s, 12h兜底): 所有视频原始时间均未命中，使用 12h 候选 %s（差值 %.0f 秒，%s）", bugid, cand_time, best_12h_diff, "仅时间差" if is_time_only else "完整差值")
         cache_key_12h = _get_video_cache_key(bugid, ranked_videos[0].get("filename", "") if ranked_videos else "")
         if cache_key_12h:
             cache[cache_key_12h] = {"time": cand_time, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -10990,10 +10991,10 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     if best_full:
         return best_full, best_full_detail
     if single_video and best_partial:
-        logger.info("视频帧提取(单视频兜底): %s", best_partial)
+        logger.info("视频帧提取(%s, 单视频兜底): %s", bugid, best_partial)
         return best_partial, best_partial_detail
     if best_partial:
-        logger.info("视频帧提取(多视频均未命中，返回第一个部分结果): %s", best_partial)
+        logger.info("视频帧提取(%s, 多视频均未命中，返回第一个部分结果): %s", bugid, best_partial)
         return best_partial, best_partial_detail
     return "", ""
 
