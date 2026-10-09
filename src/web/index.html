@@ -1803,7 +1803,7 @@
                   </div>
                 </template>
                 <el-alert type="info" :closable="false"
-                  title="扫描人工审核为'无gmlogger'的记录，重新检查Jira附件是否已新增gmlogger/main日志文件，有文件的可一键清空审核结果以便重新执行">
+                  title="扫描人工审核为'无gmlogger'的记录，重新检查Jira附件是否已新增gmlogger/main.log日志文件（或压缩包内含main.log）；匹配成功的可一键替换审核结果为'gmlogger文件已上传'，并一键去除其云端触发时间空标签以便重新提取">
                 </el-alert>
                 <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
                   <el-button type="primary" :loading="gmloggerRescan.scanning" @click="scanGmloggerRescan">扫描候选记录</el-button>
@@ -1820,13 +1820,17 @@
                       <el-tag type="info">无文件: {{ gmloggerRescan.candidates.filter(c=>!c.has_file).length }} 条</el-tag>
                     </div>
                     <div style="display:flex;gap:8px">
-                      <el-button type="warning" size="small" @click="gmloggerRescan.candidates.filter(c=>c.has_file).forEach(c=>c.selected=true)">全选有文件记录</el-button>
+                      <el-button type="warning" size="small" @click="gmloggerRescan.candidates.filter(c=>c.has_file).forEach(c=>c.selected=true)">全选匹配成功的</el-button>
                       <el-button type="danger" size="small" :loading="gmloggerRescan.clearing"
                         :disabled="!gmloggerRescan.candidates.some(c=>c.selected)"
-                        @click="clearGmloggerReview">一键清空人工审核结果</el-button>
+                        @click="clearGmloggerReview">一键替换人工审核结果为gmlogger文件已上传</el-button>
+                      <el-button type="primary" size="small" :loading="gmloggerRescan.markClearing"
+                        :disabled="!gmloggerRescan.candidates.some(c=>c.selected && c.has_file)"
+                        @click="clearGmloggerEmptyMark">一键去匹配成功的云端空标签</el-button>
                     </div>
                   </div>
                   <el-alert v-if="gmloggerRescan.clearMsg" type="success" :closable="false" :title="gmloggerRescan.clearMsg" style="margin-bottom:8px"></el-alert>
+                  <el-alert v-if="gmloggerRescan.markMsg" type="success" :closable="false" :title="gmloggerRescan.markMsg" style="margin-bottom:8px"></el-alert>
                   <el-table :data="gmloggerRescan.candidates" size="small" stripe border max-height="320"
                     @selection-change="sel => gmloggerRescan.candidates.forEach((c,i) => c.selected = sel.some(s => s.record_id === c.record_id))">
                     <el-table-column type="selection" width="45" :selectable="row => row.has_file"></el-table-column>
@@ -3470,6 +3474,7 @@ createApp({
       gmloggerRescan: {
         scanning: false, candidates: [], scanMsg: '',
         clearing: false, clearMsg: '',
+        markClearing: false, markMsg: '',
         _abort: null,
         progress: { current: 0, total: 0 }
       },
@@ -6608,14 +6613,14 @@ createApp({
     stopGmloggerRescan() {
       if (this.gmloggerRescan._abort) this.gmloggerRescan._abort.abort();
     },
-    // 无gmlogger重新排查：一键清空人工审核结果
+    // 无gmlogger重新排查：一键将人工审核结果替换为'gmlogger文件已上传'
     async clearGmloggerReview() {
       const selected = this.gmloggerRescan.candidates.filter(c => c.selected);
-      if (!selected.length) return ElementPlus.ElMessage.warning('请先勾选要清空的记录');
+      if (!selected.length) return ElementPlus.ElMessage.warning('请先勾选要替换的记录');
       try {
         await ElementPlus.ElMessageBox.confirm(
-          `确认清空 ${selected.length} 条记录的人工审核结果？清空后可通过失败重触发功能重新执行。`,
-          '确认清空', { type: 'warning' }
+          `确认将 ${selected.length} 条记录的人工审核结果替换为'gmlogger文件已上传'？该标记不属于通用失败，下次批量执行会重新分析这些记录。`,
+          '确认替换', { type: 'warning' }
         );
       } catch (_) { return; }
       this.gmloggerRescan.clearing = true;
@@ -6627,13 +6632,37 @@ createApp({
         });
         this.gmloggerRescan.clearMsg = body.message;
         ElementPlus.ElMessage.success(body.message);
-        // 清空后从候选中移除已处理的记录
+        // 替换后从候选中移除已处理的记录
         const clearedIds = new Set(selected.map(c => c.record_id));
         this.gmloggerRescan.candidates = this.gmloggerRescan.candidates.filter(c => !clearedIds.has(c.record_id));
       } catch (e) {
-        this.gmloggerRescan.clearMsg = '清空失败: ' + e.message;
-        ElementPlus.ElMessage.error('清空失败: ' + e.message);
+        this.gmloggerRescan.clearMsg = '替换失败: ' + e.message;
+        ElementPlus.ElMessage.error('替换失败: ' + e.message);
       } finally { this.gmloggerRescan.clearing = false; }
+    },
+    // 无gmlogger重新排查：一键去除匹配成功记录的云端触发时间空标签（使其下次能重新提取）
+    async clearGmloggerEmptyMark() {
+      const selected = this.gmloggerRescan.candidates.filter(c => c.selected && c.has_file);
+      if (!selected.length) return ElementPlus.ElMessage.warning('请先勾选匹配成功的记录');
+      try {
+        await ElementPlus.ElMessageBox.confirm(
+          `确认清除 ${selected.length} 个匹配成功 jira 的云端触发时间空标签？清除后下次批量提取会重新提取这些 jira 的触发时间。`,
+          '确认清除空标签', { type: 'warning' }
+        );
+      } catch (_) { return; }
+      this.gmloggerRescan.markClearing = true;
+      this.gmloggerRescan.markMsg = '';
+      try {
+        const body = await this.api('/api/test/gmlogger_clear_empty_mark', {
+          method: 'POST',
+          body: JSON.stringify({ bugids: [...new Set(selected.map(c => c.bugid))] })
+        });
+        this.gmloggerRescan.markMsg = body.message;
+        ElementPlus.ElMessage.success(body.message);
+      } catch (e) {
+        this.gmloggerRescan.markMsg = '清除空标签失败: ' + e.message;
+        ElementPlus.ElMessage.error('清除空标签失败: ' + e.message);
+      } finally { this.gmloggerRescan.markClearing = false; }
     },
     // 云端缓存批量更新：扫描候选记录
     async cacheBatchScan() {
