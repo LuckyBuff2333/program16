@@ -1807,6 +1807,7 @@
                 </el-alert>
                 <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
                   <el-button type="primary" :loading="gmloggerRescan.scanning" @click="scanGmloggerRescan">扫描候选记录</el-button>
+                  <el-button v-if="gmloggerRescan.scanning" type="danger" @click="stopGmloggerRescan">停止扫描</el-button>
                 </div>
                 <el-alert v-if="gmloggerRescan.scanMsg" :type="gmloggerRescan.candidates.filter(c=>c.has_file).length ? 'success' : 'info'"
                   :closable="false" :title="gmloggerRescan.scanMsg" style="margin-top:8px"></el-alert>
@@ -3469,6 +3470,7 @@ createApp({
       gmloggerRescan: {
         scanning: false, candidates: [], scanMsg: '',
         clearing: false, clearMsg: '',
+        _abort: null,
         progress: { current: 0, total: 0 }
       },
       // 云端缓存批量更新
@@ -6562,22 +6564,49 @@ createApp({
     stopReExtract() {
       this.reExtract.stopping = true;
     },
-    // 无gmlogger重新排查：扫描候选记录
+    // 无gmlogger重新排查：扫描候选记录（SSE 流式，边扫边填表）
     async scanGmloggerRescan() {
       this.gmloggerRescan.scanning = true;
       this.gmloggerRescan.scanMsg = '';
       this.gmloggerRescan.candidates = [];
       this.gmloggerRescan.clearMsg = '';
+      this.gmloggerRescan._abort = new AbortController();
       try {
-        const body = await this.api('/api/test/gmlogger_rescan', { method: 'POST' });
-        const data = body.data || {};
-        this.gmloggerRescan.candidates = (data.candidates || []).map(c => ({ ...c, selected: false }));
-        this.gmloggerRescan.scanMsg = body.message;
-        ElementPlus.ElMessage.success(body.message);
+        const resp = await fetch('/api/test/gmlogger_rescan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: this.gmloggerRescan._abort.signal });
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+            if (!line.startsWith('data: ')) continue;
+            let evt; try { evt = JSON.parse(line.slice(6)); } catch (_) { continue; }
+            if (evt.type === 'start') {
+              this.gmloggerRescan.scanMsg = `扫描中... 共 ${evt.total} 条候选`;
+            } else if (evt.type === 'progress') {
+              this.gmloggerRescan.candidates.push({ ...evt, selected: false });
+              const hf = this.gmloggerRescan.candidates.filter(c => c.has_file).length;
+              this.gmloggerRescan.scanMsg = `扫描中... 已完成 ${evt.index} 条，有日志 ${hf} 条`;
+            } else if (evt.type === 'done') {
+              this.gmloggerRescan.scanMsg = evt.message;
+              ElementPlus.ElMessage.success(evt.message);
+            } else if (evt.type === 'error') {
+              this.gmloggerRescan.scanMsg = evt.message;
+              ElementPlus.ElMessage.error(evt.message);
+            }
+          }
+        }
       } catch (e) {
-        this.gmloggerRescan.scanMsg = '扫描失败: ' + e.message;
-        ElementPlus.ElMessage.error('扫描失败: ' + e.message);
-      } finally { this.gmloggerRescan.scanning = false; }
+        if (e.name === 'AbortError') { this.gmloggerRescan.scanMsg = '已停止扫描'; }
+        else { this.gmloggerRescan.scanMsg = '扫描失败: ' + e.message; ElementPlus.ElMessage.error('扫描失败: ' + e.message); }
+      } finally { this.gmloggerRescan.scanning = false; this.gmloggerRescan._abort = null; }
+    },
+    stopGmloggerRescan() {
+      if (this.gmloggerRescan._abort) this.gmloggerRescan._abort.abort();
     },
     // 无gmlogger重新排查：一键清空人工审核结果
     async clearGmloggerReview() {
