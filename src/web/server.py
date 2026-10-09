@@ -1848,14 +1848,11 @@ def _timestudy_record(bugid: str, result: str, source: str,
         logger.warning("自学习记录写入失败 %s: %s", bugid, e)
 
 
-def _timestudy_analyze() -> dict:
+def _timestudy_analyze(after_time: str = "") -> dict:
     """深度分析 records.csv，生成 error_patterns.json 和 optimization_log.md
 
-    分析维度：
-    1. 基础统计：成功率、来源分布、错误类型分布
-    2. 重复错误检测：同一 Jira 反复失败 = 系统性问题
-    3. 共性特征分析：同类型错误是否共享特征（无视频/无gmlogger/特定时间段）
-    4. 分类判定：偶发问题 vs 系统性逻辑缺陷
+    Args:
+        after_time: 可选，只分析该时间之后的记录（格式: YYYY-MM-DD HH:MM:SS）
     """
     import csv as _csv
     if not os.path.exists(_TIMESTUDY_RECORDS):
@@ -1866,6 +1863,15 @@ def _timestudy_analyze() -> dict:
         reader = _csv.DictReader(f)
         for row in reader:
             records.append(row)
+    # 按时间过滤（记录时间字段）
+    if after_time:
+        after_time = after_time.strip()
+        filtered = []
+        for rec in records:
+            rec_time = (rec.get("记录时间", "") or "").strip()
+            if rec_time and rec_time >= after_time:
+                filtered.append(rec)
+        records = filtered
     if not records:
         return {"total_records": 0, "error_patterns": {}}
     total = len(records)
@@ -2352,7 +2358,7 @@ def _bot_trigger_and_reply(chat_id: str, bugids: list, trigger_times: dict, real
         try:
             if exec_mode == "online":
                 payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
-                resp = http_post(_PROD_AI_URL, payload, timeout=30)
+                resp = http_post(_get_prod_ai_url(), payload, timeout=30)
             else:
                 payload = {cfg["bugid_field"]: bugid}
                 if cfg.get("trigger_time_field"):
@@ -3758,7 +3764,7 @@ def _bot_run_single_execute(chat_id: str, bugids: list, exec_mode: str = "pc"):
             try:
                 if exec_mode == "online":
                     payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
-                    resp = http_post(_PROD_AI_URL, payload, timeout=30)
+                    resp = http_post(_get_prod_ai_url(), payload, timeout=30)
                 else:
                     cfg = load_config()["ai_log_api"]
                     payload = {cfg["bugid_field"]: bugid}
@@ -3910,7 +3916,7 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "
                 _exec_timeout = 15
                 if exec_mode == "online":
                     payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
-                    resp = http_post(_PROD_AI_URL, payload, timeout=_exec_timeout)
+                    resp = http_post(_get_prod_ai_url(), payload, timeout=_exec_timeout)
                 else:
                     cfg = load_config()["ai_log_api"]
                     payload = {cfg["bugid_field"]: bugid}
@@ -5024,6 +5030,8 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str):
     # 云端成功后才写本地 CSV，避免云端失败时本地多余
     if cloud_ok:
         _save_trigger_time_to_csv(bugid, trigger_time)
+        # 清除云端触发时间批量缓存，确保后续步骤能读到最新数据
+        _bitable_bulk_cache.pop("cloud_trigger_cache", None)
     else:
         logger.warning("云端写入失败，跳过本地 CSV 保存: %s", bugid)
 
@@ -5138,6 +5146,8 @@ def _batch_save_trigger_times_to_cloud(items: dict) -> bool:
         logger.warning("云端触发时间批量写入失败: %s", e)
         # 云端写入失败时保留本地缓存，避免下次重复提取（本地与云端短暂不一致可接受）
         return False
+    # 批量写入成功后清除云端触发时间批量缓存，确保后续步骤能读到最新数据
+    _bitable_bulk_cache.pop("cloud_trigger_cache", None)
     return True
 
 
@@ -11441,10 +11451,11 @@ def _load_diagnose_cache(bugid: str) -> dict:
 # ==================== 触发时间自学习 API ====================
 
 @app.post("/api/timestudy/analyze")
-async def timestudy_analyze():
-    """触发分析：统计错误模式，生成 error_patterns.json 和 optimization_log.md"""
+async def timestudy_analyze(body: dict = Body(default={})):
+    """触发分析：统计错误模式，支持按时间范围过滤"""
     try:
-        patterns = _timestudy_analyze()
+        after_time = (body or {}).get("after_time", "")
+        patterns = _timestudy_analyze(after_time=after_time)
         total = patterns.get("total_records", 0)
         rate = patterns.get("success_rate", 0)
         err_dist = patterns.get("error_distribution", {})
@@ -11489,6 +11500,103 @@ async def timestudy_records(limit: int = 50):
         rows = rows[-limit:][::-1]
         return _ok(rows, f"最近 {len(rows)} 条记录")
     except Exception as e:
+        return _fail(str(e))
+
+
+# trace 步骤中文描述（复用）
+_TRACE_STAGE_DESC = {
+    "cloud": "云端缓存", "diag": "诊断缓存", "video": "视频附件检查",
+    "gm": "gmlogger解析", "dl": "视频下载", "frame": "帧提取",
+    "ocr": "OCR识别", "full": "完整时间匹配", "12h": "12h转换",
+    "cache": "缓存命中", "fn": "文件名回退", "partial": "部分结果兜底",
+    "text": "文本提取回退", "result": "最终结果", "fetch": "Jira获取",
+    "skip": "前置跳过"
+}
+
+
+@app.post("/api/timestudy/root-causes")
+async def timestudy_root_causes(body: dict = Body(default={})):
+    """批量查询 Jira 的上次提取根因（从 records.csv 读取最新一条记录）"""
+    import csv as _csv
+    bugids = body.get("bugids", [])
+    if not bugids:
+        return _ok({}, "无查询目标")
+    if not os.path.exists(_TIMESTUDY_RECORDS):
+        return _ok({}, "尚无自学习记录")
+    try:
+        # 读取所有记录，取每个 bugid 的最后一条
+        last_record = {}  # {bugid: record}
+        with open(_TIMESTUDY_RECORDS, "r", encoding="utf-8-sig") as f:
+            reader = _csv.DictReader(f)
+            for row in reader:
+                bid = (row.get("jira号", "") or "").strip()
+                if bid:
+                    last_record[bid] = row
+        # 构造根因结果
+        _RESULT_MAP = {
+            "video:0": "无视频附件",
+            "dl:fail": "视频下载失败",
+            "frame:fail": "帧提取失败",
+            "ocr:empty": "OCR未识别到文字",
+            "ocr:no_pattern": "OCR识别了文字但无时间模式",
+            "full:hit": "完整时间匹配成功",
+            "12h:hit": "12h转换命中",
+            "12h:fallback": "12h兜底",
+            "cache:hit": "缓存命中",
+            "fn:try": "文件名回退",
+            "partial:single": "单视频兜底(未匹配gmlogger)",
+            "partial:multi": "多视频兜底(未匹配gmlogger)",
+            "text:hit": "文本回退成功",
+            "text:empty": "文本回退也失败",
+            "result:video_hit": "视频提取成功",
+            "cloud:hit": "云端缓存命中",
+            "diag:correction": "诊断缓存修正值",
+            "diag:suggested": "诊断缓存建议值",
+            "skip:no_gmlogger": "无gmlogger前置跳过",
+            "fetch:fail": "Jira获取失败",
+        }
+        results = {}
+        for bid in bugids:
+            rec = last_record.get(bid)
+            if not rec:
+                results[bid] = {"root_cause": "无历史提取记录", "trace": "", "error_type": ""}
+                continue
+            trace_str = (rec.get("trace_steps", "") or "").strip()
+            error_type = (rec.get("错误类型", "") or "").strip()
+            source = (rec.get("提取来源", "") or "").strip()
+            result = (rec.get("提取结果", "") or "").strip()
+            # 解析 trace 找出根因
+            if trace_str:
+                steps = [s.strip() for s in trace_str.split("→") if s.strip()]
+                # 找最后一个非成功步骤作为根因
+                root_step = ""
+                for s in reversed(steps):
+                    code = s.split(":")[0] if ":" in s else s
+                    if code not in ("result", "cloud", "diag"):
+                        root_step = s
+                        break
+                root_desc = _RESULT_MAP.get(root_step, "")
+                if not root_desc and root_step:
+                    code = root_step.split(":")[0] if ":" in root_step else root_step
+                    root_desc = _TRACE_STAGE_DESC.get(code, root_step)
+                results[bid] = {
+                    "root_cause": root_desc or root_step,
+                    "trace": trace_str,
+                    "error_type": error_type,
+                    "source": source,
+                    "result": result,
+                }
+            else:
+                results[bid] = {
+                    "root_cause": error_type or source or "无trace数据",
+                    "trace": "",
+                    "error_type": error_type,
+                    "source": source,
+                    "result": result,
+                }
+        return _ok(results, f"查询 {len(bugids)} 个Jira根因")
+    except Exception as e:
+        logger.error("根因查询失败: %s", e)
         return _fail(str(e))
 
 
@@ -12530,7 +12638,13 @@ async def test_unanalyzed_bugs(request: Request):
 
 
 # ---- 线上AI日志分析批量执行 ----
-_PROD_AI_URL = "https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket"
+_PROD_AI_URL_DEFAULT = "https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket"
+
+
+def _get_prod_ai_url() -> str:
+    """从配置读取线上AI分析接口地址，支持在接口设置页面动态修改"""
+    cfg = load_config()
+    return (cfg.get("prod_ai") or {}).get("url", _PROD_AI_URL_DEFAULT)
 
 
 @app.get("/api/test/prod_csv_files")
@@ -12689,7 +12803,7 @@ async def test_prod_csv_bitable(request: Request):
 
 @app.post("/api/test/prod_batch_run")
 async def test_prod_batch_run(request: Request):
-    """线上AI日志分析批量执行：读取CSV → 提取触发时间(优先云端) → 去重 → 批量调用线上接口"""
+    """AI日志分析批量执行：读取CSV → 提取触发时间(优先云端) → 去重 → 批量调用接口（支持PC/线上模式）"""
     import asyncio
     import json as _json
     import csv as _csv
@@ -12702,14 +12816,16 @@ async def test_prod_batch_run(request: Request):
     filter_pc_only = body.get("filter_pc_only", False)  # 仅过滤PC来源的正确+通用失败
     filter_online_only = body.get("filter_online_only", False)  # 仅过滤线上来源的正确+通用失败
     max_count = int(body.get("max_count") or 0)  # 抽取数量上限，0 表示不限制
+    exec_mode = body.get("exec_mode", "online")  # 执行模式：online(线上) / pc
     # 前端已提取的触发时间（抽样步骤已获取，优先使用避免重复提取）
     frontend_trigger_times = body.get("trigger_times") or {}
-    # 批量执行元数据（默认线上值）
+    # 批量执行元数据
+    mode_label = "线上" if exec_mode == "online" else "PC"
     _batch_meta = {
         "分析并发数": str(body.get("analysis_concurrency", "5")),
         "下载并发数": str(body.get("download_concurrency", "2")),
         "模型": str(body.get("model", "deepseek-v-pro")),
-        "触发来源": str(body.get("trigger_source", "线上")),
+        "触发来源": str(body.get("trigger_source", mode_label)),
     }
     # 从 CSV 和直接输入两种来源收集 Jira 号
     all_bugids = list(direct_bugids)
@@ -12863,7 +12979,7 @@ async def test_prod_batch_run(request: Request):
             run_bugids = [b for b in run_bugids if b in trigger_times]
         skipped_no_time = len(bugids) - len(run_bugids)
         yield f"data: {_json.dumps({'type': 'extract_done', 'total': len(run_bugids), 'with_time': len(trigger_times), 'without_time': skipped_no_time, 'skip_empty_mark': skip_empty_mark}, ensure_ascii=False)}\n\n"
-        # 批量执行线上接口
+        # 批量执行接口（支持PC/线上模式）
         result_queue = queue.Queue()
 
         def _run_one(bugid):
@@ -12879,15 +12995,24 @@ async def test_prod_batch_run(request: Request):
                                   "status": "fail", "msg": "无触发时间"})
                 return
             try:
-                payload = {"jiraNumber": bugid}
-                if exec_time:
-                    payload["questionTimes"] = [exec_time]
-                resp = http_post(_PROD_AI_URL, payload, timeout=30)
+                if exec_mode == "online":
+                    payload = {"jiraNumber": bugid}
+                    if exec_time:
+                        payload["questionTimes"] = [exec_time]
+                    resp = http_post(_get_prod_ai_url(), payload, timeout=30)
+                else:
+                    cfg = load_config()["ai_log_api"]
+                    payload = {cfg["bugid_field"]: bugid}
+                    if cfg.get("trigger_time_field") and exec_time:
+                        payload[cfg["trigger_time_field"]] = exec_time
+                    resp = http_post(cfg["url"], payload, timeout=int(cfg.get("timeout", 60)))
                 if stop_event.is_set():
                     return
                 resp_code = resp.get("code") if isinstance(resp, dict) else None
                 resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
                 is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
+                if is_ok and exec_mode == "pc":
+                    is_ok = any(kw in resp_msg for kw in ["分析任务已启动", "后台处理", "正在分析"])
                 result_queue.put({"Jira号": bugid, "执行结果": "成功" if is_ok else "失败",
                                   "备注": resp_msg[:200], "触发时间": exec_time,
                                   "执行时间": batch_start_time,
@@ -12929,7 +13054,7 @@ async def test_prod_batch_run(request: Request):
         fail_count = len(results) - success_count
         no_time_count = sum(1 for r in results if r.get("备注") == "无触发时间")
         done_msg = f"执行完成：成功 {success_count}，失败 {fail_count}，去重 {dedup_count}，重复跳过 {skipped_count}，无触发时间 {no_time_count}"
-        logger.info("线上批量执行完成: %s", done_msg)
+        logger.info("%s批量执行完成: %s", mode_label, done_msg)
         # 上传执行记录到云端
         cloud_url = ""
         try:
@@ -13774,7 +13899,7 @@ def _bot_run_11_1_continuous(chat_id: str, diff_records: list, batch_size: int,
                 exec_time = trigger_times.get(bugid, "")
                 try:
                     payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
-                    resp = http_post(_PROD_AI_URL, payload, timeout=15)
+                    resp = http_post(_get_prod_ai_url(), payload, timeout=15)
                     resp_code = resp.get("code") if isinstance(resp, dict) else None
                     if resp_code in (200, 0, "200"):
                         success += 1
@@ -13984,7 +14109,7 @@ async def auto_detect_run(request: Request):
                     payload = {"jiraNumber": bugid}
                     if exec_time:
                         payload["questionTimes"] = [exec_time]
-                    resp = await loop.run_in_executor(None, lambda p=payload: http_post(_PROD_AI_URL, p, timeout=30))
+                    resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=30))
                     resp_code = resp.get("code") if isinstance(resp, dict) else None
                     resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
                     is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
@@ -14123,7 +14248,7 @@ async def regression_run(request: Request):
                 try:
                     if exec_mode == "online":
                         payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
-                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(_PROD_AI_URL, p, timeout=30))
+                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=30))
                     else:
                         payload = {pc_cfg.get("bugid_field", "jira号"): bugid}
                         if pc_cfg.get("trigger_time_field"):
@@ -14223,7 +14348,7 @@ async def ab_experiment(request: Request):
                 try:
                     if module == "prod_batch":
                         payload = {"jiraNumber": bugid}
-                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(_PROD_AI_URL, p, timeout=30))
+                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=30))
                         resp_code = resp.get("code") if isinstance(resp, dict) else None
                         is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
                         results.append({"bugid": bugid, "success": is_ok})
