@@ -672,6 +672,37 @@ def _process_bot_command(chat_id: str, text: str):
             feishu_client.send_bot_message(chat_id, f"更新异常: {str(e)[:200]}")
         return
 
+    # 触发时间自学习：发送 timestudy 触发分析
+    if text.strip().lower() in ("timestudy", "自学习", "触发时间学习"):
+        feishu_client.send_bot_message(chat_id, "正在分析触发时间提取记录...")
+        try:
+            patterns = _timestudy_analyze()
+            total = patterns.get("total_records", 0)
+            rate = patterns.get("success_rate", 0)
+            err_dist = patterns.get("error_distribution", {})
+            src_dist = patterns.get("source_distribution", {})
+            # 构建摘要消息
+            lines = [f"触发时间自学习分析完成",
+                     f"总记录: {total} 条",
+                     f"成功率: {rate}%",
+                     f"用户修正: {patterns.get('corrected_count', 0)} 条",
+                     f"12h转换: {patterns.get('h12_count', 0)} 条", ""]
+            if src_dist:
+                lines.append("提取来源分布:")
+                for src, cnt in list(src_dist.items())[:5]:
+                    lines.append(f"  {src}: {cnt}次")
+                lines.append("")
+            if err_dist:
+                lines.append("错误类型Top5:")
+                for err, cnt in list(err_dist.items())[:5]:
+                    lines.append(f"  {err}: {cnt}次")
+            else:
+                lines.append("无错误记录")
+            feishu_client.send_bot_message(chat_id, "\n".join(lines))
+        except Exception as e:
+            feishu_client.send_bot_message(chat_id, f"自学习分析失败: {e}")
+        return
+
     # 帮助/功能菜单：显示菜单并等待子功能输入
     if any(kw in text for kw in ("功能", "帮助", "菜单", "help")):
         _set_bot_session(chat_id, "wait_menu")
@@ -1735,6 +1766,198 @@ def _is_bitable_excluded(fields: dict, bugid_field: str = "jira号") -> bool:
     return False
 
 
+# ==================== 触发时间自学习系统 ====================
+_TIMESTUDY_DIR = os.path.join(PROJECT_ROOT, "timestudy")
+_TIMESTUDY_RECORDS = os.path.join(_TIMESTUDY_DIR, "records.csv")
+_TIMESTUDY_CSV_HEADERS = [
+    "jira号", "记录时间", "提取来源", "提取结果", "是否正确",
+    "错误类型", "错误详情", "修正后时间",
+    "视频数量", "gmlogger数量", "参考时间",
+    "OCR原文", "匹配差秒", "12h转换"
+]
+# 提取上下文（线程安全，每次提取前初始化）
+_timestudy_ctx: dict = {}
+_timestudy_lock = threading.Lock()
+_record_write_lock = threading.Lock()
+
+
+def _timestudy_init_ctx(bugid: str):
+    """初始化提取上下文（每次提取前调用）"""
+    with _timestudy_lock:
+        _timestudy_ctx[bugid] = {
+            "source": "", "error_type": "", "error_detail": "",
+            "video_count": 0, "gm_count": 0, "ref_times": "",
+            "ocr_text": "", "match_diff": "", "h12": "no"
+        }
+
+
+def _timestudy_update_ctx(bugid: str, **kwargs):
+    """更新提取上下文"""
+    with _timestudy_lock:
+        ctx = _timestudy_ctx.get(bugid)
+        if ctx:
+            ctx.update(kwargs)
+
+
+def _timestudy_get_ctx(bugid: str) -> dict:
+    """获取并清除提取上下文"""
+    with _timestudy_lock:
+        return _timestudy_ctx.pop(bugid, None) or {}
+
+
+def _timestudy_record(bugid: str, result: str, source: str,
+                      error_type: str = "", error_detail: str = "",
+                      correction: str = "", ctx: dict = None):
+    """写入一条自学习记录到 timestudy/records.csv"""
+    import csv as _csv
+    os.makedirs(_TIMESTUDY_DIR, exist_ok=True)
+    ctx = ctx or {}
+    record_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    file_exists = os.path.exists(_TIMESTUDY_RECORDS)
+    row = [
+        bugid, record_time, source, result, "unknown",
+        error_type, error_detail, correction,
+        str(ctx.get("video_count", 0)),
+        str(ctx.get("gm_count", 0)),
+        ctx.get("ref_times", ""),
+        ctx.get("ocr_text", ""),
+        ctx.get("match_diff", ""),
+        ctx.get("h12", "no"),
+    ]
+    try:
+        with _record_write_lock:
+            with open(_TIMESTUDY_RECORDS, "a", newline="", encoding="utf-8-sig") as f:
+                writer = _csv.writer(f)
+                if not file_exists:
+                    writer.writerow(_TIMESTUDY_CSV_HEADERS)
+                writer.writerow(row)
+    except Exception as e:
+        logger.warning("自学习记录写入失败 %s: %s", bugid, e)
+
+
+def _timestudy_analyze() -> dict:
+    """分析 records.csv，生成 error_patterns.json 和 optimization_log.md"""
+    import csv as _csv
+    if not os.path.exists(_TIMESTUDY_RECORDS):
+        return {"total": 0, "error_patterns": {}}
+    # 读取所有记录
+    records = []
+    with open(_TIMESTUDY_RECORDS, "r", encoding="utf-8-sig") as f:
+        reader = _csv.DictReader(f)
+        for row in reader:
+            records.append(row)
+    if not records:
+        return {"total": 0, "error_patterns": {}}
+    total = len(records)
+    # 统计错误类型分布
+    error_counts = {}
+    source_counts = {}
+    success_count = 0
+    fail_count = 0
+    corrected_count = 0
+    h12_count = 0
+    for rec in records:
+        err = rec.get("错误类型", "").strip()
+        src = rec.get("提取来源", "").strip()
+        result = rec.get("提取结果", "").strip()
+        h12 = rec.get("12h转换", "").strip()
+        if err:
+            error_counts[err] = error_counts.get(err, 0) + 1
+        if src:
+            source_counts[src] = source_counts.get(src, 0) + 1
+        if result:
+            success_count += 1
+        else:
+            fail_count += 1
+        if rec.get("是否正确", "").strip() == "corrected":
+            corrected_count += 1
+        if h12 == "yes":
+            h12_count += 1
+    # 错误类型按数量降序
+    sorted_errors = sorted(error_counts.items(), key=lambda x: x[1], reverse=True)
+    # 生成 error_patterns.json
+    patterns = {
+        "total_records": total,
+        "success_count": success_count,
+        "fail_count": fail_count,
+        "corrected_count": corrected_count,
+        "h12_count": h12_count,
+        "success_rate": round(success_count / total * 100, 1) if total else 0,
+        "error_distribution": dict(sorted_errors),
+        "source_distribution": dict(sorted(source_counts.items(), key=lambda x: x[1], reverse=True)),
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    patterns_path = os.path.join(_TIMESTUDY_DIR, "error_patterns.json")
+    with open(patterns_path, "w", encoding="utf-8") as f:
+        import json as _json2
+        _json2.dump(patterns, f, ensure_ascii=False, indent=2)
+    # 生成 optimization_log.md
+    log_lines = [
+        f"# 触发时间提取优化日志",
+        f"",
+        f"生成时间: {patterns['generated_at']}",
+        f"",
+        f"## 统计概览",
+        f"",
+        f"| 指标 | 值 |",
+        f"|------|------|",
+        f"| 总记录数 | {total} |",
+        f"| 提取成功 | {success_count} ({patterns['success_rate']}%) |",
+        f"| 提取失败 | {fail_count} |",
+        f"| 用户修正 | {corrected_count} |",
+        f"| 12h转换使用 | {h12_count} |",
+        f"",
+        f"## 提取来源分布",
+        f"",
+        f"| 来源 | 次数 | 占比 |",
+        f"|------|------|------|",
+    ]
+    for src, cnt in patterns["source_distribution"].items():
+        pct = round(cnt / total * 100, 1) if total else 0
+        log_lines.append(f"| {src} | {cnt} | {pct}% |")
+    log_lines.extend([
+        f"",
+        f"## 错误类型分布",
+        f"",
+        f"| 错误类型 | 次数 | 占比 |",
+        f"|----------|------|------|",
+    ])
+    for err, cnt in sorted_errors:
+        pct = round(cnt / total * 100, 1) if total else 0
+        log_lines.append(f"| {err} | {cnt} | {pct}% |")
+    log_lines.extend([f"", f"## 优化建议", f""])
+    # 基于错误模式生成具体建议
+    suggestions = []
+    if total > 0:
+        for err, cnt in sorted_errors:
+            ratio = cnt / total
+            if err == "video_download_failed" and ratio > 0.05:
+                suggestions.append(f"- **视频下载失败** ({cnt}次, {round(ratio*100,1)}%): 建议增大 httpx 超时时间或增加下载重试机制")
+            elif err == "ocr_no_time_pattern" and ratio > 0.05:
+                suggestions.append(f"- **OCR无时间模式** ({cnt}次, {round(ratio*100,1)}%): 建议优化 OCR 正则表达式或增加新的时间格式匹配")
+            elif err == "12h_ambiguity" and ratio > 0.03:
+                suggestions.append(f"- **12h歧义** ({cnt}次, {round(ratio*100,1)}%): 建议引入更多上下文判断 AM/PM，如 Jira 创建时间")
+            elif err == "time_no_match_gmlogger" and ratio > 0.05:
+                suggestions.append(f"- **时间不匹配gmlogger** ({cnt}次, {round(ratio*100,1)}%): 建议调整匹配阈值或改进 gmlogger 文件名解析")
+            elif err == "no_video" and ratio > 0.1:
+                suggestions.append(f"- **无视频附件** ({cnt}次, {round(ratio*100,1)}%): 大量记录无视频，建议优化标题/评论/描述的提取逻辑")
+            elif err == "gmlogger_missing" and ratio > 0.05:
+                suggestions.append(f"- **无gmlogger参考** ({cnt}次, {round(ratio*100,1)}%): 建议增强无 gmlogger 场景下的时间验证逻辑")
+            elif err == "all_sources_empty" and ratio > 0.03:
+                suggestions.append(f"- **全部来源失败** ({cnt}次, {round(ratio*100,1)}%): 需分析这些 Jira 的附件类型，考虑新增提取来源")
+            elif err == "user_corrected" and ratio > 0.02:
+                suggestions.append(f"- **用户修正** ({cnt}次, {round(ratio*100,1)}%): 分析修正前后的规律，自动调整提取策略")
+    if not suggestions:
+        suggestions.append("暂无明显优化方向，建议积累更多数据后再分析")
+    log_lines.extend(suggestions)
+    log_lines.append("")
+    log_path = os.path.join(_TIMESTUDY_DIR, "optimization_log.md")
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(log_lines))
+    logger.info("自学习分析完成: %d 条记录, %d 种错误类型", total, len(error_counts))
+    return patterns
+
+
 def _bot_get_trigger_times(bugids: list) -> dict:
     """批量获取触发时间（优先云端缓存，已标记空跳过，新提取结果存入云端+本地）
 
@@ -1749,6 +1972,7 @@ def _bot_get_trigger_times(bugids: list) -> dict:
         if bugid in cloud_times:
             # 云端已有触发时间，直接使用（包含用户手动修正的值）
             trigger_times[bugid] = cloud_times[bugid]
+            _timestudy_record(bugid, cloud_times[bugid], "cloud_cache")
             continue
         if bugid in cloud_keys:
             # 云端已标记无触发时间（空值），跳过
@@ -1763,9 +1987,12 @@ def _bot_get_trigger_times(bugids: list) -> dict:
         if diag and diag.get("correction_time"):
             trigger_times[bugid] = diag["correction_time"]
             logger.info("触发时间: %s 使用诊断缓存修正值 %s", bugid, diag["correction_time"])
+            _timestudy_record(bugid, diag["correction_time"], "diag_cache",
+                              error_detail="使用用户修正值")
         elif diag and diag.get("suggested_time") and diag.get("verify_status") == "success":
             trigger_times[bugid] = diag["suggested_time"]
             logger.info("触发时间: %s 使用诊断缓存建议值 %s", bugid, diag["suggested_time"])
+            _timestudy_record(bugid, diag["suggested_time"], "diag_cache")
         else:
             still_need.append(bugid)
     if len(still_need) < len(need_fetch):
@@ -1774,10 +2001,28 @@ def _bot_get_trigger_times(bugids: list) -> dict:
     for bugid in need_fetch:
         try:
             issue = _jc.fetch_issue(bugid)
+            # 初始化自学习上下文（视频提取前）
+            _timestudy_init_ctx(bugid)
             # 视频 OCR 优先级最高
             tt = _diag_extract_time_from_video_simple(issue)
-            if not tt:
+            ctx = _timestudy_get_ctx(bugid)  # 获取并清除上下文
+            if tt:
+                # 视频提取成功
+                source = ctx.get("source", "") or "video_ocr"
+                _timestudy_record(bugid, str(tt), source, ctx=ctx)
+            else:
+                # 视频未提取到，回退到标题/评论/描述/自定义字段
                 tt = _jc.extract_trigger_time_from_issue(issue)
+                if tt:
+                    _timestudy_record(bugid, str(tt), "text_fallback",
+                                      error_type="no_video" if ctx.get("error_type") == "no_video" else "video_failed_text_fallback",
+                                      error_detail=f"视频提取失败({ctx.get('error_type','')})→文本回退成功",
+                                      ctx=ctx)
+                else:
+                    _timestudy_record(bugid, "", "empty",
+                                      error_type=ctx.get("error_type") or "all_sources_empty",
+                                      error_detail=ctx.get("error_detail") or "所有来源均未提取到触发时间",
+                                      ctx=ctx)
             if tt:
                 trigger_times[bugid] = str(tt)
             try:
@@ -1786,6 +2031,7 @@ def _bot_get_trigger_times(bugids: list) -> dict:
                 logger.warning("云端保存触发时间失败 %s（不影响流程）: %s", bugid, save_e)
         except Exception as e:
             logger.warning("机器人提取触发时间失败 %s: %s", bugid, e)
+            _timestudy_record(bugid, "", "error", error_type="fetch_failed", error_detail=str(e)[:200])
     return trigger_times
 
 
@@ -9604,9 +9850,13 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     attachments = fields.get("attachment") or []
     videos = [a for a in attachments if (a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES)]
     if not videos:
+        _timestudy_update_ctx(issue.get("key", ""), error_type="no_video", error_detail="Jira无视频附件")
         return ""
     # 获取 bugid 用于缓存键
     bugid = issue.get("key") or (issue.get("fields") or {}).get("summary", "")[:20]
+    # 初始化自学习上下文
+    _timestudy_init_ctx(bugid)
+    _timestudy_update_ctx(bugid, video_count=len(videos))
     # 加载视频缓存
     cache = _load_video_time_cache()
     cache_updated = False
@@ -9615,6 +9865,8 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     gm_times = _diag_gmlogger_times(attachments)
     gm_dates = [(dt.year, dt.month, dt.day) for _, dt in gm_times]
     ref_pool = [dt for _, dt in gm_times]
+    _timestudy_update_ctx(bugid, gm_count=len(gm_times),
+                          ref_times="|".join(str(dt) for _, dt in gm_times[:3]))
     # 构建 gmlogger 详细信息（用于智能匹配视频）
     gm_info_list = _build_gmlogger_info(attachments)
     gm_ref_dt = None
@@ -9672,6 +9924,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                     ts, ext_dt = parsed
                     if any(abs((dt - ext_dt).total_seconds()) <= 300 for dt in video_ref_pool):
                         logger.info("视频兜底命中(%s, 缓存+包内重合): %s", video_label, ts)
+                        _timestudy_update_ctx(bugid, source="video_ocr")
                         return ts
                     if not best_partial:
                         best_partial = ts
@@ -9685,24 +9938,25 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         video_path = None
         tmp_dir = None
         try:
-            # 下载子块：单独捕获下载异常，失败则跳过当前视频（临时目录由外层 finally 统一清理）
-            try:
-                logger.info("视频兜底提取：开始下载视频 %s%s", video_label,
-                            "（单视频）" if single_video else "")
-                tmp_dir = tempfile.mkdtemp()
-                video_path = os.path.join(tmp_dir, "video.bin")
-                with _httpx.stream("GET", video_url, headers=headers, timeout=120, verify=False, follow_redirects=True) as resp:
-                    resp.raise_for_status()
-                    with open(video_path, "wb") as f:
-                        for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                            f.write(chunk)
-                logger.info("视频兜底提取：下载完成 %s", video_label)
-            except Exception as e:
-                logger.warning("视频兜底提取：下载失败 %s: %s", video_name, e)
-                continue
-            if not video_path or not os.path.exists(video_path):
-                logger.warning("视频兜底提取：视频文件不存在 %s", video_label)
-                continue
+            logger.info("视频兜底提取：开始下载视频 %s%s", video_label,
+                        "（单视频）" if single_video else "")
+            tmp_dir = tempfile.mkdtemp()
+            video_path = os.path.join(tmp_dir, "video.bin")
+            with _httpx.stream("GET", video_url, headers=headers, timeout=120, verify=False, follow_redirects=True) as resp:
+                resp.raise_for_status()
+                with open(video_path, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                        f.write(chunk)
+            logger.info("视频兜底提取：下载完成 %s", video_label)
+        except Exception as e:
+            logger.warning("视频兜底提取：下载失败 %s: %s", video_name, e)
+            _timestudy_update_ctx(bugid, error_type="video_download_failed",
+                                  error_detail=f"{video_name}: {e}")
+            continue
+        if not video_path or not os.path.exists(video_path):
+            logger.warning("视频兜底提取：视频文件不存在 %s", video_label)
+            continue
+        try:
             # 步骤1：提取封面帧
             cover_frames = _extract_video_frames_gpu(video_path, positions=[0], use_gpu=True) or []
             if not cover_frames:
@@ -9732,6 +9986,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                         logger.warning("视频兜底提取：OCR 第%d秒失败: %s", sec, e)
                         continue
                     all_text = " ".join(r[1] for r in results)
+                    _timestudy_update_ctx(bugid, ocr_text=all_text[:200])
                     all_text = _fix_ocr_missing_colon(all_text)
                     all_text = _fix_ocr_char_confusion(all_text)
                     all_text = _preprocess_ocr_datetime(all_text)
@@ -9747,6 +10002,8 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                                 # 缓存命中结果
                                 cache[cache_key] = {"time": ts, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
                                 _save_video_time_cache()
+                                _diff = min(abs((dt - ext_dt).total_seconds()) for dt in video_ref_pool) if video_ref_pool else 0
+                                _timestudy_update_ctx(bugid, source="video_ocr", match_diff=str(int(_diff)))
                                 return ts
                             # 完整日期时间未通过验证，尝试数字混淆纠正
                             _cr = (closest_gm[0]["filename_time"] if closest_gm and closest_gm[0]["filename_time"] else gm_ref_dt)
@@ -9773,6 +10030,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                                 logger.info("视频兜底命中(%s, 12h转换): %s -> %s (第%d秒)", video_label, ts, ts_alt, sec + 1)
                                 cache[cache_key] = {"time": ts_alt, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
                                 _save_video_time_cache()
+                                _timestudy_update_ctx(bugid, source="video_ocr", h12="yes")
                                 return ts_alt
                             if not orig_match and not alt_match:
                                 d_orig = min(abs((dt - ext_dt).total_seconds()) for dt in video_ref_pool) if video_ref_pool else float("inf")
@@ -9905,14 +10163,20 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     if best_12h_cand:
         cand_time, cand_dt = best_12h_cand
         logger.info("视频兜底提取(12h兜底): 使用 12h 候选 %s（差值 %.0f 秒）", cand_time, best_12h_diff)
+        _timestudy_update_ctx(bugid, source="video_ocr", h12="yes", match_diff=str(int(best_12h_diff)))
         return cand_time
     # 单视频兜底
     if single_video and best_partial:
         logger.info("视频兜底提取(单视频兜底): %s", best_partial)
+        _timestudy_update_ctx(bugid, source="video_ocr", error_type="time_no_match_gmlogger",
+                              error_detail=f"单视频兜底: {best_partial}")
         return best_partial
     if best_partial:
         logger.info("视频兜底提取(多视频均未命中，返回第一个部分结果): %s", best_partial)
+        _timestudy_update_ctx(bugid, source="video_ocr", error_type="time_no_match_gmlogger",
+                              error_detail=f"多视频均未命中兜底: {best_partial}")
         return best_partial
+    _timestudy_update_ctx(bugid, error_type="ocr_no_time_pattern", error_detail="所有视频OCR均未识别到时间")
     return ""
 
 
@@ -10892,6 +11156,60 @@ def _load_diagnose_cache(bugid: str) -> dict:
     except Exception as e:
         logger.warning("读取诊断缓存失败 %s: %s", bugid, e)
         return None
+
+
+# ==================== 触发时间自学习 API ====================
+
+@app.post("/api/timestudy/analyze")
+async def timestudy_analyze():
+    """触发分析：统计错误模式，生成 error_patterns.json 和 optimization_log.md"""
+    try:
+        patterns = _timestudy_analyze()
+        total = patterns.get("total_records", 0)
+        rate = patterns.get("success_rate", 0)
+        err_dist = patterns.get("error_distribution", {})
+        top3 = list(err_dist.items())[:3]
+        top3_str = ", ".join(f"{k}({v})" for k, v in top3) if top3 else "无"
+        summary = (f"自学习分析完成: {total}条记录, 成功率{rate}%, "
+                   f"Top3错误: {top3_str}")
+        return _ok(patterns, summary)
+    except Exception as e:
+        logger.error("自学习分析失败: %s", e)
+        return _fail(str(e))
+
+
+@app.get("/api/timestudy/summary")
+async def timestudy_summary():
+    """获取自学习摘要（轻量级，不重新分析）"""
+    import json as _json2
+    patterns_path = os.path.join(_TIMESTUDY_DIR, "error_patterns.json")
+    if not os.path.exists(patterns_path):
+        return _ok({"total_records": 0}, "尚无自学习数据")
+    try:
+        with open(patterns_path, "r", encoding="utf-8") as f:
+            patterns = _json2.load(f)
+        return _ok(patterns)
+    except Exception as e:
+        return _fail(str(e))
+
+
+@app.get("/api/timestudy/records")
+async def timestudy_records(limit: int = 50):
+    """获取最近的自学习记录"""
+    import csv as _csv
+    if not os.path.exists(_TIMESTUDY_RECORDS):
+        return _ok([], "尚无记录")
+    try:
+        rows = []
+        with open(_TIMESTUDY_RECORDS, "r", encoding="utf-8-sig") as f:
+            reader = _csv.DictReader(f)
+            for row in reader:
+                rows.append(row)
+        # 返回最近 N 条（倒序）
+        rows = rows[-limit:][::-1]
+        return _ok(rows, f"最近 {len(rows)} 条记录")
+    except Exception as e:
+        return _fail(str(e))
 
 
 @app.post("/api/troubleshoot/cancel_diag")
