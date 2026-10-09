@@ -2949,7 +2949,7 @@
         <div style="padding:20px;max-width:1200px;margin:0 auto">
           <div class="section-title" style="font-size:18px;margin-bottom:16px">冒烟测试</div>
           <el-alert type="info" :closable="false" style="margin-bottom:16px"
-            title="配置3条典型用例的Jira号，一键触发线上AI日志分析接口，并查询多维表格中的分析结果进行验证"></el-alert>
+            title="配置4条典型用例的Jira号，一键触发线上AI日志分析接口，并查询多维表格中的分析结果进行验证"></el-alert>
 
           <!-- 用例配置区 -->
           <el-card shadow="never" style="margin-bottom:16px">
@@ -2961,7 +2961,7 @@
             </template>
             <div v-for="(c, i) in smokeTest.cases" :key="i" style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
               <el-checkbox v-model="c.checked" style="min-width:24px"></el-checkbox>
-              <el-tag :type="['primary','success','warning'][i]" style="min-width:160px;text-align:center">{{ c.name }}</el-tag>
+              <el-tag :type="['primary','success','warning','info'][i]" style="min-width:160px;text-align:center">{{ c.name }}</el-tag>
               <el-input v-model="c.jiraId" :placeholder="'输入 ' + c.name + ' 的 Jira 号（如 VCU-xxxxxx）'" clearable style="flex:1"
                 @keyup.enter="runSmokeTest"></el-input>
             </div>
@@ -3550,6 +3550,7 @@ createApp({
         cases: [
           { name: '分包解压', jiraId: '', checked: true },
           { name: '完整解压', jiraId: '', checked: true },
+          { name: 'CAN信号分析', jiraId: '', checked: true },
           { name: '无gmlogger文件报错查看', jiraId: '', checked: true },
         ],
         version: '',
