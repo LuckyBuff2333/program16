@@ -5,6 +5,7 @@ import os
 import re
 import signal
 import threading
+import time
 from datetime import datetime
 
 import pandas as pd
@@ -2564,8 +2565,12 @@ def _auto_disable_daily_broadcast(chat_id: str):
 
 
 def get_daily_report_url() -> str:
-    """获取结论报表云端文件夹 URL"""
-    return f"https://my.feishu.cn/drive/folder/{_DAILY_BROADCAST_FOLDER}"
+    """获取结论报表云端文件夹 URL（域名从配置读取，取不到时回退 my.feishu.cn）"""
+    try:
+        domain = load_config().get("feishu_bitable", {}).get("domain", "") or "my.feishu.cn"
+    except Exception:
+        domain = "my.feishu.cn"
+    return f"https://{domain}/drive/folder/{_DAILY_BROADCAST_FOLDER}"
 
 
 def _parse_dur_sec(raw) -> float:
@@ -2888,26 +2893,45 @@ def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -
     return msg
 
 
-def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
-    """将每日结论上传到云端指定文件夹（先删后建，确保不产生重复文档）"""
+def _overwrite_daily_doc(doc_title: str, md_content: str, main_token: str, main_url: str, date_str: str) -> str:
+    """原地覆盖每日结论文档内容（保留原文件与原链接，禁止删除重建）：
+    调用 update_docx_content 失败后退避重试，共3次尝试；全部失败返回 ""，
+    由上层 _bot_daily_broadcast 兜底查询回填当天文档链接。
+    为避免在 HTTP 请求内长时间阻塞，自进入起设约90秒总时限，超时则放弃后续尝试。
+
+    :return: 成功返回文档具体 url（原链接不变），3次均失败或超时返回 ""
+    """
     from src.clients import feishu_client
+    # 最多3次原地覆盖尝试，轮间退避递增（不删除旧文档，确保原文件保留、内容清空后覆盖）
+    # 总时限约90秒：每次尝试前检查是否超时，超时则放弃后续尝试，避免最坏阻塞过久
+    deadline = time.monotonic() + 90.0
+    backoff = 2.0
+    for attempt in range(1, 4):
+        if time.monotonic() > deadline:
+            logger.error("每日结论文档原地覆盖超时（>90秒），放弃后续尝试: 日期=%s, token=%s, 已完成第%d次",
+                         date_str, main_token, attempt - 1)
+            return ""
+        ok = feishu_client.update_docx_content(main_token, md_content)
+        if ok:
+            logger.info("每日结论文档已原地覆盖: 日期=%s, 第%d/3次尝试, %s", date_str, attempt, main_url)
+            return main_url
+        logger.error("每日结论文档原地覆盖失败: 日期=%s, 标题=%s, token=%s, 第%d/3次尝试",
+                     date_str, doc_title, main_token, attempt)
+        if attempt < 3:
+            time.sleep(backoff)
+            backoff = min(backoff * 1.5, 5.0)
+    logger.error("每日结论文档原地覆盖3次均失败，放弃写入（保留原文件，不删除重建）: 日期=%s, token=%s",
+                 date_str, main_token)
+    return ""
+
+
+def _generate_daily_report_md(report: dict, date_str: str) -> str:
+    """生成每日结论文档的 Markdown 内容：结论→失败分析→待办跟进→执行详情"""
     report_dates = report.get("report_dates", [date_str])
     if len(report_dates) > 1:
         doc_title = f"每日结论_{report_dates[0]}~{report_dates[-1]}"
     else:
         doc_title = f"每日结论_{date_str}"
-    # 查找所有同名文档（可能有历史重复）
-    existing_docs = []  # [(token, url)]
-    try:
-        existing = feishu_client.list_folder_files(_DAILY_BROADCAST_FOLDER)
-        for f in existing:
-            if f.get("name") == doc_title and f.get("type") == "docx":
-                existing_docs.append((f["token"], f.get("url", "")))
-        logger.info("查找每日结论文档: 标题='%s', 文件夹共 %d 个文件, 匹配 %d 个同名文档",
-                    doc_title, len(existing), len(existing_docs))
-    except Exception as e:
-        logger.warning("查找旧每日结论文档失败: %s", e)
-    # 生成 Markdown 内容：结论→待办→详情
     total = report['total']
     success = report['success']
     fail = report['fail']
@@ -3049,27 +3073,57 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
     else:
         lines.append("无")
     lines.append("")
-    md_content = "\n".join(lines)
-    # 上传：原地覆盖内容，保持链接不变
+    return "\n".join(lines)
+
+
+def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
+    """将每日结论上传到云端指定文件夹（同名文档原地覆盖，仅清理重复副本）"""
+    from src.clients import feishu_client
+    report_dates = report.get("report_dates", [date_str])
+    if len(report_dates) > 1:
+        doc_title = f"每日结论_{report_dates[0]}~{report_dates[-1]}"
+    else:
+        doc_title = f"每日结论_{date_str}"
+    # 查找所有同名文档（可能有历史重复）：收集 (created_time, token, url) 用于稳定排序
+    existing_docs = []  # [(created_time, token, url)]
+    try:
+        existing = feishu_client.list_folder_files(_DAILY_BROADCAST_FOLDER)
+        for f in existing:
+            if f.get("name") == doc_title and f.get("type") == "docx":
+                existing_docs.append((f.get("created_time", ""), f["token"], f.get("url", "")))
+        logger.info("查找每日结论文档: 标题='%s', 文件夹共 %d 个文件, 匹配 %d 个同名文档",
+                    doc_title, len(existing), len(existing_docs))
+    except Exception as e:
+        logger.warning("查找旧每日结论文档失败: %s", e)
+    # 稳定排序固定主文档：优先按 created_time（最早创建者为主），同一时间再按 token 字典序，
+    # 避免 list_folder_files 返回顺序不稳定导致主文档在多次刷新间漂移
+    existing_docs.sort(key=lambda x: (x[0], x[1]))
+    # 生成 Markdown 内容（提取到独立函数 _generate_daily_report_md，避免主函数超长）
+    md_content = _generate_daily_report_md(report, date_str)
+    # 上传：存在同名文档时原地覆盖（失败重试3次），只要文档存在/创建成功就返回具体文档 url
     try:
         if existing_docs:
-            # 用第一个文档原地覆盖内容（全选替换）
-            main_token, main_url = existing_docs[0]
-            ok = feishu_client.update_docx_content(main_token, md_content)
-            if ok:
-                logger.info("每日结论文档已原地覆盖: %s", main_url)
-                return main_url
-            logger.warning("每日结论文档原地覆盖失败")
-            return ""
+            _, main_token, main_url = existing_docs[0]
+            # 先原地覆盖主文档；仅在覆盖成功（返回 url）后再清理重复副本，
+            # 覆盖失败时保留全部副本，避免误删导致当天文档彻底丢失
+            result_url = _overwrite_daily_doc(doc_title, md_content, main_token, main_url, date_str)
+            if result_url:
+                for _, dup_token, dup_url in existing_docs[1:]:
+                    logger.warning("发现重复每日结论文档，清理: 日期=%s, token=%s, url=%s", date_str, dup_token, dup_url)
+                    if not feishu_client.delete_drive_file(dup_token, "docx"):
+                        logger.warning("重复每日结论文档删除失败（忽略）: 日期=%s, token=%s", date_str, dup_token)
+            return result_url
         # 无同名文档：创建新文档
         doc_result = feishu_client.create_docx_document(
             doc_title, md_content, folder_token=_DAILY_BROADCAST_FOLDER)
         url = doc_result.get("url", "")
         if url:
-            logger.info("每日结论文档已创建: %s", url)
+            logger.info("每日结论文档已创建: 日期=%s, %s", date_str, url)
+        else:
+            logger.error("每日结论文档创建失败（未返回 url）: 日期=%s, 标题=%s", date_str, doc_title)
         return url
     except Exception as e:
-        logger.warning("每日结论文档上传失败: %s", e)
+        logger.error("每日结论文档上传失败: 日期=%s, %s", date_str, e)
         return ""
 
 
@@ -3149,6 +3203,18 @@ def _bot_daily_broadcast(chat_id: str, date_str: str, is_scheduled: bool):
         cloud_url = _upload_daily_report_to_cloud(report, date_str)
         if cloud_url:
             logger.info("昨日结论已上传: %s", cloud_url)
+        else:
+            # 兜底：上传失败时查询云端文件夹，确保链接至少指向当天文档
+            fallback_title = (f"每日结论_{report_dates[0]}~{report_dates[-1]}"
+                              if len(report_dates) > 1 else f"每日结论_{date_str}")
+            try:
+                for f in feishu_client.list_folder_files(_DAILY_BROADCAST_FOLDER):
+                    if f.get("name") == fallback_title and f.get("type") == "docx":
+                        cloud_url = f.get("url", "")
+                        logger.error("每日结论文档写入失败，链接回退为已有文档: 日期=%s, url=%s", date_str, cloud_url)
+                        break
+            except Exception as e:
+                logger.error("每日结论文档写入失败，兜底查询也异常: 日期=%s, %s", date_str, e)
         # 同步到数据沉淀统计表
         _sync_daily_stats_to_bitable(report, date_str)
         msg = _format_daily_report_msg(report, date_str, cloud_url=cloud_url)
@@ -4607,20 +4673,32 @@ def _daily_csv_path(date_str: str = None) -> str:
 
 
 def _load_all_doc_jira_keys() -> set:
-    """扫描 docs/ 下所有 CSV 文件，收集已测试的 jira 号集合"""
+    """扫描 docs/ 和 data/unanalyzed/ 下执行结果 CSV，收集已测试的 jira 号集合
+
+    跨轮去重说明：
+    - PC 模式执行结果写入 docs/日期/batch_*.csv
+    - 线上模式执行结果写入 data/unanalyzed/prod_batch_*.csv
+    - 自动检测/回归结果写入 data/unanalyzed/auto_add_*.csv / regression_*.csv
+    注意：data/unanalyzed/unanalyzed_*.csv 是功能9的"未分析"列表，不能纳入去重。
+    """
     tested = set()
-    doc_dir = get_path("doc_dir")
-    if not os.path.isdir(doc_dir):
-        return tested
-    for root, _dirs, files in os.walk(doc_dir):
-        for fname in files:
-            if not fname.lower().endswith(".csv"):
-                continue
-            fpath = os.path.join(root, fname)
-            for r in _read_csv_rows(fpath):
-                jira_no = (r.get("jira号") or "").strip()
-                if jira_no:
-                    tested.add(jira_no)
+    scan_dirs = [get_path("doc_dir"), _UNANALYZED_DIR]
+    for scan_dir in scan_dirs:
+        if not os.path.isdir(scan_dir):
+            continue
+        for root, _dirs, files in os.walk(scan_dir):
+            for fname in files:
+                if not fname.lower().endswith(".csv"):
+                    continue
+                # 跳过功能9的"未分析"列表文件（它们记录的是未执行的bug，不是已执行结果）
+                if fname.startswith("unanalyzed_"):
+                    continue
+                fpath = os.path.join(root, fname)
+                for r in _read_csv_rows(fpath):
+                    # 兼容两种列名：docs/ 用 "jira号"，data/unanalyzed/ 用 "Jira号"
+                    jira_no = (r.get("jira号") or r.get("Jira号") or "").strip()
+                    if jira_no:
+                        tested.add(jira_no)
     return tested
 
 
@@ -5644,17 +5722,22 @@ def report_daily_refresh(date: str = None):
                date_str, len(jira_exec),
                len(jira_exec) - sum(1 for j in jira_exec if j not in bt_map),
                len(all_keys))
-    # 同步生成并覆盖云端结论文档（前端触发与飞书机器人触发共享同一覆盖逻辑）
-    try:
-        report = _generate_daily_report(date_str)
-        if report.get("total", 0) > 0:
-            cloud_url = _upload_daily_report_to_cloud(report, date_str)
-            if cloud_url:
-                logger.info("前端刷新触发云端文档覆盖: %s", cloud_url)
-            # 同步到数据沉淀统计表
-            _sync_daily_stats_to_bitable(report, date_str)
-    except Exception as e:
-        logger.warning("前端刷新时云端文档覆盖失败: %s", e)
+    # 云端文档覆盖改后台线程异步执行（fire-and-forget）：前端仅依赖本接口返回的 rows，
+    # 不依赖响应中的 cloud_url，故无需在 HTTP 请求内同步等待覆盖（最坏可阻塞约90秒）。
+    # 与飞书机器人触发共享同一覆盖逻辑，且 update_docx_content 已按 document_id 加写锁保证串行。
+    def _async_cloud_sync(_date_str: str):
+        try:
+            report = _generate_daily_report(_date_str)
+            if report.get("total", 0) > 0:
+                cloud_url = _upload_daily_report_to_cloud(report, _date_str)
+                if cloud_url:
+                    logger.info("前端刷新触发云端文档覆盖: %s", cloud_url)
+                # 同步到数据沉淀统计表
+                _sync_daily_stats_to_bitable(report, _date_str)
+        except Exception as e:
+            logger.warning("前端刷新时云端文档覆盖失败: %s", e)
+    threading.Thread(target=_async_cloud_sync, args=(date_str,),
+                     name=f"daily-cloud-sync-{date_str}", daemon=True).start()
     return _ok(rows)
 
 
@@ -6801,9 +6884,52 @@ async def test_batch_ai_extract_times(request: Request):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+def _batch_check_ai_init_field(keys: list) -> set:
+    """批量查询 Jira customfield_13714，返回已有AI初步分析结果的 jira 号集合
+
+    使用 JQL `key in (...)` 分批查询（每批最多100个），避免 URL 过长。
+    """
+    if not keys:
+        return set()
+    from src.clients.base import http_get
+    cfg = load_config()["jira_api"]
+    if cfg.get("mock", False):
+        return set()
+    headers, auth = {}, None
+    token = cfg.get("token", "")
+    if token:
+        auth_type = cfg.get("auth_type", "bearer").lower()
+        if auth_type == "bearer":
+            headers["Authorization"] = f"Bearer {token}"
+        elif cfg.get("username"):
+            auth = (cfg["username"], token)
+    search_url = cfg["url"].rsplit("/issue", 1)[0] + "/search"
+    has_ai_init = set()
+    batch_size = 100
+    for i in range(0, len(keys), batch_size):
+        batch = keys[i:i + batch_size]
+        jql = "key in (" + ",".join(batch) + ")"
+        try:
+            result = http_get(search_url, params={
+                "jql": jql, "maxResults": len(batch), "fields": _AI_INIT_FIELD_ID,
+            }, timeout=cfg.get("timeout", 30), auth=auth, headers=headers)
+            for iss in result.get("issues", []):
+                key = iss.get("key", "")
+                val = (iss.get("fields") or {}).get(_AI_INIT_FIELD_ID)
+                # 有值且非空字符串 → 已有AI初步分析结果
+                if val and str(val).strip() and str(val).strip().lower() not in ("none", "null"):
+                    has_ai_init.add(key)
+        except Exception as e:
+            logger.warning("批量查询 AI 初步分析字段失败 (batch %d): %s", i // batch_size, e)
+    return has_ai_init
+
+
 @app.post("/api/test/batch_ai_filter")
 async def test_batch_ai_filter(request: Request):
-    """步骤3：查询多维表格，过滤掉已存在的记录。支持多种过滤模式组合"""
+    """步骤3：查询多维表格，过滤掉已存在的记录。支持多种过滤模式组合
+
+    filter_ai_preliminary=True 时额外检查 Jira customfield_13714（AI初步分析结果字段）。
+    """
     body = await request.json() or {}
     keys = body.get("keys") or []
     filter_all = body.get("filter_all", False)
@@ -6851,17 +6977,22 @@ async def test_batch_ai_filter(request: Request):
                     continue
                 if not _is_bitable_excluded(fields, bugid_field):
                     continue
-            # 过滤AI初步分析结果：强制使用智能过滤（排除已成功+无效审核），覆盖filter_all
-            use_smart = filter_ai_preliminary or (not filter_all)
-            if use_smart:
-                if _is_bitable_excluded(fields, bugid_field):
-                    exclude_keys.add(jira_key)
-            else:
+            # 多维表格过滤：filter_all=True 时排除所有记录，否则只排除已成功/无效审核
+            if filter_all and not (filter_pc_only or filter_online_only):
                 exclude_keys.add(jira_key)
+            elif _is_bitable_excluded(fields, bugid_field):
+                exclude_keys.add(jira_key)
+        # 过滤AI初步分析结果：检查 Jira customfield_13714（有值表示已有AI初步分析）
+        if filter_ai_preliminary:
+            remaining = [k for k in keys if k not in exclude_keys]
+            if remaining:
+                ai_init_keys = _batch_check_ai_init_field(remaining)
+                exclude_keys.update(ai_init_keys)
+                logger.info("AI初步分析过滤(customfield_13714): 排除 %d 条", len(ai_init_keys))
         mode_parts = []
-        if filter_all and not filter_ai_preliminary:
+        if filter_all and not (filter_pc_only or filter_online_only):
             mode_parts.append("所有已存在")
-        if not filter_pc_only and not filter_online_only and not filter_all and not filter_ai_preliminary:
+        if not filter_pc_only and not filter_online_only and not filter_all:
             mode_parts.append("成功+无需重试")
         if filter_pc_only and filter_online_only:
             mode_parts.append("PC+线上正确和通用失败")
@@ -6871,7 +7002,7 @@ async def test_batch_ai_filter(request: Request):
             if filter_online_only:
                 mode_parts.append("线上正确+通用失败")
         if filter_ai_preliminary:
-            mode_parts.append("AI初步分析")
+            mode_parts.append("AI初步分析(Jira字段)")
         mode_desc = "+".join(mode_parts)
         logger.info("多维表格重复过滤(%s): 排除记录 %d 条", mode_desc, len(exclude_keys))
     except Exception as e:
@@ -14066,23 +14197,13 @@ async def auto_detect_run(request: Request):
                 if max_rounds <= 0:
                     await asyncio.sleep(interval_min * 60)
                 continue
-            # 步骤3：AI初步分析过滤（可选）
+            # 步骤3：AI初步分析过滤（可选）—— 检查 Jira customfield_13714
             if filter_ai_init:
                 try:
-                    cfg_fb = load_config().get("feishu_bitable", {})
-                    at, tid = cfg_fb.get("app_token", ""), cfg_fb.get("table_id", "")
-                    bf = cfg_fb.get("bugid_field", "jira号")
-                    ai_init_set = set()
-                    if at and tid:
-                        records = await loop.run_in_executor(None, lambda: feishu_client.list_bitable_records(at, tid))
-                        for rec in records:
-                            fields = rec.get("fields", {})
-                            jn = _bitable_text(fields.get(bf, "")).upper()
-                            ar = _bitable_text(fields.get("分析结果", ""))
-                            if jn and ar == "成功":
-                                ai_init_set.add(jn)
                     before = len(bugids)
-                    bugids = [b for b in bugids if b.upper() not in ai_init_set]
+                    ai_init_keys = await loop.run_in_executor(None, _batch_check_ai_init_field, bugids)
+                    if ai_init_keys:
+                        bugids = [b for b in bugids if b not in ai_init_keys]
                     yield f"data: {_json.dumps({'type': 'ai_filter', 'round': round_num, 'before': before, 'after': len(bugids)}, ensure_ascii=False)}\n\n"
                 except Exception as e:
                     logger.warning("自动检测: AI初步分析过滤失败: %s", e)
