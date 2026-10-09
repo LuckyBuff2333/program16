@@ -1651,6 +1651,7 @@
                     <el-checkbox v-model="batchTrigger.refreshCache"><span>云端缓存更新</span></el-checkbox>
                     <el-checkbox v-model="batchTrigger.reExtractEmpty"><span>空标记重新提取</span></el-checkbox>
                     <el-checkbox v-model="batchTrigger.parallelExtract"><span>并行提取</span></el-checkbox>
+                    <el-checkbox v-model="batchTrigger.filterAiInit"><span>过滤AI初步分析结果</span></el-checkbox>
                   </div>
                   <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
                     <el-button type="success" :loading="running.batchTriggerExtract" @click="batchTriggerExtract" :disabled="running.batchTriggerExtractStop || !batchTrigger.rowTables.filter(t=>t.selected).length">提取触发时间（{{ batchTrigger.rowTables.filter(t=>t.selected).reduce((s,t)=>s+t.rows.length, 0) }} 条）</el-button>
@@ -3451,6 +3452,7 @@ createApp({
         refreshCache: false,    // 云端缓存更新：有缓存也重新提取，提取不到则保留旧值
         reExtractEmpty: false,  // 空标记重新提取：已标记空的也重新提取
         parallelExtract: false, // 并行提取：同时处理 8 条（视频下载+分析+处理）
+        filterAiInit: false,    // 过滤AI初步分析结果：已有 customfield_13714 的跳过（与功能9一致）
       },
       bitableWriteForm: { bugid: '', rootcause: '', comment: '', confidence: 0.95, docUrl: '' },
       bitableWriteResult: null,
@@ -6320,7 +6322,7 @@ createApp({
       try {
         const resp = await fetch('/api/test/batch_ai_extract_times', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keys, filter_existing: bt.filterExisting, video_fallback: bt.videoFallback, refresh_cache: bt.refreshCache, re_extract_empty: bt.reExtractEmpty, parallel: bt.parallelExtract }),
+          body: JSON.stringify({ keys, filter_existing: bt.filterExisting, video_fallback: bt.videoFallback, refresh_cache: bt.refreshCache, re_extract_empty: bt.reExtractEmpty, parallel: bt.parallelExtract, filter_ai_init: bt.filterAiInit }),
         });
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
@@ -6354,6 +6356,7 @@ createApp({
                 }));
                 bt.doneMsg = `提取完成: 共${evt.total}条, 有时间${evt.time_count}条(云端命中${evt.local_hit}, 新提取${evt.new_count}), 空${evt.empty_count}条`;
                 if (evt.skip_bitable) bt.doneMsg += `, 多维表过滤${evt.skip_bitable}条`;
+                if (evt.skip_ai_init) bt.doneMsg += `, AI初步分析过滤${evt.skip_ai_init}条`;
                 if (evt.skip_corrected) bt.doneMsg += `, 已修正跳过${evt.skip_corrected}条`;
                 if (evt.interrupted) bt.doneMsg += '（已中断）';
               }
