@@ -1826,7 +1826,7 @@
                         @click="clearGmloggerReview">一键替换人工审核结果为gmlogger文件已上传</el-button>
                       <el-button type="primary" size="small" :loading="gmloggerRescan.markClearing"
                         :disabled="!gmloggerRescan.candidates.some(c=>c.selected && c.has_file)"
-                        @click="clearGmloggerEmptyMark">一键去匹配成功的云端空标签</el-button>
+                        @click="clearGmloggerEmptyMark">一键去除匹配成功的云端空标签</el-button>
                     </div>
                   </div>
                   <el-alert v-if="gmloggerRescan.clearMsg" type="success" :closable="false" :title="gmloggerRescan.clearMsg" style="margin-bottom:8px"></el-alert>
