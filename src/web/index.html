@@ -2347,6 +2347,7 @@
                     @click="rerunManualReview">
                     待人工审核重新执行（{{ getManualReviewCount() }} 条）
                   </el-button>
+                  <el-checkbox v-model="troubleshoot.execOnlyEmptyReview" style="margin-left:8px">仅人工审核为空</el-checkbox>
                   <el-checkbox v-model="troubleshoot.skipVideoCache" style="margin-left:8px">跳过视频缓存</el-checkbox>
                 </div>
                 <!-- 成功记录表格 -->
@@ -3503,7 +3504,7 @@ createApp({
         querying: false, records: [], successRecords: [], queryingSuccess: false, successSearched: false,
         diagRunning: false, diagLoadingMap: {}, diagResults: [], categoryFilter: '',
         writingReview: false, exportingTriggerIssues: false, batchApplyingTime: false, onlyEmptyReview: false,
-        stopFlag: false, abortController: null, skipVideoCache: false,
+        stopFlag: false, abortController: null, skipVideoCache: false, execOnlyEmptyReview: false,
         correctionEditor: { visible: false, row: null, time: '', note: '', humanReason: '', matchedCategory: '', saving: false },
         rootCauses: {},  // {bugid: {root_cause, trace, error_type, source, result}}
         timestudy: { loading: false, summary: null },  // 自学习分析结果
@@ -7542,8 +7543,8 @@ createApp({
     },
     // 批量诊断失败记录：并发 3 逐个诊断，实时刷新归类结果（支持人工停止）
     async diagnoseAllFailed() {
-      const targets = this.troubleshoot.records.filter(r => r['分析结果'] === '失败');
-      if (!targets.length) { ElementPlus.ElMessage.warning('无可诊断的记录（需分析结果为失败）'); return; }
+      const targets = this.getDiagnoseTargets();
+      if (!targets.length) { ElementPlus.ElMessage.warning(this.troubleshoot.execOnlyEmptyReview ? '无可诊断的记录（需分析结果为失败且人工审核为空）' : '无可诊断的记录（需分析结果为失败）'); return; }
       this.troubleshoot.diagRunning = true;
       this.troubleshoot.stopFlag = false;
       this.troubleshoot.abortController = new AbortController();
@@ -7594,9 +7595,15 @@ createApp({
         this.troubleshoot.timestudy.loading = false;
       }
     },
+    // 可诊断的失败记录列表（供按钮展示与批量诊断共用）
+    // 勾选「仅人工审核为空」时，执行时排除人工审核结果非空的记录，只诊断人工审核为空的失败记录
+    getDiagnoseTargets() {
+      return this.troubleshoot.records.filter(r =>
+        r['分析结果'] === '失败' && (!this.troubleshoot.execOnlyEmptyReview || !r['人工审核结果']));
+    },
     // 可诊断的失败记录数（供按钮展示）
     getTroubleshootFailedCount() {
-      return this.troubleshoot.records.filter(r => r['分析结果'] === '失败').length;
+      return this.getDiagnoseTargets().length;
     },
     // 待人工审核记录数
     getManualReviewCount() {
@@ -7671,6 +7678,14 @@ createApp({
         const matched = new Set(arc.matched_entries || []);
         for (const name of (arc.entries || [])) {
           out.push({ name: name.split(/[\\/]/).pop(), matched: matched.has(name) });
+        }
+      }
+      // gmlogger 路径不产出 archive_files，仅回传包内解压出的 main 文件名（main_entries），
+      // 此处兜底展示，避免“解压后文件名”恒为空。
+      if (!out.length && Array.isArray(row.main_entries)) {
+        for (const name of row.main_entries) {
+          if (!name) continue;
+          out.push({ name: String(name).split(/[\\/]/).pop(), matched: false });
         }
       }
       return out;
