@@ -32,7 +32,7 @@ config/config.yaml
 *.tmp
 screenshot_*.png
 
-# 触发时间自学习（运行时生成）
-timestudy/records.csv
-timestudy/error_patterns.json
-timestudy/optimization_log.md
+# 触发时间自学习（需推送到云端）
+# timestudy/records/        -- 按日期分文件，已追踪
+# timestudy/error_patterns*  -- 分析快照，已追踪
+# timestudy/optimization_log.md -- 优化日志，已追踪

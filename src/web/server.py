@@ -1778,7 +1778,7 @@ def _is_bitable_excluded(fields: dict, bugid_field: str = "jira号") -> bool:
 
 # ==================== 触发时间自学习系统 ====================
 _TIMESTUDY_DIR = os.path.join(PROJECT_ROOT, "timestudy")
-_TIMESTUDY_RECORDS = os.path.join(_TIMESTUDY_DIR, "records.csv")
+_TIMESTUDY_RECORDS_DIR = os.path.join(_TIMESTUDY_DIR, "records")
 _TIMESTUDY_CSV_HEADERS = [
     "jira号", "记录时间", "提取来源", "提取结果", "是否正确",
     "错误类型", "错误详情", "修正后时间",
@@ -1795,6 +1795,7 @@ _TIMESTUDY_FIX_LOG = [
         "problem": "封面帧有清晰时钟但 OCR 读成乱码，时间提取失败",
         "root_cause": "EasyOCR 默认画布 1280 导致大图下采样，小字号/低对比度时钟识别能力不足",
         "fix": "新增 _ocr_readtext 使用 canvas_size=2560、mag_ratio=1.5、降低阈值，统一应用到三处 OCR 调用点",
+        "status": "manual",
     },
     {
         "date": "2026-10-10",
@@ -1803,6 +1804,25 @@ _TIMESTUDY_FIX_LOG = [
         "problem": "视频封面读出 6:17，但未能匹配到包内 58-main.log_2026_10_10_6_18_4.gz 的正确日期",
         "root_cause": "① main_names[:5] 只取前 5 个 main 文件，30+ 文件时遗漏目标日期；② 外层 gmlogger 文件名有旧日期时不触发包内回退",
         "fix": "遍历所有 main 文件解析时间（头读限 10 个）；始终下载包内取权威日期，包内优先、外层仅补充",
+        "status": "manual",
+    },
+    {
+        "date": "2026-10-10",
+        "title": "标题仅时间时用创建日期补全导致日期错误",
+        "bugid": "VCU-553601",
+        "problem": "标题含 10:31，评论区有完整 2026-10-6 10:31:00，但系统用 Jira 创建日期 2026-10-09 补全成 2026-10-09 10:31:00",
+        "root_cause": "标题仅含时间无日期时，_extract_times_from_text 用 created_date 补全，但创建日期可能比实际事件日期晚几天；评论区有正确日期但未被检查",
+        "fix": "标题仅时间时，先从评论区查找同一时间的完整日期（时间差≤1秒），命中则用评论日期；未命中再回退 gmlogger 补充",
+        "status": "manual",
+    },
+    {
+        "date": "2026-10-10",
+        "title": "视频 OCR 低置信度误识别过滤",
+        "bugid": "VCU-553491",
+        "problem": "视频帧中手机屏幕显示 10:08，因清晰度低被 OCR 误读为 16:50，导致提取错误时间",
+        "root_cause": "OCR 结果的置信度完全被忽略，低置信度的误识别文本直接参与时间提取，模糊帧的数字容易被错读",
+        "fix": "在 _ocr_readtext 中过滤置信度<0.3 的时间类文本（仅含数字/冒号/斜杠），三处 OCR 调用点统一生效",
+        "status": "manual",
     },
 ]
 # 提取上下文（线程安全，每次提取前初始化）
@@ -1845,15 +1865,40 @@ def _timestudy_get_ctx(bugid: str) -> dict:
         return _timestudy_ctx.pop(bugid, None) or {}
 
 
+def _timestudy_records_dir() -> str:
+    """获取记录目录路径（按日期分文件）"""
+    os.makedirs(_TIMESTUDY_RECORDS_DIR, exist_ok=True)
+    return _TIMESTUDY_RECORDS_DIR
+
+
+def _timestudy_today_csv() -> str:
+    """获取今天的记录文件路径: timestudy/records/records_YYYY-MM-DD.csv"""
+    return os.path.join(_timestudy_records_dir(),
+                        f"records_{datetime.now().strftime('%Y-%m-%d')}.csv")
+
+
+def _timestudy_load_last_snapshot() -> dict:
+    """加载上次分析的快照，用于模式生命周期对比"""
+    import json as _json2
+    path = os.path.join(_TIMESTUDY_DIR, "error_patterns.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return _json2.load(f)
+    except Exception:
+        return {}
+
+
 def _timestudy_record(bugid: str, result: str, source: str,
                       error_type: str = "", error_detail: str = "",
                       correction: str = "", ctx: dict = None):
-    """写入一条自学习记录到 timestudy/records.csv"""
+    """写入一条自学习记录到 timestudy/records/records_YYYY-MM-DD.csv"""
     import csv as _csv
-    os.makedirs(_TIMESTUDY_DIR, exist_ok=True)
     ctx = ctx or {}
     record_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    file_exists = os.path.exists(_TIMESTUDY_RECORDS)
+    csv_path = _timestudy_today_csv()
+    file_exists = os.path.exists(csv_path)
     row = [
         bugid, record_time, source, result, "unknown",
         error_type, error_detail, correction,
@@ -1868,7 +1913,7 @@ def _timestudy_record(bugid: str, result: str, source: str,
     ]
     try:
         with _record_write_lock:
-            with open(_TIMESTUDY_RECORDS, "a", newline="", encoding="utf-8-sig") as f:
+            with open(csv_path, "a", newline="", encoding="utf-8-sig") as f:
                 writer = _csv.writer(f)
                 if not file_exists:
                     writer.writerow(_TIMESTUDY_CSV_HEADERS)
@@ -1909,19 +1954,31 @@ def _timestudy_append_doc(body: str):
 
 
 def _timestudy_analyze(after_time: str = "") -> dict:
-    """深度分析 records.csv，生成 error_patterns.json 和 optimization_log.md
+    """深度分析 timestudy/records/ 下所有日期记录，生成 error_patterns.json 和 optimization_log.md
 
     Args:
         after_time: 可选，只分析该时间之后的记录（格式: YYYY-MM-DD HH:MM:SS）
     """
     import csv as _csv
-    # 读取所有记录（records.csv 可能不存在，如批量提取路径不写记录）
+    import json as _json2
+    # 读取所有日期记录文件（timestudy/records/records_YYYY-MM-DD.csv）
     records = []
-    if os.path.exists(_TIMESTUDY_RECORDS):
-        with open(_TIMESTUDY_RECORDS, "r", encoding="utf-8-sig") as f:
-            reader = _csv.DictReader(f)
-            for row in reader:
-                records.append(row)
+    records_dir = _TIMESTUDY_RECORDS_DIR
+    if os.path.exists(records_dir):
+        for fname in sorted(os.listdir(records_dir)):
+            if not fname.startswith("records_") or not fname.endswith(".csv"):
+                continue
+            fpath = os.path.join(records_dir, fname)
+            try:
+                with open(fpath, "r", encoding="utf-8-sig") as f:
+                    reader = _csv.DictReader(f)
+                    for row in reader:
+                        row["_source_file"] = fname
+                        records.append(row)
+            except Exception as e:
+                logger.warning("读取记录文件失败 %s: %s", fname, e)
+    # 加载上次快照（用于模式生命周期对比）
+    last_snapshot = _timestudy_load_last_snapshot()
     # 无分析记录时：仅在文档不存在时创建（含"已实施优化记录"），避免重复点击产生重复快照
     if not records:
         if not os.path.exists(os.path.join(_TIMESTUDY_DIR, "optimization_log.md")):
@@ -2102,7 +2159,42 @@ def _timestudy_analyze(after_time: str = "") -> dict:
             error_analysis[err_type]["main_breakpoint"] = f"{desc} ({pct}%)"
         else:
             error_analysis[err_type]["main_breakpoint"] = "无trace数据"
-    # 生成 error_patterns.json
+    # ===== 模式生命周期追踪：对比上次快照，检测 resolved/new/ongoing/improving =====
+    pattern_lifecycle = {}
+    last_analysis = last_snapshot.get("error_analysis", {})
+    current_err_types = set(error_analysis.keys())
+    prev_err_types = set(last_analysis.keys())
+    for et in current_err_types | prev_err_types:
+        prev_info = last_analysis.get(et, {})
+        curr_info = error_analysis.get(et, {})
+        if et in current_err_types and et not in prev_err_types:
+            pattern_lifecycle[et] = "new"
+        elif et in current_err_types and et in prev_err_types:
+            if curr_info.get("count", 0) < prev_info.get("count", 0) * 0.5:
+                pattern_lifecycle[et] = "improving"
+            else:
+                pattern_lifecycle[et] = "ongoing"
+        elif et in prev_err_types and et not in current_err_types:
+            pattern_lifecycle[et] = "resolved"
+            # 自动生成修复记录：上次存在但本次消失的系统性问题
+            if prev_info.get("classification") in ("系统性问题", "顽固问题"):
+                features_str = ", ".join(prev_info.get("common_features", [])) or prev_info.get("main_breakpoint", "未知")
+                jiras = prev_info.get("example_jiras", [])
+                _TIMESTUDY_FIX_LOG.append({
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "title": f"{et} 自动修复检测",
+                    "bugid": ", ".join(jiras[:2]),
+                    "problem": f"{et}（共{prev_info['count']}次, {prev_info['unique_jiras']}个Jira）在本次分析中消失",
+                    "root_cause": features_str,
+                    "fix": "代码逻辑优化后该错误模式自动消失，由自学习系统自动检测",
+                    "status": "auto",
+                })
+                logger.info("自学习: 检测到 %s 已自动修复（上次 %d 次 → 本次 0 次）", et, prev_info["count"])
+    # 将生命周期状态加入 error_analysis
+    for et, status in pattern_lifecycle.items():
+        if et in error_analysis:
+            error_analysis[et]["lifecycle"] = status
+    # ===== 生成 error_patterns.json =====
     patterns = {
         "total_records": total,
         "skip_count": skip_count,
@@ -2116,6 +2208,7 @@ def _timestudy_analyze(after_time: str = "") -> dict:
         "source_distribution": dict(sorted(source_counts.items(), key=lambda x: x[1], reverse=True)),
         "stubborn_jiras": {bid: len(recs) for bid, recs in stubborn_jiras.items()},
         "error_analysis": error_analysis,
+        "pattern_lifecycle": pattern_lifecycle,
         "breakpoint_summary": [
             {"step": code, "desc": _TRACE_STAGE_DESC.get(code, code), "count": cnt}
             for code, cnt in sorted_breakpoints[:5]
@@ -2127,8 +2220,15 @@ def _timestudy_analyze(after_time: str = "") -> dict:
     }
     patterns_path = os.path.join(_TIMESTUDY_DIR, "error_patterns.json")
     with open(patterns_path, "w", encoding="utf-8") as f:
-        import json as _json2
         _json2.dump(patterns, f, ensure_ascii=False, indent=2)
+    # 同时保存日期快照（归档用）
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    dated_path = os.path.join(_TIMESTUDY_DIR, f"error_patterns_{today_str}.json")
+    try:
+        with open(dated_path, "w", encoding="utf-8") as f:
+            _json2.dump(patterns, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning("保存日期快照失败: %s", e)
     # ===== 生成 optimization_log.md =====
     log_lines = [
         f"## 分析快照 {patterns['generated_at']}",
@@ -2156,6 +2256,29 @@ def _timestudy_analyze(after_time: str = "") -> dict:
     for src, cnt in patterns["source_distribution"].items():
         pct = round(cnt / total * 100, 1) if total else 0
         log_lines.append(f"| {src} | {cnt} | {pct}% |")
+    # ===== 模式生命周期状态 =====
+    _LIFECYCLE_LABEL = {"resolved": "✅ 已修复", "new": "🆕 新发现", "ongoing": "⚠️ 持续中", "improving": "📉 改善中"}
+    if pattern_lifecycle:
+        log_lines.extend(["", "## 模式生命周期", "",
+                          "| 错误类型 | 状态 | 说明 |",
+                          "|----------|------|------|"])
+        for et, status in sorted(pattern_lifecycle.items(), key=lambda x: ({"resolved": 0, "new": 1, "improving": 2, "ongoing": 3}.get(x[1], 4))):
+            label = _LIFECYCLE_LABEL.get(status, status)
+            if status == "resolved":
+                prev_info = last_analysis.get(et, {})
+                desc = f"上次 {prev_info.get('count', 0)} 次 → 本次 0 次，自动判定修复"
+            elif status == "new":
+                curr_info = error_analysis.get(et, {})
+                desc = f"本次新增 {curr_info.get('count', 0)} 次失败"
+            elif status == "improving":
+                curr_info = error_analysis.get(et, {})
+                prev_info = last_analysis.get(et, {})
+                desc = f"上次 {prev_info.get('count', 0)} 次 → 本次 {curr_info.get('count', 0)} 次"
+            else:
+                curr_info = error_analysis.get(et, {})
+                desc = f"持续 {curr_info.get('count', 0)} 次"
+            log_lines.append(f"| {et} | {label} | {desc} |")
+        log_lines.append("")
     # ===== 已实施优化记录（持久化）=====
     if _TIMESTUDY_FIX_LOG:
         log_lines.extend(_timestudy_fixlog_lines())
@@ -2264,7 +2387,22 @@ def _timestudy_analyze(after_time: str = "") -> dict:
         suggestions.append("暂无明显优化方向，建议积累更多数据后再分析")
     log_lines.extend(suggestions)
     log_lines.append("")
-    # 追加模式：每次分析新增一个快照区块，保留历史记录，不覆盖旧内容
+    # ===== 本批次自学习表格 =====
+    batch_records = [r for r in records if r.get("_source_file", "").endswith(f"_{today_str}.csv")]
+    if batch_records:
+        log_lines.extend([f"## 本批次记录 ({today_str}, {len(batch_records)}条)", "",
+                          "| Jira | 来源 | 提取结果 | 错误类型 | 12h |",
+                          "|------|------|----------|----------|-----|"])
+        for r in batch_records[:50]:  # 最多显示 50 条
+            jira = r.get("jira号", "")
+            src = r.get("提取来源", "")
+            res = (r.get("提取结果", "") or "-")[:19]
+            err = r.get("错误类型", "") or "-"
+            h12 = "✅" if r.get("12h转换", "").strip() == "yes" else ""
+            log_lines.append(f"| {jira} | {src} | {res} | {err} | {h12} |")
+        if len(batch_records) > 50:
+            log_lines.append(f"| ... | 共 {len(batch_records)} 条 | | | |")
+        log_lines.append("")
     _timestudy_append_doc("\n".join(log_lines))
     logger.info("自学习分析完成: %d 条记录, %d 种错误类型, 系统性问题 %d 种, 顽固问题 %d 种",
                 total, len(error_counts), len(systematic_errors), len(stubborn_errors))
@@ -3227,11 +3365,23 @@ def _sync_daily_stats_to_bitable(report: dict, date_str: str):
         }
         # 读取已有记录，合并或替换当前日期数据
         records = feishu_client.list_bitable_records(app_token, stats_table_id)
+        # 数字字段列表（旧记录读回可能是字符串，写回前需转为数字）
+        _num_fields = {"测试总数", "PC端", "jira线上", "成功", "失败", "成功率"}
         all_data = {}  # {date_ts: fields}
         for rec in records:
             f = rec.get("fields", {})
             rd = f.get("日期", 0)
+            if isinstance(rd, str) and rd.isdigit():
+                rd = int(rd)
             if isinstance(rd, (int, float)) and int(rd) > 0:
+                # 数字字段类型修正：旧记录可能读回字符串
+                for nf in _num_fields:
+                    v = f.get(nf)
+                    if isinstance(v, str):
+                        try:
+                            f[nf] = float(v) if "." in v else int(v)
+                        except (ValueError, TypeError):
+                            f[nf] = 0
                 all_data[int(rd)] = f
         # 写入当天数据（覆盖）
         all_data[date_ts] = fields_to_write
@@ -10466,13 +10616,28 @@ def _ocr_readtext(reader, image):
     这里提高画布上限并放大图像、调低阈值，提升小字识别率。
     参数不兼容时自动回退默认调用，保证稳定。
     返回 readtext 结果列表（每项 [bbox, text, conf]）。
+
+    置信度过低的时间类文本（数字/冒号/斜杠）会被过滤掉，
+    避免模糊帧将 "10:08" 误读为 "16:50" 等误识别干扰提取。
     """
     try:
-        return reader.readtext(image, canvas_size=2560, mag_ratio=1.5,
-                               text_threshold=0.25, low_text=0.3)
+        results = reader.readtext(image, canvas_size=2560, mag_ratio=1.5,
+                                  text_threshold=0.25, low_text=0.3)
     except Exception as e:
         logger.warning("OCR 参数化调用失败，回退默认: %s", e)
-        return reader.readtext(image)
+        results = reader.readtext(image)
+    # 过滤低置信度的时间类文本（仅含数字/冒号/斜杠/点/空格的结果）
+    import re as _re
+    _time_like = _re.compile(r'^[\d:\-/\.\s]+$')
+    filtered = []
+    for item in results:
+        text = item[1] if len(item) > 1 else ""
+        conf = item[2] if len(item) > 2 else 1.0
+        if conf < 0.3 and text and _time_like.match(text.strip()):
+            logger.info("OCR 过滤低置信度时间类文本: '%s' (conf=%.2f)", text, conf)
+            continue
+        filtered.append(item)
+    return filtered
 
 
 
