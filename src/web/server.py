@@ -1833,6 +1833,15 @@ _TIMESTUDY_FIX_LOG = [
         "fix": "调整 _diag_verify_suggestion 中无包内时间戳分支的优先级：文本路径已提取有效时间时优先与 gmlogger 文件名时间印证，仅在文本无结果时才回退视频 OCR",
         "status": "manual",
     },
+    {
+        "date": "2026-10-10",
+        "title": "水印相机时间过滤——优先使用设备屏幕时间",
+        "bugid": "VCU-553532",
+        "problem": "视频帧同时存在水印相机时间(16:13)和设备屏幕时间(17:37)，OCR 误用水印时间",
+        "root_cause": "水印相机叠加的时间往往不准确，但 OCR 不区分来源，水印时间可能被优先匹配",
+        "fix": "在 _ocr_readtext 中检测水印关键词(“水印”/“相机真实可靠”)，计算水印区域 bbox，过滤该区域内的时间类文本",
+        "status": "manual",
+    },
 ]
 # 提取上下文（线程安全，每次提取前初始化）
 _timestudy_ctx: dict = {}
@@ -10634,8 +10643,9 @@ def _ocr_readtext(reader, image):
     参数不兼容时自动回退默认调用，保证稳定。
     返回 readtext 结果列表（每项 [bbox, text, conf]）。
 
-    置信度过低的时间类文本（数字/冒号/斜杠）会被过滤掉，
-    避免模糊帧将 "10:08" 误读为 "16:50" 等误识别干扰提取。
+    过滤规则：
+    1. 置信度过低的时间类文本（数字/冒号/斜杠）会被过滤掉
+    2. 水印相机区域内的时间类文本会被过滤掉（保留设备屏幕时间）
     """
     try:
         results = reader.readtext(image, canvas_size=2560, mag_ratio=1.5,
@@ -10643,9 +10653,9 @@ def _ocr_readtext(reader, image):
     except Exception as e:
         logger.warning("OCR 参数化调用失败，回退默认: %s", e)
         results = reader.readtext(image)
-    # 过滤低置信度的时间类文本（仅含数字/冒号/斜杠/点/空格的结果）
     import re as _re
     _time_like = _re.compile(r'^[\d:\-/\.\s]+$')
+    # 1. 过滤低置信度的时间类文本
     filtered = []
     for item in results:
         text = item[1] if len(item) > 1 else ""
@@ -10654,6 +10664,48 @@ def _ocr_readtext(reader, image):
             logger.info("OCR 过滤低置信度时间类文本: '%s' (conf=%.2f)", text, conf)
             continue
         filtered.append(item)
+    # 2. 过滤水印相机区域内的时间类文本
+    #    水印特征：文本含"水印"、"相机真实可靠"等关键词
+    #    或底部区域包含日期+天气关键词（"晴/阴/雨/雪/℃"）的混合文本
+    _wm_keywords = ("水印", "相机真实")
+    _weather_keywords = ("晴", "阴", "雨", "雪", "℃", "星期", "周")
+    wm_items = [it for it in filtered if any(kw in (it[1] if len(it) > 1 else "") for kw in _wm_keywords)]
+    # 回退检测：底部区域的日期+天气混合文本也视为水印标记
+    if not wm_items:
+        img_h = max((max(p[1] for p in it[0]) for it in filtered if it and it[0]), default=0)
+        if img_h > 0:
+            bottom_threshold = img_h * 0.6
+            for it in filtered:
+                text = it[1] if len(it) > 1 else ""
+                bbox = it[0] if it else []
+                if not bbox or not text:
+                    continue
+                cy = sum(p[1] for p in bbox) / len(bbox)
+                if cy >= bottom_threshold and any(kw in text for kw in _weather_keywords):
+                    wm_items.append(it)
+    if wm_items:
+        # 计算水印区域包围盒（y 范围）
+        wm_y_min = min(p[1] for it in wm_items for p in it[0])
+        wm_y_max = max(p[1] for it in wm_items for p in it[0])
+        wm_x_min = min(p[0] for it in wm_items for p in it[0])
+        # 向上扩展 80% 高度（水印时间通常在水印标记上方或同行）
+        wm_h = wm_y_max - wm_y_min or 1
+        wm_y_min_ext = wm_y_min - wm_h * 0.8
+        wm_y_max_ext = wm_y_max + wm_h * 0.3
+        clean = []
+        for item in filtered:
+            text = item[1] if len(item) > 1 else ""
+            bbox = item[0] if item else []
+            if text and _time_like.match(text.strip()) and bbox:
+                # 检查该文本是否在水印区域内
+                cy = sum(p[1] for p in bbox) / len(bbox)
+                cx = sum(p[0] for p in bbox) / len(bbox)
+                if wm_y_min_ext <= cy <= wm_y_max_ext and cx >= wm_x_min - 300:
+                    logger.info("OCR 过滤水印相机时间: '%s' (y=%.0f, 水印区域 y=[%.0f,%.0f])",
+                                text, cy, wm_y_min_ext, wm_y_max_ext)
+                    continue
+            clean.append(item)
+        filtered = clean
     return filtered
 
 
