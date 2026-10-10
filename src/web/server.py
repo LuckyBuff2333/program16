@@ -281,6 +281,59 @@ async def restart_server():
     return _ok(message="worker 正在终止，reloader 将自动重启...")
 
 
+def _git_pull_safe_merge() -> dict:
+    """安全拉取：本地未提交变更先 stash 暂存，再 fetch + 合并（冲突默认取云端 -X theirs）。
+    stash 恢复若与云端冲突，则工作区回退到云端合并结果并保留 stash 供人工恢复，
+    全程不留下冲突标记/MERGE_HEAD，避免半合并坏代码触发重载崩溃。
+    :return: {"success":bool, "already_up":bool, "message":str, "detail":str}
+    """
+    import subprocess
+
+    def _run(args, timeout=60):
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout, cwd=PROJECT_ROOT)
+
+    notes = []
+    stashed = False
+    # 1) 本地有未提交变更 → stash 暂存，保证工作区干净可拉取
+    st = _run(["git", "status", "--porcelain"])
+    if st.returncode == 0 and st.stdout.strip():
+        sp = _run(["git", "stash", "push", "-u", "-m", "auto-stash-before-pull"])
+        if sp.returncode != 0:
+            return {"success": False, "already_up": False,
+                    "message": "git stash 暂存本地变更失败", "detail": sp.stderr.strip()[:300]}
+        stashed = True
+        notes.append("已暂存本地未提交变更(stash)")
+    # 2) fetch 远程最新
+    fe = _run(["git", "fetch", "origin", "master"], timeout=120)
+    if fe.returncode != 0:
+        if stashed:
+            _run(["git", "stash", "pop"])
+        return {"success": False, "already_up": False,
+                "message": "git fetch 失败", "detail": fe.stderr.strip()[:300]}
+    # 3) 合并，冲突默认取云端内容(-X theirs)
+    me = _run(["git", "merge", "-X", "theirs", "--no-edit", "FETCH_HEAD"], timeout=120)
+    if me.returncode != 0:
+        _run(["git", "merge", "--abort"])  # 清理可能的合并中间态
+        if stashed:
+            _run(["git", "stash", "pop"])
+        return {"success": False, "already_up": False,
+                "message": "git merge 失败（已回滚合并）", "detail": (me.stderr or me.stdout).strip()[:300]}
+    out = (me.stdout or "").strip()
+    already_up = "Already up to date" in out or "already up to date" in out
+    # 4) 恢复本地暂存；若与云端冲突则工作区回退到云端结果并保留 stash 待人工恢复
+    if stashed:
+        pp = _run(["git", "stash", "pop"])
+        if pp.returncode != 0:
+            _run(["git", "reset", "--hard", "HEAD"])
+            notes.append("本地暂存与云端冲突，工作区已用云端内容，暂存保留在stash待人工恢复")
+        else:
+            notes.append("已恢复本地暂存变更")
+    msg = "代码已是最新" if already_up else "代码更新成功"
+    if notes:
+        msg += "；" + "；".join(notes)
+    return {"success": True, "already_up": already_up, "message": msg, "detail": out[:300]}
+
+
 @app.post("/api/system/git_pull")
 async def git_pull_and_restart(request: Request):
     """远程拉取最新代码并可选重启服务
@@ -301,24 +354,19 @@ async def git_pull_and_restart(request: Request):
     expected_token = cfg.get("deploy_token", "program16")
     if token != expected_token:
         return _fail("安全令牌不匹配")
-    logger.info("收到远程更新请求，执行 git pull...")
+    logger.info("收到远程更新请求，执行安全拉取(stash+merge theirs)...")
+    loop = asyncio.get_event_loop()
     try:
-        result = subprocess.run(
-            ["git", "pull", "origin", "master"],
-            capture_output=True, text=True, timeout=60,
-            cwd=PROJECT_ROOT
-        )
-        output = result.stdout.strip()
-        err = result.stderr.strip()
-        success = result.returncode == 0
+        # 放线程池执行，避免同步 git 子进程阻塞事件循环
+        r = await loop.run_in_executor(None, _git_pull_safe_merge)
+        success = r["success"]
+        already_up = r["already_up"]
+        msg = r["message"]
         if success:
-            already_up = "Already up to date" in output or "already up to date" in output
-            msg = f"代码已是最新" if already_up else f"代码更新成功"
-            logger.info("git pull 成功: %s", output[:200])
+            logger.info("git 安全拉取成功: %s", r["detail"][:200])
         else:
-            msg = f"git pull 失败: {err[:200]}"
-            logger.warning("git pull 失败: %s", err[:200])
-        resp_data = {"output": output[:500], "error": err[:500], "success": success}
+            logger.warning("git 安全拉取失败: %s | %s", msg, r["detail"][:200])
+        resp_data = {"output": r["detail"][:500], "success": success, "already_up": already_up}
         if success and do_restart and not already_up:
             resp_data["restarting"] = True
             msg += "\n服务正在重启..."
@@ -326,9 +374,9 @@ async def git_pull_and_restart(request: Request):
             loop.call_later(1.0, lambda: __import__("sys").exit(0))
         return _ok(resp_data, msg)
     except subprocess.TimeoutExpired:
-        return _fail("git pull 超时（60秒）")
+        return _fail("git 操作超时")
     except Exception as e:
-        return _fail(f"git pull 异常: {str(e)[:200]}")
+        return _fail(f"git 拉取异常: {str(e)[:200]}")
 
 
 def _save_user_token_to_config(user_token: str, refresh_token: str):
@@ -488,6 +536,8 @@ _bot_sessions: dict = {}
 _BOT_SESSION_FILE = os.path.join(PROJECT_ROOT, "data", "bot_sessions.json")
 # 分号命令链式执行：中间命令静默模式，仅最后一条展示反馈
 _bot_silent_mode = False
+# 代码更新任务进行中标志：防止重复触发导致反复拉取
+_git_update_running = False
 
 
 def _feishu_ws_event_handler(data):
@@ -713,31 +763,36 @@ def _process_bot_command(chat_id: str, text: str):
                 "当前无运行中的任务。\n发送「菜单」查看可用功能")
         return
 
-    # 更新服务：远程拉取最新代码并重启
+    # 更新服务：安全拉取（stash+合并冲突取云端）最新代码并重启
+    # 后台线程执行 git，避免阻塞飞书消息处理线程导致事件重投/反复拉取
     if text.strip() in ("更新服务", "更新代码", "拉取代码", "git pull"):
-        import subprocess as _sp
+        global _git_update_running
+        if _git_update_running:
+            feishu_client.send_bot_message(chat_id, "已有代码更新任务在执行中，请稍候再试")
+            return
+        _git_update_running = True
         feishu_client.send_bot_message(chat_id, "正在拉取最新代码...")
-        try:
-            result = _sp.run(
-                ["git", "pull", "origin", "master"],
-                capture_output=True, text=True, timeout=60,
-                cwd=PROJECT_ROOT
-            )
-            output = result.stdout.strip()
-            if result.returncode == 0:
-                already_up = "Already up to date" in output or "already up to date" in output
-                if already_up:
-                    feishu_client.send_bot_message(chat_id, "代码已是最新，无需更新")
+
+        def _do_git_update():
+            global _git_update_running
+            try:
+                r = _git_pull_safe_merge()
+                if r["success"]:
+                    if r["already_up"]:
+                        feishu_client.send_bot_message(chat_id, "代码已是最新，无需更新")
+                    else:
+                        feishu_client.send_bot_message(chat_id, f"代码更新成功，正在重启服务...\n{r['detail'][:200]}")
+                        import time as _t
+                        _t.sleep(1.0)
+                        os._exit(0)  # 线程内退出整个进程，交由 reloader 拉起新 worker
                 else:
-                    feishu_client.send_bot_message(chat_id, f"代码更新成功，正在重启服务...\n{output[:200]}")
-                    import sys as _sys
-                    import asyncio as _aio
-                    loop = _aio.get_event_loop()
-                    loop.call_later(1.0, lambda: _sys.exit(0))
-            else:
-                feishu_client.send_bot_message(chat_id, f"拉取失败:\n{result.stderr[:300]}")
-        except Exception as e:
-            feishu_client.send_bot_message(chat_id, f"更新异常: {str(e)[:200]}")
+                    feishu_client.send_bot_message(chat_id, f"拉取失败: {r['message']}\n{r['detail'][:300]}")
+            except Exception as e:
+                feishu_client.send_bot_message(chat_id, f"更新异常: {str(e)[:200]}")
+            finally:
+                _git_update_running = False
+
+        threading.Thread(target=_do_git_update, name="bot-git-update", daemon=True).start()
         return
 
     # 触发时间自学习：发送 timestudy 触发分析
