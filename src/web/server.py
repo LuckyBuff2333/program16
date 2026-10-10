@@ -1791,10 +1791,18 @@ _TIMESTUDY_FIX_LOG = [
     {
         "date": "2026-10-09",
         "title": "封面帧小字时钟 OCR 识别修复",
-        "problem": "封面帧(position=0)确有清晰时钟(如10:14/10:12)，但 EasyOCR 默认 canvas_size=1280 会把宽幅画面下采样，小字号、浅粉底低对比度的时钟被读成乱码(如 10,? / 10:1?)，分钟位变成非数字导致时间正则匹配失败，被误判为'未识别到时间'。",
-        "root_cause": "EasyOCR 默认画布过小导致大图下采样 + 检测阈值偏高，对小字/低对比度时钟识别能力不足。区别于'首帧黑屏/转场导致无时钟'的正常情况。",
-        "fix": "新增 _ocr_readtext(reader, image) helper：readtext 使用 canvas_size=2560、mag_ratio=1.5、text_threshold=0.25、low_text=0.3，参数不兼容时回退默认调用；统一应用到 simple/非simple 两处视频帧OCR 与图片OCR 共三个调用点。",
-        "verify": "VCU-553755：修复前封面读'10,?'失败(未识别到时间)；修复后封面第1秒读出'10,12'→经 _fix_ocr_missing_colon 转'10:12'→配合 gmlogger 日期(10:16参考,差240s<300s)成功命中 2026-10-09 10:12:00。",
+        "bugid": "VCU-553755",
+        "problem": "封面帧有清晰时钟但 OCR 读成乱码，时间提取失败",
+        "root_cause": "EasyOCR 默认画布 1280 导致大图下采样，小字号/低对比度时钟识别能力不足",
+        "fix": "新增 _ocr_readtext 使用 canvas_size=2560、mag_ratio=1.5、降低阈值，统一应用到三处 OCR 调用点",
+    },
+    {
+        "date": "2026-10-10",
+        "title": "gmlogger 包内 main 文件日期遗漏修复",
+        "bugid": "VCU-553973",
+        "problem": "视频封面读出 6:17，但未能匹配到包内 58-main.log_2026_10_10_6_18_4.gz 的正确日期",
+        "root_cause": "① main_names[:5] 只取前 5 个 main 文件，30+ 文件时遗漏目标日期；② 外层 gmlogger 文件名有旧日期时不触发包内回退",
+        "fix": "遍历所有 main 文件解析时间（头读限 10 个）；始终下载包内取权威日期，包内优先、外层仅补充",
     },
 ]
 # 提取上下文（线程安全，每次提取前初始化）
@@ -1870,16 +1878,19 @@ def _timestudy_record(bugid: str, result: str, source: str,
 
 
 def _timestudy_fixlog_lines() -> list:
-    """渲染"已实施优化记录"区块的 markdown 行（完整分析与空记录兜底共用）。"""
-    lines = ["", "## 已实施优化记录", ""]
+    """渲染"历史变更记录"区块的 markdown 行（可折叠精简格式）。"""
+    lines = ["", "## 历史变更记录", ""]
     for i, fx in enumerate(_TIMESTUDY_FIX_LOG, 1):
         lines.extend([
-            f"### {i}. {fx['title']}（{fx['date']}）",
+            "<details>",
+            f"<summary><b>{i}. {fx['title']}（{fx['date']}）</b></summary>",
             "",
-            f"- **问题现象**: {fx['problem']}",
-            f"- **根因**: {fx['root_cause']}",
-            f"- **修复方案**: {fx['fix']}",
-            f"- **验证结果**: {fx['verify']}",
+            f"- **问题描述**：{fx['problem']}",
+            f"- **相关Bug号**：{fx.get('bugid', '')}",
+            f"- **根因**：{fx['root_cause']}",
+            f"- **解决方案**：{fx['fix']}",
+            "",
+            "</details>",
             "",
         ])
     return lines
@@ -9395,6 +9406,42 @@ def _diag_archive_names(path: str) -> tuple:
     return False, "非 zip/7z/tar/rar 格式，无法解压"
 
 
+def _diag_flatten_nested(archive_path: str, names: list, work_dir: str, depth: int = 2) -> list:
+    """展开套娃压缩包：外层中作为条目存在的内层归档（zip/tar/7z/rar）流式解到临时文件并列出其条目，
+    合并回 names，供包内 main.log 时间提取。单个 .gz 日志是单文件流不展开。最多递归 depth 层。"""
+    import zipfile
+    import tarfile
+    import shutil
+    if depth <= 0:
+        return names
+    nested = [n for n in names if n.lower().endswith((".zip", ".tar", ".tgz", ".tar.gz", ".7z", ".rar"))]
+    if not nested:
+        return names
+    out = list(names)
+    for idx, n in enumerate(nested):
+        dst = os.path.join(work_dir, f"nested_{idx}_{os.path.basename(n)}")
+        try:
+            if zipfile.is_zipfile(archive_path):
+                with zipfile.ZipFile(archive_path) as zf, zf.open(n) as src, open(dst, "wb") as f:
+                    shutil.copyfileobj(src, f, 1024 * 1024)
+            elif tarfile.is_tarfile(archive_path):
+                with tarfile.open(archive_path) as tf:
+                    member = tf.extractfile(n)
+                    if not member:
+                        continue
+                    with open(dst, "wb") as f:
+                        shutil.copyfileobj(member, f, 1024 * 1024)
+            else:
+                continue
+            ok2, sub = _diag_archive_names(dst)
+            if ok2 and isinstance(sub, list) and sub:
+                out.extend(sub)
+                out = _diag_flatten_nested(dst, sub, work_dir, depth - 1)
+        except Exception as e:
+            logger.warning("展开内层归档失败 %s: %s", n, e)
+    return out
+
+
 def _diag_archive_read_heads(path: str, names: list, size: int = 65536) -> dict:
     """批量读取压缩包内多个文件的头部内容（支持 zip/7z/tar/rar），返回 {name: 头部文本}
 
@@ -9652,8 +9699,11 @@ def _diag_rar_main_times(rar_first: str, work_dir: str) -> dict:
         except Exception as e:
             logger.warning("rar 条目清单获取失败: %s", e)
     all_times = _diag_scan_entry_times(all_names)
+    # 包内所有 main.log 类文件名（含 main.log_xxx.gz 等变体），供前端“解压后文件名”展示
+    main_log_entries = [os.path.basename(n) for n in all_names if "main.log" in os.path.basename(n).lower()]
     return {"status": "ok", "reason": "",
             "main_entries": [os.path.basename(p) for p in main_files],
+            "main_log_entries": main_log_entries,
             "main_times": main_times, "all_times": all_times}
 
 
@@ -9851,7 +9901,8 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                 main_names = [n for n in names if "main" in os.path.basename(n).lower()]
             main_times = []
             need_head = []  # 文件名无时间的 main 文件，待批量读头部提取首条日志时间戳
-            for n in main_names[:5]:
+            # 遍历所有 main 文件提取时间（修复：原先仅取前 5 个，当包内含多日 main.log 时可能遗漏目标日期）
+            for n in main_names:
                 bname = os.path.basename(n)
                 parsed = _diag_parse_entry_time(bname)
                 if parsed:
@@ -9867,7 +9918,9 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                         continue
                     except ValueError:
                         pass
-                need_head.append(n)
+                # 限制头部读取数量（避免大量 I/O），仅对前 10 个无文件名时间的文件读头部
+                if len(need_head) < 10:
+                    need_head.append(n)
             # 批量读文件头部提取首条日志时间戳（7z 一次解压，读 64KB 提升命中率）
             if need_head:
                 heads = _diag_archive_read_heads(merged, need_head, 65536)
@@ -9881,8 +9934,11 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                         base, len(names), len(main_names), len(main_times))
             # 全部条目文件名时间戳（任一命中目标窗口即验证通过）
             all_times = _diag_scan_entry_times(names)
+            # 包内所有 main.log 类文件名（含 main.log_xxx.gz 等变体），供前端“解压后文件名”展示
+            main_log_entries = [os.path.basename(n) for n in names if "main.log" in os.path.basename(n).lower()]
             return {"status": "ok", "reason": "",
                     "main_entries": [os.path.basename(n) for n in main_names],
+                    "main_log_entries": main_log_entries,
                     "main_times": main_times, "all_times": all_times}
     return {"status": "failed", "reason": last_reason, "main_entries": [], "main_times": []}
 
@@ -9987,8 +10043,8 @@ def _get_ocr_reader():
 
 
 # OCR 结果中匹配时间的正则（视频屏幕时间常用点号/逗号分隔如 10.26.39 或 10,12）
-_OCR_TIME_FULL_RE = re.compile(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2}[\s.,\-]?\d{1,2}[.:,]\d{2}(?:[.:,]\d{2})?)')
-_OCR_TIME_ONLY_RE = re.compile(r'(?<!\d)(\d{1,2}[.:,]\d{2}(?:[.:,]\d{2})?)(?!\d)')
+_OCR_TIME_FULL_RE = re.compile(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2}[\s.,\-]?\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?)')
+_OCR_TIME_ONLY_RE = re.compile(r'(?<!\d)(\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?)(?!\d)')
 
 
 def _normalize_ocr_time(text: str) -> str:
@@ -10026,8 +10082,8 @@ def _normalize_ocr_time(text: str) -> str:
     text = re.sub(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})[.,](\d{1,2}[.:,]\d{2})', r'\1 \2', text)
     # 3. 日期和时间无分隔符（如 2026-01-0914:02 → 2026-01-09 14:02）
     text = re.sub(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})(\d{1,2}[.:,]\d{2})', r'\1 \2', text)
-    # 4. 将时间点号和逗号替换为冒号
-    text = re.sub(r'(\d{1,2})[.,](\d{2})(?:[.,](\d{2}))?',
+    # 4. 将时间点号/逗号/分号替换为冒号（EasyOCR 常把 : 误识别为 ;）
+    text = re.sub(r'(\d{1,2})[.,;](\d{2})(?:[.,;](\d{2}))?',
                   lambda m: f"{m.group(1)}:{m.group(2)}" + (f":{m.group(3)}" if m.group(3) else ""), text)
     # 5. 处理独立 6 位数字时间 HHMMSS（如 172440 → 17:24:40）
     def _fix_6digit_time(m):
@@ -10629,15 +10685,23 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         auth_type = cfg.get("auth_type", "bearer").lower()
         if auth_type == "bearer":
             headers["Authorization"] = f"Bearer {token}"
-    # 智能回退：文件名解析不到 gmlogger 日期时，下载 gmlogger 压缩包取包内 main 权威日期，
-    # 使已读到的时钟（如 10.32/13.52）能落地，减少"封面及1/3/6秒全失败"
-    if not gm_dates:
-        _timeout = max(int(cfg.get("timeout", 30)), 120)
-        _main_dts = _gmlogger_main_date_refs(attachments, headers, _timeout, bugid)
-        if _main_dts:
-            gm_dates = [(dt.year, dt.month, dt.day) for dt in _main_dts]
-            ref_pool = list(_main_dts)
-            logger.info("视频兜底提取(%s)：文件名无 gmlogger 日期，回退包内 main 日期 %d 个", bugid, len(_main_dts))
+    # 始终下载 gmlogger 压缩包取包内 main 权威日期（修复：外层 gmlogger 文件名日期可能不准，
+    # 包内 main.log 文件名时间才是权威来源，确保视频时钟能匹配到正确日期）
+    _timeout = max(int(cfg.get("timeout", 30)), 120)
+    _main_dts = _gmlogger_main_date_refs(attachments, headers, _timeout, bugid)
+    if _main_dts:
+        # 包内日期为权威来源，外层日期作为补充
+        _inner_date_set = {(dt.year, dt.month, dt.day) for dt in _main_dts}
+        gm_dates = [(dt.year, dt.month, dt.day) for dt in _main_dts]
+        ref_pool = list(_main_dts)
+        # 外层文件名日期补充（不覆盖包内权威日期）
+        for gd in [(dt.year, dt.month, dt.day) for dt in [t[1] for t in gm_times]]:
+            if gd not in _inner_date_set:
+                gm_dates.append(gd)
+        logger.info("视频兜底提取(%s)：包内 main 日期 %d 个，外层补充后 gm_dates %d 个",
+                    bugid, len(_main_dts), len(gm_dates))
+    elif not gm_dates:
+        logger.warning("视频兜底提取(%s)：文件名和包内均无 gmlogger 日期", bugid)
     best_partial = ""
     # 12h 制兜底候选（延迟决策）
     best_12h_cand = None  # (time_str, ext_dt)
@@ -10950,6 +11014,37 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     return ""
 
 
+def _pick_video_anchor_date(time_str: str, validation_pool: list, gmlogger_dates: list, tol_sec: int = 300):
+    """为视频「仅时间」挑选日期锚点：优先用字面时间(如 6:17)去匹配包内 main.log 文件名时间戳，
+    命中(容差内)则取其日期；字面匹配不到再用 12h 制时间(如 18:17)匹配；均不中回退字面最近者日期，
+    再回退 gmlogger 文件名首个日期。返回 (y, m, d) 或 None。"""
+    hm = re.search(r'(\d{1,2})[:.,;](\d{2})', time_str or "")
+    if hm and validation_pool:
+        h, mi = int(hm.group(1)) % 24, int(hm.group(2))
+
+        def _best(target_h):
+            tmins = target_h * 60 + mi
+            bdt, bd = None, None
+            for dt in validation_pool:
+                d = abs((dt.hour * 60 + dt.minute) - tmins)
+                d = min(d, 1440 - d)  # 跨天环形
+                if bd is None or d < bd:
+                    bd, bdt = d, dt
+            return bdt, bd
+        # 两轮优先级：先字面时间命中，命中容差即返回；否则再试 12h 制时间
+        for shift in (0, 12):
+            bdt, bd = _best((h + shift) % 24)
+            if bdt is not None and bd * 60 <= tol_sec:
+                return (bdt.year, bdt.month, bdt.day)
+        # 均未命中容差：回退字面时间最接近者的日期，交由下游继续判定
+        bdt, _ = _best(h)
+        if bdt:
+            return (bdt.year, bdt.month, bdt.day)
+    if gmlogger_dates:
+        return gmlogger_dates[0]
+    return None
+
+
 def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                                    gmlogger_dates: list, ref_pool: list,
                                    gm_ref_dt=None, gm_times: list = None) -> tuple:
@@ -10972,8 +11067,8 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
         return "", ""
     # 确定验证池和容忍度
     if ref_pool:
-        # 已解压：使用包内时间戳，±5分钟严格匹配
-        validation_pool = ref_pool
+        # 已解压：使用包内时间戳，±5分钟严格匹配（ref_pool 为 (时间串, datetime) 元组，统一取 datetime）
+        validation_pool = [t[1] if isinstance(t, tuple) else t for t in ref_pool]
         strict_tol = 300
         fallback_tol = None  # 无 fallback
     else:
@@ -11148,15 +11243,16 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                             if not first_full:
                                 first_full = extracted_time
                                 first_detail = f"从视频{video_label}第{sec+1}秒 OCR 识别到完整日期时间 {extracted_time}"
-                    # 仅时间（无日期），用 gmlogger 文件名日期补充，延迟 12h 决策
+                    # 仅时间（无日期）：用包内 main.log 时间戳中「时:分最接近」者的日期补全，回退 gmlogger 文件名日期
                     m = _OCR_TIME_ONLY_RE.search(all_text)
-                    if m and gmlogger_dates:
+                    anchor = _pick_video_anchor_date(m.group(1), validation_pool, gmlogger_dates, strict_tol) if m else None
+                    if m and anchor:
                         time_str = _normalize_ocr_time(m.group(1))
                         # 参照 gmlogger 时间纠正数字混淆
                         if gm_ref_dt:
                             time_str = _correct_ocr_by_reference(time_str, gm_ref_dt)
-                        # 用 gmlogger 日期补充，延迟 12h 决策
-                        y, mo, d = gmlogger_dates[0]
+                        # 用锚点日期补充，延迟 12h 决策
+                        y, mo, d = anchor
                         full_orig = f"{y:04d}-{mo:02d}-{d:02d} {time_str}"
                         parsed_orig = _parse_datetime_string(full_orig)
                         if parsed_orig:
@@ -11785,9 +11881,11 @@ def _diag_pre_classify(err_msg: str) -> str:
     if ("all connection attempts failed" in low or "connecterror" in low
             or "连接失败" in msg or "无法连接" in msg or "connection refused" in low):
         return "接口连接问题"
-    if "时间过滤后日志为空" in msg:
-        return ""  # 需下载附件比对时间后才能判定
-    return ""
+    if "时间过滤后日志为空" in msg or "未找到有效的日志文件" in msg:
+        return ""  # 需下载附件比对时间后才能判定，继续进入日志分析流程
+    # 未预期的错误（如 HTTPStatusError）及归类中未提到的未知错误类型：
+    # 统一归类为“待后端开发排查”，跳过日志分析比对
+    return "待后端开发排查"
 
 
 def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detail: str,
@@ -11872,6 +11970,11 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         human_reason = "无法自动归类，待人工排查"
         retry_result = ""
         final_category = "待人工排查"
+    elif category == "待后端开发排查":
+        ai_reason = msg or "未预期的错误或归类中未提到的错误类型"
+        human_reason = "待后端开发排查"
+        retry_result = ""
+        final_category = "待后端开发排查"
     elif category == "问题重复":
         ai_reason = "评论区存在“问题重复”标记"
         human_reason = "问题重复，无需排查"
@@ -12395,9 +12498,17 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                                                                          main_times=main_times, all_times=all_times,
                                                                          headers=headers, att_timeout=att_timeout)
         detail += "；查验：" + vdetail
-    report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time, archive_results)
+    # 展示包内所有 main.log 类文件名（供未分析出结果/时间命中的记录人工审核参考），命中错误时间的条目高亮
+    _main_log = list(dict.fromkeys(gm_probe.get("main_log_entries") or main_entries or []))
+    _matched_log = [n for n in _main_log if _diag_match_time_window(os.path.basename(n), problem_time, 5)[0]]
+    out_archive_files = archive_results
+    if _main_log:
+        out_archive_files = [{"filename": "gmlogger 包内 main.log 文件", "size": 0,
+                              "entries": _main_log, "matched_entries": _matched_log,
+                              "status": "已解压", "reason": ""}]
+    report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time, out_archive_files)
     result = {"bugid": bugid, "category": category, "problem_time": problem_time,
-               "archive_files": archive_results, "detail": detail, "main_entries": main_entries,
+               "archive_files": out_archive_files, "detail": detail, "main_entries": main_entries,
                "verify_status": verify_status, "suggested_time": suggested_time, "report": report, "done_time": done_time}
     _save_diagnose_cache(bugid, result)
     logger.info("诊断 %s: 最终分类=%s, verify_status=%s", bugid, category, verify_status or "N/A")
