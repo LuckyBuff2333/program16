@@ -1824,6 +1824,15 @@ _TIMESTUDY_FIX_LOG = [
         "fix": "在 _ocr_readtext 中过滤置信度<0.3 的时间类文本（仅含数字/冒号/斜杠），三处 OCR 调用点统一生效",
         "status": "manual",
     },
+    {
+        "date": "2026-10-10",
+        "title": "排查诊断未解压时视频OCR无条件覆盖文本提取结果",
+        "bugid": "VCU-553491",
+        "problem": "文本路径已正确提取到 13:44:00（Initial Setting），但排查诊断仍返回视频 OCR 的 16:50:53",
+        "root_cause": "gmlogger 未解压时 ref_pool 为空，视频 OCR 结果不经任何验证直接返回 success，覆盖了正确的文本提取时间",
+        "fix": "调整 _diag_verify_suggestion 中无包内时间戳分支的优先级：文本路径已提取有效时间时优先与 gmlogger 文件名时间印证，仅在文本无结果时才回退视频 OCR",
+        "status": "manual",
+    },
 ]
 # 提取上下文（线程安全，每次提取前初始化）
 _timestudy_ctx: dict = {}
@@ -11829,40 +11838,50 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
     if gm_times:
         gm_ref_dt = gm_times[0][1]
         gm_date_tuple = (gm_ref_dt.year, gm_ref_dt.month, gm_ref_dt.day)
-        # 尝试视频提取，与 gmlogger 文件名时间交叉印证
+        # 文本路径已提取到有效时间时，优先与 gmlogger 文件名时间交叉印证
+        if ext_dt and abs((gm_ref_dt - ext_dt).total_seconds()) <= 900:
+            return "success", extracted, (
+                f"gmlogger 包内无法解析（文件过大/解压失败），"
+                f"提取时间 {extracted}（来自评论区/标题/描述/字段）"
+                f"与 gmlogger 文件名时间 {gm_times[0][0]} 前后15分钟内命中，可用该时间作为替换")
+        # 文本路径未命中，尝试视频提取
         if headers:
             gm_dates = [(dt.year, dt.month, dt.day) for _, dt in gm_times]
             vid_time, vid_detail = _diag_extract_time_from_video(
                 issue, headers, att_timeout, gm_dates, [], gm_ref_dt, gm_times)
             vid_dt = _ts_parse_datetime(vid_time) if vid_time else None
-            if vid_time:
+            if vid_time and not ext_dt:
+                # 文本路径无结果，视频时间可用
                 return "success", vid_time, (
                     f"gmlogger 包内无法解析（文件过大/解压失败），"
                     f"视频提取时间 {vid_time}，{vid_detail}")
-            # 评论区提取时间与 gmlogger 文件名时间接近 → 可用
-            if ext_dt and abs((gm_ref_dt - ext_dt).total_seconds()) <= 900:
-                return "success", extracted, (
-                    f"gmlogger 包内无法解析，提取时间 {extracted}（来自评论区/标题/描述/字段）"
-                    f"与 gmlogger 文件名时间 {gm_times[0][0]} 前后15分钟内命中，可用该时间作为替换")
-            # 视频时间与提取时间接近 → 互相印证（用视频时间，因为有 12h 转换）
-            if vid_dt and ext_dt and abs((vid_dt - ext_dt).total_seconds()) <= 900:
-                return "success", vid_time, (
-                    f"gmlogger 包内无法解析，视频时间 {vid_time} 与提取时间 {extracted}（来自评论区/标题/描述/字段）接近，交叉印证可用")
-            # 视频时间存在但与任何源都不接近 → 参考建议
-            if vid_time:
+            if vid_time and ext_dt:
+                # 文本和视频都有时间，检查是否接近
+                if abs((vid_dt - ext_dt).total_seconds()) <= 900:
+                    return "success", vid_time, (
+                        f"gmlogger 包内无法解析，视频时间 {vid_time} 与提取时间 {extracted}"
+                        f"（来自评论区/标题/描述/字段）接近，交叉印证可用")
+                # 不接近：优先信任文本路径（文本提取优先级更高）
+                if abs((gm_ref_dt - ext_dt).total_seconds()) <= 3600:
+                    return "success", extracted, (
+                        f"gmlogger 包内无法解析，提取时间 {extracted}"
+                        f"（来自评论区/标题/描述/字段）与 gmlogger 文件名时间"
+                        f" {gm_times[0][0]} 前后60分钟内接近，可用该时间作为替换{gm_note}")
+                # 都不接近，待人工审核
                 return "manual", vid_time, (
                     f"gmlogger 包内无法解析（文件过大/解压失败），"
                     f"视频提取时间 {vid_time}，gmlogger 文件名时间 {gm_times[0][0]}，"
-                    f"提取时间 {extracted or '(无)'}（来自评论区/标题/描述/字段），三者未命中，待人工审核{gm_note}")
-        # 无视频或视频提取失败：仅用提取时间与 gmlogger 文件名时间对比
-        if ext_dt and abs((gm_ref_dt - ext_dt).total_seconds()) <= 3600:
-            return "success", extracted, (
-                f"gmlogger 包内无法解析，提取时间 {extracted}（来自评论区/标题/描述/字段）"
-                f"与 gmlogger 文件名时间 {gm_times[0][0]} 前后60分钟内接近，可用该时间作为替换{gm_note}")
-        return "manual", "", (
-            f"gmlogger 包内无法解析（文件过大/解压失败），"
-            f"提取时间 {extracted or '(未提取到)'}（来自评论区/标题/描述/字段），gmlogger 文件名时间 {gm_times[0][0]}，"
-            f"未能交叉印证，待人工审核正确的时间{gm_note}")
+                    f"提取时间 {extracted}（来自评论区/标题/描述/字段），三者未命中，待人工审核{gm_note}")
+            # 视频未提取到时间
+            if ext_dt and abs((gm_ref_dt - ext_dt).total_seconds()) <= 3600:
+                return "success", extracted, (
+                    f"gmlogger 包内无法解析，提取时间 {extracted}"
+                    f"（来自评论区/标题/描述/字段）与 gmlogger 文件名时间"
+                    f" {gm_times[0][0]} 前后60分钟内接近，可用该时间作为替换{gm_note}")
+            return "manual", "", (
+                f"gmlogger 包内无法解析（文件过大/解压失败），"
+                f"提取时间 {extracted or '(未提取到)'}（来自评论区/标题/描述/字段），"
+                f"gmlogger 文件名时间 {gm_times[0][0]}，未能交叉印证，待人工审核正确的时间{gm_note}")
     if ext_dt:
         for arc in archive_results:
             for n in arc.get("entries", []):

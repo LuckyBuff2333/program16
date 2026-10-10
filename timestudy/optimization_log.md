@@ -100,3 +100,13 @@ flowchart TD
 - **解决方案**：在 `_ocr_readtext` 中过滤置信度<0.3 的时间类文本（仅含数字/冒号/斜杠），三处 OCR 调用点统一生效
 
 </details>
+
+<details>
+<summary><b>5. 排查诊断未解压时视频OCR无条件覆盖文本提取结果（2026-10-10）</b></summary>
+
+- **问题描述**：文本路径已正确提取到 `13:44:00`（Initial Setting），但排查诊断仍返回视频 OCR 的 `16:50:53`
+- **相关Bug号**：VCU-553491
+- **根因**：gmlogger 未解压时 `ref_pool` 为空，视频 OCR 结果不经任何验证直接返回 success，覆盖了正确的文本提取时间
+- **解决方案**：调整 `_diag_verify_suggestion` 优先级：文本路径已提取有效时间时优先与 gmlogger 文件名时间印证，仅在文本无结果时才回退视频 OCR
+
+</details>
