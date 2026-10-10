@@ -484,6 +484,8 @@ def _process_feishu_message_event(event_data: dict):
 
 # 会话状态机：chat_id -> {"state": "wait_jira"}，引导式对话（输入1→提示输入Jira号→执行）
 _bot_sessions: dict = {}
+# 会话持久化文件：worker 重载/重启后仍可恢复引导式会话，避免“输入默认却回到菜单”
+_BOT_SESSION_FILE = os.path.join(PROJECT_ROOT, "data", "bot_sessions.json")
 # 分号命令链式执行：中间命令静默模式，仅最后一条展示反馈
 _bot_silent_mode = False
 
@@ -550,7 +552,7 @@ def _feishu_ws_event_handler(data):
 
 
 # 机器人会话超时时间（秒）
-_BOT_SESSION_TIMEOUT = 120
+_BOT_SESSION_TIMEOUT = 300
 
 # 任务取消标记：{chat_id: Event}，设置时表示用户发送了"退出"
 _bot_cancel_events: dict = {}
@@ -590,38 +592,94 @@ def _is_cancelled(chat_id: str) -> bool:
     return evt.is_set() if evt else False
 
 
-def _set_bot_session(chat_id: str, state: str, **kwargs):
-    """设置机器人会话状态并启动 2 分钟自动超时定时器"""
+def _bot_session_dump() -> dict:
+    """序列化当前会话（剔除不可序列化的 timer），created_at 转字符串便于 JSON 存储"""
+    out = {}
+    for cid, s in _bot_sessions.items():
+        item = {k: v for k, v in s.items() if k != "timer"}
+        ca = item.get("created_at")
+        if isinstance(ca, datetime):
+            item["created_at"] = ca.strftime("%Y-%m-%d %H:%M:%S")
+        out[cid] = item
+    return out
+
+
+def _save_bot_sessions():
+    """将会话状态写入磁盘，worker 重载(reload)/重启后可恢复"""
+    try:
+        with open(_BOT_SESSION_FILE, "w", encoding="utf-8") as f:
+            json.dump(_bot_session_dump(), f, ensure_ascii=False)
+    except Exception as e:
+        logger.warning("机器人会话持久化失败: %s", e)
+
+
+def _arm_bot_session_timer(chat_id: str, seconds: float):
+    """为会话启动超时定时器，到期自动清除并提示"""
     import threading
-    # 取消旧的定时器
-    old = _bot_sessions.get(chat_id)
-    if old and old.get("timer"):
-        old["timer"].cancel()
-    # 设置新会话
-    session_data = {"state": state, "created_at": datetime.now(), "timer": None}
-    session_data.update(kwargs)
-    _bot_sessions[chat_id] = session_data
-    # 启动超时定时器
+
     def _on_timeout():
         cur = _bot_sessions.get(chat_id)
         if cur and cur.get("state"):
             _bot_sessions.pop(chat_id, None)
+            _save_bot_sessions()
             try:
                 from src.clients import feishu_client
-                feishu_client.send_bot_message(chat_id, "会话已超时（2分钟无操作），已自动取消。\n发送“帮助”查看可用功能")
+                feishu_client.send_bot_message(chat_id, "会话已超时（5分钟无操作），已自动取消。\n发送“帮助”查看可用功能")
             except Exception:
                 pass
-    timer = threading.Timer(_BOT_SESSION_TIMEOUT, _on_timeout)
+
+    timer = threading.Timer(seconds, _on_timeout)
     timer.daemon = True
     timer.start()
     _bot_sessions[chat_id]["timer"] = timer
 
 
+def _load_bot_session(chat_id: str):
+    """内存缺失时从磁盘恢复会话（超过超时时间视为过期），并重新计时"""
+    if chat_id in _bot_sessions:
+        return _bot_sessions[chat_id]
+    try:
+        with open(_BOT_SESSION_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        return None
+    s = data.get(chat_id)
+    if not s or not s.get("state"):
+        return None
+    try:
+        created = datetime.strptime(s.get("created_at", ""), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+    elapsed = (datetime.now() - created).total_seconds()
+    if elapsed >= _BOT_SESSION_TIMEOUT:
+        return None  # 已过期，不恢复
+    s = dict(s)
+    s["created_at"] = created
+    s["timer"] = None
+    _bot_sessions[chat_id] = s
+    _arm_bot_session_timer(chat_id, max(_BOT_SESSION_TIMEOUT - elapsed, 10))
+    logger.info("从磁盘恢复机器人会话: chat=%s, state=%s", chat_id[:12], s.get("state"))
+    return s
+
+
+def _set_bot_session(chat_id: str, state: str, **kwargs):
+    """设置机器人会话状态并启动超时定时器，同时持久化到磁盘"""
+    old = _bot_sessions.get(chat_id)
+    if old and old.get("timer"):
+        old["timer"].cancel()
+    session_data = {"state": state, "created_at": datetime.now(), "timer": None}
+    session_data.update(kwargs)
+    _bot_sessions[chat_id] = session_data
+    _arm_bot_session_timer(chat_id, _BOT_SESSION_TIMEOUT)
+    _save_bot_sessions()
+
+
 def _clear_bot_session(chat_id: str):
-    """清除机器人会话并取消定时器"""
+    """清除机器人会话并取消定时器，同时更新持久化文件"""
     old = _bot_sessions.pop(chat_id, None)
     if old and old.get("timer"):
         old["timer"].cancel()
+    _save_bot_sessions()
 
 
 def _process_bot_command(chat_id: str, text: str):
@@ -631,7 +689,7 @@ def _process_bot_command(chat_id: str, text: str):
     # 链式命令中间步骤：静默执行，不发送任何消息（由事件处理器负责恢复）
     if _bot_silent_mode:
         feishu_client.send_bot_message = lambda *a, **kw: True
-    session = _bot_sessions.get(chat_id)
+    session = _bot_sessions.get(chat_id) or _load_bot_session(chat_id)
     logger.info("机器人收到命令: chat=%s, text=%s", chat_id[:12], text[:60])
 
     # 退出命令：取消当前运行中的任务 或 清除会话等待状态
@@ -1104,19 +1162,20 @@ def _process_bot_command(chat_id: str, text: str):
         feishu_client.send_bot_message(chat_id,
             f"过滤已设置：{filters.get('desc', '默认')}\n\n"
             f"可用JQL：\n{jql_desc}\n\n"
-            f"请输入：JQL编号,抽取数量,PC/线上\n示例: JQL1,50,PC")
+            f"请输入：JQL编号,抽取数量,PC/线上（数量可省略=全部；持续执行用每批数量）\n示例: JQL1,50,PC 或 JQL1,PC")
         return
 
     # 6.1.1 JQL执行输入处理
     if session and session.get("state") == "wait_batch_jql_filter":
-        m = re.match(r"(jql\s*\d+)\s*[,，]\s*(\d+)\s*[,，]\s*(pc|线上|online)", text, re.I)
+        m = re.match(r"(jql\s*\d+)\s*[,，]\s*(?:(\d+)\s*[,，])?\s*(pc|线上|online)", text, re.I)
         if not m:
-            feishu_client.send_bot_message(chat_id, "格式错误，请输入「JQL编号,数量,PC/线上」\n示例: JQL1,50,PC")
+            feishu_client.send_bot_message(chat_id, "格式错误，请输入「JQL编号,数量,PC/线上」（数量可省略=全部）\n示例: JQL1,50,PC 或 JQL1,PC")
             return
         jql_key = m.group(1).replace(" ", "").upper()
-        count = int(m.group(2))
+        # 数量省略时记 0：单次=全部候选，持续=用配置的每批数量
+        count = int(m.group(2)) if m.group(2) else 0
         exec_mode = "online" if m.group(3).lower() in ("online", "线上") else "pc"
-        if count <= 0:
+        if m.group(2) and count <= 0:
             feishu_client.send_bot_message(chat_id, "抽取数量必须大于 0")
             return
         jql_presets = _get_jql_presets()
@@ -1144,10 +1203,11 @@ def _process_bot_command(chat_id: str, text: str):
                              args=(chat_id, jql_key, count, exec_mode, filters, meta, interval_min, total_rounds),
                              name=f"bot-batch-cont-{jql_key}", daemon=True).start()
         else:
+            count_label = "全部" if count <= 0 else str(count)
             feishu_client.send_bot_message(chat_id,
-                f"{jql_key}({label}) 开始执行\n抽取 {count} 条，{mode_label}模式\n"
+                f"{jql_key}({label}) 开始执行\n抽取 {count_label} 条，{mode_label}模式\n"
                 f"过滤：{filters.get('desc', '默认')}\n发送「退出」可中断任务")
-            _set_running_task(chat_id, f"JQL批量执行({jql_key},{count}条,{mode_label})")
+            _set_running_task(chat_id, f"JQL批量执行({jql_key},{count_label}条,{mode_label})")
             threading.Thread(target=_bot_run_batch_ai, args=(chat_id, jql_key, count, exec_mode, filters, meta),
                              name=f"bot-batch-{jql_key}", daemon=True).start()
         return
@@ -1527,7 +1587,8 @@ def _get_jql_presets() -> dict:
         "JQL6": ("8.25后远控", 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed'),
         "JQL7": ("8.25后coreservice", 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed'),
         "JQL8": ("8.25后RES1.0/1.1", 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")'),
-        "JQL9": ("9.1新增非close", 'issuetype = bug AND status != closed AND created >= "2026/09/01"'),
+        "JQL9": ("9.1新增非close", 'issuetype = bug AND status != closed AND created >= "2026-09-01"'),
+        "JQL10": ("10.1新增非close", 'issuetype = bug AND status != closed AND created >= "2026-10-01"'),
     }
     cfg_jqls = load_config().get("feishu_bot", {}).get("jqls", {}) or {}
     for k, v in cfg_jqls.items():
@@ -4263,6 +4324,9 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "
         if _is_cancelled(chat_id):
             feishu_client.send_bot_message(chat_id, "任务已被用户取消")
             return
+        # 数量省略（count<=0）表示不限制：抽取全部过滤后候选
+        if count <= 0:
+            count = len(filtered)
         # 步骤3+4：优先缓存抽样+提取触发时间
         remaining = list(filtered)
         # 先查缓存，将候选分为「有缓存」和「无缓存」两组
