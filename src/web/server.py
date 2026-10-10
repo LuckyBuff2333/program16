@@ -2908,8 +2908,16 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
                     todo_items.append({"jira号": jira_no, "reason": f"分析失败: {cat}",
                                        "触发时间": exec_info.get("触发时间", "")})
         else:
-            # 执行成功但多维表格无记录 → 计入统计，标记为"分析中"
-            row["分析结果"] = "分析中"
+            # 执行成功但多维表格无记录 → 队列阻塞导致执行丢失
+            row["分析结果"] = "失败"
+            row["失败分类"] = "队列阻塞"
+            fail_count += 1
+            fail_cats["队列阻塞"] = fail_cats.get("队列阻塞", 0) + 1
+            if "队列阻塞" not in fail_jiras:
+                fail_jiras["队列阻塞"] = []
+            fail_jiras["队列阻塞"].append({"jira号": jira_no, "错误信息": "队列阻塞导致执行丢失"})
+            todo_items.append({"jira号": jira_no, "reason": "队列阻塞导致执行丢失",
+                               "触发时间": exec_info.get("触发时间", "")})
         rows.append(row)
     rows.sort(key=lambda x: x["jira号"])
     regression_count = success_count + fail_count
