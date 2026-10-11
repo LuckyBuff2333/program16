@@ -7145,20 +7145,32 @@ async def test_batch_ai_extract_times(request: Request):
                             _write_buffer.append((key, ""))
                             return key, "no_gmlogger", ""
                         tt = ""
-                        # 评论/字段提取优先
-                        tt = _jc.extract_trigger_time_from_issue(issue)
-                        if tt:
-                            sources[key] = "新提取"
-                        if not tt and video_fallback:
-                            # 文本未提取到，回退视频OCR
+                        if video_fallback:
+                            # 勾选“视频提取优先”：视频 → 评论 → 图片
                             async with _ocr_sem:
                                 video_tt = await loop.run_in_executor(
                                     None, _diag_extract_time_from_video_simple, issue)
                             if video_tt:
                                 tt = video_tt
                                 sources[key] = "视频提取"
-                        if not tt and video_fallback:
-                            # 视频也未提取到，图片OCR再兜底
+                            if not tt:
+                                tt = _jc.extract_trigger_time_from_issue(issue)
+                                if tt:
+                                    sources[key] = "新提取"
+                        else:
+                            # 默认不勾选：评论 → 视频 → 图片
+                            tt = _jc.extract_trigger_time_from_issue(issue)
+                            if tt:
+                                sources[key] = "新提取"
+                            if not tt:
+                                async with _ocr_sem:
+                                    video_tt = await loop.run_in_executor(
+                                        None, _diag_extract_time_from_video_simple, issue)
+                                if video_tt:
+                                    tt = video_tt
+                                    sources[key] = "视频提取"
+                        # 图片OCR最终兜底（两种模式都走）
+                        if not tt:
                             cfg_api = load_config().get("jira_api", {})
                             img_h = {}
                             img_tok = cfg_api.get("token", "")
