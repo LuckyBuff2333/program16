@@ -2494,31 +2494,47 @@ def _bot_get_trigger_times(bugids: list) -> dict:
             # 提取 jira 创建时间用于自学习分析
             jira_created = (issue.get("fields") or {}).get("created", "") or ""
             _timestudy_update_ctx(bugid, jira_created=jira_created[:19])
-            # 视频 OCR 优先级最高
-            tt = _diag_extract_time_from_video_simple(issue)
+            # 评论/字段提取优先级最高（基于对比实验结果：文本提取准确率最高且速度最快）
+            tt = _jc.extract_trigger_time_from_issue(issue)
             if tt:
-                # 视频提取成功
-                _timestudy_trace(bugid, "result:video_hit")
-                ctx = _timestudy_get_ctx(bugid)
-                source = ctx.get("source", "") or "video_ocr"
-                _timestudy_record(bugid, str(tt), source, ctx=ctx)
+                _timestudy_trace(bugid, "result:text_hit")
+                _timestudy_record(bugid, str(tt), "text_extract",
+                                  ctx=_timestudy_get_ctx(bugid))
             else:
-                # 视频未提取到，回退到标题/评论/描述/自定义字段
-                _timestudy_trace(bugid, "text:try")
-                tt = _jc.extract_trigger_time_from_issue(issue)
+                # 文本未提取到，回退到视频OCR
+                _timestudy_trace(bugid, "video:try")
+                tt = _diag_extract_time_from_video_simple(issue)
                 ctx = _timestudy_get_ctx(bugid)
                 if tt:
-                    _timestudy_trace(bugid, "text:hit")
-                    _timestudy_record(bugid, str(tt), "text_fallback",
-                                      error_type="no_video" if ctx.get("error_type") == "no_video" else "video_failed_text_fallback",
-                                      error_detail=f"视频提取失败({ctx.get('error_type','')})→文本回退成功",
+                    _timestudy_trace(bugid, "video:hit")
+                    source = ctx.get("source", "") or "video_ocr"
+                    _timestudy_record(bugid, str(tt), source,
+                                      error_type="text_failed_video_fallback",
+                                      error_detail="文本提取失败→视频回退成功",
                                       ctx=ctx)
                 else:
-                    _timestudy_trace(bugid, "text:empty")
-                    _timestudy_record(bugid, "", "empty",
-                                      error_type=ctx.get("error_type") or "all_sources_empty",
-                                      error_detail=ctx.get("error_detail") or "所有来源均未提取到触发时间",
-                                      ctx=ctx)
+                    # 视频也未提取到，回退到图片OCR
+                    _timestudy_trace(bugid, "image:try")
+                    cfg_api = load_config().get("jira_api", {})
+                    img_headers = {}
+                    img_token = cfg_api.get("token", "")
+                    if img_token:
+                        img_headers["Authorization"] = f"Bearer {img_token}"
+                    img_timeout = max(int(cfg_api.get("timeout", 30)), 120)
+                    img_tt, _ = _diag_extract_time_from_images(issue, img_headers, img_timeout, bugid)
+                    if img_tt:
+                        _timestudy_trace(bugid, "image:hit")
+                        _timestudy_record(bugid, str(img_tt), "image_fallback",
+                                          error_type="text_video_failed_image_fallback",
+                                          error_detail="文本和视频均未提取到→图片回退成功",
+                                          ctx=ctx)
+                        tt = img_tt
+                    else:
+                        _timestudy_trace(bugid, "image:empty")
+                        _timestudy_record(bugid, "", "empty",
+                                          error_type=ctx.get("error_type") or "all_sources_empty",
+                                          error_detail=ctx.get("error_detail") or "所有来源均未提取到触发时间",
+                                          ctx=ctx)
             if tt:
                 trigger_times[bugid] = str(tt)
             try:
@@ -7129,17 +7145,30 @@ async def test_batch_ai_extract_times(request: Request):
                             _write_buffer.append((key, ""))
                             return key, "no_gmlogger", ""
                         tt = ""
-                        if video_fallback:
+                        # 评论/字段提取优先
+                        tt = _jc.extract_trigger_time_from_issue(issue)
+                        if tt:
+                            sources[key] = "新提取"
+                        if not tt and video_fallback:
+                            # 文本未提取到，回退视频OCR
                             async with _ocr_sem:
                                 video_tt = await loop.run_in_executor(
                                     None, _diag_extract_time_from_video_simple, issue)
                             if video_tt:
                                 tt = video_tt
                                 sources[key] = "视频提取"
-                        if not tt:
-                            tt = _jc.extract_trigger_time_from_issue(issue)
-                            if tt:
-                                sources[key] = "新提取"
+                        if not tt and video_fallback:
+                            # 视频也未提取到，图片OCR再兜底
+                            cfg_api = load_config().get("jira_api", {})
+                            img_h = {}
+                            img_tok = cfg_api.get("token", "")
+                            if img_tok:
+                                img_h["Authorization"] = f"Bearer {img_tok}"
+                            img_to = max(int(cfg_api.get("timeout", 30)), 120)
+                            img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, key)
+                            if img_tt:
+                                tt = img_tt
+                                sources[key] = "图片提取"
                         if tt:
                             trigger_times[key] = tt
                             tt_val = tt
@@ -7469,10 +7498,20 @@ async def test_batch_ai_sample(request: Request):
                 try:
                     from src.clients import jira_client as _jc
                     issue = _jc.fetch_issue(k)
-                    # 视频 OCR 提取优先级最高
-                    tt = _diag_extract_time_from_video_simple(issue)
+                    # 评论/字段提取优先，视频兜底，图片再兜底
+                    tt = _jc.extract_trigger_time_from_issue(issue)
                     if not tt:
-                        tt = _jc.extract_trigger_time_from_issue(issue)
+                        tt = _diag_extract_time_from_video_simple(issue)
+                    if not tt:
+                        cfg_api = load_config().get("jira_api", {})
+                        img_h = {}
+                        img_tok = cfg_api.get("token", "")
+                        if img_tok:
+                            img_h["Authorization"] = f"Bearer {img_tok}"
+                        img_to = max(int(cfg_api.get("timeout", 30)), 120)
+                        img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, k)
+                        if img_tt:
+                            tt = img_tt
                     # 防御性处理：确保 tt 是字符串
                     if tt and not isinstance(tt, str):
                         if hasattr(tt, 'strftime'):
@@ -8518,19 +8557,37 @@ async def test_trigger_time(request: Request):
                 "comment_count": 0,
                 "source": "cloud",
             }, f"云端已有触发时间: {cached_time}")
-        # 云端无记录，从 Jira 提取
+        # 云端无记录，从 Jira 提取（评论字段优先→视频→图片三级回退）
         issue = jira_client.fetch_issue(bugid)
         trigger_time = jira_client.extract_trigger_time_from_issue(issue)
+        source = "comment_field"
         if not trigger_time:
-            return _fail("提取失败，评论区未获取到时间内容")
+            # 评论字段未提取到，视频OCR兜底
+            trigger_time = _diag_extract_time_from_video_simple(issue)
+            if trigger_time:
+                source = "video_ocr"
+        if not trigger_time:
+            # 视频也未提取到，图片OCR兜底
+            cfg_api = load_config().get("jira_api", {})
+            img_h = {}
+            img_tok = cfg_api.get("token", "")
+            if img_tok:
+                img_h["Authorization"] = f"Bearer {img_tok}"
+            img_to = max(int(cfg_api.get("timeout", 30)), 120)
+            img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, bugid)
+            if img_tt:
+                trigger_time = img_tt
+                source = "image_ocr"
+        if not trigger_time:
+            return _fail("提取失败，评论/视频/图片均未获取到时间内容")
         # 提取成功后保存到云端+本地
         _save_trigger_time_to_cloud(bugid, trigger_time)
         comments = jira_client.extract_comments(issue)
         return _ok({
             "trigger_time": trigger_time,
             "comment_count": len(comments),
-            "source": "jira",
-        }, f"Jira提取成功，从 {len(comments)} 条评论中提取到触发时间")
+            "source": source,
+        }, f"提取成功({source})，从 {len(comments)} 条评论中获取")
     except Exception as e:
         logger.error("触发时间提取失败: %s", e)
         return _fail(str(e))
@@ -8696,7 +8753,7 @@ async def re_extract_scan(request: Request):
 
 @app.post("/api/trigger_time/re_extract")
 async def re_extract(request: Request):
-    """对指定的 bugid 列表重新提取触发时间（视频优先）并更新云端，失败不变更"""
+    """对指定的 bugid 列表重新提取触发时间（评论字段优先→视频→图片）并更新云端，失败不变更"""
     body = await request.json() or {}
     bugids = body.get("bugids") or []
     if not bugids:
@@ -8713,10 +8770,20 @@ async def re_extract(request: Request):
             await asyncio.sleep(0)
             try:
                 issue = await loop.run_in_executor(None, _jc.fetch_issue, bugid)
-                # 视频优先提取
-                tt = await loop.run_in_executor(None, _diag_extract_time_from_video_simple, issue)
+                # 评论/字段提取优先，视频兜底，图片再兜底
+                tt = await loop.run_in_executor(None, _jc.extract_trigger_time_from_issue, issue)
                 if not tt:
-                    tt = await loop.run_in_executor(None, _jc.extract_trigger_time_from_issue, issue)
+                    tt = await loop.run_in_executor(None, _diag_extract_time_from_video_simple, issue)
+                if not tt:
+                    cfg_api = load_config().get("jira_api", {})
+                    img_h = {}
+                    img_tok = cfg_api.get("token", "")
+                    if img_tok:
+                        img_h["Authorization"] = f"Bearer {img_tok}"
+                    img_to = max(int(cfg_api.get("timeout", 30)), 120)
+                    img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, bugid)
+                    if img_tt:
+                        tt = img_tt
                 status = ((issue.get("fields") or {}).get("status") or {}).get("name", "")
                 if tt:
                     # 成功：更新云端，去掉空标记
@@ -8952,7 +9019,7 @@ async def cache_batch_extract(request: Request):
     body = await request.json() or {}
     bugids = body.get("bugids") or []
     old_times = body.get("old_times") or {}  # {bugid: current_time} 用于对比
-    video_first = body.get("video_first", True)  # 视频提取优先
+    video_first = body.get("video_first", False)  # 视频提取优先（默认关闭，评论字段优先）
     if not bugids:
         return _fail("待提取列表为空")
 
@@ -9042,6 +9109,18 @@ async def cache_batch_extract(request: Request):
                     tt = await loop.run_in_executor(
                         None, _diag_extract_time_from_video_simple, issue)
                     source = "视频兜底"
+                if not tt:
+                    # 视频也未提取到，图片OCR再兜底
+                    cfg_api = load_config().get("jira_api", {})
+                    img_h = {}
+                    img_tok = cfg_api.get("token", "")
+                    if img_tok:
+                        img_h["Authorization"] = f"Bearer {img_tok}"
+                    img_to = max(int(cfg_api.get("timeout", 30)), 120)
+                    img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, bugid)
+                    if img_tt:
+                        tt = img_tt
+                        source = "图片兜底"
                 if tt:
                     old = old_times.get(bugid, "")
                     # 时间对比：完全相同 或 误差在 1 分钟内视为未变化
@@ -13820,16 +13899,30 @@ async def test_prod_batch_run(request: Request):
             def _extract_one(bugid):
                 try:
                     issue = _jc.fetch_issue(bugid)
-                    tt = _diag_extract_time_from_video_simple(issue)
-                    if tt:
-                        if not isinstance(tt, str):
-                            tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
-                        return bugid, tt
+                    # 评论/字段提取优先（基于对比实验结果：文本提取准确率最高且速度最快）
                     tt = _jc.extract_trigger_time_from_issue(issue)
                     if tt:
                         if not isinstance(tt, str):
                             tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
                         return bugid, tt
+                    # 文本未命中，视频OCR兜底
+                    tt = _diag_extract_time_from_video_simple(issue)
+                    if tt:
+                        if not isinstance(tt, str):
+                            tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
+                        return bugid, tt
+                    # 视频也未命中，图片OCR再兜底
+                    cfg_api = load_config().get("jira_api", {})
+                    img_h = {}
+                    img_tok = cfg_api.get("token", "")
+                    if img_tok:
+                        img_h["Authorization"] = f"Bearer {img_tok}"
+                    img_to = max(int(cfg_api.get("timeout", 30)), 120)
+                    img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, bugid)
+                    if img_tt:
+                        if not isinstance(img_tt, str):
+                            img_tt = img_tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(img_tt, 'strftime') else str(img_tt)
+                        return bugid, img_tt
                 except Exception:
                     pass
                 return bugid, ""
@@ -14952,8 +15045,21 @@ async def auto_detect_run(request: Request):
                         bugids.remove(bugid)
                         no_gmlogger += 1
                         continue
-                    from src.core.trigger_time import extract_trigger_time_from_issue
-                    tt = await loop.run_in_executor(None, lambda b=bugid, iss=issue: extract_trigger_time_from_issue(b, iss))
+                    # 评论/字段提取优先，视频兜底，图片再兜底
+                    tt = jira_client.extract_trigger_time_from_issue(issue)
+                    if not tt:
+                        tt = await loop.run_in_executor(
+                            None, _diag_extract_time_from_video_simple, issue)
+                    if not tt:
+                        cfg_api = load_config().get("jira_api", {})
+                        img_h = {}
+                        img_tok = cfg_api.get("token", "")
+                        if img_tok:
+                            img_h["Authorization"] = f"Bearer {img_tok}"
+                        img_to = max(int(cfg_api.get("timeout", 30)), 120)
+                        img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, bugid)
+                        if img_tt:
+                            tt = img_tt
                     if tt:
                         trigger_times[bugid] = tt
                         _save_trigger_time_to_cloud(bugid, tt)

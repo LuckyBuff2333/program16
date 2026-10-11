@@ -3570,7 +3570,7 @@ createApp({
         results: [], currentIndex: 0, total: 0, hasTime: 0, empty: 0, errorCount: 0,
         doneMsg: '',
         filterExisting: false,  // 过滤多维表格中已有数据
-        videoFallback: true,    // 视频提取优先级最高（默认启用）
+        videoFallback: false,   // 评论字段提取优先（默认关闭视频优先，文本提取准确率更高）
         refreshCache: false,    // 云端缓存更新：有缓存也重新提取，提取不到则保留旧值
         reExtractEmpty: false,  // 空标记重新提取：已标记空的也重新提取
         parallelExtract: false, // 并行提取：同时处理 8 条（视频下载+分析+处理）
