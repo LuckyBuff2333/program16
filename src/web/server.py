@@ -16174,23 +16174,116 @@ async def tuning_analyze(request: Request):
 # 匹配容差：提取时间与基线时间差距在60秒内视为匹配
 _COMPARE_MATCH_TOLERANCE = 60
 
-# 四种提取策略定义
+# 五种提取策略定义
 _COMPARE_STRATEGIES = {
     "video_first": "视频优先",
     "image_first": "图片优先",
     "comment_first": "评论字段优先",
     "video_confidence": "视频置信度优先",
+    "video_no_preprocess": "无视频预处理",
 }
+
+
+def _video_extract_no_preprocess(issue: dict) -> str:
+    """纯视频OCR提取，不做gmlogger下载/解压/日期验证等预处理。
+
+    仅下载视频、截帧、OCR识别，返回第一个能解析的时间字符串。
+    不做与gmlogger的时间匹配验证，用于对比“无预处理”场景的提取准确率。
+    """
+    import tempfile
+    import httpx as _httpx
+    from datetime import datetime as _dt
+    fields = issue.get("fields") or {}
+    attachments = fields.get("attachment") or []
+    videos = [a for a in attachments if (a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES)]
+    if not videos:
+        return ""
+    bugid = issue.get("key", "")
+    cfg = load_config().get("jira_api", {})
+    headers = {}
+    token = cfg.get("token", "")
+    if token:
+        auth_type = cfg.get("auth_type", "bearer").lower()
+        if auth_type == "bearer":
+            headers["Authorization"] = f"Bearer {token}"
+    reader = _get_ocr_reader()
+    if reader is None:
+        logger.warning("无预处理视频提取(%s)：OCR 不可用，跳过", bugid)
+        return ""
+    # 按上传时间排序视频（无gmlogger参考，按时间顺序）
+    videos = sorted(videos, key=lambda a: a.get("created", "") or "", reverse=True)
+    for video_att in videos:
+        video_url = video_att.get("content", "")
+        video_name = video_att.get("filename", "")
+        if not video_url:
+            continue
+        video_path = None
+        tmp_dir = None
+        try:
+            tmp_dir = tempfile.mkdtemp()
+            video_path = os.path.join(tmp_dir, "video.bin")
+            with _httpx.stream("GET", video_url, headers=headers, timeout=120,
+                               verify=False, follow_redirects=True) as resp:
+                resp.raise_for_status()
+                with open(video_path, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                        f.write(chunk)
+        except Exception as e:
+            logger.warning("无预处理视频提取(%s)：下载失败 %s: %s", bugid, video_name, e)
+            if tmp_dir:
+                import shutil
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            continue
+        try:
+            # 截帧：封面 + 第1/3/6秒
+            for positions in [[0], [1, 3, 6]]:
+                frames = _extract_video_frames_gpu(video_path, positions=positions, use_gpu=True) or []
+                for sec, frame in frames:
+                    try:
+                        results = _ocr_readtext(reader, frame)
+                    except Exception:
+                        continue
+                    if not results:
+                        continue
+                    all_text = " ".join(r[1] for r in results)
+                    all_text = _fix_ocr_missing_colon(all_text)
+                    all_text = _fix_ocr_char_confusion(all_text)
+                    all_text = _preprocess_ocr_datetime(all_text)
+                    # 完整日期+时间
+                    m = _OCR_TIME_FULL_RE.search(all_text)
+                    if m:
+                        parsed = _parse_datetime_string(_normalize_ocr_time(m.group(1)))
+                        if parsed:
+                            logger.info("无预处理视频提取(%s)：命中 %s（第%d秒）", bugid, parsed[0], sec + 1)
+                            return parsed[0]
+                    # 仅时间（无日期）
+                    m = _OCR_TIME_ONLY_RE.search(all_text)
+                    if m:
+                        # 无gmlogger日期可补，尝试用视频附件创建日期
+                        created = video_att.get("created", "") or ""
+                        date_prefix = created[:10] if len(created) >= 10 else ""
+                        if date_prefix:
+                            combined = f"{date_prefix} {m.group(0)}"
+                            parsed = _parse_datetime_string(combined)
+                            if parsed:
+                                logger.info("无预处理视频提取(%s)：仅时间+附件日期命中 %s", bugid, parsed[0])
+                                return parsed[0]
+        finally:
+            if tmp_dir:
+                import shutil
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+    return ""
 
 
 def _strategy_extract_time(issue: dict, strategy: str) -> dict:
     """按指定策略提取触发时间，返回 {time, source, detail}
 
-    四种策略：
-    - video_first: 视频OCR -> 图片OCR -> 评论字段
+    五种策略：
+    - video_first: 视频OCR(含gmlogger预处理) -> 图片OCR -> 评论字段
     - image_first: 图片OCR -> 视频OCR -> 评论字段
     - comment_first: 评论字段 -> 视频OCR -> 图片OCR
     - video_confidence: 视频OCR(高置信度) -> 评论字段 -> 图片OCR
+    - video_no_preprocess: 视频OCR(无gmlogger预处理) -> 图片OCR -> 评论字段
     """
     bugid = issue.get("key", "")
     cfg = load_config().get("jira_api", {})
@@ -16241,6 +16334,15 @@ def _strategy_extract_time(issue: dict, strategy: str) -> dict:
             logger.warning("对比提取(%s) 视频置信度提取失败: %s", bugid, e)
             return "", ""
 
+    def _try_video_no_preprocess():
+        """无gmlogger预处理的纯视频OCR提取"""
+        try:
+            t = _video_extract_no_preprocess(issue)
+            return t, "video_ocr_no_preprocess"
+        except Exception as e:
+            logger.warning("对比提取(%s) 无预处理视频提取失败: %s", bugid, e)
+            return "", ""
+
     # 按策略执行提取链
     if strategy == "video_first":
         for fn in [_try_video, _try_image, _try_comment]:
@@ -16265,6 +16367,13 @@ def _strategy_extract_time(issue: dict, strategy: str) -> dict:
 
     elif strategy == "video_confidence":
         for fn in [_try_video_confidence, _try_comment, _try_image]:
+            t, src = fn()
+            if t:
+                return {"time": t, "source": src, "detail": ""}
+        return {"time": "", "source": "none", "detail": "所有方式均未提取到时间"}
+
+    elif strategy == "video_no_preprocess":
+        for fn in [_try_video_no_preprocess, _try_image, _try_comment]:
             t, src = fn()
             if t:
                 return {"time": t, "source": src, "detail": ""}

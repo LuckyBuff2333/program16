@@ -3070,7 +3070,7 @@
             <div v-else-if="testPanel === 'trigger_compare'" key="trigger_compare" class="test-panel">
               <div class="section-title">触发时间提取方式对比分析</div>
               <el-alert type="info" :closable="false"
-                title="对比4种触发时间提取策略（视频优先/图片优先/评论字段优先/视频置信度优先）的提取结果，评估哪种策略最准确。结果仅展示，不存入缓存。"></el-alert>
+                title="对比5种触发时间提取策略（视频优先/图片优先/评论字段优先/视频置信度优先/无视频预处理）的提取结果，评估哪种策略最准确。结果仅展示，不存入缓存。"></el-alert>
 
               <!-- 输入区域 -->
               <el-card shadow="never" style="margin-top:14px">
@@ -3110,6 +3110,7 @@
                     <el-checkbox label="image_first">图片优先</el-checkbox>
                     <el-checkbox label="comment_first">评论字段优先</el-checkbox>
                     <el-checkbox label="video_confidence">视频置信度优先</el-checkbox>
+                    <el-checkbox label="video_no_preprocess">无视频预处理</el-checkbox>
                   </el-checkbox-group>
                 </div>
 
@@ -3129,7 +3130,7 @@
               </el-card>
 
               <!-- 统计卡片 -->
-              <div v-if="triggerCompare.summary" class="stat-row" style="margin-top:14px;grid-template-columns:repeat(4,1fr)">
+              <div v-if="triggerCompare.summary" class="stat-row" style="margin-top:14px;grid-template-columns:repeat(5,1fr)">
                 <div v-for="s in triggerCompare.summary.strategies" :key="s.key" class="stat-card">
                   <div class="num">{{ s.matchRate }}</div>
                   <div class="label">{{ s.label }} · 平均{{ s.avgElapsed }}s</div>
@@ -3861,7 +3862,7 @@ createApp({
         inputMode: 'manual',
         manualBugids: '',
         randomCount: 20,
-        strategies: ['video_first', 'image_first', 'comment_first', 'video_confidence'],
+        strategies: ['video_first', 'image_first', 'comment_first', 'video_confidence', 'video_no_preprocess'],
         running: false,
         sampling: false,
         sampledItems: [],
@@ -8185,7 +8186,7 @@ createApp({
 
     // ==================== 功能14：触发时间提取对比 ====================
     strategyLabel(key) {
-      const map = { video_first: '视频优先', image_first: '图片优先', comment_first: '评论字段优先', video_confidence: '视频置信度优先' };
+      const map = { video_first: '视频优先', image_first: '图片优先', comment_first: '评论字段优先', video_confidence: '视频置信度优先', video_no_preprocess: '无视频预处理' };
       return map[key] || key;
     },
     async randomSampleTrigger() {
@@ -8369,7 +8370,7 @@ createApp({
           yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
           series: [{
             type: 'bar', data: strats.map(s => parseFloat(s.matchRate)),
-            itemStyle: { color: (p) => ['#67c23a', '#409eff', '#e6a23c', '#f56c6c'][p.dataIndex % 4] },
+            itemStyle: { color: (p) => ['#67c23a', '#409eff', '#e6a23c', '#f56c6c', '#909399'][p.dataIndex % 5] },
             label: { show: true, position: 'top', formatter: '{c}%' },
           }],
           grid: { bottom: 50 },
@@ -8385,7 +8386,7 @@ createApp({
           yAxis: { type: 'value', axisLabel: { formatter: '{value}s' } },
           series: [{
             type: 'bar', data: strats.map(s => s.avgElapsed),
-            itemStyle: { color: (p) => ['#67c23a', '#409eff', '#e6a23c', '#f56c6c'][p.dataIndex % 4] },
+            itemStyle: { color: (p) => ['#67c23a', '#409eff', '#e6a23c', '#f56c6c', '#909399'][p.dataIndex % 5] },
             label: { show: true, position: 'top', formatter: '{c}s' },
           }],
           grid: { bottom: 50 },
