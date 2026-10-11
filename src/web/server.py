@@ -1958,6 +1958,16 @@ _TIMESTUDY_FIX_LOG = [
         "fix": "在 _ocr_readtext 中检测水印关键词(“水印”/“相机真实可靠”)，计算水印区域 bbox，过滤该区域内的时间类文本",
         "status": "manual",
     },
+    {
+        "date": "2026-10-11",
+        "title": "视频未命中gmlogger时新增非视频图片OCR时钟兜底",
+        "bugid": "VCU-550243",
+        "problem": "视频提取时间(17:27)与gmlogger包内/文件名时间(20:05)不命中，直接走兜底或返回空；附件中车机时钟截图(20:01)未被利用，导致提取失败",
+        "root_cause": "图片OCR兜底 _diag_extract_time_from_images 仅在诊断流程且gmlogger组数>10时调用，主提取链路 _diag_extract_time_from_video_simple 在视频未命中gmlogger时从不参考非视频图片",
+        "fix": "新增 _image_fallback_time：视频未命中gmlogger后调用图片OCR，图片时钟(20:01)与参考时间(20:05)按时分接近(容差10分钟)则用参考日期+图片时间拼接返回；差距过大弃用回退原逻辑",
+        "verify": "VCU-550243：修复前不命中/返回空；修复后图片20:01与参考20:05:18差258秒≤600秒，拼接返回 2026-09-19 20:01:00",
+        "status": "manual",
+    },
 ]
 # 提取上下文（线程安全，每次提取前初始化）
 _timestudy_ctx: dict = {}
@@ -2003,6 +2013,25 @@ def _timestudy_records_dir() -> str:
     """获取记录目录路径（按日期分文件）"""
     os.makedirs(_TIMESTUDY_RECORDS_DIR, exist_ok=True)
     return _TIMESTUDY_RECORDS_DIR
+
+
+def _timestudy_load_records() -> list:
+    """读取 timestudy/records/ 下所有日期记录文件(records_YYYY-MM-DD.csv)，返回行列表"""
+    import csv as _csv
+    rows = []
+    records_dir = _TIMESTUDY_RECORDS_DIR
+    if not os.path.exists(records_dir):
+        return rows
+    for fname in sorted(os.listdir(records_dir)):
+        if not fname.startswith("records_") or not fname.endswith(".csv"):
+            continue
+        try:
+            with open(os.path.join(records_dir, fname), "r", encoding="utf-8-sig") as f:
+                for row in _csv.DictReader(f):
+                    rows.append(row)
+        except Exception as e:
+            logger.warning("读取自学习记录文件失败 %s: %s", fname, e)
+    return rows
 
 
 def _timestudy_today_csv() -> str:
@@ -2075,20 +2104,54 @@ def _timestudy_fixlog_lines() -> list:
     return lines
 
 
-def _timestudy_append_doc(body: str):
-    """把一段 markdown 追加到 optimization_log.md；文件不存在则创建并加 H1 标题。"""
+def _timestudy_render_fixlog_doc():
+    """覆盖渲染 optimization_log.md：仅保留"历史变更记录"（通用时间提取逻辑变更总结）。
+    偶发失败或无需修改提取逻辑的失败不进 _TIMESTUDY_FIX_LOG，自然不进文档；
+    通用逻辑变更（人工追加 + 自学习对消失模式的自动检测）在分析时自动落入文档。"""
     log_path = os.path.join(_TIMESTUDY_DIR, "optimization_log.md")
     os.makedirs(_TIMESTUDY_DIR, exist_ok=True)
-    if os.path.exists(log_path):
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write("\n\n---\n\n" + body)
-    else:
-        with open(log_path, "w", encoding="utf-8") as f:
-            f.write("# 触发时间提取优化日志\n\n" + body)
+    head = [
+        "# 触发时间提取优化日志",
+        "",
+        "本文档为触发时间提取的学习总结：仅记录**通用时间提取逻辑**的变更总结（逻辑变更时自动追加到历史变更记录）；",
+        "偶发失败、或无需修改提取逻辑的失败不入库。",
+        "失败原始记录（含顺便排查的根因）见 `timestudy/records/records_YYYY-MM-DD.csv`；分析快照见 `timestudy/error_patterns*.json`。",
+        "",
+        "## 当前时间提取逻辑",
+        "",
+        "### 提取优先级",
+        "",
+        "```mermaid",
+        "flowchart TD",
+        '    A["触发时间提取"] --> B["视频帧 OCR — 截帧: 0s / 1s / 3s / 6s"]',
+        '    B --> C{提取结果}',
+        '    C -->|"完整日期+时间"| D["ref_pool 验证 +-5min"]',
+        '    C -->|"仅时间"| E["gmlogger 补日期"]',
+        "    E --> D",
+        '    D -->|"通过"| R["返回触发时间"]',
+        '    D -->|"失败"| F["12h 转换 / 文件名回退"]',
+        '    F --> G["图片附件 OCR — 最新 5 张"]',
+        '    G --> H["标记检测: 红/绿高亮优先"]',
+        '    H --> I["频率兜底: 众数统计"]',
+        '    I -->|"命中"| R',
+        '    I -->|"失败"| J["标题"]',
+        '    J --> K["评论区 — 日志行优先"]',
+        '    K --> L["描述"]',
+        '    L --> M["自定义字段"]',
+        '    M --> N["gmlogger 文件名补年/日期"]',
+        '    N -->|"命中"| R',
+        '    N -->|"失败"| X["无有效触发时间"]',
+        "```",
+        "",
+        "> **ref_pool 验证池**：包内 main.log 时间（权威）> 外层 gmlogger 文件名时间（补充）",
+        "",
+    ]
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(head + _timestudy_fixlog_lines()) + "\n")
 
 
 def _timestudy_analyze(after_time: str = "") -> dict:
-    """深度分析 timestudy/records/ 下所有日期记录，生成 error_patterns.json 和 optimization_log.md
+    """深度分析 timestudy/records/ 下所有日期记录，生成 error_patterns.json 并覆盖渲染 optimization_log.md（仅历史变更记录）
 
     Args:
         after_time: 可选，只分析该时间之后的记录（格式: YYYY-MM-DD HH:MM:SS）
@@ -2113,10 +2176,9 @@ def _timestudy_analyze(after_time: str = "") -> dict:
                 logger.warning("读取记录文件失败 %s: %s", fname, e)
     # 加载上次快照（用于模式生命周期对比）
     last_snapshot = _timestudy_load_last_snapshot()
-    # 无分析记录时：仅在文档不存在时创建（含"已实施优化记录"），避免重复点击产生重复快照
+    # 无分析记录时：仅覆盖渲染文档（历史变更记录），不产生快照
     if not records:
-        if not os.path.exists(os.path.join(_TIMESTUDY_DIR, "optimization_log.md")):
-            _timestudy_append_doc("\n".join(_timestudy_fixlog_lines()))
+        _timestudy_render_fixlog_doc()
         return {"total_records": 0, "error_patterns": {}}
     # 按时间过滤（记录时间字段）
     if after_time:
@@ -2363,181 +2425,11 @@ def _timestudy_analyze(after_time: str = "") -> dict:
             _json2.dump(patterns, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.warning("保存日期快照失败: %s", e)
-    # ===== 生成 optimization_log.md =====
-    log_lines = [
-        f"## 分析快照 {patterns['generated_at']}",
-        f"",
-        f"生成时间: {patterns['generated_at']}",
-        f"",
-        f"## 统计概览",
-        f"",
-        f"| 指标 | 值 |",
-        f"|------|------|",
-        f"| 总记录数 | {total} |",
-        f"| 前置跳过(无gmlogger) | {skip_count} |",
-        f"| 有效提取 | {total - skip_count} |",
-        f"| 提取成功 | {success_count} ({patterns['success_rate']}%) |",
-        f"| 提取失败 | {fail_count} |",
-        f"| 用户修正 | {corrected_count} |",
-        f"| 12h转换使用 | {h12_count} |",
-        f"| 顽固Jira(2+次失败) | {len(stubborn_jiras)} 个 |",
-        f"",
-        f"## 提取来源分布",
-        f"",
-        f"| 来源 | 次数 | 占比 |",
-        f"|------|------|------|",
-    ]
-    for src, cnt in patterns["source_distribution"].items():
-        pct = round(cnt / total * 100, 1) if total else 0
-        log_lines.append(f"| {src} | {cnt} | {pct}% |")
-    # ===== 模式生命周期状态 =====
-    _LIFECYCLE_LABEL = {"resolved": "✅ 已修复", "new": "🆕 新发现", "ongoing": "⚠️ 持续中", "improving": "📉 改善中"}
-    if pattern_lifecycle:
-        log_lines.extend(["", "## 模式生命周期", "",
-                          "| 错误类型 | 状态 | 说明 |",
-                          "|----------|------|------|"])
-        for et, status in sorted(pattern_lifecycle.items(), key=lambda x: ({"resolved": 0, "new": 1, "improving": 2, "ongoing": 3}.get(x[1], 4))):
-            label = _LIFECYCLE_LABEL.get(status, status)
-            if status == "resolved":
-                prev_info = last_analysis.get(et, {})
-                desc = f"上次 {prev_info.get('count', 0)} 次 → 本次 0 次，自动判定修复"
-            elif status == "new":
-                curr_info = error_analysis.get(et, {})
-                desc = f"本次新增 {curr_info.get('count', 0)} 次失败"
-            elif status == "improving":
-                curr_info = error_analysis.get(et, {})
-                prev_info = last_analysis.get(et, {})
-                desc = f"上次 {prev_info.get('count', 0)} 次 → 本次 {curr_info.get('count', 0)} 次"
-            else:
-                curr_info = error_analysis.get(et, {})
-                desc = f"持续 {curr_info.get('count', 0)} 次"
-            log_lines.append(f"| {et} | {label} | {desc} |")
-        log_lines.append("")
-    # ===== 已实施优化记录（持久化）=====
-    if _TIMESTUDY_FIX_LOG:
-        log_lines.extend(_timestudy_fixlog_lines())
-    # ===== 错误深度分析（核心部分）=====
-    log_lines.extend(["", f"## 错误深度分析", ""])
-    # 按分类分组
+    # ===== 分类统计（供日志输出）=====
     systematic_errors = {k: v for k, v in error_analysis.items() if v["classification"] == "系统性问题"}
     stubborn_errors = {k: v for k, v in error_analysis.items() if v["classification"] == "顽固问题"}
-    sporadic_errors = {k: v for k, v in error_analysis.items() if v["classification"] == "偶发问题"}
-    if systematic_errors:
-        log_lines.extend([f"### 系统性逻辑缺陷（需优先修复）", ""])
-        for err_type, info in sorted(systematic_errors.items(), key=lambda x: x[1]["count"], reverse=True):
-            log_lines.extend([
-                f"#### {err_type} ({info['count']}次, {info['unique_jiras']}个Jira)",
-                f"",
-                f"- **分类**: 系统性问题 — 多个Jira共享相同失败特征",
-                f"- **共性特征**: {', '.join(info['common_features']) or '无明显共性'}",
-                f"- **断点分析**: {info.get('main_breakpoint', '无trace数据')}",
-                f"- **无视频占比**: {info['no_video_pct']}% | **无gmlogger占比**: {info['no_gm_pct']}% | **12h转换占比**: {info['h12_pct']}%",
-                f"- **时间范围**: {info['date_range'] or '无'}",
-                f"- **示例Jira**: {', '.join(info['example_jiras'])}",
-                "",
-            ])
-    if stubborn_errors:
-        log_lines.extend([f"### 顽固问题（同一Jira反复失败）", ""])
-        for err_type, info in sorted(stubborn_errors.items(), key=lambda x: x[1]["count"], reverse=True):
-            stubborn_list = ', '.join(info['stubborn_jiras'][:5])
-            log_lines.extend([
-                f"#### {err_type} ({info['count']}次, {info['unique_jiras']}个Jira)",
-                f"",
-                f"- **分类**: 顽固问题 — 同一Jira多次提取均失败",
-                f"- **顽固Jira**: {stubborn_list or '无'}",
-                f"- **共性特征**: {', '.join(info['common_features']) or '无明显共性'}",
-                f"- **断点分析**: {info.get('main_breakpoint', '无trace数据')}",
-                f"- **示例Jira**: {', '.join(info['example_jiras'])}",
-                "",
-            ])
-    if sporadic_errors:
-        log_lines.extend([f"### 偶发问题（个别失败，无需优先处理）", ""])
-        for err_type, info in sorted(sporadic_errors.items(), key=lambda x: x[1]["count"], reverse=True):
-            log_lines.append(f"- **{err_type}** ({info['count']}次, {info['unique_jiras']}个Jira): {', '.join(info['common_features']) or '无明显特征'}")
-        log_lines.append("")
-    # ===== 流水线断点分析 =====
-    if sorted_breakpoints:
-        log_lines.extend([
-            "## 流水线断点分析",
-            "",
-            "解析每条记录的 trace_steps 字段，找出失败时流水线断在哪一步：",
-            "",
-            "| 断点步骤 | 含义 | 失败次数 |",
-            "|----------|------|----------|",
-        ])
-        for code, cnt in sorted_breakpoints[:8]:
-            desc = _TRACE_STAGE_DESC.get(code, code)
-            log_lines.append(f"| {code} | {desc} | {cnt} |")
-        log_lines.append("")
-        # 常见流水线路径
-        if sorted_patterns:
-            log_lines.extend([
-                "### 常见提取路径",
-                "",
-                "| 路径 | 次数 |",
-                "|------|------|",
-            ])
-            for trace, cnt in sorted_patterns:
-                log_lines.append(f"| {trace} | {cnt} |")
-            log_lines.append("")
-        # 断点溯源建议
-        log_lines.extend(["### 断点溯源", ""])
-        for err_type, info in sorted(error_analysis.items(), key=lambda x: x[1]["count"], reverse=True):
-            bp_list = info.get("breakpoints", [])
-            if not bp_list:
-                continue
-            bp_str = "; ".join(f"{bp['desc']}({bp['count']}次,{bp['pct']}%)" for bp in bp_list[:3])
-            log_lines.append(f"- **{err_type}** → 断在: {bp_str}")
-        log_lines.append("")
-    # ===== 优化建议（基于分析结果）=====
-    log_lines.extend([f"## 优化建议", f""])
-    suggestions = []
-    # 系统性问题优先建议
-    for err_type, info in systematic_errors.items():
-        features_str = ", ".join(info["common_features"])
-        if err_type == "video_download_failed":
-            suggestions.append(f"- **视频下载失败** ({info['count']}次): 建议增大 httpx 超时时间或增加重试机制")
-        elif err_type == "ocr_no_time_pattern":
-            suggestions.append(f"- **OCR无时间模式** ({info['count']}次, {info['unique_jiras']}个Jira): 建议优化 OCR 正则或增加新的时间匹配模式，共性: {features_str}")
-        elif err_type == "12h_ambiguity":
-            suggestions.append(f"- **12h歧义** ({info['count']}次): 建议引入 Jira 创建时间等上下文判断 AM/PM")
-        elif err_type == "time_no_match_gmlogger":
-            suggestions.append(f"- **时间不匹配gmlogger** ({info['count']}次): 建议调整匹配阈值或改进 gmlogger 解析，共性: {features_str}")
-        elif err_type == "no_video":
-            suggestions.append(f"- **无视频附件** ({info['count']}次): 建议优化标题/评论/描述的文本提取逻辑")
-        elif err_type == "gmlogger_missing":
-            suggestions.append(f"- **无gmlogger参考** ({info['count']}次): 建议增强无 gmlogger 场景的时间验证")
-        elif err_type == "all_sources_empty":
-            suggestions.append(f"- **全部来源失败** ({info['count']}次): 需分析这些Jira的附件类型，考虑新增提取来源")
-        elif err_type == "user_corrected":
-            suggestions.append(f"- **用户修正** ({info['count']}次): 分析修正前后规律，自动调整提取策略")
-        else:
-            suggestions.append(f"- **{err_type}** ({info['count']}次, 系统性): {features_str}")
-    # 顽固问题建议
-    if stubborn_errors:
-        stubborn_list = ', '.join(list(stubborn_errors.keys())[:3])
-        suggestions.append(f"- **顽固失败** ({len(stubborn_errors)}种类型): {stubborn_list}，建议人工检查这些Jira的附件内容")
-    if not suggestions:
-        suggestions.append("暂无明显优化方向，建议积累更多数据后再分析")
-    log_lines.extend(suggestions)
-    log_lines.append("")
-    # ===== 本批次自学习表格 =====
-    batch_records = [r for r in records if r.get("_source_file", "").endswith(f"_{today_str}.csv")]
-    if batch_records:
-        log_lines.extend([f"## 本批次记录 ({today_str}, {len(batch_records)}条)", "",
-                          "| Jira | 来源 | 提取结果 | 错误类型 | 12h |",
-                          "|------|------|----------|----------|-----|"])
-        for r in batch_records[:50]:  # 最多显示 50 条
-            jira = r.get("jira号", "")
-            src = r.get("提取来源", "")
-            res = (r.get("提取结果", "") or "-")[:19]
-            err = r.get("错误类型", "") or "-"
-            h12 = "✅" if r.get("12h转换", "").strip() == "yes" else ""
-            log_lines.append(f"| {jira} | {src} | {res} | {err} | {h12} |")
-        if len(batch_records) > 50:
-            log_lines.append(f"| ... | 共 {len(batch_records)} 条 | | | |")
-        log_lines.append("")
-    _timestudy_append_doc("\n".join(log_lines))
+    # ===== optimization_log.md：仅保留提取逻辑说明图+历史变更记录，覆盖渲染 =====
+    _timestudy_render_fixlog_doc()
     logger.info("自学习分析完成: %d 条记录, %d 种错误类型, 系统性问题 %d 种, 顽固问题 %d 种",
                 total, len(error_counts), len(systematic_errors), len(stubborn_errors))
     return patterns
@@ -11341,6 +11233,12 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     # 保存缓存（所有视频处理完后统一保存）
     if cache_updated:
         _save_video_time_cache()
+    # 视频未命中 gmlogger → 退而求其次：非视频图片 OCR 时钟兜底（与参考时间接近则拼接日期）
+    img_ts = _image_fallback_time(issue, headers, _timeout, bugid, ref_pool)
+    if img_ts:
+        _timestudy_update_ctx(bugid, source="image_ocr")
+        _timestudy_trace(bugid, "image:fallback")
+        return img_ts
     # 12h 制兜底：所有视频原始时间均未命中，尝试 12h 转换取差值最小的
     if best_12h_cand:
         cand_time, cand_dt = best_12h_cand
@@ -11885,6 +11783,39 @@ def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bug
             except Exception:
                 pass
     return "", ""
+
+
+def _image_fallback_time(issue: dict, headers: dict, timeout: int, bugid: str, ref_pool: list) -> str:
+    """视频未命中 gmlogger 时的图片兜底：非视频图片 OCR 时钟(如20:01)与参考时间(如20:05)
+    按“时分”接近(容差10分钟)则用参考日期+图片时间拼接返回；无参考时直接返回图片时间。
+    差距过大则弃用，回退后续逻辑。"""
+    img_ts, _img_detail = _diag_extract_time_from_images(issue, headers, timeout, bugid)
+    if not img_ts:
+        return ""
+    img_dt = _ts_parse_datetime(img_ts)
+    if not img_dt:
+        return ""
+    if not ref_pool:
+        logger.info("视频兜底提取(%s, 图片兜底-无参考): %s", bugid, img_ts)
+        return img_ts
+
+    def _tod(dt):
+        return dt.hour * 3600 + dt.minute * 60 + dt.second
+
+    best_diff, best_ref = float("inf"), None
+    for dt in ref_pool:
+        d = abs(_tod(dt) - _tod(img_dt))
+        d = min(d, 86400 - d)
+        if d < best_diff:
+            best_diff, best_ref = d, dt
+    if best_ref is None or best_diff > 600:
+        logger.info("视频兜底提取(%s, 图片兜底): 图片时间 %s 与参考差 %.0f 秒过大，弃用",
+                    bugid, img_ts, best_diff)
+        return ""
+    combined = best_ref.replace(hour=img_dt.hour, minute=img_dt.minute, second=img_dt.second)
+    logger.info("视频兜底提取(%s, 图片兜底): 图片 %s 与参考 %s 接近(%.0f秒)，拼接为 %s",
+                bugid, img_ts, best_ref, best_diff, combined)
+    return combined.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _check_time_marked(img_path: str, bbox: list, all_results: list) -> bool:
@@ -12433,15 +12364,10 @@ async def timestudy_summary():
 @app.get("/api/timestudy/records")
 async def timestudy_records(limit: int = 50):
     """获取最近的自学习记录"""
-    import csv as _csv
-    if not os.path.exists(_TIMESTUDY_RECORDS):
-        return _ok([], "尚无记录")
     try:
-        rows = []
-        with open(_TIMESTUDY_RECORDS, "r", encoding="utf-8-sig") as f:
-            reader = _csv.DictReader(f)
-            for row in reader:
-                rows.append(row)
+        rows = _timestudy_load_records()
+        if not rows:
+            return _ok([], "尚无记录")
         # 返回最近 N 条（倒序）
         rows = rows[-limit:][::-1]
         return _ok(rows, f"最近 {len(rows)} 条记录")
@@ -12462,22 +12388,19 @@ _TRACE_STAGE_DESC = {
 
 @app.post("/api/timestudy/root-causes")
 async def timestudy_root_causes(body: dict = Body(default={})):
-    """批量查询 Jira 的上次提取根因（从 records.csv 读取最新一条记录）"""
-    import csv as _csv
+    """批量查询 Jira 的上次提取根因（从 timestudy/records/ 读取最新一条记录）"""
     bugids = body.get("bugids", [])
     if not bugids:
         return _ok({}, "无查询目标")
-    if not os.path.exists(_TIMESTUDY_RECORDS):
-        return _ok({}, "尚无自学习记录")
     try:
-        # 读取所有记录，取每个 bugid 的最后一条
+        # 读取所有日期记录，取每个 bugid 的最后一条
         last_record = {}  # {bugid: record}
-        with open(_TIMESTUDY_RECORDS, "r", encoding="utf-8-sig") as f:
-            reader = _csv.DictReader(f)
-            for row in reader:
-                bid = (row.get("jira号", "") or "").strip()
-                if bid:
-                    last_record[bid] = row
+        for row in _timestudy_load_records():
+            bid = (row.get("jira号", "") or "").strip()
+            if bid:
+                last_record[bid] = row
+        if not last_record:
+            return _ok({}, "尚无自学习记录")
         # 构造根因结果
         _RESULT_MAP = {
             "video:0": "无视频附件",

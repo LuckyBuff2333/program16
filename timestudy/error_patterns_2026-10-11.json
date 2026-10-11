@@ -1,0 +1,60 @@
+{
+  "total_records": 1,
+  "skip_count": 0,
+  "effective_total": 1,
+  "success_count": 0,
+  "fail_count": 1,
+  "corrected_count": 0,
+  "h12_count": 0,
+  "success_rate": 0.0,
+  "error_distribution": {
+    "time_no_match_gmlogger": 1
+  },
+  "source_distribution": {
+    "video": 1
+  },
+  "stubborn_jiras": {},
+  "error_analysis": {
+    "time_no_match_gmlogger": {
+      "count": 1,
+      "unique_jiras": 1,
+      "stubborn_jiras": [],
+      "no_video_pct": 0.0,
+      "no_gm_pct": 0.0,
+      "h12_pct": 0.0,
+      "date_range": "",
+      "common_features": [],
+      "classification": "偶发问题",
+      "example_jiras": [
+        "VCU-550243"
+      ],
+      "breakpoints": [
+        {
+          "step": "result",
+          "desc": "最终结果",
+          "count": 1,
+          "pct": 100.0
+        }
+      ],
+      "main_breakpoint": "最终结果 (100.0%)",
+      "lifecycle": "ongoing"
+    }
+  },
+  "pattern_lifecycle": {
+    "time_no_match_gmlogger": "ongoing"
+  },
+  "breakpoint_summary": [
+    {
+      "step": "result",
+      "desc": "最终结果",
+      "count": 1
+    }
+  ],
+  "common_trace_patterns": [
+    {
+      "trace": "video:1→gm:1→ocr:17:27→full:miss→result:empty",
+      "count": 1
+    }
+  ],
+  "generated_at": "2026-10-11 17:06:36"
+}
