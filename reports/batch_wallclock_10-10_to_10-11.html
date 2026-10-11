@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>批次墙钟耗时报告 · 10-10 ~ 10-11 · 云端数据</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+:root{--bg:#0f1117;--card:#1a1d2e;--border:#2a2d3e;--text:#e2e8f0;--muted:#8892a8;--accent:#6366f1;--green:#22c55e;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;--cyan:#06b6d4;--purple:#a78bfa}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);line-height:1.7;padding:20px}
+.container{max-width:1440px;margin:0 auto}
+h1{font-size:26px;font-weight:700;background:linear-gradient(135deg,#6366f1,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.subtitle{color:var(--muted);font-size:13px;margin:4px 0 24px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.grid-5{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+@media(max-width:1000px){.grid-2,.grid-3,.grid-4,.grid-5{grid-template-columns:1fr 1fr}}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px}
+.card-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.card-value{font-size:28px;font-weight:700;margin:4px 0}
+.card-sub{font-size:11px;color:var(--muted)}
+.section{margin:28px 0}
+.section-title{font-size:16px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.section-title::before{content:'';display:inline-block;width:4px;height:18px;background:var(--accent);border-radius:2px}
+.chart-box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:20px}
+.chart-title{font-size:14px;font-weight:600;margin-bottom:10px}
+.chart-sub{font-size:11px;color:var(--muted);margin-bottom:8px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.3px;position:sticky;top:0;background:var(--card)}
+tr:hover{background:rgba(99,102,241,.06)}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.tag-ok{background:rgba(34,197,94,.15);color:var(--green)}
+.tag-fail{background:rgba(239,68,68,.15);color:var(--red)}
+.tag-warn{background:rgba(245,158,11,.15);color:var(--orange)}
+.tag-info{background:rgba(59,130,246,.15);color:var(--blue)}
+.green{color:var(--green)}.red{color:var(--red)}.orange{color:var(--orange)}.blue{color:var(--blue)}.cyan{color:var(--cyan)}.purple{color:var(--purple)}
+.conclusion{background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(167,139,250,.05));border:1px solid rgba(99,102,241,.25);border-radius:12px;padding:20px;margin-top:24px}
+.conclusion h3{font-size:15px;color:var(--accent);margin-bottom:12px}
+.conclusion li{margin:6px 0;font-size:13px;line-height:1.7}
+.table-wrap{max-height:520px;overflow:auto;border-radius:8px;border:1px solid var(--border)}
+.timeline-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.tl-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.tl-time{font-size:12px;color:var(--muted);min-width:100px;font-family:monospace}
+.tl-label{font-size:12px}
+.tl-bar{height:6px;border-radius:3px;margin-top:2px}
+.highlight-box{background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:16px;text-align:center}
+.highlight-box .val{font-size:36px;font-weight:800;color:var(--green)}
+.highlight-box .lbl{font-size:12px;color:var(--muted);margin-top:4px}
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>批次墙钟耗时报告 · 10-10 ~ 10-11</h1>
+<p class="subtitle">墙钟时间 = 从批次提交时刻 → 该批次最后一个Bug在多维表格分析完成的时间差 · 数据源：飞书云端 + 多维表格 · 2026-10-11 19:24</p>
+
+<!-- ========== 核心指标 ========== -->
+<div class="grid-5">
+  <div class="card"><div class="card-label">10-11 批次数</div><div class="card-value cyan">13</div><div class="card-sub">r1~r13 持续执行</div></div>
+  <div class="card"><div class="card-label">10-11 总Bug</div><div class="card-value blue">650</div><div class="card-sub">每轮50个</div></div>
+  <div class="highlight-box"><div class="val">89.6<span style="font-size:16px">min</span></div><div class="lbl">10-11 平均每批次墙钟时间</div></div>
+  <div class="card"><div class="card-label">最短批次</div><div class="card-value green">47.8<span style="font-size:14px">min</span></div><div class="card-sub">r1 (00:06)</div></div>
+  <div class="card"><div class="card-label">最长批次</div><div class="card-value orange">124.5<span style="font-size:14px">min</span></div><div class="card-sub">r10 (13:43)</div></div>
+</div>
+
+<!-- ========== 图表区 ========== -->
+<div class="section">
+  <div class="section-title">图表分析</div>
+
+  <!-- 图1：每批次墙钟时间（核心图表） -->
+  <div class="chart-box">
+    <div class="chart-title">每批次墙钟总时间（提交 → 最后一个分析完成）</div>
+    <div class="chart-sub">柱高 = 墙钟分钟数 · 折线 = 分析成功率(%)</div>
+    <div id="chart_wallclock" style="height:400px"></div>
+  </div>
+
+  <div class="grid-2">
+    <!-- 图2：提交→首个完成 vs 首个完成→最后完成 -->
+    <div class="chart-box">
+      <div class="chart-title">墙钟时间拆解：等待开始 + 分析执行</div>
+      <div class="chart-sub">蓝色=等待首个结果 · 绿色=首个结果到最后完成</div>
+      <div id="chart_wallclock_breakdown" style="height:360px"></div>
+    </div>
+    <!-- 图3：10-11 各批次成功率 -->
+    <div class="chart-box">
+      <div class="chart-title">10-11 各批次多维表格分析成功率</div>
+      <div id="chart_success_rate" style="height:360px"></div>
+    </div>
+  </div>
+
+  <!-- 图4：甘特图 - 10-11 各批次时间范围 -->
+  <div class="chart-box">
+    <div class="chart-title">10-11 持续执行甘特图（提交 → 最后完成，按真实时间排列）</div>
+    <div id="chart_gantt" style="height:400px"></div>
+  </div>
+
+  <!-- 图5：耗时分布 -->
+  <div class="chart-box">
+    <div class="chart-title">10-11 各批次墙钟时间分布（箱线图模拟）</div>
+    <div id="chart_boxplot" style="height:300px"></div>
+  </div>
+</div>
+
+<!-- ========== 批次详情表 ========== -->
+<div class="section">
+  <div class="section-title">批次详情（墙钟时间 + 分析结果）</div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr>
+      <th>#</th><th>批次</th><th>提交时间</th><th>来源</th>
+      <th>提交</th><th>匹配</th><th>成功</th><th>失败</th><th>成功率</th>
+      <th>首个完成</th><th>最后完成</th><th>墙钟时间</th>
+      <th>单Bug均耗时</th><th>状态</th>
+    </tr></thead>
+    <tbody id="batchTable"></tbody>
+  </table>
+  </div>
+</div>
+
+<!-- ========== 时间线 ========== -->
+<div class="section">
+  <div class="section-title">10-11 持续执行时间线</div>
+  <div class="card" style="max-height:480px;overflow:auto" id="timeline"></div>
+</div>
+
+<!-- ========== 结论 ========== -->
+<div class="conclusion">
+  <h3>核心结论</h3>
+  <ol>
+    <li><strong>10-11 持续执行 13 轮</strong>，每轮 50 Bug，提交全部成功（50/50），<strong>总计 650 个</strong></li>
+    <li><strong>平均每批次墙钟时间 89.6 分钟</strong>（~1.5h），即从提交到最后一个Bug分析完成约需 1.5 小时</li>
+    <li><strong>最快批次 r1（47.8min）</strong>，凌晨首批提交后分析最快完成；<strong>最慢批次 r10（124.5min）</strong>，午间高峰时段</li>
+    <li><strong>墙钟时间分布：48min ~ 125min</strong>，其中 10 轮在 65~104min 区间，2 轮超过 120min（r9、r10）</li>
+    <li><strong>多维表格匹配成功率 78.7%</strong>（619 匹配，487 成功）；r13 仍有 19 个分析中</li>
+    <li><strong>10-10 线上批次</strong>（01:11）因 502 错误全部提交失败，但部分 Bug 后来被其他批次分析完成</li>
+    <li><strong>10-10 PC 批次</strong>（17:54）墙钟时间 <strong>92.2 分钟</strong>，与 10-11 水平一致</li>
+    <li><strong>单 Bug 平均分析耗时 15~21 分钟</strong>，但墙钟总时间更长是因为 50 个 Bug 串行排队 + 分析服务端并发有限</li>
+  </ol>
+</div>
+
+</div>
+
+<script>
+// 数据（仅10-11的13轮 + 10-10的2个有效批次）
+const batches11 = [
+  {name:"r1",exec:"00:06:02",submitOk:50,btMatch:49,btOk:19,btFail:30,firstComp:"00:09:56",lastComp:"00:53:51",wallMin:47.8,avgDur:908.5},
+  {name:"r2",exec:"01:36:51",submitOk:50,btMatch:49,btOk:43,btFail:6,firstComp:"01:50:45",lastComp:"02:56:32",wallMin:79.7,avgDur:940.0},
+  {name:"r3",exec:"03:07:47",submitOk:50,btMatch:47,btOk:36,btFail:11,firstComp:"03:10:37",lastComp:"04:34:37",wallMin:86.8,avgDur:1063.0},
+  {name:"r4",exec:"04:38:31",submitOk:50,btMatch:50,btOk:36,btFail:14,firstComp:"04:39:44",lastComp:"05:54:52",wallMin:76.3,avgDur:966.7},
+  {name:"r5",exec:"06:09:14",submitOk:50,btMatch:49,btOk:39,btFail:10,firstComp:"06:09:33",lastComp:"07:29:53",wallMin:80.7,avgDur:996.4},
+  {name:"r6",exec:"07:39:58",submitOk:50,btMatch:49,btOk:41,btFail:8,firstComp:"07:40:04",lastComp:"08:57:40",wallMin:77.7,avgDur:943.4},
+  {name:"r7",exec:"09:10:50",submitOk:50,btMatch:49,btOk:39,btFail:10,firstComp:"09:11:02",lastComp:"10:32:20",wallMin:81.5,avgDur:998.0},
+  {name:"r8",exec:"10:41:42",submitOk:50,btMatch:50,btOk:46,btFail:4,firstComp:"10:42:34",lastComp:"12:25:10",wallMin:103.5,avgDur:1087.8},
+  {name:"r9",exec:"12:12:33",submitOk:50,btMatch:48,btOk:40,btFail:8,firstComp:"12:27:49",lastComp:"14:13:08",wallMin:120.6,avgDur:1232.2},
+  {name:"r10",exec:"13:43:24",submitOk:50,btMatch:49,btOk:40,btFail:9,firstComp:"13:59:59",lastComp:"15:47:52",wallMin:124.5,avgDur:1056.1},
+  {name:"r11",exec:"15:14:15",submitOk:50,btMatch:49,btOk:41,btFail:8,firstComp:"15:30:18",lastComp:"17:14:02",wallMin:119.8,avgDur:1216.1},
+  {name:"r12",exec:"16:45:06",submitOk:50,btMatch:50,btOk:40,btFail:10,firstComp:"16:53:41",lastComp:"18:25:35",wallMin:100.5,avgDur:1091.7},
+  {name:"r13",exec:"18:16:22",submitOk:50,btMatch:31,btOk:27,btFail:4,firstComp:"18:16:39",lastComp:"19:21:35",wallMin:65.2,avgDur:1101.7}
+];
+const batches10 = [
+  {name:"175449(PC)",exec:"17:54:29",submitOk:50,btMatch:47,btOk:38,btFail:9,firstComp:"18:08:48",lastComp:"19:26:41",wallMin:92.2,avgDur:1096.8},
+  {name:"single(1)",exec:"23:03:32",submitOk:1,btMatch:1,btOk:0,btFail:1,firstComp:"23:03:55",lastComp:"23:03:55",wallMin:0.4,avgDur:0}
+];
+const allBatches = [...batches10, ...batches11];
+
+// ===== 图1：墙钟时间 + 成功率 =====
+const c1 = echarts.init(document.getElementById('chart_wallclock'));
+c1.setOption({
+  tooltip:{trigger:'axis',formatter:function(p){
+    const b = batches11[p[0].dataIndex];
+    return `<b>${b.name}</b> (${b.exec})<br/>墙钟: ${b.wallMin}min<br/>匹配: ${b.btMatch}/50<br/>成功: ${b.btOk} (${(b.btOk/b.btMatch*100).toFixed(1)}%)`;
+  }},
+  legend:{data:['墙钟时间(min)','分析成功率(%)'],textStyle:{color:'#8892a8'}},
+  grid:{left:55,right:55,bottom:50,top:45},
+  xAxis:{type:'category',data:batches11.map(b=>b.name),axisLabel:{color:'#8892a8',fontSize:12},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:[
+    {type:'value',name:'分钟',nameTextStyle:{color:'#8892a8'},axisLabel:{color:'#8892a8'},splitLine:{lineStyle:{color:'#1e2030'}}},
+    {type:'value',name:'成功率%',max:100,nameTextStyle:{color:'#8892a8'},axisLabel:{color:'#8892a8',formatter:'{value}%'},splitLine:{show:false}}
+  ],
+  series:[
+    {name:'墙钟时间(min)',type:'bar',data:batches11.map(b=>({value:b.wallMin,itemStyle:{color:b.wallMin<=80?'#22c55e':b.wallMin<=100?'#3b82f6':b.wallMin<=120?'#f59e0b':'#ef4444'}})),barWidth:'55%',
+     label:{show:true,position:'top',color:'#e2e8f0',fontSize:11,formatter:p=>p.value.toFixed(0)+'min'}},
+    {name:'分析成功率(%)',type:'line',yAxisIndex:1,data:batches11.map(b=>+(b.btOk/b.btMatch*100).toFixed(1)),
+     lineStyle:{color:'#a78bfa',width:2},symbol:'circle',symbolSize:7,itemStyle:{color:'#a78bfa'},
+     label:{show:true,color:'#a78bfa',fontSize:10,formatter:p=>p.value+'%'}}
+  ]
+});
+
+// ===== 图2：墙钟拆解（等待+执行）=====
+const c2 = echarts.init(document.getElementById('chart_wallclock_breakdown'));
+const waitMin = batches11.map(b=>{
+  const execH = parseInt(b.exec.split(':')[0]), execM = parseInt(b.exec.split(':')[1]);
+  const firstH = parseInt(b.firstComp.split(':')[0]), firstM = parseInt(b.firstComp.split(':')[1]);
+  return Math.max(0, (firstH*60+firstM) - (execH*60+execM));
+});
+const execMin = batches11.map((b,i)=>+(b.wallMin - waitMin[i]).toFixed(1));
+c2.setOption({
+  tooltip:{trigger:'axis',formatter:function(p){
+    const b=batches11[p[0].dataIndex];
+    return `<b>${b.name}</b><br/>等待首个结果: ${p[0].value}min<br/>分析执行: ${p[1].value}min<br/>总墙钟: ${b.wallMin}min`;
+  }},
+  legend:{data:['等待首个结果','分析执行(首→末)'],textStyle:{color:'#8892a8'}},
+  grid:{left:45,right:15,bottom:50,top:40},
+  xAxis:{type:'category',data:batches11.map(b=>b.name),axisLabel:{color:'#8892a8'},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:{type:'value',name:'分钟',nameTextStyle:{color:'#8892a8'},axisLabel:{color:'#8892a8'},splitLine:{lineStyle:{color:'#1e2030'}}},
+  series:[
+    {name:'等待首个结果',type:'bar',stack:'total',data:waitMin,itemStyle:{color:'#3b82f6'},barWidth:'55%'},
+    {name:'分析执行(首→末)',type:'bar',stack:'total',data:execMin,itemStyle:{color:'#22c55e'}}
+  ]
+});
+
+// ===== 图3：成功率 =====
+const c3 = echarts.init(document.getElementById('chart_success_rate'));
+c3.setOption({
+  tooltip:{trigger:'axis'},
+  grid:{left:45,right:15,bottom:50,top:20},
+  xAxis:{type:'category',data:batches11.map(b=>b.name),axisLabel:{color:'#8892a8'},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:{type:'value',max:100,axisLabel:{formatter:'{value}%',color:'#8892a8'},splitLine:{lineStyle:{color:'#1e2030'}}},
+  series:[{type:'bar',data:batches11.map(b=>{
+    const r=+(b.btOk/b.btMatch*100).toFixed(1);
+    return {value:r,itemStyle:{color:r>=80?'#22c55e':r>=60?'#3b82f6':r>=40?'#f59e0b':'#ef4444'}};
+  }),barWidth:'60%',label:{show:true,position:'top',color:'#e2e8f0',fontSize:10,formatter:p=>p.value+'%'}}]
+});
+
+// ===== 图4：甘特图 =====
+const c4 = echarts.init(document.getElementById('chart_gantt'));
+const ganttData = batches11.map((b,i)=>{
+  const execH = parseInt(b.exec.split(':')[0]), execM = parseInt(b.exec.split(':')[1]), execS = parseInt(b.exec.split(':')[2]);
+  const lastH = parseInt(b.lastComp.split(':')[0]), lastM = parseInt(b.lastComp.split(':')[1]), lastS = parseInt(b.lastComp.split(':')[2]);
+  const startMin = execH*60+execM+execS/60;
+  const endMin = lastH*60+lastM+lastS/60;
+  return [i, startMin, endMin, b.wallMin, b.name];
+});
+function minToTime(m){return String(Math.floor(m/60)).padStart(2,'0')+':'+String(Math.floor(m%60)).padStart(2,'0');}
+c4.setOption({
+  tooltip:{formatter:function(p){
+    const d=p.data;return `<b>${d[4]}</b><br/>提交: ${minToTime(d[1])}<br/>最后完成: ${minToTime(d[2])}<br/>墙钟: ${d[3]}min`;
+  }},
+  grid:{left:55,right:20,bottom:30,top:10},
+  xAxis:{type:'value',min:0,max:24*60,interval:60,axisLabel:{color:'#8892a8',formatter:v=>minToTime(v)},splitLine:{lineStyle:{color:'#1e2030'}},
+    axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:{type:'category',data:batches11.map(b=>b.name),axisLabel:{color:'#8892a8'},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  series:[{type:'custom',renderItem:function(params,api){
+    const idx=api.value(0);
+    const start=api.coord([api.value(1),idx]);
+    const end=api.coord([api.value(2),idx]);
+    const h=api.size([0,1])[1]*0.5;
+    return {type:'rect',shape:{x:start[0],y:start[1]-h/2,width:end[0]-start[0],height:h},
+      style:{fill:api.value(3)<=80?'#22c55e':api.value(3)<=100?'#3b82f6':api.value(3)<=120?'#f59e0b':'#ef4444',opacity:0.85}};
+  },encode:{x:[1,2],y:0},data:ganttData}]
+});
+
+// ===== 图5：箱线图模拟 =====
+const c5 = echarts.init(document.getElementById('chart_boxplot'));
+const walls = batches11.map(b=>b.wallMin).sort((a,b)=>a-b);
+const min_v = Math.min(...walls), max_v = Math.max(...walls);
+const avg_v = +(walls.reduce((a,b)=>a+b,0)/walls.length).toFixed(1);
+const med_v = walls[Math.floor(walls.length/2)];
+const q1 = walls[Math.floor(walls.length*0.25)];
+const q3 = walls[Math.floor(walls.length*0.75)];
+c5.setOption({
+  tooltip:{trigger:'axis'},
+  grid:{left:55,right:20,bottom:30,top:20},
+  xAxis:{type:'category',data:['最小值','P25','中位数','平均值','P75','最大值'],axisLabel:{color:'#8892a8'},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:{type:'value',name:'分钟',nameTextStyle:{color:'#8892a8'},axisLabel:{color:'#8892a8'},splitLine:{lineStyle:{color:'#1e2030'}}},
+  series:[{type:'bar',data:[
+    {value:+min_v.toFixed(1),itemStyle:{color:'#22c55e'}},
+    {value:+q1.toFixed(1),itemStyle:{color:'#3b82f6'}},
+    {value:+med_v.toFixed(1),itemStyle:{color:'#6366f1'}},
+    {value:avg_v,itemStyle:{color:'#a78bfa'}},
+    {value:+q3.toFixed(1),itemStyle:{color:'#f59e0b'}},
+    {value:+max_v.toFixed(1),itemStyle:{color:'#ef4444'}}
+  ],barWidth:'50%',label:{show:true,position:'top',color:'#e2e8f0',fontSize:12,formatter:p=>p.value+'min'}}]
+});
+
+// ===== 表格 =====
+const tb = document.getElementById('batchTable');
+const allRows = [
+  ...batches10.map(b=>({...b,folder:'10-10'})),
+  ...batches11.map(b=>({...b,folder:'10-11'}))
+];
+allRows.forEach((b,i)=>{
+  const rate = b.btMatch>0?(b.btOk/b.btMatch*100).toFixed(1):'–';
+  const rNum = parseFloat(rate);
+  const wallH = Math.floor(b.wallMin/60);
+  const wallM = Math.round(b.wallMin%60);
+  const wallStr = wallH>0?`${wallH}h${wallM}m`:`${b.wallMin}min`;
+  const avgMin = b.avgDur>0?(b.avgDur/60).toFixed(1)+'min':'–';
+  let statusTag = b.btMatch<40?'<span class="tag tag-warn">分析中</span>':rNum>=80?'<span class="tag tag-ok">优秀</span>':rNum>=60?'<span class="tag tag-info">正常</span>':rNum>=40?'<span class="tag tag-warn">偏低</span>':'<span class="tag tag-fail">异常</span>';
+  if(b.submitOk===0) statusTag='<span class="tag tag-fail">提交失败</span>';
+  tb.innerHTML+=`<tr>
+    <td>${i+1}</td>
+    <td><strong>${b.folder} ${b.name}</strong></td>
+    <td style="font-family:monospace">${b.exec}</td>
+    <td><span class="tag tag-info">PC</span></td>
+    <td class="green">${b.submitOk}/50</td>
+    <td>${b.btMatch}/${b.submitOk}</td>
+    <td class="green">${b.btOk}</td>
+    <td class="red">${b.btFail}</td>
+    <td><span class="tag ${rNum>=70?'tag-ok':rNum>=50?'tag-warn':'tag-fail'}">${rate}%</span></td>
+    <td style="font-family:monospace;font-size:11px">${b.firstComp}</td>
+    <td style="font-family:monospace;font-size:11px">${b.lastComp}</td>
+    <td><strong style="font-size:13px">${wallStr}</strong></td>
+    <td>${avgMin}</td>
+    <td>${statusTag}</td>
+  </tr>`;
+});
+
+// ===== 时间线 =====
+const tl = document.getElementById('timeline');
+const tlData = [
+  ...batches11.flatMap(b=>[
+    {time:b.exec,label:`${b.name} 提交 (50/50)`,color:'var(--blue)',barW:0},
+    {time:b.lastComp,label:`${b.name} 最后完成 · 墙钟${b.wallMin}min · 成功${b.btOk}/${b.btMatch}`,
+     color:b.wallMin<=80?'var(--green)':b.wallMin<=100?'var(--blue)':b.wallMin<=120?'var(--orange)':'var(--red)',
+     barW:Math.min(b.wallMin/130*100,100)}
+  ])
+];
+tlData.sort((a,b)=>{
+  const aMin = parseInt(a.time.split(':')[0])*60+parseInt(a.time.split(':')[1]);
+  const bMin = parseInt(b.time.split(':')[0])*60+parseInt(b.time.split(':')[1]);
+  return aMin-bMin;
+});
+tlData.forEach(t=>{
+  tl.innerHTML+=`<div class="timeline-row">
+    <div class="tl-dot" style="background:${t.color}"></div>
+    <div class="tl-time">${t.time}</div>
+    <div class="tl-label" style="flex:1">${t.label}</div>
+    ${t.barW>0?`<div style="width:120px"><div class="tl-bar" style="width:${t.barW}%;background:${t.color}"></div></div>`:''}
+  </div>`;
+});
+
+window.addEventListener('resize',()=>{c1.resize();c2.resize();c3.resize();c4.resize();c5.resize()});
+</script>
+</body>
+</html>
