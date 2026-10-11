@@ -1198,6 +1198,7 @@
               <el-menu-item index="online_followup">11. 线上正确执行跟进</el-menu-item>
               <el-menu-item index="ai_log_visual">12. AI日志分析可视化</el-menu-item>
               <el-menu-item index="config_tuning">13. 配置参数调优</el-menu-item>
+<el-menu-item index="trigger_compare">14. 触发时间提取对比</el-menu-item>
             </el-menu>
           </el-aside>
           <el-main style="padding:20px;display:flex;flex-direction:column">
@@ -3065,6 +3066,120 @@
               </template>
             </div>
 
+            <!-- 14. 触发时间提取对比 -->
+            <div v-else-if="testPanel === 'trigger_compare'" key="trigger_compare" class="test-panel">
+              <div class="section-title">触发时间提取方式对比分析</div>
+              <el-alert type="info" :closable="false"
+                title="对比4种触发时间提取策略（视频优先/图片优先/评论字段优先/视频置信度优先）的提取结果，评估哪种策略最准确。结果仅展示，不存入缓存。"></el-alert>
+
+              <!-- 输入区域 -->
+              <el-card shadow="never" style="margin-top:14px">
+                <el-tabs v-model="triggerCompare.inputMode">
+                  <el-tab-pane label="手动输入" name="manual">
+                    <el-input type="textarea" v-model="triggerCompare.manualBugids"
+                      placeholder="输入Jira号，逗号或换行分隔，如：VCU-123456, VCU-789012"
+                      :rows="3" style="max-width:600px"></el-input>
+                  </el-tab-pane>
+                  <el-tab-pane label="随机抽样" name="random">
+                    <div style="display:flex;align-items:center;gap:12px">
+                      <span>抽取数量：</span>
+                      <el-select v-model="triggerCompare.randomCount" style="width:100px">
+                        <el-option :value="5" label="5"></el-option>
+                        <el-option :value="10" label="10"></el-option>
+                        <el-option :value="20" label="20"></el-option>
+                        <el-option :value="50" label="50"></el-option>
+                      </el-select>
+                      <el-button type="primary" :loading="triggerCompare.sampling" @click="randomSampleTrigger">
+                        {{ triggerCompare.sampledItems.length ? '重新抽取' : '抽取' }}
+                      </el-button>
+                      <span v-if="triggerCompare.sampleMsg" style="color:#909399;font-size:13px">{{ triggerCompare.sampleMsg }}</span>
+                    </div>
+                    <div v-if="triggerCompare.sampledItems.length" style="margin-top:10px">
+                      <el-tag v-for="s in triggerCompare.sampledItems" :key="s.bugid" size="small" style="margin:2px 4px">
+                        {{ s.bugid }}
+                      </el-tag>
+                    </div>
+                  </el-tab-pane>
+                </el-tabs>
+
+                <!-- 策略选择 -->
+                <div style="margin-top:14px">
+                  <span style="font-weight:600;margin-right:12px">提取策略：</span>
+                  <el-checkbox-group v-model="triggerCompare.strategies">
+                    <el-checkbox label="video_first">视频优先</el-checkbox>
+                    <el-checkbox label="image_first">图片优先</el-checkbox>
+                    <el-checkbox label="comment_first">评论字段优先</el-checkbox>
+                    <el-checkbox label="video_confidence">视频置信度优先</el-checkbox>
+                  </el-checkbox-group>
+                </div>
+
+                <!-- 操作按钮 -->
+                <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
+                  <el-button type="success" :loading="triggerCompare.running"
+                    :disabled="!triggerCompare.strategies.length" @click="startTriggerCompare">
+                    开始对比
+                  </el-button>
+                  <el-button v-if="triggerCompare.running" @click="triggerCompare.running = false">停止</el-button>
+                  <span v-if="triggerCompare.progress > 0" style="color:#909399;font-size:13px">
+                    进度：{{ triggerCompare.progress }} / {{ triggerCompare.total }}
+                  </span>
+                </div>
+                <el-progress v-if="triggerCompare.total > 0" :percentage="Math.round(triggerCompare.progress / triggerCompare.total * 100)"
+                  :status="triggerCompare.progress === triggerCompare.total ? 'success' : ''" style="margin-top:8px;max-width:500px"></el-progress>
+              </el-card>
+
+              <!-- 统计卡片 -->
+              <div v-if="triggerCompare.summary" class="stat-row" style="margin-top:14px;grid-template-columns:repeat(4,1fr)">
+                <div v-for="s in triggerCompare.summary.strategies" :key="s.key" class="stat-card">
+                  <div class="num">{{ s.matchRate }}</div>
+                  <div class="label">{{ s.label }} · 平均{{ s.avgElapsed }}s</div>
+                  <div style="font-size:11px;color:#909399;margin-top:2px">命中 {{ s.matchCount }}/{{ s.total }} · 提取成功 {{ s.extractCount }}/{{ s.total }}</div>
+                </div>
+              </div>
+
+              <!-- 对比表格 -->
+              <el-card v-if="triggerCompare.results.length" shadow="never" style="margin-top:14px">
+                <div style="font-weight:600;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between">
+                  <span>对比结果明细（{{ triggerCompare.results.length }} 条）</span>
+                  <el-tag v-if="triggerCompare.summary" :type="triggerCompare.summary.bestStrategy ? 'success' : 'info'">
+                    最优策略：{{ triggerCompare.summary.bestStrategyLabel || '-' }}
+                  </el-tag>
+                </div>
+                <el-table :data="triggerCompare.results" stripe size="small" max-height="500">
+                  <el-table-column type="index" label="#" width="40"></el-table-column>
+                  <el-table-column prop="bugid" label="Jira号" width="140"></el-table-column>
+                  <el-table-column prop="baseline_time" label="基线时间" width="160"></el-table-column>
+                  <el-table-column v-for="sk in triggerCompare.strategies" :key="sk" :label="strategyLabel(sk)" min-width="180">
+                    <template #default="{row}">
+                      <div v-if="row.results && row.results[sk]">
+                        <el-tag :type="row.results[sk].match ? 'success' : (row.results[sk].time ? 'danger' : 'info')" size="small">
+                          {{ row.results[sk].match ? '匹配' : (row.results[sk].time ? '不匹配' : '未提取') }}
+                        </el-tag>
+                        <div style="font-size:11px;color:#606266;margin-top:2px">{{ row.results[sk].time || '-' }}</div>
+                        <div style="font-size:10px;color:#909399">{{ row.results[sk].source }} · {{ row.results[sk].elapsed }}s</div>
+                      </div>
+                      <span v-else style="color:#c0c4cc">-</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </el-card>
+
+              <!-- 分析报告 -->
+              <el-card v-if="triggerCompare.summary" shadow="never" style="margin-top:14px">
+                <div style="font-weight:600;margin-bottom:10px">分析报告</div>
+                <div style="padding:12px;background:#f8f9fa;border-radius:6px;white-space:pre-wrap;font-size:13px;line-height:1.8">{{ triggerCompare.report }}</div>
+              </el-card>
+
+              <!-- 图表区域 -->
+              <el-card v-if="triggerCompare.summary" shadow="never" style="margin-top:14px">
+                <div style="font-weight:600;margin-bottom:10px">对比图表</div>
+                <el-row :gutter="16">
+                  <el-col :span="12"><div ref="compareChart1" style="height:300px"></div></el-col>
+                  <el-col :span="12"><div ref="compareChart2" style="height:300px"></div></el-col>
+                </el-row>
+              </el-card>
+            </div>
+
             </transition>
           </el-main>
         </el-container>
@@ -3740,6 +3855,22 @@ createApp({
         results: [],
         comparing: [],
         conclusion: '',
+      },
+      // 触发时间提取对比（功能14）
+      triggerCompare: {
+        inputMode: 'manual',
+        manualBugids: '',
+        randomCount: 20,
+        strategies: ['video_first', 'image_first', 'comment_first', 'video_confidence'],
+        running: false,
+        sampling: false,
+        sampledItems: [],
+        sampleMsg: '',
+        progress: 0,
+        total: 0,
+        results: [],
+        summary: null,
+        report: '',
       },
     };
   },
@@ -8050,6 +8181,216 @@ createApp({
         }
       }
       this.tuning.conclusion = lines.join('\n');
+    },
+
+    // ==================== 功能14：触发时间提取对比 ====================
+    strategyLabel(key) {
+      const map = { video_first: '视频优先', image_first: '图片优先', comment_first: '评论字段优先', video_confidence: '视频置信度优先' };
+      return map[key] || key;
+    },
+    async randomSampleTrigger() {
+      const tc = this.triggerCompare;
+      tc.sampling = true;
+      tc.sampleMsg = '';
+      try {
+        const resp = await fetch(`/api/compare/sample?count=${tc.randomCount}`);
+        const data = await resp.json();
+        if (data.ok) {
+          tc.sampledItems = data.data.samples;
+          tc.sampleMsg = `从 ${data.data.total_available} 条中抽取 ${tc.sampledItems.length} 条`;
+        } else {
+          tc.sampleMsg = data.message || '抽取失败';
+        }
+      } catch (e) {
+        tc.sampleMsg = '抽取失败: ' + e.message;
+      } finally {
+        tc.sampling = false;
+      }
+    },
+    async startTriggerCompare() {
+      const tc = this.triggerCompare;
+      // 收集bugids和基线时间
+      let bugids = [];
+      let baselineMap = {};
+      if (tc.inputMode === 'random' && tc.sampledItems.length) {
+        bugids = tc.sampledItems.map(s => s.bugid);
+        tc.sampledItems.forEach(s => { if (s.baseline_time) baselineMap[s.bugid] = s.baseline_time; });
+      } else {
+        const raw = tc.manualBugids.replace(/[，\n\r]+/g, ',');
+        bugids = raw.split(',').map(s => s.trim()).filter(Boolean);
+      }
+      if (!bugids.length) {
+        this.$message.warning('请先输入Jira号或抽取样本');
+        return;
+      }
+      // 重置状态
+      tc.results = [];
+      tc.summary = null;
+      tc.report = '';
+      tc.progress = 0;
+      tc.total = bugids.length;
+      tc.running = true;
+      try {
+        const resp = await fetch('/api/compare/trigger_time', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bugids, strategies: tc.strategies, baseline_map: baselineMap }),
+        });
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (tc.running) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const msg = JSON.parse(line.slice(6));
+              if (msg.type === 'result') {
+                tc.results.push({ bugid: msg.bugid, baseline_time: msg.baseline_time, results: msg.results });
+                tc.progress = msg.index;
+              } else if (msg.type === 'error') {
+                tc.results.push({ bugid: msg.bugid, baseline_time: '', results: {}, error: msg.error });
+                tc.progress = msg.index;
+              } else if (msg.type === 'done') {
+                tc.running = false;
+              }
+            } catch (_) { /* 忽略解析错误 */ }
+          }
+        }
+      } catch (e) {
+        this.$message.error('对比请求失败: ' + e.message);
+      } finally {
+        tc.running = false;
+      }
+      // 生成汇总和报告
+      if (tc.results.length) {
+        this._buildCompareSummary();
+        this._buildCompareReport();
+        this.$nextTick(() => this._renderCompareCharts());
+      }
+    },
+    _buildCompareSummary() {
+      const tc = this.triggerCompare;
+      const strats = tc.strategies;
+      const results = tc.results.filter(r => !r.error);
+      const total = results.length;
+      const stratStats = strats.map(sk => {
+        let matchCount = 0, extractCount = 0, totalElapsed = 0, elapsedCount = 0;
+        results.forEach(r => {
+          const sr = r.results[sk];
+          if (!sr) return;
+          if (sr.time) extractCount++;
+          if (sr.match) matchCount++;
+          if (sr.elapsed > 0) { totalElapsed += sr.elapsed; elapsedCount++; }
+        });
+        const matchRate = total ? (matchCount / total * 100).toFixed(1) + '%' : '0%';
+        const avgElapsed = elapsedCount ? (totalElapsed / elapsedCount).toFixed(1) : '0';
+        return { key: sk, label: this.strategyLabel(sk), matchCount, extractCount, total, matchRate, avgElapsed: parseFloat(avgElapsed), matchRateNum: total ? matchCount / total : 0 };
+      });
+      stratStats.sort((a, b) => b.matchRateNum - a.matchRateNum);
+      tc.summary = {
+        strategies: stratStats,
+        bestStrategy: stratStats[0]?.key || '',
+        bestStrategyLabel: stratStats[0]?.label || '-',
+        total,
+      };
+    },
+    _buildCompareReport() {
+      const tc = this.triggerCompare;
+      if (!tc.summary) return;
+      const s = tc.summary;
+      const lines = [];
+      lines.push('========== 触发时间提取方式对比分析报告 ==========');
+      lines.push(`\n【样本概况】共 ${s.total} 个Jira，${tc.strategies.length} 种策略参与对比`);
+      lines.push('\n【策略排名】');
+      s.strategies.forEach((st, i) => {
+        lines.push(`  ${i + 1}. ${st.label}：命中率 ${st.matchRate}（${st.matchCount}/${st.total}），提取成功 ${st.extractCount}/${st.total}，平均耗时 ${st.avgElapsed}s`);
+      });
+      const best = s.strategies[0];
+      const second = s.strategies[1];
+      if (best && second) {
+        const diff = ((best.matchRateNum - second.matchRateNum) * 100).toFixed(1);
+        lines.push(`\n【最优策略】${best.label}（命中率 ${best.matchRate}）`);
+        if (parseFloat(diff) > 5) {
+          lines.push(`  领先第二名 ${second.label} ${diff} 个百分点，优势明显。`);
+        } else {
+          lines.push(`  与第二名 ${second.label}（${second.matchRate}）差距仅 ${diff} 个百分点，表现接近。`);
+        }
+      }
+      // 耗时分析
+      lines.push('\n【耗时分析】');
+      const bySpeed = [...s.strategies].sort((a, b) => a.avgElapsed - b.avgElapsed);
+      lines.push(`  最快：${bySpeed[0].label}（平均 ${bySpeed[0].avgElapsed}s）`);
+      lines.push(`  最慢：${bySpeed[bySpeed.length - 1].label}（平均 ${bySpeed[bySpeed.length - 1].avgElapsed}s）`);
+      // 典型不一致案例
+      const inconsistent = tc.results.filter(r => {
+        if (!r.results || r.error) return false;
+        const matchResults = tc.strategies.map(sk => r.results[sk]?.match).filter(v => v !== undefined);
+        return new Set(matchResults).size > 1;
+      });
+      if (inconsistent.length) {
+        lines.push(`\n【典型不一致案例】共 ${inconsistent.length} 个Jira各策略结果不一致`);
+        inconsistent.slice(0, 5).forEach(r => {
+          const details = tc.strategies.map(sk => {
+            const sr = r.results[sk];
+            return `${this.strategyLabel(sk)}:${sr?.match ? '匹配' : (sr?.time ? '不匹配' : '未提取')}`;
+          }).join(', ');
+          lines.push(`  ${r.bugid}：${details}`);
+        });
+      }
+      // 改进建议
+      lines.push('\n【改进建议】');
+      const worstExtract = s.strategies.filter(st => st.extractCount < s.total * 0.5);
+      if (worstExtract.length) {
+        lines.push(`  提取成功率较低的策略：${worstExtract.map(w => w.label).join('、')}，建议优化其提取逻辑。`);
+      }
+      if (best && best.matchRateNum > 0.8) {
+        lines.push(`  ${best.label}表现优异（命中率>${80}%），可作为默认提取策略。`);
+      } else if (best) {
+        lines.push(`  当前最优策略 ${best.label} 命中率为 ${(best.matchRateNum * 100).toFixed(1)}%，仍有提升空间，建议结合多种策略优势进行融合。`);
+      }
+      tc.report = lines.join('\n');
+    },
+    _renderCompareCharts() {
+      const tc = this.triggerCompare;
+      if (!tc.summary) return;
+      const strats = tc.summary.strategies;
+      // 图1：命中率柱状图
+      if (this.$refs.compareChart1) {
+        const chart1 = echarts.init(this.$refs.compareChart1);
+        chart1.setOption({
+          title: { text: '各策略命中率对比', left: 'center', textStyle: { fontSize: 14 } },
+          tooltip: { trigger: 'axis', formatter: '{b}: {c}%' },
+          xAxis: { type: 'category', data: strats.map(s => s.label), axisLabel: { fontSize: 11 } },
+          yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
+          series: [{
+            type: 'bar', data: strats.map(s => parseFloat(s.matchRate)),
+            itemStyle: { color: (p) => ['#67c23a', '#409eff', '#e6a23c', '#f56c6c'][p.dataIndex % 4] },
+            label: { show: true, position: 'top', formatter: '{c}%' },
+          }],
+          grid: { bottom: 50 },
+        });
+      }
+      // 图2：平均耗时对比
+      if (this.$refs.compareChart2) {
+        const chart2 = echarts.init(this.$refs.compareChart2);
+        chart2.setOption({
+          title: { text: '各策略平均耗时对比', left: 'center', textStyle: { fontSize: 14 } },
+          tooltip: { trigger: 'axis', formatter: '{b}: {c}s' },
+          xAxis: { type: 'category', data: strats.map(s => s.label), axisLabel: { fontSize: 11 } },
+          yAxis: { type: 'value', axisLabel: { formatter: '{value}s' } },
+          series: [{
+            type: 'bar', data: strats.map(s => s.avgElapsed),
+            itemStyle: { color: (p) => ['#67c23a', '#409eff', '#e6a23c', '#f56c6c'][p.dataIndex % 4] },
+            label: { show: true, position: 'top', formatter: '{c}s' },
+          }],
+          grid: { bottom: 50 },
+        });
+      }
     },
   },
   async mounted() {

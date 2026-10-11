@@ -16167,3 +16167,238 @@ async def tuning_analyze(request: Request):
             "analysis_times": analysis_times,
         })
     return _ok({"batches": results}, f"分析完成，{len(results)} 个批次")
+
+
+# ==================== 功能14：触发时间提取方式对比分析 ====================
+
+# 匹配容差：提取时间与基线时间差距在60秒内视为匹配
+_COMPARE_MATCH_TOLERANCE = 60
+
+# 四种提取策略定义
+_COMPARE_STRATEGIES = {
+    "video_first": "视频优先",
+    "image_first": "图片优先",
+    "comment_first": "评论字段优先",
+    "video_confidence": "视频置信度优先",
+}
+
+
+def _strategy_extract_time(issue: dict, strategy: str) -> dict:
+    """按指定策略提取触发时间，返回 {time, source, detail}
+
+    四种策略：
+    - video_first: 视频OCR -> 图片OCR -> 评论字段
+    - image_first: 图片OCR -> 视频OCR -> 评论字段
+    - comment_first: 评论字段 -> 视频OCR -> 图片OCR
+    - video_confidence: 视频OCR(高置信度) -> 评论字段 -> 图片OCR
+    """
+    bugid = issue.get("key", "")
+    cfg = load_config().get("jira_api", {})
+    headers = {}
+    token = cfg.get("token", "")
+    if token:
+        auth_type = cfg.get("auth_type", "bearer").lower()
+        if auth_type == "bearer":
+            headers["Authorization"] = f"Bearer {token}"
+    timeout = max(int(cfg.get("timeout", 30)), 120)
+
+    def _try_video():
+        """视频OCR提取"""
+        try:
+            t = _diag_extract_time_from_video_simple(issue)
+            return t, "video_ocr"
+        except Exception as e:
+            logger.warning("对比提取(%s) 视频OCR失败: %s", bugid, e)
+            return "", ""
+
+    def _try_image():
+        """图片OCR提取"""
+        try:
+            t, detail = _diag_extract_time_from_images(issue, headers, timeout, bugid)
+            return t, "image_ocr"
+        except Exception as e:
+            logger.warning("对比提取(%s) 图片OCR失败: %s", bugid, e)
+            return "", ""
+
+    def _try_comment():
+        """评论字段提取（标题+自定义字段+评论+描述）"""
+        try:
+            from src.clients import jira_client as _jc
+            t = _jc.extract_trigger_time_from_issue(issue)
+            return t, "comment_field"
+        except Exception as e:
+            logger.warning("对比提取(%s) 评论字段提取失败: %s", bugid, e)
+            return "", ""
+
+    def _try_video_confidence():
+        """视频OCR高置信度提取：仅接受完整日期时间格式（非部分匹配）"""
+        try:
+            t = _diag_extract_time_from_video_simple(issue)
+            if t and len(t) >= 16:  # 完整格式 YYYY-MM-DD HH:MM:SS
+                return t, "video_ocr_high_conf"
+            return "", ""
+        except Exception as e:
+            logger.warning("对比提取(%s) 视频置信度提取失败: %s", bugid, e)
+            return "", ""
+
+    # 按策略执行提取链
+    if strategy == "video_first":
+        for fn in [_try_video, _try_image, _try_comment]:
+            t, src = fn()
+            if t:
+                return {"time": t, "source": src, "detail": ""}
+        return {"time": "", "source": "none", "detail": "所有方式均未提取到时间"}
+
+    elif strategy == "image_first":
+        for fn in [_try_image, _try_video, _try_comment]:
+            t, src = fn()
+            if t:
+                return {"time": t, "source": src, "detail": ""}
+        return {"time": "", "source": "none", "detail": "所有方式均未提取到时间"}
+
+    elif strategy == "comment_first":
+        for fn in [_try_comment, _try_video, _try_image]:
+            t, src = fn()
+            if t:
+                return {"time": t, "source": src, "detail": ""}
+        return {"time": "", "source": "none", "detail": "所有方式均未提取到时间"}
+
+    elif strategy == "video_confidence":
+        for fn in [_try_video_confidence, _try_comment, _try_image]:
+            t, src = fn()
+            if t:
+                return {"time": t, "source": src, "detail": ""}
+        return {"time": "", "source": "none", "detail": "所有方式均未提取到时间"}
+
+    return {"time": "", "source": "unknown", "detail": f"未知策略: {strategy}"}
+
+
+def _times_match(t1: str, t2: str) -> bool:
+    """判断两个时间字符串是否匹配（容差60秒）"""
+    if not t1 or not t2:
+        return False
+    from src.clients.jira_client import _parse_datetime_string
+    p1 = _parse_datetime_string(t1.strip())
+    p2 = _parse_datetime_string(t2.strip())
+    if not p1 or not p2:
+        # 降级：字符串前缀比较（至少到分钟）
+        return t1.strip()[:16] == t2.strip()[:16]
+    return abs((p1[1] - p2[1]).total_seconds()) <= _COMPARE_MATCH_TOLERANCE
+
+
+@app.get("/api/compare/sample")
+def compare_sample(count: int = 20):
+    """从多维表格随机抽样已分析成功且有触发时间的记录"""
+    from src.clients import feishu_client
+    import random
+    cfg = load_config().get("feishu_bitable", {})
+    app_token, table_id = cfg.get("app_token", ""), cfg.get("table_id", "")
+    bugid_field = cfg.get("bugid_field", "jira号")
+    if not app_token or not table_id:
+        return _fail("多维表格未配置")
+    try:
+        records = feishu_client.list_bitable_records(app_token, table_id)
+        # 筛选：分析成功 且 有触发时间 且 有jira号
+        candidates = []
+        seen = set()
+        for rec in records:
+            fields = rec.get("fields", {})
+            result_status = _bitable_text(fields.get("分析结果", ""))
+            if result_status != "成功":
+                continue
+            jira_no = _bitable_text(fields.get(bugid_field, ""))
+            if not jira_no or jira_no in seen:
+                continue
+            trigger_time = _bitable_text(fields.get("分析问题时间", ""))
+            if not trigger_time:
+                continue
+            seen.add(jira_no)
+            candidates.append({"bugid": jira_no, "baseline_time": trigger_time})
+        if not candidates:
+            return _fail("多维表格中无符合条件的记录（分析成功且有触发时间）")
+        # 随机抽样
+        sample_size = min(count, len(candidates))
+        sampled = random.sample(candidates, sample_size)
+        return _ok({"samples": sampled, "total_available": len(candidates)},
+                   f"从 {len(candidates)} 条中抽取 {sample_size} 条")
+    except Exception as e:
+        logger.error("随机抽样失败: %s", e)
+        return _fail(f"抽样失败: {e}")
+
+
+@app.post("/api/compare/trigger_time")
+async def compare_trigger_time(request: Request):
+    """触发时间提取方式对比（SSE流式）：对每个jira用多种策略提取并对比"""
+    import asyncio
+    import queue
+    import json as _json
+    body = await request.json() or {}
+    bugids = [b.strip() for b in (body.get("bugids") or []) if b.strip()]
+    strategies = body.get("strategies") or list(_COMPARE_STRATEGIES.keys())
+    baseline_map = body.get("baseline_map") or {}  # {bugid: baseline_time}
+
+    if not bugids:
+        return _fail("bugids 不能为空")
+    # 验证策略名称
+    strategies = [s for s in strategies if s in _COMPARE_STRATEGIES]
+    if not strategies:
+        return _fail("无有效策略")
+
+    async def event_generator():
+        step_queue = queue.Queue()
+        yield f"data: {_json.dumps({'type': 'start', 'total': len(bugids), 'strategies': strategies}, ensure_ascii=False)}\n\n"
+        loop = asyncio.get_event_loop()
+
+        def _run_compare():
+            from src.clients import jira_client as _jc
+            for idx, bugid in enumerate(bugids):
+                try:
+                    # 获取issue
+                    issue = _jc.fetch_issue(bugid)
+                    baseline = baseline_map.get(bugid, "")
+                    # 如果无基线时间，尝试从云端获取
+                    if not baseline:
+                        cloud_times = _load_trigger_times_from_cloud()
+                        baseline = cloud_times.get(bugid, "")
+                    results = {}
+                    for strategy in strategies:
+                        t0 = time.time()
+                        extract_result = _strategy_extract_time(issue, strategy)
+                        elapsed = round(time.time() - t0, 2)
+                        extracted_time = extract_result.get("time", "")
+                        results[strategy] = {
+                            "time": extracted_time,
+                            "source": extract_result.get("source", ""),
+                            "detail": extract_result.get("detail", ""),
+                            "match": _times_match(extracted_time, baseline) if baseline and extracted_time else False,
+                            "elapsed": elapsed,
+                        }
+                    step_queue.put({
+                        "type": "result", "index": idx + 1, "bugid": bugid,
+                        "baseline_time": baseline, "results": results,
+                    })
+                except Exception as e:
+                    step_queue.put({
+                        "type": "error", "index": idx + 1, "bugid": bugid,
+                        "error": str(e)[:200],
+                    })
+            step_queue.put({"type": "done"})
+
+        loop.run_in_executor(_get_diag_executor(), _run_compare)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = step_queue.get_nowait()
+                except queue.Empty:
+                    await asyncio.sleep(0.3)
+                    continue
+                yield f"data: {_json.dumps(item, ensure_ascii=False)}\n\n"
+                if item.get("type") == "done":
+                    break
+        except Exception as e:
+            logger.warning("对比SSE异常: %s", e)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
