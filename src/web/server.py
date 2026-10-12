@@ -12864,54 +12864,6 @@ def _load_diagnose_cache(bugid: str) -> dict:
 
 # ==================== 触发时间自学习 API ====================
 
-@app.post("/api/timestudy/analyze")
-async def timestudy_analyze(body: dict = Body(default={})):
-    """触发分析：统计错误模式，支持按时间范围过滤"""
-    try:
-        after_time = (body or {}).get("after_time", "")
-        patterns = _timestudy_analyze(after_time=after_time)
-        total = patterns.get("total_records", 0)
-        rate = patterns.get("success_rate", 0)
-        err_dist = patterns.get("error_distribution", {})
-        top3 = list(err_dist.items())[:3]
-        top3_str = ", ".join(f"{k}({v})" for k, v in top3) if top3 else "无"
-        summary = (f"自学习分析完成: {total}条记录, 成功率{rate}%, "
-                   f"Top3错误: {top3_str}")
-        return _ok(patterns, summary)
-    except Exception as e:
-        logger.error("自学习分析失败: %s", e)
-        return _fail(str(e))
-
-
-@app.get("/api/timestudy/summary")
-async def timestudy_summary():
-    """获取自学习摘要（轻量级，不重新分析）"""
-    import json as _json2
-    patterns_path = os.path.join(_TIMESTUDY_DIR, "error_patterns.json")
-    if not os.path.exists(patterns_path):
-        return _ok({"total_records": 0}, "尚无自学习数据")
-    try:
-        with open(patterns_path, "r", encoding="utf-8") as f:
-            patterns = _json2.load(f)
-        return _ok(patterns)
-    except Exception as e:
-        return _fail(str(e))
-
-
-@app.get("/api/timestudy/records")
-async def timestudy_records(limit: int = 50):
-    """获取最近的自学习记录"""
-    try:
-        rows = _timestudy_load_records()
-        if not rows:
-            return _ok([], "尚无记录")
-        # 返回最近 N 条（倒序）
-        rows = rows[-limit:][::-1]
-        return _ok(rows, f"最近 {len(rows)} 条记录")
-    except Exception as e:
-        return _fail(str(e))
-
-
 # trace 步骤中文描述（复用）
 _TRACE_STAGE_DESC = {
     "cloud": "云端缓存", "diag": "诊断缓存", "video": "视频附件检查",

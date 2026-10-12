@@ -938,17 +938,7 @@
             </el-card>
           </el-col>
         </el-row>
-        <el-card shadow="never">
-          <div class="section-title">比对阈值与抽查参数</div>
-          <el-form inline>
-            <el-form-item label="步骤相似度阈值"><el-input-number v-model="config.similarity.threshold" :min="0" :max="1" :step="0.05"></el-input-number></el-form-item>
-            <el-form-item label="根因命中比例"><el-input-number v-model="config.similarity.root_cause_hit_ratio" :min="0" :max="1" :step="0.05"></el-input-number></el-form-item>
-            <el-form-item label="默认抽查数"><el-input-number v-model="config.audit.sample_count" :min="1"></el-input-number></el-form-item>
-          </el-form>
-          <el-button type="primary" :loading="running.saveConfig" @click="saveConfig">保存配置</el-button>
-          <el-button @click="loadConfig">重置为当前值</el-button>
-          <div style="font-size:12px;color:#8a93a6;margin-top:8px">保存后将写回 config/config.yaml 并立即生效；Mock 开关关闭前请确认已填写真实接口地址。</div>
-        </el-card>
+
       </el-tab-pane>
 
       <!-- 页签3：数据看板 -->
@@ -2102,78 +2092,7 @@
                   </el-table-column>
                 </el-table>
               </el-card>
-              <!-- ③ 触发时间提取质量分析（自学习） -->
-              <el-card shadow="never" style="margin-top:12px;border:2px solid #722ed1">
-                <template #header>
-                  <div style="display:flex;justify-content:space-between;align-items:center">
-                    <span style="font-weight:700;color:#722ed1">③ 触发时间提取质量分析</span>
-                    <div style="display:flex;gap:8px;align-items:center">
-                      <el-tag v-if="troubleshoot.afterTime" type="info" size="small">{{ troubleshoot.afterTime }} 之后</el-tag>
-                      <el-tag v-else type="warning" size="small">全量历史</el-tag>
-                      <el-button size="small" type="primary" :loading="troubleshoot.timestudy.loading" @click="runTimestudyAnalysis">运行分析</el-button>
-                    </div>
-                  </div>
-                </template>
-                <div v-if="!troubleshoot.timestudy.summary" style="text-align:center;padding:20px;color:#909399">
-                  点击「运行分析」查看提取质量统计、错误分类和流水线断点溯源
-                </div>
-                <div v-else>
-                  <!-- 概览卡片 -->
-                  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
-                    <div style="flex:1;min-width:120px;padding:10px;background:#f6ffed;border-radius:6px;text-align:center">
-                      <div style="font-size:22px;font-weight:700;color:#389e0d">{{ troubleshoot.timestudy.summary.effective_total || 0 }}</div>
-                      <div style="font-size:12px;color:#606266">有效提取</div>
-                    </div>
-                    <div style="flex:1;min-width:120px;padding:10px;background:#e6f7ff;border-radius:6px;text-align:center">
-                      <div style="font-size:22px;font-weight:700;color:#1677ff">{{ troubleshoot.timestudy.summary.success_rate || 0 }}%</div>
-                      <div style="font-size:12px;color:#606266">成功率</div>
-                    </div>
-                    <div style="flex:1;min-width:120px;padding:10px;background:#fff7e6;border-radius:6px;text-align:center">
-                      <div style="font-size:22px;font-weight:700;color:#d48806">{{ troubleshoot.timestudy.summary.skip_count || 0 }}</div>
-                      <div style="font-size:12px;color:#606266">前置跳过</div>
-                    </div>
-                    <div style="flex:1;min-width:120px;padding:10px;background:#fff2f0;border-radius:6px;text-align:center">
-                      <div style="font-size:22px;font-weight:700;color:#ff4d4f">{{ troubleshoot.timestudy.summary.fail_count || 0 }}</div>
-                      <div style="font-size:12px;color:#606266">提取失败</div>
-                    </div>
-                  </div>
-                  <!-- 错误分析表 -->
-                  <div v-if="troubleshoot.timestudy.summary.error_analysis">
-                    <div style="font-weight:600;margin-bottom:6px;font-size:13px">错误深度分析</div>
-                    <el-table :data="Object.entries(troubleshoot.timestudy.summary.error_analysis).map(([k,v]) => ({error_type:k,...v}))" size="small" stripe border max-height="240">
-                      <el-table-column prop="error_type" label="错误类型" width="180"></el-table-column>
-                      <el-table-column prop="classification" label="分类" width="120">
-                        <template #default="{row}">
-                          <el-tag :type="row.classification==='系统性问题'?'danger':(row.classification==='顽固问题'?'warning':'info')" size="small">{{ row.classification }}</el-tag>
-                        </template>
-                      </el-table-column>
-                      <el-table-column prop="count" label="次数" width="70"></el-table-column>
-                      <el-table-column prop="unique_jiras" label="Jira数" width="70"></el-table-column>
-                      <el-table-column prop="main_breakpoint" label="主断点" width="160"></el-table-column>
-                      <el-table-column label="共性特征" min-width="200">
-                        <template #default="{row}">{{ (row.common_features || []).join(', ') || '-' }}</template>
-                      </el-table-column>
-                    </el-table>
-                  </div>
-                  <!-- 断点溯源表 -->
-                  <div v-if="troubleshoot.timestudy.summary.breakpoint_summary && troubleshoot.timestudy.summary.breakpoint_summary.length" style="margin-top:12px">
-                    <div style="font-weight:600;margin-bottom:6px;font-size:13px">流水线断点分布</div>
-                    <el-table :data="troubleshoot.timestudy.summary.breakpoint_summary" size="small" stripe border max-height="180">
-                      <el-table-column prop="step" label="步骤代码" width="120"></el-table-column>
-                      <el-table-column prop="desc" label="含义" width="160"></el-table-column>
-                      <el-table-column prop="count" label="失败次数" width="100"></el-table-column>
-                    </el-table>
-                  </div>
-                  <!-- 常见路径 -->
-                  <div v-if="troubleshoot.timestudy.summary.common_trace_patterns && troubleshoot.timestudy.summary.common_trace_patterns.length" style="margin-top:12px">
-                    <div style="font-weight:600;margin-bottom:6px;font-size:13px">常见提取路径 (Top5)</div>
-                    <el-table :data="troubleshoot.timestudy.summary.common_trace_patterns" size="small" stripe border max-height="180">
-                      <el-table-column prop="trace" label="路径" min-width="400" show-overflow-tooltip></el-table-column>
-                      <el-table-column prop="count" label="次数" width="80"></el-table-column>
-                    </el-table>
-                  </div>
-                </div>
-              </el-card>
+
               <!-- 修正建议编辑对话框 -->
               <el-dialog v-model="troubleshoot.correctionEditor.visible" title="编辑修正建议" width="480px" destroy-on-close>
                 <div style="margin-bottom:12px">
@@ -3193,7 +3112,6 @@ createApp({
         stopFlag: false, abortController: null, skipVideoCache: false, execOnlyEmptyReview: false,
         correctionEditor: { visible: false, row: null, time: '', note: '', humanReason: '', matchedCategory: '', saving: false },
         rootCauses: {},  // {bugid: {root_cause, trace, error_type, source, result}}
-        timestudy: { loading: false, summary: null },  // 自学习分析结果
       },
       // 未分析 Bug 提取
       unanalyzedPast: {
@@ -3331,7 +3249,7 @@ createApp({
         reExtractScan: false, reExtractRun: false, batchAssess: false,
         unanalyzedPast: false,
         prodLoadCsv: false, prodBatchRun: false },
-      config: { prod_ai: {}, ai_log_api: {}, jira_api: {}, diana: {}, feishu_bitable: {}, feishu_bot: {}, knowledge_base_api: {}, similarity: {}, audit: {}, database: {} },
+      config: { prod_ai: {}, ai_log_api: {}, jira_api: {}, diana: {}, feishu_bitable: {}, feishu_bot: {}, database: {} },
       apiSections: [
         { key: 'prod_ai', title: '线上AI日志分析接口' },
         { key: 'ai_log_api', title: 'AI日志分析工具接口(PC)' },
@@ -3339,7 +3257,7 @@ createApp({
         { key: 'diana', title: 'Diana大模型接口' },
         { key: 'feishu_bitable', title: '飞书多维表格' },
         { key: 'feishu_bot', title: '飞书机器人' },
-        { key: 'knowledge_base_api', title: '知识库入库接口' },
+
       ],
       dailyRows: [], dailyDate: '', dailyColumns: [], dailyLoading: false, syncCloudLoading: false,
             dailyReportDate: '', dailyReportLoading: false,
@@ -5762,7 +5680,7 @@ createApp({
       const vf = this.verify.files[fi];
       if (!vf) return;
       // 筛选本地结果：必须有置信度且状态非跳过
-      const threshold = this.config?.similarity?.threshold || 0.7;
+      const threshold = 0.7;
       let candidates = vf.results.filter(r => {
         const conf = Number(r.confidence || 0);
         if (r.status === 'skipped' || r.status === 'fail') return false;
@@ -7362,22 +7280,6 @@ createApp({
         console.warn('加载根因失败:', e);
       }
     },
-    // 运行自学习分析并加载摘要
-    async runTimestudyAnalysis() {
-      this.troubleshoot.timestudy.loading = true;
-      try {
-        const payload = {};
-        if (this.troubleshoot.afterTime) payload.after_time = this.troubleshoot.afterTime;
-        const resp = await this.api('/api/timestudy/analyze', { method: 'POST', body: JSON.stringify(payload) });
-        if (resp && resp.data) {
-          this.troubleshoot.timestudy.summary = resp.data;
-        }
-      } catch (e) {
-        ElementPlus.ElMessage.error('分析失败: ' + e);
-      } finally {
-        this.troubleshoot.timestudy.loading = false;
-      }
-    },
     // 可诊断的失败记录列表（供按钮展示与批量诊断共用）
     // 勾选「仅人工审核为空」时，执行时排除人工审核结果非空的记录，只诊断人工审核为空的失败记录
     getDiagnoseTargets() {
@@ -7558,9 +7460,7 @@ createApp({
             if (v && typeof v === 'object' && !Array.isArray(v)) delete v._newKey;
           });
         });
-        payload.similarity = this.config.similarity;
         payload.database = this.config.database;
-        payload.audit = this.config.audit;
         payload.output = this.config.output;
         const body = await this.api('/api/config', { method: 'POST', body: JSON.stringify(payload) });
         ElementPlus.ElMessage.success(body.message);
@@ -7574,8 +7474,6 @@ createApp({
         api_key: 'API Key', enabled: '是否启用', mock: 'Mock模式',
         bugid_field: 'API参数名', trigger_time_field: '触发时间字段',
         content_field: '内容字段', username: '用户名', token: 'Token',
-        threshold: '相似度阈值', root_cause_hit_ratio: '根因命中比例',
-        sample_count: '默认抽查数',
         /* 数据库与审计段字段映射 */
         table_name: '表名', kb_table: '知识库表',
         audited_file: '已抽查文件', report_file: '报告文件',
