@@ -12643,6 +12643,42 @@ def troubleshoot_batch_pre_classify(body: dict = Body(default={})):
                f"预归类完成: 跳过 {len(skip_list)} 条, 需分析 {len(need_list)} 条")
 
 
+@app.post("/api/troubleshoot/send_to_developer")
+def troubleshoot_send_to_developer(body: dict = Body(default={})):
+    """将自动归类记录发送给后端开发（王源泉）via 飞书机器人"""
+    from src.clients import feishu_client
+    body = body or {}
+    records = body.get("records", [])
+    if not records:
+        return _fail("发送列表为空")
+    # 构造消息内容
+    lines = [f"🔔 AI日志分析失败 - 待后端排查记录（{len(records)} 条）",
+             "", "| # | Jira号 | 分析完成时间 | 错误信息 |",
+             "|---|--------|-------------|----------|"]
+    for i, rec in enumerate(records, 1):
+        bugid = rec.get("bugid", "")
+        done_time = rec.get("done_time", "") or "-"
+        err_msg = (rec.get("err_msg", "") or "-")[:80]
+        lines.append(f"| {i} | {bugid} | {done_time} | {err_msg} |")
+    # 附加分类统计
+    cat_count = {}
+    for rec in records:
+        cat = rec.get("category", "未知")
+        cat_count[cat] = cat_count.get(cat, 0) + 1
+    lines.append("")
+    lines.append("分类统计: " + ", ".join(f"{k}({v})" for k, v in sorted(cat_count.items(), key=lambda x: -x[1])))
+    msg_text = "\n".join(lines)
+    # 发送目标：配置的 notify_chat_id（王源泉 P2P 对话）
+    notify_chat = load_config().get("feishu_bot", {}).get("notify_chat_id", "")
+    if not notify_chat:
+        return _fail("未配置 feishu_bot.notify_chat_id，无法发送")
+    ok = feishu_client.send_bot_message(notify_chat, msg_text)
+    if ok:
+        logger.info("已发送 %d 条待后端排查记录给开发者", len(records))
+        return _ok(None, f"已成功发送 {len(records)} 条记录给后端开发")
+    return _fail("发送失败，请检查飞书机器人配置")
+
+
 @app.post("/api/troubleshoot/diagnose")
 def troubleshoot_diagnose(body: dict = Body(default={})):
     """排查工具第2步：单 Jira 自动诊断归类（同步端点：FastAPI 自动走线程池，避免下载阻塞事件循环，支持前端真并发）

@@ -518,10 +518,16 @@
                   <el-tag type="info" size="small" effect="dark">自动归类</el-tag>
                   <span style="font-weight:700;font-size:14px">无需分析（{{ getSkipDiagResults().length }} 条）</span>
                 </div>
-                <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview('skip')"
-                  :disabled="!getSkipDiagResults().filter(r => r.report && r.report.human_reason).length">
-                  批量写入自动归类结果
-                </el-button>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview('skip')"
+                    :disabled="!getSkipDiagResults().filter(r => r.report && r.report.human_reason).length">
+                    批量写入自动归类结果
+                  </el-button>
+                  <el-button size="small" type="primary" :loading="troubleshoot.sendingToDeveloper" @click="sendToDeveloper"
+                    :disabled="!getSkipDiagResults().length">
+                    发送给后端开发
+                  </el-button>
+                </div>
               </div>
               <el-table :data="getSkipDiagResults()" size="small" stripe border max-height="240" row-key="bugid">
                 <el-table-column type="index" label="#" width="45"></el-table-column>
@@ -560,6 +566,9 @@
                     :disabled="!getApplicableCorrectionCount()">
                     一键应用正确时间（{{ getApplicableCorrectionCount() }}）
                   </el-button>
+                  <el-select v-model="troubleshoot.categoryFilter" size="small" placeholder="按归类筛选" clearable style="width:200px">
+                    <el-option v-for="c in getTroubleshootCategories()" :key="c" :label="c" :value="c"></el-option>
+                  </el-select>
                 </div>
               </div>
               <el-table :data="getAnalysisDiagResults()" size="small" stripe border max-height="320" row-key="bugid">
@@ -2426,10 +2435,16 @@
                       <el-tag type="info" size="small" effect="dark">自动归类</el-tag>
                       <span style="font-weight:700">无需分析（{{ getSkipDiagResults().length }} 条）</span>
                     </div>
-                    <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview('skip')"
-                      :disabled="!getSkipDiagResults().filter(r => r.report && r.report.human_reason).length">
-                      批量写入自动归类结果
-                    </el-button>
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview('skip')"
+                        :disabled="!getSkipDiagResults().filter(r => r.report && r.report.human_reason).length">
+                        批量写入自动归类结果
+                      </el-button>
+                      <el-button size="small" type="primary" :loading="troubleshoot.sendingToDeveloper" @click="sendToDeveloper"
+                        :disabled="!getSkipDiagResults().length">
+                        发送给后端开发
+                      </el-button>
+                    </div>
                   </div>
                 </template>
                 <el-table :data="getSkipDiagResults()" size="small" stripe border max-height="240" row-key="bugid">
@@ -2476,6 +2491,9 @@
                         :disabled="!getApplicableCorrectionCount()">
                         一键应用正确时间（{{ getApplicableCorrectionCount() }}）
                       </el-button>
+                      <el-select v-model="troubleshoot.categoryFilter" size="small" placeholder="按归类筛选" clearable style="width:200px">
+                        <el-option v-for="c in getTroubleshootCategories()" :key="c" :label="c" :value="c"></el-option>
+                      </el-select>
                     </div>
                   </div>
                 </template>
@@ -3642,7 +3660,7 @@ createApp({
         afterTime: '', resultFilter: '失败', sourceFilter: '', dedup: true, noManualReview: false,
         querying: false, records: [], successRecords: [], queryingSuccess: false, successSearched: false,
         diagRunning: false, diagLoadingMap: {}, diagResults: [], categoryFilter: '',
-        writingReview: false, exportingTriggerIssues: false, batchApplyingTime: false, onlyEmptyReview: false,
+        writingReview: false, sendingToDeveloper: false, exportingTriggerIssues: false, batchApplyingTime: false, onlyEmptyReview: false,
         stopFlag: false, abortController: null, skipVideoCache: false, execOnlyEmptyReview: false,
         correctionEditor: { visible: false, row: null, time: '', note: '', humanReason: '', matchedCategory: '', saving: false },
         rootCauses: {},  // {bugid: {root_cause, trace, error_type, source, result}}
@@ -4535,6 +4553,7 @@ createApp({
           this.troubleshoot.diagResults.push({
             bugid: s.bugid, category: s.category, done_time: s.done_time,
             problem_time: s.problem_time, detail: s.detail || '',
+            err_msg: s.err_msg || '',
             archive_files: [], verify_status: '', suggested_time: '',
             report: s.report || {}, needs_analysis: false,
           });
@@ -7719,6 +7738,40 @@ createApp({
         ElementPlus.ElMessage.error('写入失败: ' + (e.message || e));
       } finally { this.troubleshoot.writingReview = false; }
     },
+    // 将自动归类记录发送给后端开发（王源泉）
+    async sendToDeveloper() {
+      const rows = this.getSkipDiagResults();
+      if (!rows.length) return ElementPlus.ElMessage.warning('无自动归类记录可发送');
+      const records = rows.map(r => ({
+        bugid: r.bugid, done_time: r.done_time || '-',
+        err_msg: r.err_msg || r.detail || r.category || '-',
+        category: r.category || '',
+      }));
+      // 确认弹窗 + 预览表格
+      const previewHtml = `<div style="max-height:280px;overflow-y:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="background:#f5f7fa"><th style="padding:6px 8px;border:1px solid #ddd">#</th>
+        <th style="padding:6px 8px;border:1px solid #ddd;text-align:left">Jira号</th>
+        <th style="padding:6px 8px;border:1px solid #ddd;text-align:left">分析完成时间</th>
+        <th style="padding:6px 8px;border:1px solid #ddd;text-align:left">错误信息</th></tr></thead>
+        <tbody>${records.map((r, i) => `<tr><td style="padding:4px 8px;border:1px solid #eee;text-align:center">${i + 1}</td>
+          <td style="padding:4px 8px;border:1px solid #eee">${r.bugid}</td>
+          <td style="padding:4px 8px;border:1px solid #eee">${r.done_time}</td>
+          <td style="padding:4px 8px;border:1px solid #eee;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.err_msg}</td></tr>`).join('')}</tbody></table></div>`;
+      try {
+        await ElementPlus.ElMessageBox.confirm(
+          `将发送 ${records.length} 条自动归类记录给后端开发（王源泉），包含 Jira号、分析完成时间、错误信息。<br/><br/>${previewHtml}`,
+          '确认发送', { confirmButtonText: '发送', cancelButtonText: '取消', type: 'info', dangerouslyUseHTMLString: true, customStyle: { maxWidth: '700px' } });
+      } catch { return; }
+      this.troubleshoot.sendingToDeveloper = true;
+      try {
+        const body = await this.api('/api/troubleshoot/send_to_developer', {
+          method: 'POST', body: JSON.stringify({ records })
+        });
+        ElementPlus.ElMessage.success(body.message || '发送成功');
+      } catch (e) {
+        ElementPlus.ElMessage.error('发送失败: ' + (e.message || e));
+      } finally { this.troubleshoot.sendingToDeveloper = false; }
+    },
     // 生成触发时间问题表格：筛选归类为触发时间问题的记录，导出本地CSV+云端多维表格
     async exportTriggerTimeIssues() {
       const triggerIssues = this.troubleshoot.diagResults
@@ -7875,8 +7928,20 @@ createApp({
     // 需深入排查的诊断结果（needs_analysis=true）
     getAnalysisDiagResults() {
       const rows = this.troubleshoot.diagResults || [];
-      const needRows = rows.filter(r => r.needs_analysis === true || (!r.needs_analysis && !this.isDiagSkipCategory(r.category)));
-      return [...needRows].sort((a, b) => {
+      const needRows = rows.filter(r =>
+        r.needs_analysis === true ||
+        (r.needs_analysis === undefined && !this.isDiagSkipCategory(r.category))
+      );
+      // 尊重 categoryFilter 筛选
+      let filtered = needRows;
+      if (this.troubleshoot.categoryFilter) {
+        if (this.troubleshoot.categoryFilter === '待人工审核') {
+          filtered = needRows.filter(r => r.category === '触发时间问题' && r.verify_status === 'manual');
+        } else {
+          filtered = needRows.filter(r => r.category === this.troubleshoot.categoryFilter);
+        }
+      }
+      return [...filtered].sort((a, b) => {
         const ta = a.done_time ? new Date(a.done_time.replace(/-/g, '/')).getTime() : 0;
         const tb = b.done_time ? new Date(b.done_time.replace(/-/g, '/')).getTime() : 0;
         return ta - tb;
@@ -7885,7 +7950,10 @@ createApp({
     // 自动归类的诊断结果（无需分析，直接批量写入）
     getSkipDiagResults() {
       const rows = this.troubleshoot.diagResults || [];
-      const skipRows = rows.filter(r => r.needs_analysis === false || this.isDiagSkipCategory(r.category));
+      const skipRows = rows.filter(r =>
+        r.needs_analysis === false ||
+        (r.needs_analysis === undefined && this.isDiagSkipCategory(r.category))
+      );
       return [...skipRows].sort((a, b) => {
         const ta = a.done_time ? new Date(a.done_time.replace(/-/g, '/')).getTime() : 0;
         const tb = b.done_time ? new Date(b.done_time.replace(/-/g, '/')).getTime() : 0;
