@@ -3028,9 +3028,9 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
                                          "503 Service Unavailable", "500 Internal Server Error",
                                          "Gateway Timeout", "Service Unavailable")):
         return "上游jira卡住问题"
-    # 模型调用失败：第x轮LLM调用失败 / 第x轮调用失败
+    # 模型调用失败：第x轮LLM调用失败 / 第x轮调用失败，归为待后端开发排查
     if re.search(r"第\d+轮.*调用失败", err_info):
-        return "模型调用失败"
+        return "待后端开发排查"
     # 磁盘空间不足：No space left on device
     if "no space left on device" in err_info.lower() or "Errno 28" in err_info:
         return "磁盘空间不足"
@@ -3038,7 +3038,7 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
     if not review or review in ("-", "None"):
         return "待开发排查"
     if "模型调用失败" in review:
-        return "模型调用失败"
+        return "待后端开发排查"
     if "时间添加" in review or "时间异常" in review:
         return "触发时间问题"
     if "无gmlogger" in review or "无日志附件" in review or "损坏" in review:
@@ -12240,6 +12240,15 @@ async def troubleshoot_search_jira(request: Request):
     return _ok({"rows": rows, "count": len(rows)}, f"找到 {len(rows)} 条匹配记录")
 
 
+# 无需深入分析的预归类类别（前端优先展示，单独成表）
+_SKIP_ANALYSIS_CATEGORIES = {
+    "待后端开发排查", "磁盘空间不足", "服务运行问题",
+    "接口并发响应问题", "接口连接问题",
+    "无报错信息，跳过排查", "服务有报错，跳过排查",
+    "分析任务执行超时，跳过排查", "问题重复",
+}
+
+
 def _diag_pre_classify(err_msg: str) -> str:
     """根据失败原因文本预归类（对应问题排查文档的归类方式），无法判定时返回空串"""
     import re
@@ -12250,9 +12259,9 @@ def _diag_pre_classify(err_msg: str) -> str:
         return "无gmlogger文件"
     if "分析任务执行超时" in msg or "分析任务被取消" in msg:
         return "分析任务执行超时，跳过排查"
-    # 模型调用失败：第x轮LLM调用失败 / 第x轮调用失败，无需分析直接给结论
+    # 模型调用失败：第x轮LLM调用失败 / 第x轮调用失败，归为待后端开发排查
     if re.search(r"第\d+轮.*调用失败", msg):
-        return "模型调用失败"
+        return "待后端开发排查"
     # 磁盘空间不足：No space left on device，无需分析直接给结论
     if "no space left on device" in msg.lower() or "Errno 28" in msg:
         return "磁盘空间不足"
@@ -12294,11 +12303,11 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         human_reason = "接口无响应，待源泉排查"
         retry_result = ""
         final_category = "接口响应问题"
-    elif category == "模型调用失败":
+    elif category == "模型调用失败" or category == "待后端开发排查":
         ai_reason = msg or "LLM 调用失败"
         human_reason = "模型调用失败"
         retry_result = ""
-        final_category = "模型调用失败"
+        final_category = "待后端开发排查"
     elif category == "磁盘空间不足":
         ai_reason = msg or "No space left on device"
         human_reason = "磁盘空间不足"
@@ -12615,6 +12624,8 @@ def troubleshoot_diagnose(body: dict = Body(default={})):
             if cached is not None:
                 if done_time:
                     cached["done_time"] = done_time
+                # 缓存命中时也注入 needs_analysis 标识
+                cached["needs_analysis"] = cached.get("category", "") not in _SKIP_ANALYSIS_CATEGORIES
                 logger.info("诊断结果本地缓存命中: %s", bugid)
                 return _ok(cached, f"{bugid} 诊断结果（本地缓存）")
         # 缓存未命中：使用专用线程池执行诊断（防止无限卡住）
@@ -12637,7 +12648,12 @@ def _troubleshoot_diagnose_impl(bugid, err_msg, problem_time, done_time, force=F
     """诊断实现（从 troubleshoot_diagnose 抽取，便于统一 try/finally 管理取消标志）"""
     logger.info("诊断开始: %s%s", bugid, "（强制重新执行）" if force else "")
     try:
-        return _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force)
+        result = _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force)
+        # 统一注入 needs_analysis 标识（供前端拆分两张表）
+        data = result.get("data") if isinstance(result, dict) else None
+        if isinstance(data, dict) and "category" in data:
+            data["needs_analysis"] = data["category"] not in _SKIP_ANALYSIS_CATEGORIES
+        return result
     finally:
         # 线程完成时清除取消标志（无论是正常完成还是被中断）
         _diag_cancel.pop(bugid, None)

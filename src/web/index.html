@@ -511,30 +511,58 @@
               <el-tag type="info" size="small">已写入: {{ flow2ErrorRecords.filter(r=>r.written).length }}/{{ flow2ErrorRecords.length }}</el-tag>
               <el-tag v-if="flow2ErrorRecords.filter(r=>r.reviewed).length" type="success" size="small">已审核: {{ flow2ErrorRecords.filter(r=>r.reviewed).length }}</el-tag>
             </div>
-            <!-- 诊断归类结果 -->
-            <div v-if="troubleshoot.diagResults.length" style="margin-top:16px">
+            <!-- 自动归类结果（无需分析，优先展示） -->
+            <div v-if="getSkipDiagResults().length" style="margin-top:16px">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-                <span style="font-weight:700;font-size:14px">诊断归类结果</span>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <el-tag type="info" size="small" effect="dark">自动归类</el-tag>
+                  <span style="font-weight:700;font-size:14px">无需分析（{{ getSkipDiagResults().length }} 条）</span>
+                </div>
+                <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview"
+                  :disabled="!getSkipDiagResults().filter(r => r.report && r.report.human_reason).length">
+                  批量写入自动归类结果
+                </el-button>
+              </div>
+              <el-table :data="getSkipDiagResults()" size="small" stripe border max-height="240" row-key="bugid">
+                <el-table-column type="index" label="#" width="45"></el-table-column>
+                <el-table-column prop="bugid" label="Jira号" width="120"></el-table-column>
+                <el-table-column prop="category" label="问题归类" width="170">
+                  <template #default="{row}"><el-tag :type="diagCategoryTagType(row.category)" size="small">{{ row.category }}</el-tag></template>
+                </el-table-column>
+                <el-table-column prop="done_time" label="分析完成时间" width="160"></el-table-column>
+                <el-table-column prop="detail" label="诊断详情" min-width="260" show-overflow-tooltip></el-table-column>
+                <el-table-column label="操作" width="100" align="center">
+                  <template #default="{row}">
+                    <el-tag v-if="row.written" type="success" size="small">已写入</el-tag>
+                    <el-button v-else size="small" type="success" link @click="flow2WriteSingle(row)">写入</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <!-- 需深入排查的诊断结果 -->
+            <div v-if="getAnalysisDiagResults().length" style="margin-top:16px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <el-tag type="warning" size="small" effect="dark">需排查</el-tag>
+                  <span style="font-weight:700;font-size:14px">需深入分析（{{ getAnalysisDiagResults().length }} 条）</span>
+                </div>
                 <div style="display:flex;align-items:center;gap:8px">
                   <el-button size="small" type="warning" :loading="troubleshoot.exportingTriggerIssues" @click="exportTriggerTimeIssues"
-                    :disabled="!troubleshoot.diagResults.filter(r => r.category === '触发时间问题' || r.category?.includes('触发时间') || r.category?.includes('解压问题')).length">
+                    :disabled="!getAnalysisDiagResults().filter(r => r.category === '触发时间问题' || r.category?.includes('触发时间') || r.category?.includes('解压问题')).length">
                     生成触发时间问题表格
                   </el-button>
                   <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview"
-                    :disabled="!getFilteredDiagResults().filter(r => r.report && r.report.human_reason).length">
-                    批量写入人工审核结果{{ troubleshoot.categoryFilter ? '（筛选）' : '' }}
+                    :disabled="!getAnalysisDiagResults().filter(r => r.report && r.report.human_reason).length">
+                    批量写入人工审核结果
                   </el-button>
                   <el-checkbox v-model="troubleshoot.onlyEmptyReview" size="small">仅人工审核结果为空</el-checkbox>
                   <el-button size="small" type="primary" :loading="troubleshoot.batchApplyingTime" @click="batchApplyCorrectionTimes"
                     :disabled="!getApplicableCorrectionCount()">
                     一键应用正确时间（{{ getApplicableCorrectionCount() }}）
                   </el-button>
-                  <el-select v-model="troubleshoot.categoryFilter" size="small" placeholder="按归类筛选" clearable style="width:200px">
-                    <el-option v-for="c in getTroubleshootCategories()" :key="c" :label="c" :value="c"></el-option>
-                  </el-select>
                 </div>
               </div>
-              <el-table :data="getFilteredDiagResults()" size="small" stripe border max-height="320" row-key="bugid">
+              <el-table :data="getAnalysisDiagResults()" size="small" stripe border max-height="320" row-key="bugid">
                 <el-table-column type="index" label="#" width="45"></el-table-column>
                 <el-table-column prop="bugid" label="Jira号" width="120"></el-table-column>
                 <el-table-column prop="category" label="问题归类" width="170">
@@ -2390,32 +2418,68 @@
                 <el-alert v-if="troubleshoot.successSearched && (!troubleshoot.successRecords || !troubleshoot.successRecords.length)" type="info" :closable="false"
                   title="未找到失败 Jira 号对应的成功记录" style="margin-top:8px"></el-alert>
               </el-card>
-              <!-- 步骤2：诊断归类结果 -->
-              <el-card v-if="troubleshoot.diagResults.length" shadow="never" style="margin-top:12px">
+              <!-- 步骤2a：自动归类结果（无需分析） -->
+              <el-card v-if="getSkipDiagResults().length" shadow="never" style="margin-top:12px">
                 <template #header>
                   <div style="display:flex;justify-content:space-between;align-items:center">
-                    <span style="font-weight:700">② 诊断归类结果</span>
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <el-tag type="info" size="small" effect="dark">自动归类</el-tag>
+                      <span style="font-weight:700">无需分析（{{ getSkipDiagResults().length }} 条）</span>
+                    </div>
+                    <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview"
+                      :disabled="!getSkipDiagResults().filter(r => r.report && r.report.human_reason).length">
+                      批量写入自动归类结果
+                    </el-button>
+                  </div>
+                </template>
+                <el-table :data="getSkipDiagResults()" size="small" stripe border max-height="240" row-key="bugid">
+                  <el-table-column type="index" label="#" width="45"></el-table-column>
+                  <el-table-column prop="bugid" label="Jira号" width="120"></el-table-column>
+                  <el-table-column prop="category" label="问题归类" width="170">
+                    <template #default="{row}"><el-tag :type="diagCategoryTagType(row.category)" size="small">{{ row.category }}</el-tag></template>
+                  </el-table-column>
+                  <el-table-column prop="done_time" label="分析完成时间" width="160"></el-table-column>
+                  <el-table-column prop="detail" label="诊断详情" min-width="260" show-overflow-tooltip></el-table-column>
+                  <el-table-column label="提取根因" width="180" show-overflow-tooltip>
+                    <template #default="{row}">
+                      <template v-if="troubleshoot.rootCauses[row.bugid]">
+                        <div style="display:flex;align-items:center;gap:4px">
+                          <el-tag :type="troubleshoot.rootCauses[row.bugid].result ? 'success' : (troubleshoot.rootCauses[row.bugid].error_type ? 'danger' : 'info')" size="small">
+                            {{ troubleshoot.rootCauses[row.bugid].root_cause }}
+                          </el-tag>
+                        </div>
+                      </template>
+                      <span v-else style="color:#c0c4cc">-</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </el-card>
+              <!-- 步骤2b：需深入排查的诊断结果 -->
+              <el-card v-if="getAnalysisDiagResults().length" shadow="never" style="margin-top:12px">
+                <template #header>
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <el-tag type="warning" size="small" effect="dark">需排查</el-tag>
+                      <span style="font-weight:700">② 需深入分析（{{ getAnalysisDiagResults().length }} 条）</span>
+                    </div>
                     <div style="display:flex;align-items:center;gap:8px">
                       <el-button size="small" type="warning" :loading="troubleshoot.exportingTriggerIssues" @click="exportTriggerTimeIssues"
-                        :disabled="!troubleshoot.diagResults.filter(r => r.category === '触发时间问题' || r.category?.includes('触发时间')).length">
+                        :disabled="!getAnalysisDiagResults().filter(r => r.category === '触发时间问题' || r.category?.includes('触发时间')).length">
                         生成触发时间问题表格
                       </el-button>
                       <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview"
-                        :disabled="!getFilteredDiagResults().filter(r => r.report && r.report.human_reason).length">
-                        批量写入人工审核结果{{ troubleshoot.categoryFilter ? '（筛选）' : '' }}
+                        :disabled="!getAnalysisDiagResults().filter(r => r.report && r.report.human_reason).length">
+                        批量写入人工审核结果
                       </el-button>
                       <el-checkbox v-model="troubleshoot.onlyEmptyReview" size="small">仅人工审核结果为空</el-checkbox>
                       <el-button size="small" type="primary" :loading="troubleshoot.batchApplyingTime" @click="batchApplyCorrectionTimes"
                         :disabled="!getApplicableCorrectionCount()">
                         一键应用正确时间（{{ getApplicableCorrectionCount() }}）
                       </el-button>
-                      <el-select v-model="troubleshoot.categoryFilter" size="small" placeholder="按归类筛选" clearable style="width:200px">
-                        <el-option v-for="c in getTroubleshootCategories()" :key="c" :label="c" :value="c"></el-option>
-                      </el-select>
                     </div>
                   </div>
                 </template>
-                <el-table :data="getFilteredDiagResults()" size="small" stripe border max-height="320" row-key="bugid">
+                <el-table :data="getAnalysisDiagResults()" size="small" stripe border max-height="320" row-key="bugid">
                   <el-table-column type="index" label="#" width="45"></el-table-column>
                   <el-table-column prop="bugid" label="Jira号" width="120"></el-table-column>
                   <el-table-column prop="category" label="问题归类" width="170">
@@ -2598,47 +2662,6 @@
                   <el-button size="small" type="primary" :loading="troubleshoot.correctionEditor.saving" @click="saveSuggestion">保存</el-button>
                 </template>
               </el-dialog>
-              <!-- 步骤④：报告内容（按截图飞书文档格式生成） -->
-              <el-card v-if="troubleshoot.diagResults.length" shadow="never" style="margin-top:12px">
-                <template #header>
-                  <div style="display:flex;justify-content:space-between;align-items:center">
-                    <span style="font-weight:700">④ 报告内容</span>
-                    <el-button size="small" type="primary" link @click="copyAllReports">全部复制</el-button>
-                  </div>
-                </template>
-                <div style="max-height:400px;overflow:auto;padding:4px">
-                  <div v-for="row in getFilteredDiagResults()" :key="row.bugid" style="margin-bottom:16px;border:1px solid #ebeef5;border-radius:8px;padding:12px;background:#fff;position:relative">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-                      <div style="font-weight:700;font-size:15px;color:#303133">{{ row.bugid }}</div>
-                      <el-button size="small" type="primary" link @click="copyReport(row)">复制</el-button>
-                    </div>
-                    <div v-if="row.report" style="font-size:13px;color:#606266;line-height:1.8">
-                      <div v-if="row.correction_time" style="margin-bottom:4px">
-                        <span style="color:#409eff;font-weight:600">修正触发时间：</span>
-                        <span style="color:#e6a23c;font-weight:600">{{ row.correction_time }}</span>
-                      </div>
-                      <div style="margin-bottom:4px">
-                        <span style="color:#409eff;font-weight:600">AI分析失败原因：</span>
-                        <span>{{ row.report.ai_reason || '无' }}</span>
-                      </div>
-                      <div style="margin-bottom:4px">
-                        <span style="color:#409eff;font-weight:600">人工分析失败原因：</span>
-                        <span>{{ row.report.human_reason || '无' }}</span>
-                      </div>
-                      <div v-if="row.report.retry_result" style="margin-bottom:4px">
-                        <span style="color:#409eff;font-weight:600">重试结果：</span>
-                        <span>{{ row.report.retry_result }}</span>
-                      </div>
-                      <div style="margin-bottom:4px">
-                        <span style="color:#409eff;font-weight:600">问题归类：</span>
-                        <span>{{ row.report.final_category || row.category }}</span>
-                      </div>
-                    </div>
-                    <div v-else style="font-size:13px;color:#909399">暂无报告内容</div>
-                  </div>
-                </div>
-              </el-card>
-
               <!-- 模块：单个失败排查 -->
               <el-card shadow="never" style="margin-top:14px;border:2px solid #409eff">
                 <template #header><span style="font-weight:700">单个Jira号排查</span></template>
@@ -7765,6 +7788,16 @@ createApp({
         ElementPlus.ElMessage.success(`重新执行完成，共 ${manuals.length} 条`);
       }
     },
+    // 判断是否为无需分析的自动归类类别
+    isDiagSkipCategory(cat) {
+      const skipCats = new Set([
+        '待后端开发排查', '磁盘空间不足', '服务运行问题',
+        '接口并发响应问题', '接口连接问题',
+        '无报错信息，跳过排查', '服务有报错，跳过排查',
+        '分析任务执行超时，跳过排查', '问题重复',
+      ]);
+      return skipCats.has(cat);
+    },
     // 归类结果去重后的类别列表（供筛选下拉）
     getTroubleshootCategories() {
       const cats = [...new Set(this.troubleshoot.diagResults.map(r => r.category).filter(Boolean))];
@@ -7782,11 +7815,31 @@ createApp({
         return ta - tb;
       });
       if (!this.troubleshoot.categoryFilter) return sorted;
-      // 特殊处理"待人工审核"筛选：显示触发时间问题且 verify_status=manual 的记录
+      // 特殊处理“待人工审核”筛选：显示触发时间问题且 verify_status=manual 的记录
       if (this.troubleshoot.categoryFilter === '待人工审核') {
         return sorted.filter(r => r.category === '触发时间问题' && r.verify_status === 'manual');
       }
       return sorted.filter(r => r.category === this.troubleshoot.categoryFilter);
+    },
+    // 需深入排查的诊断结果（needs_analysis=true）
+    getAnalysisDiagResults() {
+      const rows = this.troubleshoot.diagResults || [];
+      const needRows = rows.filter(r => r.needs_analysis === true || (!r.needs_analysis && !this.isDiagSkipCategory(r.category)));
+      return [...needRows].sort((a, b) => {
+        const ta = a.done_time ? new Date(a.done_time.replace(/-/g, '/')).getTime() : 0;
+        const tb = b.done_time ? new Date(b.done_time.replace(/-/g, '/')).getTime() : 0;
+        return ta - tb;
+      });
+    },
+    // 自动归类的诊断结果（无需分析，直接批量写入）
+    getSkipDiagResults() {
+      const rows = this.troubleshoot.diagResults || [];
+      const skipRows = rows.filter(r => r.needs_analysis === false || this.isDiagSkipCategory(r.category));
+      return [...skipRows].sort((a, b) => {
+        const ta = a.done_time ? new Date(a.done_time.replace(/-/g, '/')).getTime() : 0;
+        const tb = b.done_time ? new Date(b.done_time.replace(/-/g, '/')).getTime() : 0;
+        return ta - tb;
+      });
     },
     // 归类标签颜色映射
     diagCategoryTagType(cat) {
@@ -7796,7 +7849,11 @@ createApp({
       if (cat === '接口并发响应问题') return 'info';
       if (cat === '接口连接问题') return 'info';
       if (cat === '服务运行问题') return 'warning';
+      if (cat === '待后端开发排查') return 'info';
+      if (cat === '磁盘空间不足') return 'info';
       if (cat === '无报错信息，跳过排查') return 'info';
+      if (cat === '服务有报错，跳过排查') return 'info';
+      if (cat === '分析任务执行超时，跳过排查') return 'info';
       if (cat === '无gmlogger文件') return 'warning';
       if (cat === '问题重复') return '';
       if (cat === '问题未复现') return 'success';
@@ -7821,42 +7878,6 @@ createApp({
         }
       }
       return out;
-    },
-    // 复制单条报告内容到剪贴板（飞书文档格式）
-    async copyReport(row) {
-      if (!row.report) { ElementPlus.ElMessage.warning('暂无报告内容'); return; }
-      const lines = [];
-      if (row.correction_time) { lines.push(`- 修正触发时间：${row.correction_time}`); }
-      lines.push(`- AI分析失败原因：${row.report.ai_reason || '无'}`,
-        `- 人工分析失败原因：${row.report.human_reason || '无'}`);
-      if (row.report.retry_result) { lines.push(`- 重试结果：${row.report.retry_result}`); }
-      lines.push(`- 问题归类：${row.report.final_category || row.category}`);
-      const text = `### ${row.bugid}\n${lines.join('\n')}`;
-      try {
-        await navigator.clipboard.writeText(text);
-        ElementPlus.ElMessage.success(`${row.bugid} 报告已复制`);
-      } catch (e) { ElementPlus.ElMessage.error('复制失败：' + (e.message || e)); }
-    },
-    // 复制全部报告内容到剪贴板
-    async copyAllReports() {
-      const rows = this.getFilteredDiagResults() || [];
-      if (!rows.length) { ElementPlus.ElMessage.warning('无报告内容'); return; }
-      const parts = [];
-      for (const row of rows) {
-        if (!row.report) continue;
-        const lines = [];
-        if (row.correction_time) { lines.push(`- 修正触发时间：${row.correction_time}`); }
-        lines.push(`- AI分析失败原因：${row.report.ai_reason || '无'}`,
-          `- 人工分析失败原因：${row.report.human_reason || '无'}`);
-        if (row.report.retry_result) { lines.push(`- 重试结果：${row.report.retry_result}`); }
-        lines.push(`- 问题归类：${row.report.final_category || row.category}`);
-        parts.push(`### ${row.bugid}\n${lines.join('\n')}`);
-      }
-      if (!parts.length) { ElementPlus.ElMessage.warning('无报告内容'); return; }
-      try {
-        await navigator.clipboard.writeText(parts.join('\n\n'));
-        ElementPlus.ElMessage.success(`已复制 ${parts.length} 条报告`);
-      } catch (e) { ElementPlus.ElMessage.error('复制失败：' + (e.message || e)); }
     },
     // 功能测试3：数据库随机抽查（复用线上抽查接口）
     async runTestAudit() {
