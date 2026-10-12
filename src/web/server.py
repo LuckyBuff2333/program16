@@ -10311,8 +10311,8 @@ def _get_ocr_reader():
             warnings.filterwarnings('ignore', message='.*pin_memory.*', module='torch')
             warnings.filterwarnings('ignore', message='.*quantize_per_tensor.*', module='torch')
             import easyocr
-            _easyocr_reader = easyocr.Reader(['en'], gpu=True, verbose=False)
-            logger.info("easyocr Reader 初始化完成")
+            _easyocr_reader = easyocr.Reader(['en', 'ch_sim'], gpu=True, verbose=False)
+            logger.info("easyocr Reader 初始化完成（en + ch_sim）")
         except Exception as e:
             logger.warning("easyocr 初始化失败（模型下载超时或网络不可用），视频 OCR 功能已禁用: %s", e)
             _easyocr_reader = _OCR_UNAVAILABLE
