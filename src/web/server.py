@@ -21,6 +21,7 @@ from src.clients import diana_client as _diana_client
 from src.config import get_path, load_config, setup_logger, PROJECT_ROOT
 from src.core import audit as audit_module
 from src.core import doc_generator
+from src.core import resource_monitor, cache_manager
 
 logger = setup_logger("web")
 # 前端静态页面所在目录
@@ -74,6 +75,45 @@ def _check_diag_cancel(bugid: str):
         raise InterruptedError(f"诊断已取消: {bugid}")
     if _interrupted:
         raise InterruptedError("用户已按 Ctrl+C 中断操作")
+
+
+# 定时资源清理任务
+import atexit
+
+
+# 全局定时清理线程
+_cleanup_thread = None
+_cleanup_stop_event = threading.Event()
+
+
+def _periodic_cleanup():
+    """定期执行资源清理"""
+    while not _cleanup_stop_event.is_set():
+        try:
+            # 每10分钟清理一次
+            _cleanup_stop_event.wait(timeout=600)
+            if not _cleanup_stop_event.is_set():
+                _cleanup_resources()
+        except Exception as e:
+            logger.error(f"定时清理任务异常: {e}")
+
+
+def _start_periodic_cleanup():
+    """启动定时清理任务"""
+    global _cleanup_thread
+    if _cleanup_thread is None or not _cleanup_thread.is_alive():
+        _cleanup_thread = threading.Thread(target=_periodic_cleanup, daemon=True)
+        _cleanup_thread.start()
+        logger.info("定时资源清理任务已启动")
+
+
+def _stop_periodic_cleanup():
+    """停止定时清理任务"""
+    _cleanup_stop_event.set()
+    if _cleanup_thread:
+        _cleanup_thread.join(timeout=2.0)
+        logger.info("定时资源清理任务已停止")
+
 
 app = FastAPI(title="Bug 文档沉淀工具", docs_url="/api/docs")
 
@@ -152,6 +192,10 @@ async def _on_startup():
                     f.write("1")
             except Exception:
                 pass
+        
+    # 启动定时资源清理任务
+    _start_periodic_cleanup()
+    logger.info("服务启动完成")
 
 
 @app.on_event("shutdown")
@@ -165,6 +209,8 @@ async def _on_shutdown():
         _DIAG_EXECUTOR.shutdown(wait=False)
         _DIAG_EXECUTOR = None
         logger.info("诊断线程池已关闭")
+    # 停止定时清理任务
+    _stop_periodic_cleanup()
     logger.info("服务关闭，已设置所有流程取消标志")
 
 
@@ -187,13 +233,62 @@ async def serve_doc_image(bugid: str, filename: str):
         return JSONResponse({"ok": False, "message": "图片不存在"}, status_code=404)
     return FileResponse(filepath)
 
+
+@app.get("/api/system/health")
+async def get_system_health():
+    """获取系统健康状态"""
+    try:
+        health_data = resource_monitor.get_system_health()
+        return _ok(health_data, "系统健康状态获取成功")
+    except Exception as e:
+        logger.error(f"获取系统健康状态失败: {e}")
+        return _fail(f"获取系统健康状态失败: {e}")
+
+
+@app.get("/api/system/cache-stats")
+async def get_cache_stats():
+    """获取缓存统计信息"""
+    try:
+        cache_stats = cache_manager.get_cache_stats()
+        return _ok(cache_stats, "缓存统计信息获取成功")
+    except Exception as e:
+        logger.error(f"获取缓存统计信息失败: {e}")
+        return _fail(f"获取缓存统计信息失败: {e}")
+
+
+@app.post("/api/system/cleanup")
+async def manual_cleanup():
+    """手动清理资源"""
+    try:
+        _cleanup_resources()
+        return _ok(None, "资源清理完成")
+    except Exception as e:
+        logger.error(f"手动清理资源失败: {e}")
+        return _fail(f"手动清理资源失败: {e}")
+
 # 内存缓存：存放上传文件解析后的行数据，key 为 file_id
-_uploaded_files = {}
+# 使用新的缓存管理器替代全局字典
+# _uploaded_files = {}
+_uploaded_files_cache = cache_manager.get_cache('uploaded_files', max_size=100, ttl=3600)
 
 
 def _ok(data=None, message: str = "success"):
     """统一成功响应格式"""
     return {"ok": True, "message": message, "data": data}
+
+
+def _record_performance(request: Request, start_time: float, success: bool = True):
+    """记录性能指标"""
+    duration = (time.time() - start_time) * 1000  # 转换为毫秒
+    resource_monitor.performance_monitor.record_request(duration, success)
+
+
+def _cleanup_resources():
+    """手动清理资源"""
+    resource_monitor.cleanup_resources()
+    cache_manager.cache_manager.cleanup_expired()
+    cache_manager.file_cache.cleanup_expired()
+    logger.info("资源清理完成")
 
 
 def _fail(message: str, extra: dict = None):
@@ -233,16 +328,23 @@ def _save_user_token_to_config(user_token: str, refresh_token: str):
 @app.get("/api/auth/authorize")
 async def get_authorize_url(request: Request):
     """生成飞书 OAuth 授权链接（含文档+表格+云文档权限）"""
-    cfg = load_config().get("feishu_bitable", {})
-    app_id = cfg.get("app_id", "")
-    scopes = "bitable:app docx:document docx:document:readonly sheets:spreadsheet:readonly drive:drive drive:drive:readonly im:chat:readonly im:message:readonly im:message.p2p_msg:get_as_user im:message.group_msg:get_as_user wiki:wiki"
-    # 动态获取当前服务地址，避免硬编码端口导致回调失败
-    redirect_uri = str(request.url_for("oauth_callback"))
-    # 飞书开发者后台配置的是 localhost，需保持一致（127.0.0.1 会被拒绝）
-    redirect_uri = redirect_uri.replace("127.0.0.1", "localhost")
-    url = (f"https://open.feishu.cn/open-apis/authen/v1/authorize"
-           f"?app_id={app_id}&redirect_uri={redirect_uri}&scope={scopes}")
-    return _ok({"authorize_url": url}, "请点击链接完成授权")
+    start_time = time.time()
+    try:
+        cfg = load_config().get("feishu_bitable", {})
+        app_id = cfg.get("app_id", "")
+        scopes = "bitable:app docx:document docx:document:readonly sheets:spreadsheet:readonly drive:drive drive:drive:readonly im:chat:readonly im:message:readonly im:message.p2p_msg:get_as_user im:message.group_msg:get_as_user wiki:wiki"
+        # 动态获取当前服务地址，避免硬编码端口导致回调失败
+        redirect_uri = str(request.url_for("oauth_callback"))
+        # 飞书开发者后台配置的是 localhost，需保持一致（127.0.0.1 会被拒绝）
+        redirect_uri = redirect_uri.replace("127.0.0.1", "localhost")
+        url = (f"https://open.feishu.cn/open-apis/authen/v1/authorize"
+               f"?app_id={app_id}&redirect_uri={redirect_uri}&scope={scopes}")
+        _record_performance(request, start_time, True)
+        return _ok({"authorize_url": url}, "请点击链接完成授权")
+    except Exception as e:
+        _record_performance(request, start_time, False)
+        logger.error("生成授权链接失败: %s", e)
+        return _fail(f"生成授权链接失败: {e}")
 
 
 @app.post("/api/shutdown")
@@ -5768,6 +5870,7 @@ async def save_config(request: Request):
 @app.post("/api/analyze")
 async def run_analyze(request: Request):
     """执行内容补充流程，接收表格行数据，返回补充后的完整数据"""
+    start_time = time.time()
     body = await request.json() or {}
     rows = body.get("rows", [])
     # 兼容旧格式：支持仅传 bugids 列表
@@ -5777,12 +5880,15 @@ async def run_analyze(request: Request):
         rows = [{"jira号": b, "分析问题时间": trigger_times.get(b, ""),
                  "AI分析结果(飞书链接)": "", "AI评论总结": "", "rootcause": "", "结果置信度": ""} for b in bugids]
     if not rows:
+        _record_performance(request, start_time, False)
         return _fail("表格数据不能为空")
     try:
         result = pipeline.run_pipeline(rows)
+        _record_performance(request, start_time, True)
         return _ok({"rows": result["rows"], "stats": result["stats"]},
                    f"补充完成：总 {result['stats']['total']} 条，已完整 {result['stats']['complete']} 条")
     except Exception as e:
+        _record_performance(request, start_time, False)
         logger.error("analyze 执行失败: %s", e)
         return _fail(str(e))
 
@@ -14696,8 +14802,8 @@ async def upload_bug_file(file: UploadFile = File(None)):
         rows = bug_source.parse_uploaded_file(content, file.filename)
         if not rows:
             return _fail("文件中未找到有效数据或缺少 bugid 列")
-        file_id = f"file_{len(_uploaded_files) + 1}"
-        _uploaded_files[file_id] = rows
+        file_id = f"file_{_uploaded_files_cache.size() + 1}"
+        _uploaded_files_cache.put(file_id, rows)
         logger.info("上传文件解析完成: file_id=%s, %d 行", file_id, len(rows))
         return _ok({"file_id": file_id, "row_count": len(rows)}, f"文件解析完成，共 {len(rows)} 条数据")
     except Exception as e:
@@ -14718,7 +14824,7 @@ async def batch_compare(request: Request):
     trigger_times = body.get("trigger_times") or {}
     # 获取上传文件数据（可选）
     file_id = body.get("file_id")
-    uploaded_rows = _uploaded_files.get(file_id) if file_id else None
+    uploaded_rows = _uploaded_files_cache.get(file_id) if file_id else None
     try:
         results = []
         for bugid in bugids:
