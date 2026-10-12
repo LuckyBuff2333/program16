@@ -12584,6 +12584,65 @@ async def troubleshoot_cancel_diag(body: dict = Body(default={})):
     return _ok(None, f"已发送全部取消信号: {len(_diag_cancel)} 个")
 
 
+@app.post("/api/troubleshoot/batch_pre_classify")
+def troubleshoot_batch_pre_classify(body: dict = Body(default={})):
+    """批量预归类：快速筛选出无需分析的记录（待后端开发排查等），不下载附件
+
+    前端先调此接口一次性筛出跳过记录，再仅对剩余记录调诊断接口。
+    """
+    import re
+    body = body or {}
+    records = body.get("records", [])
+    if not records:
+        return _ok({"skip": [], "need_analysis": []}, "无记录")
+    skip_list, need_list = [], []
+    for rec in records:
+        bugid = rec.get("bugid", "")
+        err_msg = rec.get("err_msg", "") or ""
+        human_review = rec.get("human_review", "") or ""
+        done_time = rec.get("done_time", "")
+        problem_time = rec.get("problem_time", "")
+        # 组合分类逻辑（与 _classify_failure + _diag_pre_classify 一致）
+        category = ""
+        # 1. 无报错信息或“服务有报错”
+        if not err_msg or err_msg == "服务有报错":
+            category = "服务有报错，跳过排查" if err_msg else "无报错信息，跳过排查"
+        # 2. 人工审核结果倒推
+        if not category and human_review and human_review not in ("-", "None"):
+            if "模型调用失败" in human_review:
+                category = "待后端开发排查"
+            elif "接口拥堵" in human_review or "手动中断" in human_review:
+                category = "接口并发响应问题"
+            elif "接口无响应" in human_review:
+                category = "接口连接问题"
+            elif "服务有报错" in human_review:
+                category = "服务运行问题"
+            elif "执行超时" in human_review:
+                category = "分析任务执行超时，跳过排查"
+            elif "问题重复" in human_review:
+                category = "问题重复"
+        # 3. 错误信息预归类
+        if not category:
+            category = _diag_pre_classify(err_msg)
+        # 构建结果条目
+        entry = {"bugid": bugid, "category": category or "", "done_time": done_time,
+                 "problem_time": problem_time, "err_msg": err_msg[:200]}
+        if category and category in _SKIP_ANALYSIS_CATEGORIES:
+            # 生成报告供批量写入使用
+            report = _generate_troubleshoot_report(bugid, category, err_msg, f"预归类：{category}")
+            entry["report"] = report
+            entry["detail"] = f"根据失败原因/人工审核预归类：{category}"
+            entry["needs_analysis"] = False
+            skip_list.append(entry)
+        else:
+            entry["needs_analysis"] = True
+            need_list.append(entry)
+    logger.info("批量预归类: 共 %d 条 → 跳过 %d 条, 需分析 %d 条",
+                len(records), len(skip_list), len(need_list))
+    return _ok({"skip": skip_list, "need_analysis": need_list},
+               f"预归类完成: 跳过 {len(skip_list)} 条, 需分析 {len(need_list)} 条")
+
+
 @app.post("/api/troubleshoot/diagnose")
 def troubleshoot_diagnose(body: dict = Body(default={})):
     """排查工具第2步：单 Jira 自动诊断归类（同步端点：FastAPI 自动走线程池，避免下载阻塞事件循环，支持前端真并发）

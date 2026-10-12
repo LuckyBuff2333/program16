@@ -518,7 +518,7 @@
                   <el-tag type="info" size="small" effect="dark">自动归类</el-tag>
                   <span style="font-weight:700;font-size:14px">无需分析（{{ getSkipDiagResults().length }} 条）</span>
                 </div>
-                <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview"
+                <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview('skip')"
                   :disabled="!getSkipDiagResults().filter(r => r.report && r.report.human_reason).length">
                   批量写入自动归类结果
                 </el-button>
@@ -551,7 +551,7 @@
                     :disabled="!getAnalysisDiagResults().filter(r => r.category === '触发时间问题' || r.category?.includes('触发时间') || r.category?.includes('解压问题')).length">
                     生成触发时间问题表格
                   </el-button>
-                  <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview"
+                  <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview('analysis')"
                     :disabled="!getAnalysisDiagResults().filter(r => r.report && r.report.human_reason).length">
                     批量写入人工审核结果
                   </el-button>
@@ -2426,7 +2426,7 @@
                       <el-tag type="info" size="small" effect="dark">自动归类</el-tag>
                       <span style="font-weight:700">无需分析（{{ getSkipDiagResults().length }} 条）</span>
                     </div>
-                    <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview"
+                    <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview('skip')"
                       :disabled="!getSkipDiagResults().filter(r => r.report && r.report.human_reason).length">
                       批量写入自动归类结果
                     </el-button>
@@ -2467,7 +2467,7 @@
                         :disabled="!getAnalysisDiagResults().filter(r => r.category === '触发时间问题' || r.category?.includes('触发时间')).length">
                         生成触发时间问题表格
                       </el-button>
-                      <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview"
+                      <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview('analysis')"
                         :disabled="!getAnalysisDiagResults().filter(r => r.report && r.report.human_reason).length">
                         批量写入人工审核结果
                       </el-button>
@@ -4497,7 +4497,7 @@ createApp({
         this.flow2Msg = '查询失败: ' + e.message; this.flow2Error = true;
       } finally { this.flow2Loading.query = false; }
     },
-    // 流程二：批量诊断失败记录（同 jira 号仅诊断一次，避免重复调用）
+    // 流程二：批量诊断失败记录（两阶段：先预筛自动归类 → 再诊断剩余记录）
     async flow2DiagnoseAll() {
       const targets = this.flow2ErrorRecords;
       if (!targets.length) { ElementPlus.ElMessage.warning('无可诊断的失败记录'); return; }
@@ -4507,23 +4507,62 @@ createApp({
       this.troubleshoot.diagResults = [];
       // 按 jira 号去重，同一 bug 仅诊断一次
       const seen = new Set();
-      const queue = [];
+      const uniqueRecords = [];
       for (const r of targets) {
         const id = r['jira号'];
-        if (id && !seen.has(id)) { seen.add(id); queue.push(r); }
+        if (id && !seen.has(id)) { seen.add(id); uniqueRecords.push(r); }
       }
-      const dupCount = targets.length - queue.length;
-      if (dupCount) console.log(`批量诊断去重: ${targets.length} 条 → ${queue.length} 条（${dupCount} 个重复 jira 号跳过）`);
-      const worker = async () => {
-        while (queue.length && !this.troubleshoot.stopFlag) { await this._diagnoseRow(queue.shift()); }
-      };
-      await Promise.all([worker(), worker(), worker()]);
+      const dupCount = targets.length - uniqueRecords.length;
+      if (dupCount) console.log(`批量诊断去重: ${targets.length} 条 → ${uniqueRecords.length} 条`);
+      // —— 阶段一：批量预归类（快速筛出无需分析的记录） ——
+      try {
+        const preBody = await this.api('/api/troubleshoot/batch_pre_classify', {
+          method: 'POST',
+          body: JSON.stringify({
+            records: uniqueRecords.map(r => ({
+              bugid: r['jira号'], err_msg: r['错误信息'] || '',
+              human_review: r['人工审核结果'] || '',
+              done_time: r['分析完成时间'] || '',
+              problem_time: r['分析问题时间'] || '',
+            })),
+          }),
+        });
+        const preData = preBody.data || {};
+        const skipRecords = preData.skip || [];
+        const needRecords = preData.need_analysis || [];
+        // 将预归类结果立即加入 diagResults（自动归类表马上展示）
+        for (const s of skipRecords) {
+          this.troubleshoot.diagResults.push({
+            bugid: s.bugid, category: s.category, done_time: s.done_time,
+            problem_time: s.problem_time, detail: s.detail || '',
+            archive_files: [], verify_status: '', suggested_time: '',
+            report: s.report || {}, needs_analysis: false,
+          });
+        }
+        if (skipRecords.length) {
+          ElementPlus.ElMessage.info(`阶段一：已筛出 ${skipRecords.length} 条自动归类记录`);
+        }
+        // —— 阶段二：仅对剩余需分析的记录执行完整诊断 ——
+        if (this.troubleshoot.stopFlag) { this.troubleshoot.diagRunning = false; return; }
+        const queue = [];
+        const needBugids = new Set(needRecords.map(r => r.bugid));
+        for (const r of uniqueRecords) {
+          if (needBugids.has(r['jira号'])) { queue.push(r); }
+        }
+        const worker = async () => {
+          while (queue.length && !this.troubleshoot.stopFlag) { await this._diagnoseRow(queue.shift()); }
+        };
+        await Promise.all([worker(), worker(), worker()]);
+      } catch (e) {
+        console.error('批量诊断异常:', e);
+      }
       this.troubleshoot.diagRunning = false;
       if (this.troubleshoot.stopFlag) {
-        ElementPlus.ElMessage.warning(`已停止诊断：完成 ${this.troubleshoot.diagResults.length} 条，剩余 ${queue.length} 条未诊断`);
+        ElementPlus.ElMessage.warning(`已停止诊断：完成 ${this.troubleshoot.diagResults.length} 条`);
       } else {
-        const dupMsg = dupCount ? `（${dupCount} 个重复 jira 号已跳过）` : '';
-        ElementPlus.ElMessage.success(`诊断完成，共 ${this.troubleshoot.diagResults.length} 条${dupMsg}`);
+        const skipCount = this.troubleshoot.diagResults.filter(r => !r.needs_analysis).length;
+        const analysisCount = this.troubleshoot.diagResults.filter(r => r.needs_analysis).length;
+        ElementPlus.ElMessage.success(`诊断完成: 自动归类 ${skipCount} 条 + 需分析 ${analysisCount} 条`);
       }
     },
     // 置信度评测：SSE流式执行（LLM语义对比）
@@ -7645,17 +7684,29 @@ createApp({
       }
       this.running.prodBatchRun = false;
     },
-    // 批量写入人工审核结果到多维表格（仅写入当前筛选结果）
-    async batchWriteReview() {
-      const items = this.getFilteredDiagResults()
+    // 批量写入人工审核结果到多维表格
+    // writeScope: 'all'=全部, 'skip'=仅自动归类, 'analysis'=仅需分析
+    async batchWriteReview(writeScope = 'all') {
+      let sourceRows;
+      let scopeLabel;
+      if (writeScope === 'skip') {
+        sourceRows = this.getSkipDiagResults();
+        scopeLabel = '自动归类';
+      } else if (writeScope === 'analysis') {
+        sourceRows = this.getAnalysisDiagResults();
+        scopeLabel = '需分析';
+      } else {
+        sourceRows = this.getFilteredDiagResults();
+        scopeLabel = this.troubleshoot.categoryFilter ? `筛选「${this.troubleshoot.categoryFilter}」` : '全部';
+      }
+      const items = sourceRows
         .filter(r => r.report && r.report.human_reason)
         .map(r => ({ bugid: r.bugid, done_time: r.done_time, human_reason: r.report.human_reason }));
-      if (!items.length) return ElementPlus.ElMessage.warning('无有人工分析失败原因的记录');
-      const scope = this.troubleshoot.categoryFilter ? `筛选「${this.troubleshoot.categoryFilter}」中 ` : '';
+      if (!items.length) return ElementPlus.ElMessage.warning(`「${scopeLabel}」中无有人工分析失败原因的记录`);
       const emptyHint = this.troubleshoot.onlyEmptyReview ? '（仅写入人工审核结果为空的记录）' : '';
       try {
         await ElementPlus.ElMessageBox.confirm(
-          `将写入${scope}${items.length} 条人工审核结果到多维表格${emptyHint}，确认？`,
+          `将写入「${scopeLabel}」${items.length} 条人工审核结果到多维表格${emptyHint}，确认？`,
           '确认写入', { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' });
       } catch { return; }
       this.troubleshoot.writingReview = true;
