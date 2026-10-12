@@ -9591,14 +9591,28 @@ def _diag_list_rar_multi_entries(parts: list, headers: dict, timeout: int, bugid
             for _p, att in parts:
                 fname = att.get("filename", "") or f"part{_p}.rar"
                 dst = os.path.join(rar_dir, fname)
+                expected_size = att.get("size", 0)
                 logger.info("%s下载 rar 分卷: %s", _label, fname)
-                with open(dst, "wb") as out:
-                    with _httpx.stream("GET", att.get("content", ""), headers=headers,
-                                       timeout=timeout, verify=False, follow_redirects=True) as r:
-                        r.raise_for_status()
-                        for chunk in r.iter_bytes(chunk_size=1024 * 1024):
-                            out.write(chunk)
-                            total_size += len(chunk)
+                _ok = False
+                for _retry in range(2):
+                    with open(dst, "wb") as out:
+                        with _httpx.stream("GET", att.get("content", ""), headers=headers,
+                                           timeout=timeout, verify=False, follow_redirects=True) as r:
+                            r.raise_for_status()
+                            for chunk in r.iter_bytes(chunk_size=1024 * 1024):
+                                out.write(chunk)
+                                total_size += len(chunk)
+                    actual = os.path.getsize(dst)
+                    if expected_size and actual < expected_size * 0.5:
+                        logger.warning("%srar 分卷文件过小(第%d次): %s, 实际 %d / 预期 %d",
+                                       _label, _retry + 1, fname, actual, expected_size)
+                        if _retry == 0:
+                            total_size -= actual
+                            continue
+                    _ok = True
+                    break
+                if not _ok:
+                    return {"ok": False, "entries": [], "reason": f"分卷 {fname} 下载不完整(实际 {actual}/{expected_size})", "size": total_size}
             logger.info("%srar 分卷下载完成: %d bytes, %d 个卷", _label, total_size, len(parts))
             # 用第一卷的路径调用 7z/UnRAR 列出条目
             first_fname = parts[0][1].get("filename", "") or f"part{parts[0][0]}.rar"
@@ -10140,12 +10154,23 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                 try:
                     for _p, att in parts:
                         dst = os.path.join(rar_dir, att.get("filename", "") or f"part{_p}.rar")
-                        with open(dst, "wb") as out:
-                            with _httpx.stream("GET", att.get("content", ""), headers=headers,
-                                               timeout=timeout, verify=False, follow_redirects=True) as r:
-                                r.raise_for_status()
-                                for chunk in r.iter_bytes(chunk_size=1024 * 1024):
-                                    out.write(chunk)
+                        expected_size = att.get("size", 0)
+                        for _retry in range(2):
+                            with open(dst, "wb") as out:
+                                with _httpx.stream("GET", att.get("content", ""), headers=headers,
+                                                   timeout=timeout, verify=False, follow_redirects=True) as r:
+                                    r.raise_for_status()
+                                    for chunk in r.iter_bytes(chunk_size=1024 * 1024):
+                                        out.write(chunk)
+                            actual = os.path.getsize(dst)
+                            if expected_size and actual < expected_size * 0.5:
+                                logger.warning("gmlogger rar 分卷文件过小(第%d次): %s, 实际 %d / 预期 %d",
+                                               _retry + 1, att.get("filename", ""), actual, expected_size)
+                                if _retry == 0:
+                                    continue
+                            break
+                        else:
+                            raise RuntimeError(f"分卷 {att.get('filename', '')} 下载不完整(实际 {actual}/{expected_size})")
                 except Exception as e:
                     logger.warning("gmlogger rar 下载失败 %s: %s", base, e)
                     last_reason = f"gmlogger 下载失败: {e}"
@@ -10160,11 +10185,25 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                 # 分卷按序流式下载拼接为完整压缩包，避免大文件占用内存
                 with open(merged, "wb") as out:
                     for _p, att in parts:
-                        with _httpx.stream("GET", att.get("content", ""), headers=headers,
-                                           timeout=timeout, verify=False, follow_redirects=True) as r:
-                            r.raise_for_status()
-                            for chunk in r.iter_bytes(chunk_size=1024 * 1024):
-                                out.write(chunk)
+                        expected_size = att.get("size", 0)
+                        for _retry in range(2):
+                            part_size_before = out.tell()
+                            with _httpx.stream("GET", att.get("content", ""), headers=headers,
+                                               timeout=timeout, verify=False, follow_redirects=True) as r:
+                                r.raise_for_status()
+                                for chunk in r.iter_bytes(chunk_size=1024 * 1024):
+                                    out.write(chunk)
+                            part_size = out.tell() - part_size_before
+                            if expected_size and part_size < expected_size * 0.5:
+                                logger.warning("gmlogger 分卷文件过小(第%d次): %s, 实际 %d / 预期 %d",
+                                               _retry + 1, att.get("filename", ""), part_size, expected_size)
+                                if _retry == 0:
+                                    out.seek(part_size_before)
+                                    out.truncate()
+                                    continue
+                            break
+                        else:
+                            raise RuntimeError(f"分卷 {att.get('filename', '')} 下载不完整(实际 {part_size}/{expected_size})")
             except Exception as e:
                 logger.warning("gmlogger 分卷下载失败 %s: %s", base, e)
                 return {"status": "failed", "reason": f"gmlogger 下载失败: {e}", "main_entries": [], "main_times": []}
@@ -11158,6 +11197,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         video_name = video_att.get("filename", "")
         if not video_url:
             continue
+        ts = None  # 初始化：避免 OCR/文件名解析均未命中时 UnboundLocalError
         video_label = f"{bugid} [{vi+1}/{len(ranked_videos)}] {video_name}"
         # 为当前视频找到最接近的 gmlogger（按接近度排序 ref_pool）
         closest_gm = _find_closest_gmlogger(video_att, gm_info_list)
@@ -11366,7 +11406,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                                 elif d_orig < best_12h_diff:
                                     best_12h_diff = d_orig
                                     best_12h_cand = (ts, ext_dt)
-                        if not first_partial:
+                        if ts and not first_partial:
                             first_partial = ts
             # 帧差法回退：标准帧OCR未提取到时间时，用帧差法自动定位时钟区域
             if not first_full and not first_partial:

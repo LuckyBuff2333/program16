@@ -194,7 +194,7 @@
           <div style="margin-bottom:16px">
             <div style="font-weight:700;color:#409eff;font-size:13px;margin-bottom:8px">流程一：AI日志分析批量执行（自动）</div>
             <div class="flow-line" style="justify-content: center; min-width: auto; max-width: 800px; margin: 0 auto;">
-              <div class="flow-node"><div class="icon">🤖</div><div class="title">AI日志分析去重执行</div><div class="desc">JQL/CSV导入 → 去重过滤<br>批量调用AI分析接口<br>等待200 OK</div></div>
+              <div class="flow-node"><div class="icon">🤖</div><div class="title">AI日志分析去重执行</div><div class="desc">JQL搜索 → 去重过滤<br>批量调用AI分析接口<br>等待200 OK</div></div>
             </div>
           </div>
           <!-- 流程二 -->
@@ -215,20 +215,16 @@
         <el-card shadow="never" style="margin-bottom:16px;border:2px solid #409eff">
           <template #header>
             <span style="font-weight:700;color:#409eff;font-size:15px">流程一：AI日志分析批量执行</span>
-            <span style="font-size:12px;color:#8a93a6;margin-left:8px">JQL搜索/CSV导入 → 去重过滤 → 批量调用AI分析接口</span>
+            <span style="font-size:12px;color:#8a93a6;margin-left:8px">JQL搜索 → 去重过滤 → 批量调用AI分析接口</span>
           </template>
           <!-- 一键执行 -->
-          <el-radio-group v-model="batchAi.source" style="margin-bottom:10px;display:block">
-            <el-radio-button value="jql">JQL 搜索</el-radio-button>
-            <el-radio-button value="csv">CSV 文件导入</el-radio-button>
-          </el-radio-group>
           <div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap">
             <el-checkbox v-model="batchAi.filterAllExisting" @change="onFilterAllChange">过滤表中所有已存在记录（含失败，防止PC/线上重复）</el-checkbox>
             <el-checkbox v-model="batchAi.filterPcOnly" @change="onFilterSourceChange">过滤PC正确和通用失败的</el-checkbox>
             <el-checkbox v-model="batchAi.filterOnlineOnly" @change="onFilterSourceChange">过滤线上正确和通用失败的</el-checkbox>
             <el-checkbox v-model="batchAi.filterAiPreliminary">过滤AI初步分析结果</el-checkbox>
           </div>
-          <el-form inline v-if="batchAi.source==='jql'" style="margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <el-form inline style="margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
             <el-form-item label="JQL" style="flex:1;min-width:200px">
               <el-input v-model="batchAi.jql" placeholder="JQL 查询语句" style="width:100%"></el-input>
             </el-form-item>
@@ -237,23 +233,6 @@
             <el-checkbox v-model="batchAi.execMode" true-value="online" @change="v => { if(v){batchAi.execMode='online';setBatchMeta('batchAi','online')} }" style="margin-right:8px">线上执行</el-checkbox>
             <el-form-item style="margin-right:0">
               <el-button type="primary" :loading="running.batchOneClick" :disabled="!batchAi.execMode" @click="batchAiOneClick">
-                {{ batchAi.continuous ? `持续执行（${batchAi.rounds} 轮）` : '一键执行' }}
-              </el-button>
-              <el-button v-if="running.batchOneClick && batchAi.continuous" type="danger" @click="batchAiAbort && batchAiAbort.abort()">停止</el-button>
-            </el-form-item>
-          </el-form>
-          <el-form inline v-else style="margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <el-form-item label="CSV文件" style="margin-right:0">
-              <el-button size="small" :loading="running.batchLoadCsv" @click="batchAiLoadCsvFiles">加载文件列表</el-button>
-              <el-select v-model="batchAi.selectedCsv" placeholder="选择CSV文件" style="width:280px;margin-left:8px" filterable>
-                <el-option v-for="f in batchAi.csvFiles" :key="f.path" :label="`${f.name} (${f.count} 条)`" :value="f.path"></el-option>
-              </el-select>
-            </el-form-item>
-            <el-form-item label="抽取数量" style="margin-right:0"><el-input-number v-model="batchAi.sampleCount" :min="1" :max="200" style="width:120px"></el-input-number></el-form-item>
-            <el-checkbox v-model="batchAi.execMode" true-value="pc" @change="v => { if(v){batchAi.execMode='pc';setBatchMeta('batchAi','pc')} }" style="margin-right:4px">PC执行</el-checkbox>
-            <el-checkbox v-model="batchAi.execMode" true-value="online" @change="v => { if(v){batchAi.execMode='online';setBatchMeta('batchAi','online')} }" style="margin-right:8px">线上执行</el-checkbox>
-            <el-form-item style="margin-right:0">
-              <el-button type="primary" :loading="running.batchOneClick" :disabled="!batchAi.selectedCsv || !batchAi.execMode" @click="batchAiOneClick">
                 {{ batchAi.continuous ? `持续执行（${batchAi.rounds} 轮）` : '一键执行' }}
               </el-button>
               <el-button v-if="running.batchOneClick && batchAi.continuous" type="danger" @click="batchAiAbort && batchAiAbort.abort()">停止</el-button>
@@ -279,7 +258,7 @@
               </el-form-item>
             </template>
           </el-form>
-          <div v-if="batchAi.source==='jql'" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
             <el-button size="small" :type="batchAi.jql===p?void 0:'info'" v-for="(p,i) in batchAi.jqlPresets" :key="i" @click="batchAi.jql=p">{{ batchAi.jqlLabels[i] }}</el-button>
           </div>
           <el-alert v-if="batchAi.oneClickMsg" :type="batchAi.oneClickError ? 'error' : 'success'" :closable="false" :title="batchAi.oneClickMsg" style="margin-top:4px"></el-alert>
@@ -686,14 +665,31 @@
 
         <el-card shadow="never">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <div class="section-title" style="margin:0">结论报表（{{ dailyReportDate || overview.today }}）</div>
-            <div style="display:flex;align-items:center;gap:8px">
+            <div class="section-title" style="margin:0">
+              <el-radio-group v-model="summaryMode" size="small" style="margin-right:12px" @change="activeFailCat = ''">
+                <el-radio-button label="day">每日汇总</el-radio-button>
+                <el-radio-button label="week">每周汇总</el-radio-button>
+                <el-radio-button label="range">时间段汇总</el-radio-button>
+              </el-radio-group>
+            </div>
+            <div v-if="summaryMode === 'day'" style="display:flex;align-items:center;gap:8px">
               <el-date-picker v-model="dailyReportDate" type="date" placeholder="选择日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:140px"></el-date-picker>
               <el-button size="small" type="primary" :loading="dailyReportLoading" @click="refreshDailyReport">刷新</el-button>
               <el-tag v-if="dailyRows.length" type="info" size="small">{{ dailyRows.length }} 条</el-tag>
             </div>
+            <div v-else-if="summaryMode === 'week'" style="display:flex;align-items:center;gap:8px">
+              <el-date-picker v-model="weeklyDate" type="date" placeholder="选择日期所在周" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:160px"></el-date-picker>
+              <el-button size="small" type="primary" :loading="weeklyLoading" @click="loadWeeklySummary">查询本周</el-button>
+            </div>
+            <div v-else style="display:flex;align-items:center;gap:8px">
+              <el-date-picker v-model="rangeStart" type="date" placeholder="开始日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:150px"></el-date-picker>
+              <span style="color:#909399">~</span>
+              <el-date-picker v-model="rangeEnd" type="date" placeholder="结束日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:150px"></el-date-picker>
+              <el-button size="small" type="primary" :loading="rangeLoading" :disabled="!rangeStart || !rangeEnd" @click="loadRangeSummary">查询</el-button>
+            </div>
           </div>
-          <!-- 汇总卡片 -->
+          <!-- ===== 每日汇总 ===== -->
+          <template v-if="summaryMode === 'day'">
           <div v-if="dailySummary.total" style="margin-bottom:12px;padding:12px 16px;background:#f8f9fa;border-radius:8px;border:1px solid #e8e8e8">
             <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
               <span style="font-weight:700;color:#303133">汇总：</span>
@@ -746,28 +742,9 @@
               </template>
             </el-table-column>
           </el-table>
-        </el-card>
-
-        <!-- 每周/时间段汇总卡片 -->
-        <el-card shadow="never" style="margin-top:12px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <div class="section-title" style="margin:0">
-              <el-radio-group v-model="summaryMode" size="small" style="margin-right:12px" @change="activeFailCat = ''">
-                <el-radio-button label="week">每周汇总</el-radio-button>
-                <el-radio-button label="range">时间段汇总</el-radio-button>
-              </el-radio-group>
-            </div>
-            <div v-if="summaryMode === 'week'" style="display:flex;align-items:center;gap:8px">
-              <el-date-picker v-model="weeklyDate" type="date" placeholder="选择日期所在周" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:160px"></el-date-picker>
-              <el-button size="small" type="primary" :loading="weeklyLoading" @click="loadWeeklySummary">查询本周</el-button>
-            </div>
-            <div v-else style="display:flex;align-items:center;gap:8px">
-              <el-date-picker v-model="rangeStart" type="date" placeholder="开始日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:150px"></el-date-picker>
-              <span style="color:#909399">~</span>
-              <el-date-picker v-model="rangeEnd" type="date" placeholder="结束日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" size="small" style="width:150px"></el-date-picker>
-              <el-button size="small" type="primary" :loading="rangeLoading" :disabled="!rangeStart || !rangeEnd" @click="loadRangeSummary">查询</el-button>
-            </div>
-          </div>
+          </template>
+          <!-- ===== 每周汇总 ===== -->
+          <template v-if="summaryMode === 'week'">
           <!-- 周报结果 -->
           <div v-if="summaryMode === 'week' && weeklySummary.total" style="margin-bottom:12px;padding:12px 16px;background:#f0f5ff;border-radius:8px;border:1px solid #d6e4ff">
             <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
@@ -805,7 +782,7 @@
             </div>
           </div>
           <!-- 每周汇总表 -->
-          <template v-if="summaryMode === 'week'">
+          <div v-if="weeklySummary.daily_breakdown && weeklySummary.daily_breakdown.length">
             <el-table v-if="weeklySummary.daily_breakdown && weeklySummary.daily_breakdown.length" :data="weeklySummary.daily_breakdown" size="small" stripe max-height="240" border style="margin-bottom:12px">
               <el-table-column prop="date" label="日期" width="120"></el-table-column>
               <el-table-column prop="total" label="总数" width="80" align="center"></el-table-column>
@@ -822,8 +799,9 @@
               <el-table-column prop="avg_analysis" label="平均分析耗时" width="130" align="center"></el-table-column>
             </el-table>
             <div v-if="weeklySummary.total === 0 && weeklySummary.week_info" style="color:#909399;text-align:center;padding:20px 0">本周无批量执行记录</div>
+          </div>
           </template>
-          <!-- 时间段汇总结果 -->
+          <!-- ===== 时间段汇总 ===== -->
           <template v-if="summaryMode === 'range'">
             <div v-if="rangeSummary.total" style="margin-bottom:12px;padding:12px 16px;background:#fff7e6;border-radius:8px;border:1px solid #ffd591">
               <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
@@ -1322,18 +1300,14 @@
             <div v-else-if="testPanel === 'batch_ai'" key="batch_ai" class="test-panel">
               <div class="section-title">PC侧AI日志分析批量执行</div>
               <el-card shadow="never" style="margin-bottom:14px;border:2px solid #409eff">
-                <template #header><span style="font-weight:700;color:#409eff">⚡ 一键执行（搜索/导入→过滤→抽样→执行，抽样时按需提取时间）</span></template>
-                <el-radio-group v-model="batchAi.source" style="margin-bottom:10px;display:block">
-                  <el-radio-button value="jql">JQL 搜索</el-radio-button>
-                  <el-radio-button value="csv">CSV 文件导入</el-radio-button>
-                </el-radio-group>
+                <template #header><span style="font-weight:700;color:#409eff">⚡ 一键执行（搜索→过滤→抽样→执行，抽样时按需提取时间）</span></template>
                 <div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap">
                   <el-checkbox v-model="batchAi.filterAllExisting" @change="onFilterAllChange">过滤表中所有已存在记录（含失败，防止PC/线上重复）</el-checkbox>
                   <el-checkbox v-model="batchAi.filterPcOnly" @change="onFilterSourceChange">过滤PC正确和通用失败的</el-checkbox>
                   <el-checkbox v-model="batchAi.filterOnlineOnly" @change="onFilterSourceChange">过滤线上正确和通用失败的</el-checkbox>
                   <el-checkbox v-model="batchAi.filterAiPreliminary">过滤AI初步分析结果</el-checkbox>
                 </div>
-                <el-form inline v-if="batchAi.source==='jql'" style="margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <el-form inline style="margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                   <el-form-item label="JQL" style="flex:1;min-width:200px">
                     <el-input v-model="batchAi.jql" placeholder="JQL 查询语句" style="width:100%"></el-input>
                   </el-form-item>
@@ -1347,29 +1321,13 @@
                     <el-button v-if="running.batchOneClick && batchAi.continuous" type="danger" @click="batchAiAbort && batchAiAbort.abort()">停止</el-button>
                   </el-form-item>
                 </el-form>
-                <el-form inline v-else style="margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-                  <el-form-item label="CSV文件" style="margin-right:0">
-                    <el-button size="small" :loading="running.batchLoadCsv" @click="batchAiLoadCsvFiles">加载文件列表</el-button>
-                    <el-select v-model="batchAi.selectedCsv" placeholder="选择CSV文件" style="width:280px;margin-left:8px" filterable>
-                      <el-option v-for="f in batchAi.csvFiles" :key="f.path" :label="`${f.name} (${f.count} 条)`" :value="f.path"></el-option>
-                    </el-select>
-                  </el-form-item>
-                  <el-form-item label="抽取数量" style="margin-right:0"><el-input-number v-model="batchAi.sampleCount" :min="1" :max="200" style="width:120px"></el-input-number></el-form-item>
-                  <el-checkbox v-model="batchAi.execMode" true-value="pc" @change="v => { if(v){batchAi.execMode='pc';setBatchMeta('batchAi','pc')} }" style="margin-right:4px">PC执行</el-checkbox>
-                  <el-checkbox v-model="batchAi.execMode" true-value="online" @change="v => { if(v){batchAi.execMode='online';setBatchMeta('batchAi','online')} }" style="margin-right:8px">线上执行</el-checkbox>
-                  <el-form-item style="margin-right:0">
-                    <el-button type="primary" :loading="running.batchOneClick" :disabled="!batchAi.selectedCsv || !batchAi.execMode" @click="batchAiOneClick">
-                      {{ batchAi.continuous ? `持续执行（${batchAi.rounds} 轮）` : '一键执行' }}
-                    </el-button>
-                    <el-button v-if="running.batchOneClick && batchAi.continuous" type="danger" @click="batchAiAbort && batchAiAbort.abort()">停止</el-button>
-                  </el-form-item>
-                </el-form>
                 <!-- 执行参数 -->
                 <div v-if="batchAi.execMode" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;font-size:12px;color:#606266">
                   <span>分析并发:</span><el-input-number v-model="batchAi.analysisConcurrency" :min="1" :max="50" size="small" style="width:80px" controls-position="right"></el-input-number>
                   <span>下载并发:</span><el-input-number v-model="batchAi.downloadConcurrency" :min="1" :max="20" size="small" style="width:80px" controls-position="right"></el-input-number>
                   <span>模型:</span><el-input v-model="batchAi.model" size="small" style="width:140px"></el-input>
                   <span>触发来源:</span><el-input v-model="batchAi.triggerSource" size="small" style="width:80px"></el-input>
+                  <el-checkbox v-model="batchAi.parallelExtractTrigger" style="margin-left:4px;font-size:12px"><span>并行提取触发时间</span></el-checkbox>
                 </div>
                 <el-form inline style="margin-bottom:8px">
                   <el-form-item style="margin-bottom:0">
@@ -1384,7 +1342,7 @@
                     </el-form-item>
                   </template>
                 </el-form>
-                <div v-if="batchAi.source==='jql'" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+                <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
                   <el-button size="small" :type="batchAi.jql===p?void 0:'info'" v-for="(p,i) in batchAi.jqlPresets" :key="i" @click="batchAi.jql=p">{{ batchAi.jqlLabels[i] }}</el-button>
                 </div>
                 <el-alert v-if="batchAi.oneClickMsg" :type="batchAi.oneClickError ? 'error' : 'success'" :closable="false" :title="batchAi.oneClickMsg" style="margin-top:4px"></el-alert>
@@ -1518,7 +1476,6 @@
                     <el-checkbox v-model="batchTrigger.videoFallback"><span>视频提取优先</span></el-checkbox>
                     <el-checkbox v-model="batchTrigger.refreshCache"><span>云端缓存更新</span></el-checkbox>
                     <el-checkbox v-model="batchTrigger.reExtractEmpty"><span>空标记重新提取</span></el-checkbox>
-                    <el-checkbox v-model="batchTrigger.parallelExtract"><span>并行提取</span></el-checkbox>
                     <el-checkbox v-model="batchTrigger.filterAiInit"><span>过滤AI初步分析结果</span></el-checkbox>
                   </div>
                   <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
@@ -3324,7 +3281,7 @@ createApp({
       feishuDocError: '',
       feishuImQuery: { chatName: '王源泉', chatId: '', startDateTime: null, chats: null, result: null, error: '', debugResult: null },
       feishuEvents: { result: null },
-      batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"', 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED', 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")', 'issuetype = bug AND status != closed AND created >= "2026/09/01"', 'issuetype = bug AND status != closed AND created >= "2026-10-01"'], jqlLabels: ['远控', 'coreservice', '导航', 'VCU近期未关闭', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice', '8.25后RES1.0/1.1', '9.1新增非close', '10.1新增非close'], sampleCount: 5, source: 'jql', filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', csvFiles: [], selectedCsv: '', csvTriggerTimes: {}, rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, preSample: null },
+      batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"', 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED', 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")', 'issuetype = bug AND status != closed AND created >= "2026/09/01"', 'issuetype = bug AND status != closed AND created >= "2026-10-01"'], jqlLabels: ['远控', 'coreservice', '导航', 'VCU近期未关闭', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice', '8.25后RES1.0/1.1', '9.1新增非close', '10.1新增非close'], sampleCount: 5, source: 'jql', filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, skipTimeExtraction: false, execMode: '', parallelExtractTrigger: false, analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', csvFiles: [], selectedCsv: '', csvTriggerTimes: {}, rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, preSample: null },
       verifyForm: { csvPath: '' },
       verifyMode: 'browse',
       docsFiles: [],
@@ -3389,7 +3346,7 @@ createApp({
             dailySummary: {},
       activeFailCat: '',  // 当前展示的失败分类弹出框
       weeklySummary: {}, weeklyLoading: false, weeklyDate: null,
-              summaryMode: 'week', rangeStart: null, rangeEnd: null, rangeSummary: {}, rangeLoading: false,
+              summaryMode: 'day', rangeStart: null, rangeEnd: null, rangeSummary: {}, rangeLoading: false,
       batchReportRows: [],
       // 多维表格全量数据
       bitableAllRecords: [], bitableAllColumns: [], bitableFilters: [], bitableLoading: false,
@@ -4534,7 +4491,7 @@ createApp({
         const keys = this.batchAi.rows.map(r => r.key);
         const resp = await fetch('/api/test/batch_ai_extract_times', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keys }), signal: this.batchAiExtractAbort.signal,
+          body: JSON.stringify({ keys, parallel: this.batchAi.parallelExtractTrigger }), signal: this.batchAiExtractAbort.signal,
         });
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
@@ -5393,14 +5350,9 @@ createApp({
       this.batchAi.continuousRunning = false;
       this.batchAiAbort = new AbortController();
       try {
-        // 步骤1: JQL搜索 或 CSV导入
-        if (this.batchAi.source === 'csv') {
-          if (!this.batchAi.selectedCsv) throw new Error('请选择CSV文件');
-          await this.batchAiCsvImport();
-        } else {
-          if (!this.batchAi.jql.trim()) throw new Error('请输入 JQL');
-          await this.batchAiSearch();
-        }
+        // 步骤1: JQL搜索
+        if (!this.batchAi.jql.trim()) throw new Error('请输入 JQL');
+        await this.batchAiSearch();
         if (!this.batchAi.rows.length) throw new Error('候选列表为空');
         // 步骤2: 按用户当前勾选的过滤条件过滤（未勾选任何过滤时跳过过滤步骤）
         const hasAnyFilter = this.batchAi.filterAllExisting || this.batchAi.filterPcOnly || this.batchAi.filterOnlineOnly || this.batchAi.filterAiPreliminary;
