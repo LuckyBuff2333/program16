@@ -105,3 +105,59 @@ flowchart TD
 
 </details>
 
+<details>
+<summary><b>8. gmlogger 前置检查移至所有时间提取之前（2026-10-12）</b></summary>
+
+- **问题描述**：gmlogger 检查在评论/字段提取之后，导致无 gmlogger 的 Jira 仍执行了不必要的评论提取
+- **根因**：_extract_one 中 gmlogger 前置检查位置不对，应在 fetch_issue 之后、所有时间提取之前
+- **解决方案**：将 _has_gmlogger_logs 检查移到 fetch_issue 之后、评论/字段提取之前，无 gmlogger 直接返回 None（不写空标签，不属于通用报错，下次重新检查）
+
+</details>
+
+<details>
+<summary><b>9. gmlogger 下载增加双重超时保护（2026-10-12）</b></summary>
+
+- **问题描述**：156MB 的 gmlogger 压缩包下载卡住，阻塞整个提取流程
+- **相关Bug号**：批量执行中偶发
+- **根因**：httpx.stream() 的 read=300（5分钟等待响应头/数据块），服务器不响应时整个线程挂起
+- **解决方案**：read 超时从 300s 降至 60s；增加 5 分钟 wall-clock deadline（time.monotonic），每下载 1MB 检查一次；体积阈值从 500MB 降至 200MB
+
+</details>
+
+<details>
+<summary><b>10. 移除视频兜底链路的外层文件名日期回退（2026-10-12）</b></summary>
+
+- **问题描述**：gmlogger 包内 main.log 日期获取失败时，仍用外层文件名的日期凑合，可能匹配到错误日期
+- **根因**：_diag_extract_time_from_video_simple 中包内日期失败后回退到外层 gmlogger 文件名日期，外层文件名日期可能不准
+- **解决方案**：包内日期为权威来源，获取失败时直接跳过视频兜底，不再用外层文件名日期凑合
+
+</details>
+
+<details>
+<summary><b>11. RapidOCR 检测阈值修复（2026-10-12）</b></summary>
+
+- **问题描述**：低质量视频帧 RapidOCR 检测不到文本，频繁回退 EasyOCR
+- **根因**：RapidOCR 默认 box_thresh=0.5 太高（EasyOCR 用 text_threshold=0.25），阈值差一倍导致低质量帧检测失败
+- **解决方案**：box_thresh 从 0.5 降至 0.3，text_score 设为 0.15（与应用层过滤阈值对齐）
+
+</details>
+
+<details>
+<summary><b>12. RapidOCR 图像放大规则从 EasyOCR 迁移（2026-10-13）</b></summary>
+
+- **问题描述**：EasyOCR 的 mag_ratio=1.5（图像放大1.5倍）未迁移到 RapidOCR，小字号识别能力下降
+- **根因**：切换 OCR 引擎时只迁移了检测阈值，未迁移图像预处理参数
+- **解决方案**：_rapid_ocr_readtext 对宽度<1280px 的图像自动放大 1.5x（INTER_CUBIC），bbox 坐标还原；已二值化/锐化的 ROI（_already_enhanced=True）跳过放大避免伪影放大
+
+</details>
+
+<details>
+<summary><b>13. gmlogger 内包日期提取优化——仅从 main 文件名提取（2026-10-13）</b></summary>
+
+- **问题描述**：VCU-555094 的 main.log 存在但头部 64KB 无日期匹配，提取时间 0 个，视频兜底被跳过
+- **相关Bug号**：VCU-555094
+- **根因**：原逻辑先尝试文件名解析，失败后解压读文件头部 64KB 提取日期，但 main.log 头部可能无日期格式
+- **解决方案**：简化为仅从 main 文件名提取日期（不解压读内容），带去重；_diag_scan_entry_times 保持仅匹配 main.log 文件名
+
+</details>
+
