@@ -10477,14 +10477,14 @@ def _get_rapid_ocr():
 def _rapid_ocr_readtext(image):
     """调用 RapidOCR 识别图像，返回与 EasyOCR 兼容的 [bbox, text, conf] 格式
 
-    降低 box_thresh/text_score 至 0.3（默认 0.5 太高，低质量视频帧检测不到文本）
-    与 EasyOCR 的 text_threshold=0.25 对齐，避免不必要的回退。
+    降低 box_thresh 至 0.3（默认 0.5 太高，低质量视频帧检测不到文本），
+    text_score 至 0.15（与应用层过滤阈值对齐，避免引擎内部丢弃可用文本）。
     """
     engine = _get_rapid_ocr()
     if engine is None:
         return []
     try:
-        result, elapse = engine(image, box_thresh=0.3, text_score=0.3)
+        result, elapse = engine(image, box_thresh=0.3, text_score=0.15)
         if not result:
             return []
         items = []
