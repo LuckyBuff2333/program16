@@ -10524,22 +10524,40 @@ def _get_rapid_ocr():
 def _rapid_ocr_readtext(image):
     """调用 RapidOCR 识别图像，返回与 EasyOCR 兼容的 [bbox, text, conf] 格式
 
-    降低 box_thresh 至 0.3（默认 0.5 太高，低质量视频帧检测不到文本），
-    text_score 至 0.15（与应用层过滤阈值对齐，避免引擎内部丢弃可用文本）。
+    图像预处理（从 EasyOCR 迁移）：
+    - 放大 1.5x（等效 EasyOCR mag_ratio=1.5），提升小字号/低对比度时钟识别能力
+    - 降低 box_thresh 至 0.3（默认 0.5 太高，低质量视频帧检测不到文本）
+    - text_score 至 0.15（与应用层过滤阈值对齐，避免引擎内部丢弃可用文本）
     """
+    import numpy as np
+    import cv2
     engine = _get_rapid_ocr()
     if engine is None:
         return []
     try:
-        result, elapse = engine(image, box_thresh=0.3, text_score=0.15)
+        # 图像放大 1.5x（等效 EasyOCR mag_ratio=1.5），提升小字号识别能力
+        mag_ratio = 1.5
+        h, w = image.shape[:2]
+        # 仅对小图像放大（超过 1280px 宽度的帧不放大，避免内存爆炸）
+        if w < 1280:
+            enlarged = cv2.resize(image, (int(w * mag_ratio), int(h * mag_ratio)),
+                                  interpolation=cv2.INTER_CUBIC)
+        else:
+            enlarged = image
+        scale = enlarged.shape[0] / h if enlarged is not image else 1.0
+        result, elapse = engine(enlarged, box_thresh=0.3, text_score=0.15)
         if not result:
             return []
         items = []
         for bbox, text, conf in result:
+            # 将 bbox 缩放回原图坐标（如果做过放大）
+            if scale != 1.0:
+                bbox = [[p[0] / scale, p[1] / scale] for p in bbox]
             # RapidOCR bbox 是 [[x1,y1],[x2,y1],[x2,y2],[x1,y2]] 格式，与 EasyOCR 兼容
             items.append([bbox, text, conf])
-        logger.info("RapidOCR 识别完成: %d 条文本, 耗时 det=%.2fs rec=%.2fs cls=%.2fs",
-                    len(items), elapse[0] if len(elapse) > 0 else 0,
+        logger.info("RapidOCR 识别完成: %d 条文本 (放大%.1fx), 耗时 det=%.2fs rec=%.2fs cls=%.2fs",
+                    len(items), mag_ratio if scale != 1.0 else 1.0,
+                    elapse[0] if len(elapse) > 0 else 0,
                     elapse[1] if len(elapse) > 1 else 0,
                     elapse[2] if len(elapse) > 2 else 0)
         return items
@@ -15570,6 +15588,18 @@ def online_followup_load(date: str = None):
 _auto_detect_stop = False
 
 
+async def _interruptible_sleep(total_seconds: float, check_interval: float = 2.0):
+    """可中断的等待：每 check_interval 秒检查一次停止标志，避免强制停止时长时间无响应"""
+    import asyncio
+    elapsed = 0.0
+    while elapsed < total_seconds:
+        if _auto_detect_stop:
+            return
+        chunk = min(check_interval, total_seconds - elapsed)
+        await asyncio.sleep(chunk)
+        elapsed += chunk
+
+
 @app.post("/api/test/auto_detect_stop")
 async def auto_detect_stop():
     """强制停止自动检测执行"""
@@ -15625,12 +15655,12 @@ async def auto_detect_run(request: Request):
             except Exception as e:
                 yield f"data: {_json.dumps({'type': 'round_error', 'round': round_num, 'error': f'JQL搜索失败: {e}'}, ensure_ascii=False)}\n\n"
                 if max_rounds <= 0:
-                    await asyncio.sleep(interval_min * 60)
+                    await _interruptible_sleep(interval_min * 60)
                 continue
             if not bugids:
                 yield f"data: {_json.dumps({'type': 'round_skip', 'round': round_num, 'reason': '无新增bug'}, ensure_ascii=False)}\n\n"
                 if max_rounds <= 0:
-                    await asyncio.sleep(interval_min * 60)
+                    await _interruptible_sleep(interval_min * 60)
                 continue
             # 步骤2：去重过滤（查询多维表格已存在的记录）
             try:
@@ -15652,7 +15682,7 @@ async def auto_detect_run(request: Request):
             if not bugids:
                 yield f"data: {_json.dumps({'type': 'round_skip', 'round': round_num, 'reason': '过滤后无新增'}, ensure_ascii=False)}\n\n"
                 if max_rounds <= 0:
-                    await asyncio.sleep(interval_min * 60)
+                    await _interruptible_sleep(interval_min * 60)
                 continue
             # 步骤3：AI初步分析过滤（可选）—— 检查 Jira customfield_13714
             if filter_ai_init:
@@ -15667,7 +15697,7 @@ async def auto_detect_run(request: Request):
             if not bugids:
                 yield f"data: {_json.dumps({'type': 'round_skip', 'round': round_num, 'reason': 'AI过滤后无新增'}, ensure_ascii=False)}\n\n"
                 if max_rounds <= 0:
-                    await asyncio.sleep(interval_min * 60)
+                    await _interruptible_sleep(interval_min * 60)
                 continue
             # 步骤4：智能抽样（<10全执行，>10抽10个）
             if len(bugids) > 10:
@@ -15710,7 +15740,7 @@ async def auto_detect_run(request: Request):
             if not bugids:
                 yield f"data: {_json.dumps({'type': 'round_skip', 'round': round_num, 'reason': '无gmlogger附件或触发时间'}, ensure_ascii=False)}\n\n"
                 if max_rounds <= 0:
-                    await asyncio.sleep(interval_min * 60)
+                    await _interruptible_sleep(interval_min * 60)
                 continue
             # 步骤6：调用线上AI接口
             batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -15772,7 +15802,7 @@ async def auto_detect_run(request: Request):
             # 等待下一轮
             if max_rounds <= 0 or round_num < max_rounds:
                 yield f"data: {_json.dumps({'type': 'waiting', 'round': round_num, 'interval': interval_min}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(interval_min * 60)
+                await _interruptible_sleep(interval_min * 60)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -15887,7 +15917,7 @@ async def regression_run(request: Request):
             # 轮次间隔
             if round_num < total_rounds and interval_min > 0:
                 yield f"data: {_json.dumps({'type': 'waiting', 'interval_min': interval_min, 'round': round_num}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(interval_min * 60)
+                await _interruptible_sleep(interval_min * 60)
         # 步骤4：保存
         date_str = datetime.now().strftime("%Y-%m-%d")
         time_str = datetime.now().strftime("%H%M%S")
