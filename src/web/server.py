@@ -10239,13 +10239,15 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
         groups.setdefault(base, []).append((part, att))
     if not groups:
         return {"status": "failed", "reason": "无 gmlogger 压缩包附件", "main_entries": [], "main_times": []}
-    # 超大包上限：避免数百分兆下载阻塞诊断太久，超限跳过内包探测走兆底链路
+    # 超大包上限：避免数百MB下载阻塞流程，超限跳过内包探测走兆底链路
     total_size = sum(a.get("size", 0) for ps in groups.values() for _p, a in ps)
-    if total_size > 500 * 1024 * 1024:
-        logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > 500MB）", total_size // 1024 // 1024)
-        return {"status": "failed", "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>500MB），已跳过内包探测",
+    if total_size > 200 * 1024 * 1024:
+        logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > 200MB）", total_size // 1024 // 1024)
+        return {"status": "failed", "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>200MB），已跳过内包探测",
                 "main_entries": [], "main_times": [], "all_times": []}
     logger.info("gmlogger 内包探测：开始下载（%dMB）", total_size // 1024 // 1024)
+    import time as _time
+    _dl_deadline = _time.monotonic() + 300  # 总下载时间上限：5分钟
     last_reason = "无有效 gmlogger 压缩包"
     with tempfile.TemporaryDirectory() as tmp:
         for base, parts in groups.items():
@@ -10263,9 +10265,11 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                         for _retry in range(2):
                             with open(dst, "wb") as out:
                                 with _httpx.stream("GET", att.get("content", ""), headers=headers,
-                                                   timeout=timeout, verify=False, follow_redirects=True) as r:
+                                                   timeout=_httpx.Timeout(timeout, read=60), verify=False, follow_redirects=True) as r:
                                     r.raise_for_status()
                                     for chunk in r.iter_bytes(chunk_size=1024 * 1024):
+                                        if _time.monotonic() > _dl_deadline:
+                                            raise TimeoutError("gmlogger 下载超时（超过5分钟）")
                                         out.write(chunk)
                             actual = os.path.getsize(dst)
                             if expected_size and actual < expected_size * 0.5:
@@ -10294,10 +10298,16 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                         for _retry in range(2):
                             part_size_before = out.tell()
                             with _httpx.stream("GET", att.get("content", ""), headers=headers,
-                                               timeout=timeout, verify=False, follow_redirects=True) as r:
+                                               timeout=_httpx.Timeout(timeout, read=60), verify=False, follow_redirects=True) as r:
                                 r.raise_for_status()
+                                downloaded = 0
                                 for chunk in r.iter_bytes(chunk_size=1024 * 1024):
+                                    if _time.monotonic() > _dl_deadline:
+                                        raise TimeoutError(f"gmlogger 下载超时（超过5分钟）")
                                     out.write(chunk)
+                                    downloaded += len(chunk)
+                                    if downloaded % (20 * 1024 * 1024) == 0:
+                                        logger.info("gmlogger 下载进度: %dMB / %dMB", downloaded // 1024 // 1024, (expected_size or 0) // 1024 // 1024)
                             part_size = out.tell() - part_size_before
                             if expected_size and part_size < expected_size * 0.5:
                                 logger.warning("gmlogger 分卷文件过小(第%d次): %s, 实际 %d / 预期 %d",
