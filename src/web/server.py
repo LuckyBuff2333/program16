@@ -14481,6 +14481,11 @@ async def test_prod_batch_run(request: Request):
                         if not isinstance(tt, str):
                             tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
                         return bugid, tt
+                    # 无 gmlogger 附件时直接跳过视频/图片 OCR（昂贵且无意义）
+                    attachments = (issue.get("fields") or {}).get("attachment") or []
+                    if not _has_gmlogger_logs(attachments, bugid):
+                        logger.info("触发时间: %s 无gmlogger附件，跳过视频/图片OCR", bugid)
+                        return bugid, ""
                     # 文本未命中，视频OCR兜底
                     tt = _diag_extract_time_from_video_simple(issue)
                     if tt:

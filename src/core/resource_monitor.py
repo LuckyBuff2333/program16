@@ -86,6 +86,7 @@ class ResourceTracker:
         self._file_handles = {}  # path -> (handle, open_time)
         self._max_age_seconds = 3600  # 1小时
         self._cleanup_interval = 300  # 5分钟清理一次
+        self._last_gc_time = 0  # 上次GC时间
     
     def track_file(self, file_path: str):
         """跟踪文件资源"""
@@ -124,10 +125,13 @@ class ResourceTracker:
                 logger.error(f"关闭文件句柄失败 {path}: {e}")
             del self._file_handles[path]
         
-        # 强制垃圾回收
-        collected = gc.collect()
-        if collected > 0:
-            logger.info(f"垃圾回收清理了 {collected} 个对象")
+        # 强制垃圾回收（每5分钟最多一次，避免频繁GC影响批量执行性能）
+        current_time = time.time()
+        if current_time - self._last_gc_time >= self._cleanup_interval:
+            collected = gc.collect()
+            if collected > 0:
+                logger.info(f"垃圾回收清理了 {collected} 个对象")
+            self._last_gc_time = current_time
 
 
 class HealthMonitor:
@@ -141,7 +145,8 @@ class HealthMonitor:
         self._monitor_thread = None
         
         # 阈值配置
-        self.cpu_threshold = 80.0  # CPU使用率阈值
+        cpu_count = os.cpu_count() or 4  # 获取CPU核心数
+        self.cpu_threshold = min(80.0 * cpu_count, 8000.0)  # 按核心数调整，上限8000%
         self.memory_threshold = 85.0  # 内存使用率阈值
         self.disk_threshold = 90.0  # 磁盘使用率阈值
         
