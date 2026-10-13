@@ -9886,21 +9886,30 @@ def _diag_flatten_nested(archive_path: str, names: list, work_dir: str, depth: i
     return out
 
 
-def _diag_archive_read_heads(path: str, names: list, size: int = 65536) -> dict:
-    """批量读取压缩包内多个文件的头部内容（支持 zip/7z/tar/rar），返回 {name: 头部文本}
+def _diag_archive_read_heads(path: str, names: list, size: int = 65536, read_tail: bool = False) -> dict:
+    """批量读取压缩包内多个文件的头部（及可选尾部）内容，支持 zip/7z/tar/rar
 
-    7z 一次性 extract 全部目标，避免 solid 归档重复解压。
+    read_tail=True 时同时读取尾部 size 字节，返回 "头部\n---TAIL---\n尾部"，
+    用于 main.log 头部无日期时从尾部（最新日志）兜底提取时间戳。
     """
     import zipfile
     import tarfile
     result = {}
+
+    def _extract_head_tail(data: bytes) -> str:
+        """从原始字节中提取头部和（可选）尾部文本"""
+        if not read_tail or len(data) <= size * 2:
+            return data[:size].decode("utf-8", errors="ignore") if not read_tail else data.decode("utf-8", errors="ignore")
+        head = data[:size].decode("utf-8", errors="ignore")
+        tail = data[-size:].decode("utf-8", errors="ignore")
+        return head + "\n---TAIL---\n" + tail
     try:
         if zipfile.is_zipfile(path):
             with zipfile.ZipFile(path) as zf:
                 for n in names:
                     try:
                         with zf.open(n) as f:
-                            result[n] = f.read(size).decode("utf-8", errors="ignore")
+                            result[n] = _extract_head_tail(f.read())
                     except Exception:
                         continue
             return result
@@ -9913,7 +9922,7 @@ def _diag_archive_read_heads(path: str, names: list, size: int = 65536) -> dict:
                     try:
                         f = tf.extractfile(member)
                         if f:
-                            result[member.name] = f.read(size).decode("utf-8", errors="ignore")
+                            result[member.name] = _extract_head_tail(f.read())
                             f.close()
                     except Exception:
                         continue
@@ -9930,7 +9939,7 @@ def _diag_archive_read_heads(path: str, names: list, size: int = 65536) -> dict:
                     if os.path.exists(fp):
                         try:
                             with open(fp, "rb") as f:
-                                result[n] = f.read(size).decode("utf-8", errors="ignore")
+                                result[n] = _extract_head_tail(f.read())
                         except Exception:
                             continue
             return result
@@ -9950,7 +9959,7 @@ def _diag_archive_read_heads(path: str, names: list, size: int = 65536) -> dict:
                     if os.path.exists(fp):
                         try:
                             with open(fp, "rb") as f:
-                                result[n] = f.read(size).decode("utf-8", errors="ignore")
+                                result[n] = _extract_head_tail(f.read())
                         except Exception:
                             continue
             return result
@@ -10116,12 +10125,17 @@ def _diag_rar_main_times(rar_first: str, work_dir: str) -> dict:
     main_files = main_files[:5]
     main_times = []
     for fp in main_files:
-        head = ""
+        content = b""
         try:
             with open(fp, "rb") as f:
-                head = f.read(65536).decode("utf-8", errors="ignore")
+                content = f.read()
         except Exception:
             pass
+        # 头部+尾部兑底，避免头部无日期时丢失最新日志时间戳
+        head = content[:65536].decode("utf-8", errors="ignore")
+        if len(content) > 65536 * 2:
+            tail = content[-65536:].decode("utf-8", errors="ignore")
+            head = head + "\n---TAIL---\n" + tail
         parsed = _diag_parse_main_time(os.path.basename(fp), head)
         if parsed:
             main_times.append(parsed)
@@ -10400,9 +10414,9 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                 # 限制头部读取数量（避免大量 I/O），仅对前 10 个无文件名时间的文件读头部
                 if len(need_head) < 10:
                     need_head.append(n)
-            # 批量读文件头部提取首条日志时间戳（7z 一次解压，读 64KB 提升命中率）
+            # 批量读文件头部+尾部提取日志时间戳（头部无日期时从尾部兜底）
             if need_head:
-                heads = _diag_archive_read_heads(merged, need_head, 65536)
+                heads = _diag_archive_read_heads(merged, need_head, 65536, read_tail=True)
                 for n in need_head:
                     mh = _re.search(r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})", heads.get(n, ""))
                     if mh:
