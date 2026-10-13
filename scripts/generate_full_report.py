@@ -330,7 +330,7 @@ html += f"""</table></div>
 // === 饼图：成功/失败 ===
 echarts.init(document.getElementById('pie_result')).setOption({{
   tooltip: {{ trigger:'item', formatter:'{{b}}: {{c}} ({{d}}%)' }},
-  series: [{{ type:'pie', radius:['40%','70%'], label:{{ formatter:'{{b}}\\n{{c}} ({{d}}%)' }},
+  series: [{{ type:'pie', radius:['40%','70%'], label:{{ position:'inside', formatter:'{{b}}\n{{c}} ({{d}}%)', color:'#fff', fontSize:14, fontWeight:'bold' }},
     data:[
       {{value:{dedup_success}, name:'成功', itemStyle:{{color:'#52c41a'}}}},
       {{value:{dedup_fail}, name:'失败', itemStyle:{{color:'#ff4d4f'}}}},
@@ -342,7 +342,7 @@ echarts.init(document.getElementById('pie_result')).setOption({{
 var sourceData = [{','.join(f'{{value:{v["success"]+v["fail"]}, name:"{_map_source(k)}"}}' for k,v in source_dedup.items())}];
 echarts.init(document.getElementById('pie_source')).setOption({{
   tooltip: {{ trigger:'item', formatter:'{{b}}: {{c}} ({{d}}%)' }},
-  series: [{{ type:'pie', radius:['40%','70%'], label:{{ formatter:'{{b}}\\n{{c}} ({{d}}%)' }},
+  series: [{{ type:'pie', radius:['40%','70%'], label:{{ position:'inside', formatter:'{{b}}\n{{c}} ({{d}}%)', color:'#fff', fontSize:13, fontWeight:'bold' }},
     data: sourceData,
     color: ['#1890ff','#52c41a','#fa8c16','#722ed1','#13c2c2']
   }}]
@@ -401,7 +401,7 @@ echarts.init(document.getElementById('bar_conf')).setOption({{
 // === 饼图：Troubleshoot分类 ===
 echarts.init(document.getElementById('pie_ts')).setOption({{
   tooltip: {{ trigger:'item', formatter:'{{b}}: {{c}} ({{d}}%)' }},
-  series: [{{ type:'pie', radius:['35%','65%'], label:{{ formatter:'{{b}}\\n{{c}} ({{d}}%)' }},
+  series: [{{ type:'pie', radius:['35%','65%'], label:{{ position:'inside', formatter:'{{b}}\n{{c}} ({{d}}%)', color:'#fff', fontSize:12, fontWeight:'bold' }},
     data:[{','.join(f'{{value:{v}, name:"{k}"}}' for k,v in ts_cats.most_common())}],
     color: ['#ff4d4f','#fa8c16','#ffc53d','#73d13d']
   }}]
