@@ -6991,13 +6991,11 @@ createApp({
     // 人工审核原因关键词匹配（自动归类）
     matchHumanReasonCategories(queryStr, cb) {
       const allOptions = [
-        { value: '无gmlogger文件', category: '无gmlogger文件', keywords: ['无gmlogger', 'gmlogger'] },
-        { value: '无gmlogger日志文件', category: '无gmlogger文件', keywords: ['无gmlogger日志'] },
+        { value: '无gmlogger', category: '无gmlogger', keywords: ['无gmlogger', 'gmlogger', '无日志', '无附件', '无日志附件'] },
         { value: '日志文件已损坏', category: '日志过滤逻辑', keywords: ['损坏', '已损坏'] },
         { value: '问题重复，无需排查', category: '问题重复', keywords: ['重复', '问题重复'] },
         { value: '问题未复现', category: '问题未复现', keywords: ['未复现', '问题未复现', '不复现'] },
         { value: '触发时间无日志', category: '触发时间问题', keywords: ['触发时间', '时间无日志', '时间问题'] },
-        { value: '该Jira无日志附件，属于正常处理机制', category: '无gmlogger文件', keywords: ['无日志', '无附件', '无日志附件', '正常处理'] },
         { value: 'JIRA 分析任务执行超时', category: '分析任务执行超时，跳过排查', keywords: ['超时', '执行超时', '任务超时'] },
         { value: '服务有报错', category: '服务运行问题', keywords: ['服务', '服务报错', '服务有报错'] },
         { value: '接口无响应，待源泉排查', category: '接口响应问题', keywords: ['接口', '无响应', '连接失败'] },
@@ -7524,7 +7522,7 @@ createApp({
       if (cat === '无报错信息，跳过排查') return 'info';
       if (cat === '服务有报错，跳过排查') return 'info';
       if (cat === '分析任务执行超时，跳过排查') return 'info';
-      if (cat === '无gmlogger文件') return 'warning';
+      if (cat === '无gmlogger') return 'warning';
       if (cat === '问题重复') return '';
       if (cat === '问题未复现') return 'success';
       if (cat === '解压问题') return 'danger';
