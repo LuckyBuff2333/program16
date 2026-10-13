@@ -11427,22 +11427,29 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         auth_type = cfg.get("auth_type", "bearer").lower()
         if auth_type == "bearer":
             headers["Authorization"] = f"Bearer {token}"
-    # 始终下载 gmlogger 压缩包取包内 main 权威日期（修复：外层 gmlogger 文件名日期可能不准，
-    # 包内 main.log 文件名时间才是权威来源，确保视频时钟能匹配到正确日期）
+    # 始终尝试下载 gmlogger 压缩包取包内 main 权威日期（包内 main.log 文件名时间是最权威的来源）
+    # 包内获取失败时回退到外层 gmlogger 文件名日期（不如包内准，但仍可作为参考）
     _timeout = max(int(cfg.get("timeout", 30)), 120)
     _main_dts = _gmlogger_main_date_refs(attachments, headers, _timeout, bugid)
-    if not _main_dts:
-        logger.info("视频兜底提取(%s)：gmlogger包内日期获取失败，跳过", bugid)
+    if _main_dts:
+        # 包内日期为权威来源，外层日期作为补充
+        _inner_date_set = {(dt.year, dt.month, dt.day) for dt in _main_dts}
+        gm_dates = [(dt.year, dt.month, dt.day) for dt in _main_dts]
+        ref_pool = list(_main_dts)
+        for gd in [(dt.year, dt.month, dt.day) for dt in [t[1] for t in gm_times]]:
+            if gd not in _inner_date_set:
+                gm_dates.append(gd)
+        logger.info("视频兜底提取(%s)：包内 main 日期 %d 个，外层补充后 gm_dates %d 个",
+                    bugid, len(_main_dts), len(gm_dates))
+    elif gm_times:
+        # 包内日期获取失败（压缩包过大/下载超时等），回退到外层 gmlogger 文件名日期
+        logger.warning("视频兜底提取(%s)：包内日期获取失败，回退到外层 gmlogger 文件名日期(%d 个)",
+                       bugid, len(gm_times))
+        # gm_dates 和 ref_pool 已在上方从 gm_times 初始化
+    else:
+        # 包内和外层均无日期，视频 OCR 无法验证，跳过
+        logger.info("视频兜底提取(%s)：包内和外层 gmlogger 均无日期，跳过", bugid)
         return ""
-    # 包内日期为权威来源，外层日期作为补充
-    _inner_date_set = {(dt.year, dt.month, dt.day) for dt in _main_dts}
-    gm_dates = [(dt.year, dt.month, dt.day) for dt in _main_dts]
-    ref_pool = list(_main_dts)
-    for gd in [(dt.year, dt.month, dt.day) for dt in [t[1] for t in gm_times]]:
-        if gd not in _inner_date_set:
-            gm_dates.append(gd)
-    logger.info("视频兜底提取(%s)：包内 main 日期 %d 个，外层补充后 gm_dates %d 个",
-                bugid, len(_main_dts), len(gm_dates))
     best_partial = ""
     # 12h 制兜底候选（延迟决策）
     best_12h_cand = None  # (time_str, ext_dt)
