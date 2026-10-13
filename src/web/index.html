@@ -1199,6 +1199,7 @@
               <el-menu-item index="ai_log_visual">7. AI日志分析可视化</el-menu-item>
               <el-menu-item index="config_tuning">8. 配置参数调优</el-menu-item>
               <el-menu-item index="trigger_compare">9. 触发时间提取对比</el-menu-item>
+              <el-menu-item index="smoke_test">10. 冒烟测试用例</el-menu-item>
             </el-menu>
           </el-aside>
           <el-main style="padding:20px;display:flex;flex-direction:column">
@@ -2670,6 +2671,35 @@
               </el-card>
             </div>
 
+            <!-- 15. 冒烟测试用例列表 -->
+            <div v-else-if="testPanel === 'smoke_test'" key="smoke_test" class="test-panel">
+              <div class="section-title">冒烟测试用例（10条）</div>
+              <el-alert type="info" :closable="false"
+                title="每次发版前必跑，覆盖所有P0级路径，预计耗时<5分钟。数据来源：Troubleshoot沉淀365条 + Pipeline代码逻辑 + 历史报错经验。"></el-alert>
+
+              <el-card shadow="never" style="margin-top:14px">
+                <template #header>
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <span style="font-weight:700">冒烟用例明细</span>
+                    <el-tag type="success">共 10 条</el-tag>
+                  </div>
+                </template>
+                <el-table :data="smokeTestCases" stripe size="small" border>
+                  <el-table-column type="index" label="#" width="50"></el-table-column>
+                  <el-table-column prop="tc" label="TC编号" width="90"></el-table-column>
+                  <el-table-column prop="name" label="用例名称" min-width="200"></el-table-column>
+                  <el-table-column prop="jira" label="Jira号" width="130">
+                    <template #default="{ row }">
+                      <el-tag size="small" type="info">{{ row.jira }}</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="precondition" label="前置条件" min-width="180"></el-table-column>
+                  <el-table-column prop="expected" label="预期结果" min-width="180"></el-table-column>
+                  <el-table-column prop="checkpoint" label="验证点" min-width="160"></el-table-column>
+                </el-table>
+              </el-card>
+            </div>
+
             </transition>
           </el-main>
         </el-container>
@@ -3361,6 +3391,19 @@ createApp({
         summary: null,
         report: '',
       },
+      // 冒烟测试用例数据（10条）
+      smokeTestCases: [
+        { tc: 'TT-03', name: '触发时间：OCR+gm交叉验证成功', jira: 'VCU-222128', precondition: 'Closed；有视频+gm；时间匹配', expected: '提取时间正确', checkpoint: '时间格式YYYY-MM-DD HH:MM:SS' },
+        { tc: 'TT-09', name: '触发时间：无gmlogger降级', jira: 'VCU-482191', precondition: 'Closed；无gmlogger附件', expected: '跳过gm，使用视频或评论时间', checkpoint: '不因无gm而崩溃' },
+        { tc: 'PL-01', name: '完整4步流程成功', jira: 'VCU-550040', precondition: 'Closed；视频+gm+评论齐全', expected: 'Step1-4全绿；置信度>0', checkpoint: '置信度字段非空且为数字' },
+        { tc: 'PL-02', name: 'Jira非Closed拒绝', jira: 'VCU-553996', precondition: '状态=Open', expected: 'Step1失败+明确错误提示', checkpoint: '错误信息含“仅Closed状态”' },
+        { tc: 'PL-06', name: 'AI接口不可达', jira: '任意Jira', precondition: '断开内网/停掉分析服务', expected: 'Step1失败+接口不可达提示', checkpoint: '不卡死，快速失败' },
+        { tc: 'BT-01', name: '批量5条正常执行', jira: '5个Closed Jira', precondition: '网络+服务正常', expected: '5条全提交成功', checkpoint: 'CSV中5行都有结果' },
+        { tc: 'DG-01', name: '失败排查归类', jira: 'VCU-554282', precondition: '有失败记录', expected: '归类正确', checkpoint: '错误类型非“未知”' },
+        { tc: 'TT-01', name: 'OCR成功但gm解析失败', jira: 'VCU-245745', precondition: '视频可用+gm包过大', expected: '视频OCR时间作为最终结果', checkpoint: '降级路径不报错' },
+        { tc: 'PL-05', name: '去重：已有完整记录跳过', jira: 'VCU-550538', precondition: 'daily.csv已有完整行', expected: '跳过AI分析，复用数据', checkpoint: 'Step1标记“skipped”' },
+        { tc: 'PL-04', name: '评论区自动提取触发时间', jira: 'VCU-554251', precondition: '评论含时间格式文本', expected: '自动填入分析问题时间', checkpoint: '时间格式正确' },
+      ],
     };
   },
   computed: {
