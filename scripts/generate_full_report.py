@@ -15,6 +15,21 @@ cfg = load_config().get('feishu_bitable', {})
 records = feishu_client.list_bitable_records(cfg['app_token'], cfg['table_id'], page_size=500)
 print(f"多维表格: {len(records)} 条记录")
 
+# ── 来源名称中文映射 ──
+SOURCE_NAME_MAP = {
+    'jira_analyze': '线上',
+    'parseFullTicket': 'PC端',
+    'feishu_bot': '飞书机器人',
+    'online': '线上',
+    'pc': 'PC端',
+    'bot': '飞书机器人',
+}
+def _map_source(raw):
+    """将触发来源原始值映射为中文名称"""
+    if not raw:
+        return '未知'
+    return SOURCE_NAME_MAP.get(raw, SOURCE_NAME_MAP.get(raw.lower(), raw))
+
 # ── 辅助函数 ──
 def _text(val):
     if isinstance(val, str): return val.strip()
@@ -28,7 +43,7 @@ for rec in records:
     f = rec.get('fields', {})
     jira = _text(f.get('jira号','')) or _text(f.get('Jira号',''))
     result = _text(f.get('分析结果',''))
-    source = _text(f.get('触发来源',''))
+    source = _map_source(_text(f.get('触发来源','')))
     err = _text(f.get('错误信息',''))
     finish = _text(f.get('分析完成时间',''))
     trigger_time = _text(f.get('分析问题时间',''))
@@ -324,7 +339,7 @@ echarts.init(document.getElementById('pie_result')).setOption({{
 }});
 
 // === 饼图：来源分布 ===
-var sourceData = [{','.join(f'{{value:{v["success"]+v["fail"]}, name:"{k}"}}' for k,v in source_dedup.items())}];
+var sourceData = [{','.join(f'{{value:{v["success"]+v["fail"]}, name:"{_map_source(k)}"}}' for k,v in source_dedup.items())}];
 echarts.init(document.getElementById('pie_source')).setOption({{
   tooltip: {{ trigger:'item', formatter:'{{b}}: {{c}} ({{d}}%)' }},
   series: [{{ type:'pie', radius:['40%','70%'], label:{{ formatter:'{{b}}\\n{{c}} ({{d}}%)' }},

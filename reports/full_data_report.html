@@ -30,7 +30,7 @@ tr:hover { background:#fafafa; }
 </style></head><body>
 <div class="header">
   <h1>AI日志分析 · 全量数据统计报告</h1>
-  <div class="sub">数据来源：多维表格 3991 条 + Troubleshoot 365 条 + 视频缓存 1545 条 + 批量提交 7947 条 &nbsp;|&nbsp; 生成时间: 2026-10-13 10:02</div>
+  <div class="sub">数据来源：多维表格 3991 条 + Troubleshoot 365 条 + 视频缓存 1545 条 + 批量提交 7947 条 &nbsp;|&nbsp; 生成时间: 2026-10-13 10:10</div>
 </div>
 
 <!-- KPI -->
@@ -79,30 +79,30 @@ tr:hover { background:#fafafa; }
 <div class="card"><h2>失败错误详细分析（去重后最终失败）</h2>
 <table>
 <tr><th>错误类型</th><th>数量</th><th>占比</th><th>影响来源</th></tr>
-<tr><td>触发时间不准确（日志为空）</td><td><b>500</b></td><td><span class="tag tag-fail">46.3%</span></td><td style="font-size:11px;color:#888">parseFullTicket, jira_analyze, feishu_bot</td></tr>
-<tr><td>日志文件缺失/不支持</td><td><b>148</b></td><td><span class="tag tag-fail">13.7%</span></td><td style="font-size:11px;color:#888">parseFullTicket, jira_analyze</td></tr>
-<tr><td>磁盘空间不足</td><td><b>114</b></td><td><span class="tag tag-fail">10.5%</span></td><td style="font-size:11px;color:#888">parseFullTicket</td></tr>
-<tr><td>分析超时</td><td><b>102</b></td><td><span class="tag tag-fail">9.4%</span></td><td style="font-size:11px;color:#888">parseFullTicket, jira_analyze</td></tr>
-<tr><td>服务端报错</td><td><b>48</b></td><td><span class="tag tag-fail">4.4%</span></td><td style="font-size:11px;color:#888">jira_analyze</td></tr>
-<tr><td>AI模型调用失败</td><td><b>40</b></td><td><span class="tag tag-fail">3.7%</span></td><td style="font-size:11px;color:#888">jira_analyze, feishu_bot</td></tr>
-<tr><td>未预期的错误: HTTPStatusError</td><td><b>30</b></td><td><span class="tag tag-warn">2.8%</span></td><td style="font-size:11px;color:#888">parseFullTicket, jira_analyze</td></tr>
-<tr><td>未知错误</td><td><b>27</b></td><td><span class="tag tag-warn">2.5%</span></td><td style="font-size:11px;color:#888">parseFullTicket, jira_analyze</td></tr>
-<tr><td>解压后未找到可识别的日志文件，文件格式可能不支持</td><td><b>8</b></td><td><span class="tag tag-ok">0.7%</span></td><td style="font-size:11px;color:#888">parseFullTicket, jira_analyze</td></tr>
-<tr><td>分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应</td><td><b>7</b></td><td><span class="tag tag-ok">0.6%</span></td><td style="font-size:11px;color:#888">jira_analyze</td></tr>
-<tr><td>分析完成但包含部分错误</td><td><b>5</b></td><td><span class="tag tag-ok">0.5%</span></td><td style="font-size:11px;color:#888">jira_analyze</td></tr>
-<tr><td>网络连接异常</td><td><b>3</b></td><td><span class="tag tag-ok">0.3%</span></td><td style="font-size:11px;color:#888">jira_analyze, feishu_bot</td></tr>
-<tr><td>分析报告生成失败: 报告生成失败: Diana 请求异常: ReadError:</td><td><b>3</b></td><td><span class="tag tag-ok">0.3%</span></td><td style="font-size:11px;color:#888">jira_analyze</td></tr>
-<tr><td>adjudication 失败: 经过 2 次尝试后仍未获取有效响应，最后错误:</td><td><b>2</b></td><td><span class="tag tag-ok">0.2%</span></td><td style="font-size:11px;color:#888">jira_analyze</td></tr>
-<tr><td>Server disconnected without sending a re</td><td><b>2</b></td><td><span class="tag tag-ok">0.2%</span></td><td style="font-size:11px;color:#888">jira_analyze</td></tr>
+<tr><td>触发时间不准确（日志为空）</td><td><b>500</b></td><td><span class="tag tag-fail">46.3%</span></td><td style="font-size:11px;color:#888">PC端, 线上, 飞书机器人</td></tr>
+<tr><td>日志文件缺失/不支持</td><td><b>148</b></td><td><span class="tag tag-fail">13.7%</span></td><td style="font-size:11px;color:#888">PC端, 线上</td></tr>
+<tr><td>磁盘空间不足</td><td><b>114</b></td><td><span class="tag tag-fail">10.5%</span></td><td style="font-size:11px;color:#888">PC端</td></tr>
+<tr><td>分析超时</td><td><b>102</b></td><td><span class="tag tag-fail">9.4%</span></td><td style="font-size:11px;color:#888">PC端, 线上</td></tr>
+<tr><td>服务端报错</td><td><b>48</b></td><td><span class="tag tag-fail">4.4%</span></td><td style="font-size:11px;color:#888">线上</td></tr>
+<tr><td>AI模型调用失败</td><td><b>40</b></td><td><span class="tag tag-fail">3.7%</span></td><td style="font-size:11px;color:#888">线上, 飞书机器人</td></tr>
+<tr><td>未预期的错误: HTTPStatusError</td><td><b>30</b></td><td><span class="tag tag-warn">2.8%</span></td><td style="font-size:11px;color:#888">PC端, 线上</td></tr>
+<tr><td>未知错误</td><td><b>27</b></td><td><span class="tag tag-warn">2.5%</span></td><td style="font-size:11px;color:#888">PC端, 线上</td></tr>
+<tr><td>解压后未找到可识别的日志文件，文件格式可能不支持</td><td><b>8</b></td><td><span class="tag tag-ok">0.7%</span></td><td style="font-size:11px;color:#888">PC端, 线上</td></tr>
+<tr><td>分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应</td><td><b>7</b></td><td><span class="tag tag-ok">0.6%</span></td><td style="font-size:11px;color:#888">线上</td></tr>
+<tr><td>分析完成但包含部分错误</td><td><b>5</b></td><td><span class="tag tag-ok">0.5%</span></td><td style="font-size:11px;color:#888">线上</td></tr>
+<tr><td>网络连接异常</td><td><b>3</b></td><td><span class="tag tag-ok">0.3%</span></td><td style="font-size:11px;color:#888">线上, 飞书机器人</td></tr>
+<tr><td>分析报告生成失败: 报告生成失败: Diana 请求异常: ReadError:</td><td><b>3</b></td><td><span class="tag tag-ok">0.3%</span></td><td style="font-size:11px;color:#888">线上</td></tr>
+<tr><td>adjudication 失败: 经过 2 次尝试后仍未获取有效响应，最后错误:</td><td><b>2</b></td><td><span class="tag tag-ok">0.2%</span></td><td style="font-size:11px;color:#888">线上</td></tr>
+<tr><td>Server disconnected without sending a re</td><td><b>2</b></td><td><span class="tag tag-ok">0.2%</span></td><td style="font-size:11px;color:#888">线上</td></tr>
 </table></div>
 
 <!-- 来源×结果明细 -->
 <div class="card"><h2>触发来源×成功率明细（去重后）</h2>
 <table>
 <tr><th>触发来源</th><th>总数</th><th>成功</th><th>失败</th><th>成功率</th></tr>
-<tr><td>jira_analyze</td><td>2632</td><td class="green">1868</td><td class="red">764</td><td><b>71.0%</b></td></tr>
-<tr><td>parseFullTicket</td><td>815</td><td class="green">506</td><td class="red">309</td><td><b>62.1%</b></td></tr>
-<tr><td>feishu_bot</td><td>31</td><td class="green">23</td><td class="red">8</td><td><b>74.2%</b></td></tr>
+<tr><td>线上</td><td>2632</td><td class="green">1868</td><td class="red">764</td><td><b>71.0%</b></td></tr>
+<tr><td>PC端</td><td>815</td><td class="green">506</td><td class="red">309</td><td><b>62.1%</b></td></tr>
+<tr><td>飞书机器人</td><td>31</td><td class="green">23</td><td class="red">8</td><td><b>74.2%</b></td></tr>
 </table></div>
 
 <!-- 月度明细 -->
@@ -114,7 +114,7 @@ tr:hover { background:#fafafa; }
 <tr><td>2026-10</td><td>1076</td><td class="green">886</td><td class="red">190</td><td><b>82.3%</b></td><td><span class="green">+22.1%</span></td></tr>
 </table></div>
 
-<div class="footer">AI日志分析全量数据报告 · 数据截至 2026-10-13 10:02 · 去重规则：同一Jira有成功记录则计为成功</div>
+<div class="footer">AI日志分析全量数据报告 · 数据截至 2026-10-13 10:10 · 去重规则：同一Jira有成功记录则计为成功</div>
 
 <script>
 // === 饼图：成功/失败 ===
@@ -129,7 +129,7 @@ echarts.init(document.getElementById('pie_result')).setOption({
 });
 
 // === 饼图：来源分布 ===
-var sourceData = [{value:31, name:"feishu_bot"},{value:815, name:"parseFullTicket"},{value:2632, name:"jira_analyze"}];
+var sourceData = [{value:31, name:"飞书机器人"},{value:815, name:"PC端"},{value:2632, name:"线上"}];
 echarts.init(document.getElementById('pie_source')).setOption({
   tooltip: { trigger:'item', formatter:'{b}: {c} ({d}%)' },
   series: [{ type:'pie', radius:['40%','70%'], label:{ formatter:'{b}\n{c} ({d}%)' },
