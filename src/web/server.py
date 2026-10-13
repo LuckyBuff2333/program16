@@ -10302,13 +10302,13 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
         return {"status": "failed", "reason": "无 gmlogger 压缩包附件", "main_entries": [], "main_times": []}
     # 超大包上限：避免数百MB下载阻塞流程，超限跳过内包探测走兆底链路
     total_size = sum(a.get("size", 0) for ps in groups.values() for _p, a in ps)
-    if total_size > 200 * 1024 * 1024:
-        logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > 200MB）", total_size // 1024 // 1024)
-        return {"status": "failed", "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>200MB），已跳过内包探测",
+    if total_size > 600 * 1024 * 1024:
+        logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > 600MB）", total_size // 1024 // 1024)
+        return {"status": "failed", "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>600MB），已跳过内包探测",
                 "main_entries": [], "main_times": [], "all_times": []}
     logger.info("gmlogger 内包探测：开始下载（%dMB）", total_size // 1024 // 1024)
     import time as _time
-    _dl_deadline = _time.monotonic() + 300  # 总下载时间上限：5分钟
+    _dl_deadline = _time.monotonic() + 600  # 总下载时间上限：10分钟（600MB上限相应放宽）
     last_reason = "无有效 gmlogger 压缩包"
     with tempfile.TemporaryDirectory() as tmp:
         for base, parts in groups.items():
@@ -10432,8 +10432,8 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
 _ARCHIVE_NAME_RE = re.compile(r"\.(zip|7z|rar|tar|gz|bz2|xz)(\.\d{2,3})?$", re.I)
 # 分卷压缩包后缀（如 xxx.7z.001 / xxx.zip.002）：多卷无法只读目录且体积极大，探测时一律跳过
 _SPLIT_ARCHIVE_RE = re.compile(r"\.\d{2,3}$")
-# 包内 main 探测的单包体积上限（80MB）：超过则不下载探测，退回文件名判定
-_ARCHIVE_PROBE_MAX_BYTES = 80 * 1024 * 1024
+# 包内 main 探测的单包体积上限（200MB）：超过则不下载探测，退回文件名判定
+_ARCHIVE_PROBE_MAX_BYTES = 200 * 1024 * 1024
 
 
 def _jira_att_auth() -> tuple:
@@ -10456,10 +10456,11 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
     """判断 Jira 是否含可用日志（gmlogger）。智能回退：
 
     1) 附件文件名含 gmlogger/main.log → 直接判定有（快，不下载）；
-    2) 否则仅对≤ 80MB 的单卷压缩包下载探测包内是否有 main.log 文件；
+    2) 否则仅对≤ 200MB 的单卷压缩包下载探测包内是否有 main 文件；
        分卷压缩包(.001/.002 等)或超大包一律跳过（避免 GB 级下载拖垮）。
     """
     names = [(a.get("filename", "") or "").lower() for a in attachments]
+    # 有直接的 gmlogger 文件（或 main.log）就算有，不需要解压
     if any("gmlogger" in n or "main.log" in n for n in names):
         return True
     headers, timeout = _jira_att_auth()
@@ -10474,8 +10475,8 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
         if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
             continue
         res = _diag_list_archive_entries(att.get("content", ""), headers, timeout, bugid)
-        if res.get("ok") and any("main.log" in os.path.basename(e).lower() for e in res.get("entries", [])):
-            logger.info("无gmlogger文件名，但压缩包 %s 内含 main.log 文件，判定有日志 (%s)", fn, bugid)
+        if res.get("ok") and any("main" in os.path.basename(e).lower() for e in res.get("entries", [])):
+            logger.info("无gmlogger文件名，但压缩包 %s 内含 main 文件，判定有日志 (%s)", fn, bugid)
             return True
     return False
 
@@ -11450,6 +11451,11 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         # 包内和外层均无日期，视频 OCR 无法验证，跳过
         logger.info("视频兜底提取(%s)：包内和外层 gmlogger 均无日期，跳过", bugid)
         return ""
+    # 包内日期可用时用 5 分钟容差（精确）；仅外层日期回退时放宽到 10 分钟（外层日期精度较低）
+    _has_inner_dates = bool(_main_dts)
+    _match_tolerance = 300 if _has_inner_dates else 600
+    logger.info("视频兜底提取(%s)：匹配容差 %ds（%s）",
+                bugid, _match_tolerance, "包内日期" if _has_inner_dates else "外层日期回退")
     best_partial = ""
     # 12h 制兜底候选（延迟决策）
     best_12h_cand = None  # (time_str, ext_dt)
@@ -11487,8 +11493,8 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                 parsed = _parse_datetime_string(cached_time)
                 if parsed:
                     ts, ext_dt = parsed
-                    if any(abs((dt - ext_dt).total_seconds()) <= 300 for dt in video_ref_pool):
-                        logger.info("视频兜底命中(%s, 缓存+包内重合): %s", video_label, ts)
+                    if any(abs((dt - ext_dt).total_seconds()) <= _match_tolerance for dt in video_ref_pool):
+                        logger.info("视频兜底命中(%s, 缓存+重合): %s", video_label, ts)
                         _timestudy_update_ctx(bugid, source="video_ocr")
                         _timestudy_trace(bugid, "cache:hit")
                         return ts
@@ -11571,8 +11577,8 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                         parsed = _parse_datetime_string(_normalize_ocr_time(m.group(1)))
                         if parsed:
                             ts, ext_dt = parsed
-                            if any(abs((dt - ext_dt).total_seconds()) <= 300 for dt in video_ref_pool):
-                                logger.info("视频兜底命中(%s, 包内时间戳重合): %s (第%d秒)",
+                            if any(abs((dt - ext_dt).total_seconds()) <= _match_tolerance for dt in video_ref_pool):
+                                logger.info("视频兜底命中(%s, 时间戳重合): %s (第%d秒)",
                                             video_label, ts, sec + 1)
                                 # 缓存命中结果
                                 cache[cache_key] = {"time": ts, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -11588,7 +11594,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                                 if corrected_t != ts[11:]:
                                     ts2 = ts[:11] + corrected_t
                                     parsed2 = _parse_datetime_string(ts2)
-                                    if parsed2 and any(abs((dt - parsed2[1]).total_seconds()) <= 300 for dt in video_ref_pool):
+                                    if parsed2 and any(abs((dt - parsed2[1]).total_seconds()) <= _match_tolerance for dt in video_ref_pool):
                                         logger.info("视频兜底命中(%s, 纠正+包内重合): %s -> %s", video_label, ts, ts2)
                                         cache[cache_key] = {"time": ts2, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
                                         _save_video_time_cache()
@@ -11600,8 +11606,8 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                             else:
                                 dt_alt = ext_dt - timedelta(hours=12)
                             ts_alt = dt_alt.strftime("%Y-%m-%d %H:%M:%S")
-                            orig_match = any(abs((dt - ext_dt).total_seconds()) <= 300 for dt in video_ref_pool)
-                            alt_match = any(abs((dt - dt_alt).total_seconds()) <= 300 for dt in video_ref_pool)
+                            orig_match = any(abs((dt - ext_dt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
+                            alt_match = any(abs((dt - dt_alt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
                             if alt_match and not orig_match:
                                 logger.info("视频兜底命中(%s, 12h转换): %s -> %s (第%d秒)", video_label, ts, ts_alt, sec + 1)
                                 cache[cache_key] = {"time": ts_alt, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -11644,10 +11650,10 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                             else:
                                 dt_alt = ext_dt - timedelta(hours=12)
                             ts_alt = dt_alt.strftime("%Y-%m-%d %H:%M:%S")
-                            orig_match = any(abs((dt - ext_dt).total_seconds()) <= 300 for dt in video_ref_pool)
-                            alt_match = any(abs((dt - dt_alt).total_seconds()) <= 300 for dt in video_ref_pool)
-                            gm_orig = gm_ref_dt and abs((gm_ref_dt - ext_dt).total_seconds()) <= 300
-                            gm_alt = gm_ref_dt and abs((gm_ref_dt - dt_alt).total_seconds()) <= 300
+                            orig_match = any(abs((dt - ext_dt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
+                            alt_match = any(abs((dt - dt_alt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
+                            gm_orig = gm_ref_dt and abs((gm_ref_dt - ext_dt).total_seconds()) <= _match_tolerance
+                            gm_alt = gm_ref_dt and abs((gm_ref_dt - dt_alt).total_seconds()) <= _match_tolerance
                             if (orig_match or gm_orig) and not (alt_match or gm_alt):
                                 logger.info("视频兜底命中(%s, 日期补充+包内重合): %s (第%d秒)", video_label, ts, sec + 1)
                                 cache[cache_key] = {"time": ts, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -11691,8 +11697,8 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                             parsed = _parse_datetime_string(_normalize_ocr_time(m.group(1)))
                             if parsed:
                                 ts, ext_dt = parsed
-                                if any(abs((dt - ext_dt).total_seconds()) <= 300 for dt in video_ref_pool):
-                                    logger.info("视频兜底命中(%s, 帧差法+包内重合): %s", video_label, ts)
+                                if any(abs((dt - ext_dt).total_seconds()) <= _match_tolerance for dt in video_ref_pool):
+                                    logger.info("视频兜底命中(%s, 帧差法+时间戳重合): %s", video_label, ts)
                                     cache[cache_key] = {"time": ts, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
                                     _save_video_time_cache()
                                     _timestudy_trace(bugid, "diff:hit")
@@ -11730,13 +11736,13 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                             parsed_orig = _parse_datetime_string(full_orig)
                             if parsed_orig:
                                 ts, ext_dt = parsed_orig
-                                orig_match = any(abs((dt - ext_dt).total_seconds()) <= 300 for dt in video_ref_pool)
+                                orig_match = any(abs((dt - ext_dt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
                                 if ext_dt.hour < 12:
                                     dt_alt = ext_dt + timedelta(hours=12)
                                 else:
                                     dt_alt = ext_dt - timedelta(hours=12)
                                 ts_alt = dt_alt.strftime("%Y-%m-%d %H:%M:%S")
-                                alt_match = any(abs((dt - dt_alt).total_seconds()) <= 300 for dt in video_ref_pool)
+                                alt_match = any(abs((dt - dt_alt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
                                 if orig_match and not alt_match:
                                     logger.info("视频兜底命中(%s, 帧差法+日期补充): %s", video_label, ts)
                                     cache[cache_key] = {"time": ts, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -11783,8 +11789,8 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                             else:
                                 dt_alt = ext_dt - timedelta(hours=12)
                             ts_alt = dt_alt.strftime("%Y-%m-%d %H:%M:%S")
-                            orig_match = any(abs((dt - ext_dt).total_seconds()) <= 300 for dt in video_ref_pool)
-                            alt_match = any(abs((dt - dt_alt).total_seconds()) <= 300 for dt in video_ref_pool)
+                            orig_match = any(abs((dt - ext_dt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
+                            alt_match = any(abs((dt - dt_alt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
                             if alt_match and not orig_match:
                                 logger.info("视频兜底提取(%s, 文件名回退+12h): %s", video_label, ts_alt)
                                 first_partial = ts_alt
