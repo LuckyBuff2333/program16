@@ -11354,19 +11354,18 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     # 包内 main.log 文件名时间才是权威来源，确保视频时钟能匹配到正确日期）
     _timeout = max(int(cfg.get("timeout", 30)), 120)
     _main_dts = _gmlogger_main_date_refs(attachments, headers, _timeout, bugid)
-    if _main_dts:
-        # 包内日期为权威来源，外层日期作为补充
-        _inner_date_set = {(dt.year, dt.month, dt.day) for dt in _main_dts}
-        gm_dates = [(dt.year, dt.month, dt.day) for dt in _main_dts]
-        ref_pool = list(_main_dts)
-        # 外层文件名日期补充（不覆盖包内权威日期）
-        for gd in [(dt.year, dt.month, dt.day) for dt in [t[1] for t in gm_times]]:
-            if gd not in _inner_date_set:
-                gm_dates.append(gd)
-        logger.info("视频兜底提取(%s)：包内 main 日期 %d 个，外层补充后 gm_dates %d 个",
-                    bugid, len(_main_dts), len(gm_dates))
-    elif not gm_dates:
-        logger.warning("视频兜底提取(%s)：文件名和包内均无 gmlogger 日期", bugid)
+    if not _main_dts:
+        logger.info("视频兜底提取(%s)：gmlogger包内日期获取失败，跳过", bugid)
+        return ""
+    # 包内日期为权威来源，外层日期作为补充
+    _inner_date_set = {(dt.year, dt.month, dt.day) for dt in _main_dts}
+    gm_dates = [(dt.year, dt.month, dt.day) for dt in _main_dts]
+    ref_pool = list(_main_dts)
+    for gd in [(dt.year, dt.month, dt.day) for dt in [t[1] for t in gm_times]]:
+        if gd not in _inner_date_set:
+            gm_dates.append(gd)
+    logger.info("视频兜底提取(%s)：包内 main 日期 %d 个，外层补充后 gm_dates %d 个",
+                bugid, len(_main_dts), len(gm_dates))
     best_partial = ""
     # 12h 制兜底候选（延迟决策）
     best_12h_cand = None  # (time_str, ext_dt)
