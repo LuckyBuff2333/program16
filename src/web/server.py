@@ -10527,11 +10527,12 @@ def _get_rapid_ocr():
     return _rapid_ocr_engine
 
 
-def _rapid_ocr_readtext(image):
+def _rapid_ocr_readtext(image, _already_enhanced: bool = False):
     """调用 RapidOCR 识别图像，返回与 EasyOCR 兼容的 [bbox, text, conf] 格式
 
     图像预处理（从 EasyOCR 迁移）：
     - 放大 1.5x（等效 EasyOCR mag_ratio=1.5），提升小字号/低对比度时钟识别能力
+    - 已二值化/锐化的图像不再放大（_already_enhanced=True），避免伪影放大降低识别率
     - 降低 box_thresh 至 0.3（默认 0.5 太高，低质量视频帧检测不到文本）
     - text_score 至 0.15（与应用层过滤阈值对齐，避免引擎内部丢弃可用文本）
     """
@@ -10541,14 +10542,14 @@ def _rapid_ocr_readtext(image):
     if engine is None:
         return []
     try:
-        # 图像放大 1.5x（等效 EasyOCR mag_ratio=1.5），提升小字号识别能力
-        mag_ratio = 1.5
         h, w = image.shape[:2]
-        # 仅对小图像放大（超过 1280px 宽度的帧不放大，避免内存爆炸）
-        if w < 1280:
+        # 仅对小尺寸原始帧放大，已二值化/锐化的图像跳过（帧差法 ROI 已 3x 放大）
+        if not _already_enhanced and w < 1280:
+            mag_ratio = 1.5
             enlarged = cv2.resize(image, (int(w * mag_ratio), int(h * mag_ratio)),
                                   interpolation=cv2.INTER_CUBIC)
         else:
+            mag_ratio = 1.0
             enlarged = image
         scale = enlarged.shape[0] / h if enlarged is not image else 1.0
         result, elapse = engine(enlarged, box_thresh=0.3, text_score=0.15)
@@ -11014,7 +11015,7 @@ def _extract_video_frames_gpu(video_path: str, positions: list = None, num_frame
     return frames
 
 
-def _ocr_readtext(reader, image):
+def _ocr_readtext(reader, image, _already_enhanced: bool = False):
     """统一 OCR 调用，RapidOCR 优先 + EasyOCR 回退。
 
     实测对比（20条视频帧基准测试）：
@@ -11025,12 +11026,14 @@ def _ocr_readtext(reader, image):
     流程：RapidOCR → 失败/不可用时回退 EasyOCR
     返回 readtext 结果列表（每项 [bbox, text, conf]）。
 
+    _already_enhanced=True 时跳过图像放大（用于帧差法已二值化+锐化的 ROI）。
+
     过滤规则：
     1. 置信度过低的时间类文本（数字/冒号/斜杠）会被过滤掉
     2. 水印相机区域内的时间类文本会被过滤掉（保留设备屏幕时间）
     """
     # 优先使用 RapidOCR（中文场景识别能力更强，置信度更高）
-    results = _rapid_ocr_readtext(image)
+    results = _rapid_ocr_readtext(image, _already_enhanced=_already_enhanced)
     _avg_conf = sum((r[2] for r in results if len(r) > 2), 0) / max(len(results), 1) if results else 0
     # RapidOCR 失败或质量差时回退 EasyOCR
     if not results or _avg_conf < 0.3:
@@ -11196,9 +11199,9 @@ def _frame_diff_clock_ocr(reader, frames):
                                     cv2.THRESH_BINARY, 15, 5)
     kernel_sharp = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]], dtype=np.float32)
     sharpened = cv2.filter2D(binary, -1, kernel_sharp)
-    # OCR 增强区域
+    # OCR 增强区域（已二值化+锐化，跳过放大）
     try:
-        roi_results = _ocr_readtext(reader, sharpened)
+        roi_results = _ocr_readtext(reader, sharpened, _already_enhanced=True)
     except Exception as e:
         logger.warning("帧差法 OCR 失败: %s", e)
         roi_results = []
