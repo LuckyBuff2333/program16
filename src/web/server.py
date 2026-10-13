@@ -14475,17 +14475,17 @@ async def test_prod_batch_run(request: Request):
             def _extract_one(bugid):
                 try:
                     issue = _jc.fetch_issue(bugid)
+                    # gmlogger 前置检查：无 gmlogger 附件直接跳过所有时间提取（与机器人流程一致）
+                    attachments = (issue.get("fields") or {}).get("attachment") or []
+                    if not _has_gmlogger_logs(attachments, bugid):
+                        logger.info("触发时间: %s 无gmlogger附件，跳过", bugid)
+                        return bugid, ""
                     # 评论/字段提取优先（基于对比实验结果：文本提取准确率最高且速度最快）
                     tt = _jc.extract_trigger_time_from_issue(issue)
                     if tt:
                         if not isinstance(tt, str):
                             tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
                         return bugid, tt
-                    # 无 gmlogger 附件时直接跳过视频/图片 OCR（昂贵且无意义）
-                    attachments = (issue.get("fields") or {}).get("attachment") or []
-                    if not _has_gmlogger_logs(attachments, bugid):
-                        logger.info("触发时间: %s 无gmlogger附件，跳过视频/图片OCR", bugid)
-                        return bugid, ""
                     # 文本未命中，视频OCR兜底
                     tt = _diag_extract_time_from_video_simple(issue)
                     if tt:
