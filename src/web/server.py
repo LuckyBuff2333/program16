@@ -11428,34 +11428,14 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         auth_type = cfg.get("auth_type", "bearer").lower()
         if auth_type == "bearer":
             headers["Authorization"] = f"Bearer {token}"
-    # 始终尝试下载 gmlogger 压缩包取包内 main 权威日期（包内 main.log 文件名时间是最权威的来源）
-    # 包内获取失败时回退到外层 gmlogger 文件名日期（不如包内准，但仍可作为参考）
-    _timeout = max(int(cfg.get("timeout", 30)), 120)
-    _main_dts = _gmlogger_main_date_refs(attachments, headers, _timeout, bugid)
-    if _main_dts:
-        # 包内日期为权威来源，外层日期作为补充
-        _inner_date_set = {(dt.year, dt.month, dt.day) for dt in _main_dts}
-        gm_dates = [(dt.year, dt.month, dt.day) for dt in _main_dts]
-        ref_pool = list(_main_dts)
-        for gd in [(dt.year, dt.month, dt.day) for dt in [t[1] for t in gm_times]]:
-            if gd not in _inner_date_set:
-                gm_dates.append(gd)
-        logger.info("视频兜底提取(%s)：包内 main 日期 %d 个，外层补充后 gm_dates %d 个",
-                    bugid, len(_main_dts), len(gm_dates))
-    elif gm_times:
-        # 包内日期获取失败（压缩包过大/下载超时等），回退到外层 gmlogger 文件名日期
-        logger.warning("视频兜底提取(%s)：包内日期获取失败，回退到外层 gmlogger 文件名日期(%d 个)",
-                       bugid, len(gm_times))
-        # gm_dates 和 ref_pool 已在上方从 gm_times 初始化
-    else:
-        # 包内和外层均无日期，视频 OCR 无法验证，跳过
-        logger.info("视频兜底提取(%s)：包内和外层 gmlogger 均无日期，跳过", bugid)
+    # 触发时间提取不解压 gmlogger，直接用外层文件名日期（解压仅在报错排查时使用）
+    # 外层日期精度低于包内，匹配容差放宽到 10 分钟
+    if not gm_times:
+        logger.info("视频兜底提取(%s)：外层 gmlogger 无日期，跳过", bugid)
         return ""
-    # 包内日期可用时用 5 分钟容差（精确）；仅外层日期回退时放宽到 10 分钟（外层日期精度较低）
-    _has_inner_dates = bool(_main_dts)
-    _match_tolerance = 300 if _has_inner_dates else 600
-    logger.info("视频兜底提取(%s)：匹配容差 %ds（%s）",
-                bugid, _match_tolerance, "包内日期" if _has_inner_dates else "外层日期回退")
+    _match_tolerance = 600  # 10分钟容差（外层文件名日期精度较低）
+    logger.info("视频兜底提取(%s)：外层 gmlogger 日期 %d 个，匹配容差 %ds",
+                bugid, len(gm_times), _match_tolerance)
     best_partial = ""
     # 12h 制兜底候选（延迟决策）
     best_12h_cand = None  # (time_str, ext_dt)
