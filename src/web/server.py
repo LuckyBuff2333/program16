@@ -1733,26 +1733,33 @@ def _bot_apply_bitable_filter(candidates: list, filters: dict = None) -> list:
     return [k for k in candidates if k not in exclude_keys]
 
 
+# JQL 默认预设（配置文件中无 JQL 时兆底）
+_JQL_DEFAULTS = [
+    {"id": "JQL1", "label": "远控", "jql": 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"'},
+    {"id": "JQL2", "label": "coreservice", "jql": 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"'},
+    {"id": "JQL3", "label": "导航", "jql": 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'},
+    {"id": "JQL4", "label": "VCU近期未关闭", "jql": 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED'},
+    {"id": "JQL5", "label": "8.25后已关闭导航", "jql": 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed'},
+    {"id": "JQL6", "label": "8.25后远控", "jql": 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed'},
+    {"id": "JQL7", "label": "8.25后coreservice", "jql": 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed'},
+    {"id": "JQL8", "label": "8.25后RES1.0/1.1", "jql": 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")'},
+    {"id": "JQL9", "label": "9.1新增非close", "jql": 'issuetype = bug AND status != closed AND created >= "2026-09-01"'},
+    {"id": "JQL10", "label": "10.1新增非close", "jql": 'issuetype = bug AND status != closed AND created >= "2026-10-01"'},
+]
+
+
 def _get_jql_presets() -> dict:
-    """获取 JQL 预设（与测试页同步），返回 {编号: (标签, JQL)} 字典"""
-    presets = {
-        "JQL1": ("远控", 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"'),
-        "JQL2": ("coreservice", 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"'),
-        "JQL3": ("导航", 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'),
-        "JQL4": ("VCU近期未关闭", 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED'),
-        "JQL5": ("8.25后已关闭导航", 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed'),
-        "JQL6": ("8.25后远控", 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed'),
-        "JQL7": ("8.25后coreservice", 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed'),
-        "JQL8": ("8.25后RES1.0/1.1", 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")'),
-        "JQL9": ("9.1新增非close", 'issuetype = bug AND status != closed AND created >= "2026-09-01"'),
-        "JQL10": ("10.1新增非close", 'issuetype = bug AND status != closed AND created >= "2026-10-01"'),
-    }
-    cfg_jqls = load_config().get("feishu_bot", {}).get("jqls", {}) or {}
-    for k, v in cfg_jqls.items():
-        key = k.upper()
-        if key not in presets:  # 不覆盖硬编码的标签
-            presets[key] = (k, v)
-    return presets
+    """获取 JQL 预设，从配置文件读取（列表格式），返回 {编号: (标签, JQL)} 字典"""
+    cfg_jqls = load_config().get("feishu_bot", {}).get("jqls", None)
+    # 新格式：列表 [{id, label, jql}]
+    if isinstance(cfg_jqls, list) and cfg_jqls:
+        return {item.get("id", f"JQL{i}").upper(): (item.get("label", ""), item.get("jql", ""))
+                for i, item in enumerate(cfg_jqls, 1)}
+    # 兆底：旧字典格式或配置为空
+    if isinstance(cfg_jqls, dict) and cfg_jqls:
+        return {k.upper(): (k, v) for k, v in cfg_jqls.items()}
+    # 无任何配置，使用内置默认值
+    return {item["id"]: (item["label"], item["jql"]) for item in _JQL_DEFAULTS}
 
 
 def _bot_diag_single(chat_id: str, bugids: list):
@@ -5867,6 +5874,44 @@ async def save_config(request: Request):
         return _fail(str(e))
 
 
+@app.get("/api/params")
+def get_params():
+    """获取参数配置（基础信息 + 并发数 + JQL列表）"""
+    cfg = load_config()
+    params = cfg.get("params", {})
+    jqls_raw = cfg.get("feishu_bot", {}).get("jqls", _JQL_DEFAULTS)
+    # 统一返回列表格式
+    if isinstance(jqls_raw, list):
+        jqls = jqls_raw
+    elif isinstance(jqls_raw, dict):
+        jqls = [{"id": k, "label": k, "jql": v} for k, v in jqls_raw.items()]
+    else:
+        jqls = _JQL_DEFAULTS
+    return {"params": params, "jqls": jqls}
+
+
+@app.post("/api/params")
+async def save_params(request: Request):
+    """保存参数配置（基础信息 + 并发数 + JQL列表）"""
+    try:
+        body = await request.json() or {}
+        cfg = load_config()
+        # 保存 params 段
+        if "params" in body:
+            cfg["params"] = body["params"]
+        # 保存 JQL 列表到 feishu_bot.jqls
+        if "jqls" in body:
+            cfg.setdefault("feishu_bot", {})["jqls"] = body["jqls"]
+        with open(cfg_module.CONFIG_PATH, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+        load_config(cfg_module.CONFIG_PATH)
+        logger.info("参数配置已保存")
+        return _ok(message="参数配置保存成功")
+    except Exception as e:
+        logger.error("参数配置保存失败: %s", e)
+        return _fail(str(e))
+
+
 @app.post("/api/analyze")
 async def run_analyze(request: Request):
     """执行内容补充流程，接收表格行数据，返回补充后的完整数据"""
@@ -7234,7 +7279,8 @@ async def test_batch_ai_extract_times(request: Request):
             _WRITE_BATCH_SIZE = 20
             if need_fetch:
                 from src.clients import jira_client as _jc
-                _ocr_sem = asyncio.Semaphore(2)  # OCR 并发限制：最多 2 路同时 GPU 推理，避免显存争抢
+                _ocr_parallel = load_config().get("params", {}).get("ocr_parallel", 2)
+                _ocr_sem = asyncio.Semaphore(_ocr_parallel)  # OCR 并发限制：避免显存争抢
 
                 async def _process_one(key):
                     """处理单条触发时间提取，返回 (key, status, tt_val)"""
@@ -7308,8 +7354,9 @@ async def test_batch_ai_extract_times(request: Request):
                     return key, status, tt_val
 
                 if parallel and len(need_fetch) > 1:
-                    # ── 并行模式：Semaphore(8) 控制并发 ──
-                    sem = asyncio.Semaphore(8)
+                    # ── 并行模式：从配置读取并发数 ──
+                    _trigger_parallel = load_config().get("params", {}).get("trigger_parallel", 8)
+                    sem = asyncio.Semaphore(_trigger_parallel)
                     async def _sem_process(key):
                         async with sem:
                             if interrupted or _batch_extract_stop_event.is_set() or stop_event.is_set():

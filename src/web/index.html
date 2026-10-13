@@ -857,8 +857,20 @@
         </el-card>
       </el-tab-pane>
 
-      <!-- 页签2：接口设置 -->
-      <el-tab-pane label="接口设置" name="config">
+      <!-- 页签2：配置页 -->
+      <el-tab-pane label="配置页" name="config">
+        <el-container style="height:100%;background:#fff;border-radius:8px;overflow:hidden">
+          <!-- 左侧子菜单 -->
+          <el-aside width="160px" style="border-right:1px solid #eef1f6;padding:12px 0">
+            <el-menu :default-active="configPanel" @select="p => { configPanel = p; if (p === 'params' && !paramsData.loaded) loadParams(); }" style="border-right:none">
+              <el-menu-item index="api">接口设置</el-menu-item>
+              <el-menu-item index="params">参数配置</el-menu-item>
+            </el-menu>
+          </el-aside>
+          <!-- 右侧内容区 -->
+          <el-main style="padding:16px;overflow:auto">
+            <!-- 子面板：接口设置（原内容） -->
+            <div v-show="configPanel === 'api'">
         <el-row :gutter="14">
           <el-col :span="8" v-for="item in apiSections" :key="item.key">
             <el-card shadow="never" style="margin-bottom:14px">
@@ -940,7 +952,76 @@
             </el-card>
           </el-col>
         </el-row>
+            </div>
 
+            <!-- 子面板：参数配置 -->
+            <div v-show="configPanel === 'params'">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                <span style="font-size:16px;font-weight:600">参数配置</span>
+                <el-button type="primary" :loading="paramsData.saving" @click="saveParams">保存配置</el-button>
+              </div>
+
+              <!-- 基础信息 -->
+              <el-card shadow="never" style="margin-bottom:14px">
+                <template #header><span style="font-weight:600">基础信息</span></template>
+                <el-form label-width="100px" size="small">
+                  <el-form-item label="版本号">
+                    <el-input v-model="paramsData.params.version" placeholder="如 1.2.0" style="max-width:300px"></el-input>
+                  </el-form-item>
+                  <el-form-item label="项目名称">
+                    <el-input v-model="paramsData.params.project_name" placeholder="如 Jira日志分析工具" style="max-width:300px"></el-input>
+                  </el-form-item>
+                </el-form>
+              </el-card>
+
+              <!-- 触发时间提取 -->
+              <el-card shadow="never" style="margin-bottom:14px">
+                <template #header><span style="font-weight:600">触发时间提取</span></template>
+                <el-form label-width="120px" size="small" inline>
+                  <el-form-item label="提取并发数">
+                    <el-input-number v-model="paramsData.params.trigger_parallel" :min="1" :max="20" controls-position="right"></el-input-number>
+                    <span style="margin-left:8px;font-size:12px;color:#909399">同时处理的Jira数</span>
+                  </el-form-item>
+                  <el-form-item label="OCR并发数">
+                    <el-input-number v-model="paramsData.params.ocr_parallel" :min="1" :max="5" controls-position="right"></el-input-number>
+                    <span style="margin-left:8px;font-size:12px;color:#909399">GPU推理并行数</span>
+                  </el-form-item>
+                </el-form>
+              </el-card>
+
+              <!-- JQL搜索按钮标签 -->
+              <el-card shadow="never" style="margin-bottom:14px">
+                <template #header>
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <span style="font-weight:600">JQL搜索按钮标签</span>
+                    <el-button size="small" type="primary" link @click="addJql">+ 添加</el-button>
+                  </div>
+                </template>
+                <el-table :data="paramsData.jqls" size="small" border style="width:100%">
+                  <el-table-column label="编号" width="90" align="center">
+                    <template #default="{row}">{{ row.id }}</template>
+                  </el-table-column>
+                  <el-table-column label="标签名" width="160">
+                    <template #default="{row}">
+                      <el-input v-model="row.label" size="small" placeholder="按钮显示名称"></el-input>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="JQL语句" min-width="400">
+                    <template #default="{row}">
+                      <el-input v-model="row.jql" size="small" placeholder="JQL查询语句"></el-input>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="" width="50" align="center">
+                    <template #default="{$index}">
+                      <span class="field-del-btn" title="删除" @click="removeJql($index)">&#x2715;</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </el-card>
+            </div>
+
+          </el-main>
+        </el-container>
       </el-tab-pane>
 
       <!-- 页签3：数据看板 -->
@@ -3325,6 +3406,12 @@ createApp({
         { key: 'feishu_bot', title: '飞书机器人' },
 
       ],
+      configPanel: 'api',  // 配置页当前子面板
+      paramsData: {  // 参数配置数据
+        loaded: false, saving: false,
+        params: { version: '1.0.0', project_name: 'Jira日志分析工具', trigger_parallel: 8, ocr_parallel: 2 },
+        jqls: [],
+      },
       dailyRows: [], dailyDate: '', dailyColumns: [], dailyLoading: false, syncCloudLoading: false,
             dailyReportDate: '', dailyReportLoading: false,
             dailySummary: {},
@@ -7589,6 +7676,49 @@ createApp({
         ElementPlus.ElMessage.success(body.message);
         await this.loadOverview();
       } catch (e) { /* 错误已提示 */ } finally { this.running.saveConfig = false; }
+    },
+    // 加载参数配置
+    async loadParams() {
+      try {
+        const body = await this.api('/api/params');
+        this.paramsData.params = Object.assign(
+          { version: '1.0.0', project_name: 'Jira日志分析工具', trigger_parallel: 8, ocr_parallel: 2 },
+          body.params || {}
+        );
+        this.paramsData.jqls = (body.jqls || []).map((item, i) => ({
+          id: item.id || `JQL${i + 1}`,
+          label: item.label || '',
+          jql: item.jql || '',
+        }));
+        this.paramsData.loaded = true;
+      } catch (e) {
+        ElementPlus.ElMessage.error('加载参数配置失败: ' + (e.message || e));
+      }
+    },
+    // 保存参数配置
+    async saveParams() {
+      this.paramsData.saving = true;
+      try {
+        const payload = {
+          params: { ...this.paramsData.params },
+          jqls: this.paramsData.jqls.map(j => ({ id: j.id, label: j.label, jql: j.jql })),
+        };
+        const body = await this.api('/api/params', { method: 'POST', body: JSON.stringify(payload) });
+        ElementPlus.ElMessage.success(body.message);
+      } catch (e) {
+        ElementPlus.ElMessage.error('保存参数配置失败: ' + (e.message || e));
+      } finally { this.paramsData.saving = false; }
+    },
+    // 添加 JQL
+    addJql() {
+      const nextNum = this.paramsData.jqls.length + 1;
+      this.paramsData.jqls.push({ id: `JQL${nextNum}`, label: '', jql: '' });
+    },
+    // 删除 JQL
+    removeJql(index) {
+      ElementPlus.ElMessageBox.confirm(`确认删除 ${this.paramsData.jqls[index].id}？`).then(() => {
+        this.paramsData.jqls.splice(index, 1);
+      }).catch(() => {});
     },
     // 字段名中文标签映射
     fieldLabel(field) {
