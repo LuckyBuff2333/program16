@@ -11402,13 +11402,76 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     cache = _load_video_time_cache()
     cache_updated = False
     from src.clients.jira_client import _parse_datetime_string
-    # 解析 gmlogger 文件名时间
+    # 1. 解析 gmlogger 压缩包文件名时间（不解压，外层日期）
     gm_times = _diag_gmlogger_times(attachments)
+    # 2. 直接上传的 main.log 文件（已解压，内层日期）
+    _inner_times = []
+    for att in attachments:
+        fname = att.get("filename", "") or ""
+        bname = os.path.basename(fname).lower()
+        # 跳过 gmlogger 压缩包（已在步骤1处理）和视频/图片
+        if "gmlogger" in fname.lower():
+            continue
+        if not bname.endswith((".log", ".txt")):
+            continue
+        if "main" not in bname:
+            continue
+        parsed = _diag_parse_entry_time(fname)
+        if parsed:
+            _inner_times.append(parsed)
+            logger.info("视频兜底提取(%s)：直接上传的 main 文件: %s -> %s", bugid, fname, parsed[0])
+    # 3. 非 gmlogger 且非 main 的压缩包：解压探测包内 main 文件（场景三）
+    cfg = load_config().get("jira_api", {})
+    _timeout = max(int(cfg.get("timeout", 30)), 120)
+    headers = {}
+    token = cfg.get("token", "")
+    if token:
+        auth_type = cfg.get("auth_type", "bearer").lower()
+        if auth_type == "bearer":
+            headers["Authorization"] = f"Bearer {token}"
+    for att in attachments:
+        fname = att.get("filename", "") or ""
+        fn_lower = fname.lower()
+        # 跳过 gmlogger 压缩包（不解压）
+        if "gmlogger" in fn_lower:
+            continue
+        # 跳过非压缩包
+        if not _ARCHIVE_NAME_RE.search(fn_lower):
+            continue
+        # 跳过分卷
+        if _SPLIT_ARCHIVE_RE.search(fn_lower):
+            continue
+        # 跳过超大包
+        if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
+            continue
+        res = _diag_list_archive_entries(att.get("content", ""), headers, _timeout, bugid)
+        if not res.get("ok"):
+            continue
+        for entry in res.get("entries", []):
+            ebname = os.path.basename(entry).lower()
+            if "main" not in ebname:
+                continue
+            parsed = _diag_parse_entry_time(entry)
+            if parsed:
+                _inner_times.append(parsed)
+                logger.info("视频兜底提取(%s)：压缩包 %s 内 main 文件: %s -> %s",
+                            bugid, fname, entry, parsed[0])
+    # 构建 ref_pool
     gm_dates = [(dt.year, dt.month, dt.day) for _, dt in gm_times]
     ref_pool = [dt for _, dt in gm_times]
-    _timestudy_update_ctx(bugid, gm_count=len(gm_times),
-                          ref_times="|".join(str(dt) for _, dt in gm_times[:3]))
-    _timestudy_trace(bugid, f"gm:{len(gm_times)}")
+    _has_inner_dates = False
+    if _inner_times:
+        _has_inner_dates = True
+        for ts, dt in _inner_times:
+            d = (dt.year, dt.month, dt.day)
+            if d not in gm_dates:
+                gm_dates.append(d)
+            if dt not in ref_pool:
+                ref_pool.append(dt)
+        logger.info("视频兜底提取(%s)：内层 main 日期 %d 个", bugid, len(_inner_times))
+    _timestudy_update_ctx(bugid, gm_count=len(gm_times) + len(_inner_times),
+                          ref_times="|".join(str(dt) for _, dt in (gm_times + _inner_times)[:3]))
+    _timestudy_trace(bugid, f"gm:{len(gm_times)}+inner:{len(_inner_times)}")
     # 构建 gmlogger 详细信息（用于智能匹配视频）
     gm_info_list = _build_gmlogger_info(attachments)
     gm_ref_dt = None
@@ -11420,22 +11483,13 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     # 按优先级排序视频
     ranked_videos = _rank_videos(videos, attachments)
     single_video = len(ranked_videos) == 1
-    # 认证头
-    cfg = load_config().get("jira_api", {})
-    headers = {}
-    token = cfg.get("token", "")
-    if token:
-        auth_type = cfg.get("auth_type", "bearer").lower()
-        if auth_type == "bearer":
-            headers["Authorization"] = f"Bearer {token}"
-    # 触发时间提取不解压 gmlogger，直接用外层文件名日期（解压仅在报错排查时使用）
-    # 外层日期精度低于包内，匹配容差放宽到 10 分钟
-    if not gm_times:
-        logger.info("视频兜底提取(%s)：外层 gmlogger 无日期，跳过", bugid)
+    # 匹配容差：内层日期（main文件）可用时 5 分钟，仅外层文件名日期时 10 分钟
+    if not ref_pool:
+        logger.info("视频兜底提取(%s)：gmlogger 和内层均无日期，跳过", bugid)
         return ""
-    _match_tolerance = 600  # 10分钟容差（外层文件名日期精度较低）
-    logger.info("视频兜底提取(%s)：外层 gmlogger 日期 %d 个，匹配容差 %ds",
-                bugid, len(gm_times), _match_tolerance)
+    _match_tolerance = 300 if _has_inner_dates else 600
+    logger.info("视频兜底提取(%s)：ref_pool %d 个（外层 %d + 内层 %d），匹配容差 %ds",
+                bugid, len(ref_pool), len(gm_times), len(_inner_times), _match_tolerance)
     best_partial = ""
     # 12h 制兜底候选（延迟决策）
     best_12h_cand = None  # (time_str, ext_dt)
