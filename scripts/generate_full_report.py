@@ -327,25 +327,27 @@ html += f"""</table></div>
 <div class="footer">AI日志分析全量数据报告 · 数据截至 {now} · 去重规则：同一Jira有成功记录则计为成功</div>
 
 <script>
-// === 饼图：成功/失败 ===
+// === 饼图：成功/失败（双系列：外标签+内百分比） ===
+var pieResult = [
+  {{value:{dedup_success}, name:'成功', itemStyle:{{color:'#52c41a'}}}},
+  {{value:{dedup_fail}, name:'失败', itemStyle:{{color:'#ff4d4f'}}}},
+];
 echarts.init(document.getElementById('pie_result')).setOption({{
   tooltip: {{ trigger:'item', formatter:'{{b}}: {{c}} ({{d}}%)' }},
-  series: [{{ type:'pie', radius:['40%','70%'], label:{{ position:'inside', formatter:'{{b}}\\n{{c}} ({{d}}%)', color:'#fff', fontSize:14, fontWeight:'bold' }},
-    data:[
-      {{value:{dedup_success}, name:'成功', itemStyle:{{color:'#52c41a'}}}},
-      {{value:{dedup_fail}, name:'失败', itemStyle:{{color:'#ff4d4f'}}}},
-    ]
-  }}]
+  series: [
+    {{ type:'pie', radius:['40%','70%'], label:{{ position:'outside', formatter:'{{b}}\\n{{c}}', fontSize:13 }}, labelLine:{{ show:true, length:15, length2:10 }}, data:pieResult }},
+    {{ type:'pie', radius:['40%','70%'], label:{{ position:'inside', formatter:'{{d}}%', color:'#fff', fontSize:16, fontWeight:'bold' }}, labelLine:{{ show:false }}, data:pieResult, silent:true, emphasis:{{ scale:false }} }}
+  ]
 }});
 
-// === 饼图：来源分布 ===
+// === 饼图：来源分布（双系列：外标签+内百分比） ===
 var sourceData = [{','.join(f'{{value:{v["success"]+v["fail"]}, name:"{_map_source(k)}"}}' for k,v in source_dedup.items())}];
 echarts.init(document.getElementById('pie_source')).setOption({{
   tooltip: {{ trigger:'item', formatter:'{{b}}: {{c}} ({{d}}%)' }},
-  series: [{{ type:'pie', radius:['40%','70%'], label:{{ position:'inside', formatter:'{{b}}\\n{{c}} ({{d}}%)', color:'#fff', fontSize:13, fontWeight:'bold' }},
-    data: sourceData,
-    color: ['#1890ff','#52c41a','#fa8c16','#722ed1','#13c2c2']
-  }}]
+  series: [
+    {{ type:'pie', radius:['40%','70%'], label:{{ position:'outside', formatter:'{{b}}\\n{{c}}', fontSize:12 }}, labelLine:{{ show:true, length:15, length2:10 }}, data:sourceData, color:['#1890ff','#52c41a','#fa8c16','#722ed1','#13c2c2'] }},
+    {{ type:'pie', radius:['40%','70%'], label:{{ position:'inside', formatter:'{{d}}%', color:'#fff', fontSize:14, fontWeight:'bold' }}, labelLine:{{ show:false }}, data:sourceData, color:['#1890ff','#52c41a','#fa8c16','#722ed1','#13c2c2'], silent:true, emphasis:{{ scale:false }} }}
+  ]
 }});
 
 // === 柱状图：月度 ===
@@ -398,13 +400,14 @@ echarts.init(document.getElementById('bar_conf')).setOption({{
   }}]
 }});
 
-// === 饼图：Troubleshoot分类 ===
+// === 饼图：Troubleshoot分类（双系列：外标签+内百分比） ===
+var tsData = [{','.join(f'{{value:{v}, name:"{k}"}}' for k,v in ts_cats.most_common())}];
 echarts.init(document.getElementById('pie_ts')).setOption({{
   tooltip: {{ trigger:'item', formatter:'{{b}}: {{c}} ({{d}}%)' }},
-  series: [{{ type:'pie', radius:['35%','65%'], label:{{ position:'inside', formatter:'{{b}}\\n{{c}} ({{d}}%)', color:'#fff', fontSize:12, fontWeight:'bold' }},
-    data:[{','.join(f'{{value:{v}, name:"{k}"}}' for k,v in ts_cats.most_common())}],
-    color: ['#ff4d4f','#fa8c16','#ffc53d','#73d13d']
-  }}]
+  series: [
+    {{ type:'pie', radius:['35%','65%'], label:{{ position:'outside', formatter:'{{b}}\\n{{c}}', fontSize:11 }}, labelLine:{{ show:true, length:12, length2:8 }}, data:tsData, color:['#ff4d4f','#fa8c16','#ffc53d','#73d13d'] }},
+    {{ type:'pie', radius:['35%','65%'], label:{{ position:'inside', formatter:'{{d}}%', color:'#fff', fontSize:13, fontWeight:'bold' }}, labelLine:{{ show:false }}, data:tsData, color:['#ff4d4f','#fa8c16','#ffc53d','#73d13d'], silent:true, emphasis:{{ scale:false }} }}
+  ]
 }});
 </script>
 </body></html>"""

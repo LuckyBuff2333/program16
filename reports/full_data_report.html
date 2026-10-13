@@ -30,7 +30,7 @@ tr:hover { background:#fafafa; }
 </style></head><body>
 <div class="header">
   <h1>AI日志分析 · 全量数据统计报告</h1>
-  <div class="sub">数据来源：多维表格 3991 条 + Troubleshoot 365 条 + 视频缓存 1545 条 + 批量提交 7947 条 &nbsp;|&nbsp; 生成时间: 2026-10-13 10:16</div>
+  <div class="sub">数据来源：多维表格 3991 条 + Troubleshoot 365 条 + 视频缓存 1545 条 + 批量提交 7947 条 &nbsp;|&nbsp; 生成时间: 2026-10-13 10:21</div>
 </div>
 
 <!-- KPI -->
@@ -114,28 +114,30 @@ tr:hover { background:#fafafa; }
 <tr><td>2026-10</td><td>1076</td><td class="green">886</td><td class="red">190</td><td><b>82.3%</b></td><td><span class="green">+22.1%</span></td></tr>
 </table></div>
 
-<div class="footer">AI日志分析全量数据报告 · 数据截至 2026-10-13 10:16 · 去重规则：同一Jira有成功记录则计为成功</div>
+<div class="footer">AI日志分析全量数据报告 · 数据截至 2026-10-13 10:21 · 去重规则：同一Jira有成功记录则计为成功</div>
 
 <script>
-// === 饼图：成功/失败 ===
+// === 饼图：成功/失败（双系列：外标签+内百分比） ===
+var pieResult = [
+  {value:2397, name:'成功', itemStyle:{color:'#52c41a'}},
+  {value:1081, name:'失败', itemStyle:{color:'#ff4d4f'}},
+];
 echarts.init(document.getElementById('pie_result')).setOption({
   tooltip: { trigger:'item', formatter:'{b}: {c} ({d}%)' },
-  series: [{ type:'pie', radius:['40%','70%'], label:{ position:'inside', formatter:'{b}\n{c} ({d}%)', color:'#fff', fontSize:14, fontWeight:'bold' },
-    data:[
-      {value:2397, name:'成功', itemStyle:{color:'#52c41a'}},
-      {value:1081, name:'失败', itemStyle:{color:'#ff4d4f'}},
-    ]
-  }]
+  series: [
+    { type:'pie', radius:['40%','70%'], label:{ position:'outside', formatter:'{b}\n{c}', fontSize:13 }, labelLine:{ show:true, length:15, length2:10 }, data:pieResult },
+    { type:'pie', radius:['40%','70%'], label:{ position:'inside', formatter:'{d}%', color:'#fff', fontSize:16, fontWeight:'bold' }, labelLine:{ show:false }, data:pieResult, silent:true, emphasis:{ scale:false } }
+  ]
 });
 
-// === 饼图：来源分布 ===
+// === 饼图：来源分布（双系列：外标签+内百分比） ===
 var sourceData = [{value:31, name:"飞书机器人"},{value:815, name:"PC端"},{value:2632, name:"线上"}];
 echarts.init(document.getElementById('pie_source')).setOption({
   tooltip: { trigger:'item', formatter:'{b}: {c} ({d}%)' },
-  series: [{ type:'pie', radius:['40%','70%'], label:{ position:'inside', formatter:'{b}\n{c} ({d}%)', color:'#fff', fontSize:13, fontWeight:'bold' },
-    data: sourceData,
-    color: ['#1890ff','#52c41a','#fa8c16','#722ed1','#13c2c2']
-  }]
+  series: [
+    { type:'pie', radius:['40%','70%'], label:{ position:'outside', formatter:'{b}\n{c}', fontSize:12 }, labelLine:{ show:true, length:15, length2:10 }, data:sourceData, color:['#1890ff','#52c41a','#fa8c16','#722ed1','#13c2c2'] },
+    { type:'pie', radius:['40%','70%'], label:{ position:'inside', formatter:'{d}%', color:'#fff', fontSize:14, fontWeight:'bold' }, labelLine:{ show:false }, data:sourceData, color:['#1890ff','#52c41a','#fa8c16','#722ed1','#13c2c2'], silent:true, emphasis:{ scale:false } }
+  ]
 });
 
 // === 柱状图：月度 ===
@@ -188,13 +190,14 @@ echarts.init(document.getElementById('bar_conf')).setOption({
   }]
 });
 
-// === 饼图：Troubleshoot分类 ===
+// === 饼图：Troubleshoot分类（双系列：外标签+内百分比） ===
+var tsData = [{value:322, name:"触发时间问题"},{value:25, name:"无gmlogger文件"},{value:16, name:"解压问题"},{value:2, name:"日志过滤逻辑"}];
 echarts.init(document.getElementById('pie_ts')).setOption({
   tooltip: { trigger:'item', formatter:'{b}: {c} ({d}%)' },
-  series: [{ type:'pie', radius:['35%','65%'], label:{ position:'inside', formatter:'{b}\n{c} ({d}%)', color:'#fff', fontSize:12, fontWeight:'bold' },
-    data:[{value:322, name:"触发时间问题"},{value:25, name:"无gmlogger文件"},{value:16, name:"解压问题"},{value:2, name:"日志过滤逻辑"}],
-    color: ['#ff4d4f','#fa8c16','#ffc53d','#73d13d']
-  }]
+  series: [
+    { type:'pie', radius:['35%','65%'], label:{ position:'outside', formatter:'{b}\n{c}', fontSize:11 }, labelLine:{ show:true, length:12, length2:8 }, data:tsData, color:['#ff4d4f','#fa8c16','#ffc53d','#73d13d'] },
+    { type:'pie', radius:['35%','65%'], label:{ position:'inside', formatter:'{d}%', color:'#fff', fontSize:13, fontWeight:'bold' }, labelLine:{ show:false }, data:tsData, color:['#ff4d4f','#fa8c16','#ffc53d','#73d13d'], silent:true, emphasis:{ scale:false } }
+  ]
 });
 </script>
 </body></html>
