@@ -5887,7 +5887,7 @@ def get_params():
         jqls = [{"id": k, "label": k, "jql": v} for k, v in jqls_raw.items()]
     else:
         jqls = _JQL_DEFAULTS
-    return {"params": params, "jqls": jqls}
+    return _ok({"params": params, "jqls": jqls})
 
 
 @app.post("/api/params")

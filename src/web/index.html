@@ -7693,7 +7693,7 @@ createApp({
     async _initBatchParams() {
       try {
         const body = await this.api('/api/params');
-        const p = body.params || {};
+        const p = (body.data || {}).params || {};
         this.batchAi.analysisConcurrency = p.analysis_concurrency || 5;
         this.batchAi.downloadConcurrency = p.download_concurrency || 2;
         this.batchAi.model = p.model || 'deepseek-v-pro';
@@ -7703,16 +7703,17 @@ createApp({
     async loadParams() {
       try {
         const body = await this.api('/api/params');
+        const data = body.data || {};
         this.paramsData.params = Object.assign(
           { version: '1.0.0', project_name: 'Jira日志分析工具', trigger_parallel: 8, ocr_parallel: 2, analysis_concurrency: 5, download_concurrency: 2, model: 'deepseek-v-pro', trigger_source: '线上' },
-          body.params || {}
+          data.params || {}
         );
         // 加载完成后同步到批量执行参数
         this.batchAi.analysisConcurrency = this.paramsData.params.analysis_concurrency;
         this.batchAi.downloadConcurrency = this.paramsData.params.download_concurrency;
         this.batchAi.model = this.paramsData.params.model;
         this.batchAi.triggerSource = this.paramsData.params.trigger_source;
-        this.paramsData.jqls = (body.jqls || []).map((item, i) => ({
+        this.paramsData.jqls = (data.jqls || []).map((item, i) => ({
           id: item.id || `JQL${i + 1}`,
           label: item.label || '',
           jql: item.jql || '',
