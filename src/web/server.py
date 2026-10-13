@@ -1946,7 +1946,7 @@ def _bot_run_troubleshoot(chat_id: str, after_time: str):
                  f"失败记录: {total} 条（其中缓存命中: {cached_count} 条）",
                  ""]
         # 按用户要求的 4 类展示，其余合并到“其他”
-        main_cats = ["触发时间问题", "无gmlogger文件", "无报错信息，跳过排查", "分析任务执行超时，跳过排查"]
+        main_cats = ["触发时间问题", "无gmlogger", "无报错信息，跳过排查", "分析任务执行超时，跳过排查"]
         for cat in main_cats:
             if cat in categories:
                 lines.append(f"{cat}: {categories[cat]}/{total}")
@@ -1963,8 +1963,8 @@ def _bot_run_troubleshoot(chat_id: str, after_time: str):
 
 
 # 分析结果为成功或人工审核确认为无效/无需重试的 Jira 号集合
-# 注意：超时和手动中断不属于通用失败原因，应允许重试
-_EXCLUDE_REASONS = {"无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "日志文件已损坏", "问题重复", "问题重复，无需排查", "问题未复现", "触发时间无日志", "无日志附件", "该jira无日志附件，属于正常处理机制", "该Jira无日志附件，属于正常处理机制", "该jira无日志附件", "该Jira无日志附件", "日志里无对应触发时间相关文件，但是标题里明确说了触发时间", "解压问题，待排查", "解压问题"}
+# 注意：超时和手动中断不属于通用失败原因，应允许重试；无gmlogger不属于通用失败，应允许重试
+_EXCLUDE_REASONS = {"日志文件已损坏", "问题重复", "问题重复，无需排查", "问题未复现", "解压问题，待排查", "解压问题"}
 
 
 def _is_bitable_excluded(fields: dict, bugid_field: str = "jira号") -> bool:
@@ -1972,7 +1972,7 @@ def _is_bitable_excluded(fields: dict, bugid_field: str = "jira号") -> bool:
 
     排除条件：
     1. 触发来源=parseFullTicket 且 分析结果=成功 → 已正常处理的记录
-    2. 分析结果=失败 且 人工审核结果为无效bug原因（无gmlogger/无日志附件/问题重复/信息不全等）
+    2. 分析结果=失败 且 人工审核结果为无效bug原因（问题重复/信息不全等）
     """
     result_status = _bitable_text(fields.get("分析结果", ""))
     # 触发来源=parseFullTicket 且分析成功 → 排除
@@ -7247,8 +7247,7 @@ async def test_batch_ai_extract_times(request: Request):
                         attachments = (issue.get("fields") or {}).get("attachment") or []
                         _has_log = await loop.run_in_executor(None, _has_gmlogger_logs, attachments, key)
                         if not _has_log:
-                            # 无gmlogger且包内无main → 写空标记，下次自动按"已标记空"跳过（勾"空标记重新提取"可重来）
-                            _write_buffer.append((key, ""))
+                            # 无gmlogger且包内无main → 不写空标记，下次仍可重新检查
                             return key, "no_gmlogger", ""
                         tt = ""
                         if video_fallback:
@@ -9411,7 +9410,7 @@ async def test_bitable_failed_jiras(request: Request):
 # ==================== 无gmlogger重新排查 ====================
 
 # 需要重新排查的人工审核关键词
-_GMLOGGER_REVIEW_KEYWORDS = {"无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "无日志附件",
+_GMLOGGER_REVIEW_KEYWORDS = {"无gmlogger", "无日志附件",
                               "该jira无日志附件", "该Jira无日志附件", "该jira无日志附件，属于正常处理机制",
                               "该Jira无日志附件，属于正常处理机制"}
 
@@ -12757,7 +12756,7 @@ def _diag_pre_classify(err_msg: str) -> str:
     if "未找到问题时间" in msg:
         return "触发时间问题"
     if "没有可下载的日志附件" in msg:
-        return "无gmlogger文件"
+        return "无gmlogger"
     if "分析任务执行超时" in msg or "分析任务被取消" in msg:
         return "分析任务执行超时，跳过排查"
     # 模型调用失败：第x轮LLM调用失败 / 第x轮调用失败，归为待后端开发排查
@@ -12824,9 +12823,9 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         human_reason = "服务有报错"
         retry_result = ""
         final_category = "服务运行问题"
-    elif category == "无gmlogger文件":
+    elif category == "无gmlogger":
         ai_reason = msg or "处理后未找到有效的日志文件（可能所有文件都不时间范围内，或文件格式不支持）"
-        human_reason = "无gmlogger文件"
+        human_reason = "无gmlogger"
         retry_result = "失败，事实证明当前验证逻辑无法读取非gmlogger相关名称文件进行识别。"
         final_category = "日志过滤逻辑"
     elif category == "日志过滤逻辑":
@@ -13304,15 +13303,15 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
     # —— 识别 gmlogger 附件（文件名含 gmlogger 即算）——
     gm_atts = [a for a in attachments if "gmlogger" in (a.get("filename", "") or "").lower()]
     if not gm_atts:
-        # 归类：无gmlogger文件；其他压缩包兆底下载解压比对错误时间（前后5分钟）
+        # 归类：无gmlogger；其他压缩包兆底下载解压比对错误时间（前后5分钟）
         _check_diag_cancel(bugid)
         archive_results, matched_any = _diag_download_archives(attachments, headers, att_timeout, problem_time, bugid)
         if matched_any:
             category = "解压问题"
-            detail = f"无gmlogger文件，但解压文件中存在错误时间({problem_time})前后5分钟内对应文件，解压问题，待排查"
+            detail = f"无gmlogger，但解压文件中存在错误时间({problem_time})前后5分钟内对应文件，解压问题，待排查"
             verify_status, suggested_time = "", ""
         else:
-            category = "无gmlogger文件"
+            category = "无gmlogger"
             detail = f"该 Issue 共 {len(attachments)} 个附件中未找到 gmlogger 日志文件，无需提取时间"
             verify_status, suggested_time = "", ""
         report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time, archive_results)
@@ -14479,7 +14478,7 @@ async def test_prod_batch_run(request: Request):
                     attachments = (issue.get("fields") or {}).get("attachment") or []
                     if not _has_gmlogger_logs(attachments, bugid):
                         logger.info("触发时间: %s 无gmlogger附件，跳过", bugid)
-                        return bugid, ""
+                        return bugid, None  # None 表示无gmlogger，不写空标签
                     # 评论/字段提取优先（基于对比实验结果：文本提取准确率最高且速度最快）
                     tt = _jc.extract_trigger_time_from_issue(issue)
                     if tt:
@@ -14518,6 +14517,8 @@ async def test_prod_batch_run(request: Request):
                         if tt:
                             trigger_times[bugid] = tt
                             _save_trigger_time_to_cloud(bugid, tt)
+                        elif tt is None:
+                            pass  # 无gmlogger，不写空标签到云端（下次仍可重试）
                         else:
                             _save_trigger_time_to_cloud(bugid, "")
                     except Exception:
