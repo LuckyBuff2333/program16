@@ -2675,7 +2675,7 @@
             <div v-else-if="testPanel === 'smoke_test'" key="smoke_test" class="test-panel">
               <div class="section-title">冒烟测试用例（{{ smokeTestCases.length }} 条）</div>
               <el-alert type="info" :closable="false"
-                title="每次发版前必跑，覆盖多个维度。新问题Jira会持续归纳新增，每周统计更新一次。数据来源：Troubleshoot沉淀 + 批量执行CSV + 历史报错经验。"></el-alert>
+                title="每次发版前必跑，覆盖多个维度（正常流程/输入校验/失败场景/批量执行/结果质量/特殊场景）。新问题Jira会持续归纳新增，每周统计更新一次。数据来源：Troubleshoot沉淀 + 批量执行CSV + Pipeline代码逻辑。"></el-alert>
 
               <!-- 维度统计卡片 -->
               <div class="stat-row" style="margin-top:14px;grid-template-columns:repeat(auto-fill,minmax(150px,1fr))">
@@ -2702,7 +2702,7 @@
                   <el-table-column prop="tc" label="TC编号" width="90"></el-table-column>
                   <el-table-column prop="dim" label="维度" width="110">
                     <template #default="{ row }">
-                      <el-tag size="small" :type="row.dim==='正常流程'?'success':row.dim==='文件名类型'?'warning':row.dim==='视频类型'?'':row.dim==='压测/Pipeline'?'danger':'info'">{{ row.dim }}</el-tag>
+                      <el-tag size="small" :type="row.dim==='正常流程'?'success':row.dim==='输入校验'?'warning':row.dim==='失败场景'?'danger':row.dim==='批量执行'?'':'info'">{{ row.dim }}</el-tag>
                     </template>
                   </el-table-column>
                   <el-table-column prop="name" label="用例名称" min-width="220"></el-table-column>
@@ -3409,35 +3409,34 @@ createApp({
         summary: null,
         report: '',
       },
-      // 冒烟测试用例数据（20条，覆盖7个维度）
+      // 冒烟测试用例数据（20条，聚焦AI日志分析接口+Pipeline验证）
       smokeTestCases: [
-        // A. 正常流程（3条）
-        { tc: 'SM-01', name: '交叉验证成功（无main验证）', jira: 'VCU-222128', precondition: 'Closed；有视频+gm；时间匹配；无main.log', expected: 'OCR+gm文件名交叉验证成功，采纳评论时间', checkpoint: '时间格式正确，置信度>0', dim: '正常流程' },
-        { tc: 'SM-02', name: '完整4步流程成功', jira: 'VCU-550040', precondition: 'Closed；视频+gm+评论齐全', expected: 'Step1-4全绿；置信度>0', checkpoint: '置信度字段非空且为数字', dim: '正常流程' },
-        { tc: 'SM-03', name: '交叉验证成功（gm解析失败降级）', jira: 'VCU-187528', precondition: 'Closed；视频+gm包过大(>200MB)无法解压', expected: '视频OCR时间与gm文件名时间交叉印证', checkpoint: '降级不报错，时间差<5min', dim: '正常流程' },
-        // B. 文件名类型（3条）
-        { tc: 'SM-04', name: 'gm文件名时间与错误时间不匹配', jira: 'VCU-225526', precondition: 'Closed；gmlogger文件名时间与报告时间差距>5min', expected: '标记为触发时间问题，提示人工确认', checkpoint: '错误提示含“不匹配”', dim: '文件名类型' },
-        { tc: 'SM-05', name: '解压后无内容，靠外侧文件名推断', jira: 'VCU-199794', precondition: 'Closed；gm包解压后无时间戳内容', expected: '使用外侧文件名时间，标注“推断”', checkpoint: '结果含“推断”标记', dim: '文件名类型' },
-        { tc: 'SM-06', name: '包内时间戳存在但与错误时间不匹配', jira: 'VCU-218596', precondition: 'Closed；gm包内有main.log时间戳；偏差>5min', expected: '标记时间不匹配，建议使用视频时间', checkpoint: '提示“超出前后5分钟”', dim: '文件名类型' },
-        // C. 无main文件（3条）
-        { tc: 'SM-07', name: '无main.log文件，直接采纳评论时间', jira: 'VCU-438476', precondition: 'Closed；gm包内无可用main.log', expected: '交叉验证成功，采纳评论/描述时间', checkpoint: '提示“无可用main.log”', dim: '无main文件' },
-        { tc: 'SM-08', name: '解压后日志为空', jira: 'VCU-207772', precondition: 'Closed；gm包解压成功但main.log为空', expected: '降级到视频/外侧时间提取', checkpoint: '不因空日志崩溃', dim: '无main文件' },
-        { tc: 'SM-09', name: '解压后无内容时间戳，多个外侧文件名', jira: 'VCU-234693', precondition: 'Closed；解压后无内容；多个附件文件名含时间', expected: '取最接近报告时间的外侧文件名时间', checkpoint: '时间选择逻辑正确', dim: '无main文件' },
-        // D. 视频类型（3条）
-        { tc: 'SM-10', name: '.mov视频触发时间提取', jira: 'VCU-544774', precondition: 'Closed；附件为.MOV格式视频', expected: '视频下载+OCR提取时间成功', checkpoint: 'mov格式正常解析', dim: '视频类型' },
-        { tc: 'SM-11', name: '时间戳命名视频（YYYYMMDD-HHMMSS）', jira: 'VCU-550716', precondition: 'Closed；视频文件名含时间戳如20260922-150523', expected: '视频OCR时间与文件名时间一致', checkpoint: '时间提取正确', dim: '视频类型' },
-        { tc: 'SM-12', name: '中文命名视频（地图录屏）', jira: 'VCU-544493', precondition: 'Closed；视频文件名为中文如“1429地图.mp4”', expected: '视频下载+OCR提取时间成功', checkpoint: '中文文件名不影响提取', dim: '视频类型' },
-        // E. 压缩包类型（3条）
-        { tc: 'SM-13', name: '.rar压缩包无法解压降级', jira: 'VCU-188538', precondition: 'Closed；gmlogger为.rar格式', expected: '提示“非zip/7z/tar格式”降级处理', checkpoint: '降级到视频/评论时间', dim: '压缩包类型' },
-        { tc: 'SM-14', name: '.zip压缩包正常解压+时间匹配', jira: 'VCU-202844', precondition: 'Closed；gmlogger为.zip格式；内含main.log', expected: '解压成功，提取时间戳', checkpoint: '解压状态“已解压”', dim: '压缩包类型' },
-        { tc: 'SM-15', name: '无gmlogger附件，仅依赖视频/评论', jira: 'VCU-241162', precondition: 'Closed；附件中完全无gmlogger文件', expected: '跳过gm，使用视频或评论时间', checkpoint: '不因无gm崩溃', dim: '压缩包类型' },
-        // F. Pipeline/压测（3条）
-        { tc: 'SM-16', name: 'Jira非Closed拒绝执行', jira: 'VCU-553996', precondition: '状态=Open', expected: 'Step1失败+明确错误提示', checkpoint: '错误信息含“仅Closed状态”', dim: '压测/Pipeline' },
-        { tc: 'SM-17', name: '批量5条正常执行', jira: '5个Closed Jira', precondition: '网络+服务正常', expected: '5条全提交成功', checkpoint: 'CSV中5行都有结果', dim: '压测/Pipeline' },
-        { tc: 'SM-18', name: '429限流后重试', jira: 'VCU-544892', precondition: '触发限流后等待冷却', expected: '限流期间报错429，冷却后恢复', checkpoint: '不水久失败，可重试', dim: '压测/Pipeline' },
-        // G. 失败执行速度+特殊场景（2条）
-        { tc: 'SM-19', name: 'AI接口不可达快速失败', jira: '任意Jira', precondition: '断开内网/停掉分析服务', expected: 'Step1失败+接口不可达提示', checkpoint: '不卡死，<10s快速失败', dim: '失败速度' },
-        { tc: 'SM-20', name: '日志过滤机制问题', jira: 'VCU-535944', precondition: 'Closed；gm包内有日志但被时间过滤排除', expected: '识别出过滤逻辑问题，输出告警', checkpoint: '错误类型含“过滤”', dim: '失败速度' },
+        // A. 正常分析流程（4条）—— 不同附件组合下AI分析接口调用+结果写入
+        { tc: 'SM-01', name: '完整4步流程：视频+gm+评论齐全', jira: 'VCU-550040', precondition: 'Closed；视频+gmlogger+评论均存在', expected: 'Step1-4全绿；AI报告已生成；置信度>0', checkpoint: '置信度非空且为数字', dim: '正常流程' },
+        { tc: 'SM-02', name: '有视频+无gmlogger，AI分析仍成功', jira: 'VCU-207772', precondition: 'Closed；有视频但无gmlogger附件', expected: 'AI分析接口正常调用；报告生成成功', checkpoint: 'Step1-2成功，不因无gm崩溃', dim: '正常流程' },
+        { tc: 'SM-03', name: 'gm包过大无法解压，AI分析降级成功', jira: 'VCU-187528', precondition: 'Closed；gm包>200MB解压失败', expected: 'AI分析接口正常调用；报告含降级提示', checkpoint: 'Step1-2成功，降级不报错', dim: '正常流程' },
+        { tc: 'SM-04', name: '附件仅有视频，AI分析正常完成', jira: 'VCU-207149', precondition: 'Closed；仅视频附件，无gm/评论', expected: 'AI分析接口正常调用；报告生成', checkpoint: 'Step1-4全绿', dim: '正常流程' },
+        // B. 输入校验（3条）—— Step1的前置检查逻辑
+        { tc: 'SM-05', name: 'Jira非Closed拒绝执行', jira: 'VCU-553996', precondition: 'Jira状态=Open（非Closed）', expected: 'Step1失败，提示“仅 Closed 允许”', checkpoint: '快速失败，不进入AI分析', dim: '输入校验' },
+        { tc: 'SM-06', name: 'Jira号不存在', jira: 'VCU-999999', precondition: 'Jira号不存在或已删除', expected: 'Step1失败，提示Jira不存在', checkpoint: '不卡死，报错清晰', dim: '输入校验' },
+        { tc: 'SM-07', name: '去重：已有完整记录跳过分析', jira: 'VCU-550538', precondition: '当日CSV已有该Jira完整记录', expected: '跳过AI分析，复用已有数据', checkpoint: 'Step1标记“skipped”', dim: '输入校验' },
+        // C. 分析失败场景（4条）—— 各类异常下的失败处理
+        { tc: 'SM-08', name: 'AI分析接口不可达', jira: '任意Closed Jira', precondition: '断开内网或停掉分析服务(8001端口)', expected: 'Step1失败，提示“接口不可达”', checkpoint: '不卡死，<10s快速失败', dim: '失败场景' },
+        { tc: 'SM-09', name: 'AI分析异步超时(10分钟)', jira: '任意Closed Jira', precondition: 'AI接口返回pending后一直无结果', expected: '轮询10分钟后超时，报告“AI分析超时”', checkpoint: '不无限等待，明确超时提示', dim: '失败场景' },
+        { tc: 'SM-10', name: '429限流失败', jira: 'VCU-544892', precondition: '短时间内大量请求触发限流', expected: 'Step1失败，提示429限流', checkpoint: '限流后可重试，不永久失败', dim: '失败场景' },
+        { tc: 'SM-11', name: '磁盘空间不足(Errno 28)', jira: '任意Closed Jira', precondition: '服务器磁盘满（LogAnalysisBackend目录）', expected: '失败提示含“[Errno 28] No space”', checkpoint: '不崩溃，明确磁盘错误', dim: '失败场景' },
+        // D. 批量执行（4条）—— 并发、取消、稳定性
+        { tc: 'SM-12', name: '批量5条并发执行成功', jira: '5个Closed Jira', precondition: '网络+服务正常；分析并发=5', expected: '5条全提交成功，结果写入CSV', checkpoint: 'CSV中5行都有结果', dim: '批量执行' },
+        { tc: 'SM-13', name: '批量混合有效/无效Jira', jira: 'VCU-550040+VCU-999999', precondition: '混合有效Closed和不存在Jira', expected: '有效的成功，无效的报错，不互相影响', checkpoint: '错误隔离，不中断批次', dim: '批量执行' },
+        { tc: 'SM-14', name: '批量执行中取消', jira: '批量50条任务', precondition: '批量执行已开始并正在处理', expected: '当前批次完成后停止；已完成的结果保留', checkpoint: '取消后不丢失已完成结果', dim: '批量执行' },
+        { tc: 'SM-15', name: '批量执行网络中断后恢复', jira: '批量任务', precondition: '执行中网络断7分钟后恢复', expected: '中断的任务报超时；恢复后新任务正常', checkpoint: '网络恢复后自动继续', dim: '批量执行' },
+        // E. 结果质量（3条）—— 置信度、报告完整性、rootcause
+        { tc: 'SM-16', name: '置信度>0：根因+步骤匹配', jira: 'VCU-207959', precondition: 'Closed；AI报告含根因结论和分析步骤', expected: '置信度计算成功，数值>0', checkpoint: '置信度为0-1之间的小数', dim: '结果质量' },
+        { tc: 'SM-17', name: '置信度=0：AI报告无根因结论', jira: 'VCU-554245', precondition: 'Closed；AI分析成功但报告缺少“根因结论”', expected: '置信度=0，判定不达标', checkpoint: '置信度字段显示“0”', dim: '结果质量' },
+        { tc: 'SM-18', name: '飞书文档创建成功+报告可下载', jira: 'VCU-207973', precondition: 'Closed；AI分析成功', expected: '飞书文档链接有效；报告内容可下载', checkpoint: '飞书链接非空且可访问', dim: '结果质量' },
+        // F. 特殊场景（2条）—— rootcause填充、评论总结
+        { tc: 'SM-19', name: 'rootcause为空时自动填充', jira: 'VCU-208369', precondition: 'Closed；多维表格rootcause字段为空', expected: '从Jira自动提取rootcause并填充', checkpoint: 'rootcause字段非空', dim: '特殊场景' },
+        { tc: 'SM-20', name: 'AI评论总结生成成功', jira: 'VCU-208836', precondition: 'Closed；有AI报告+评论数据', expected: '评论总结字段生成成功', checkpoint: 'AI评论总结非空且合理', dim: '特殊场景' },
       ],
       smokeTestLastUpdate: '2026-10-13',
     };
@@ -3445,7 +3444,7 @@ createApp({
   computed: {
     smokeDimStats() {
       const dimMap = {};
-      const typeMap = { '正常流程': 'success', '文件名类型': 'warning', '视频类型': '', '无main文件': 'info', '压缩包类型': 'info', '压测/Pipeline': 'danger', '失败速度': 'danger' };
+      const typeMap = { '正常流程': 'success', '输入校验': 'warning', '失败场景': 'danger', '批量执行': '', '结果质量': 'info', '特殊场景': 'info' };
       this.smokeTestCases.forEach(c => {
         if (!dimMap[c.dim]) dimMap[c.dim] = { dim: c.dim, count: 0, type: typeMap[c.dim] || 'info' };
         dimMap[c.dim].count++;
