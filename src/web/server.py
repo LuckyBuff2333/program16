@@ -10057,8 +10057,8 @@ def _diag_parse_main_time(bname: str, head: str = ""):
 def _diag_scan_entry_times(names: list) -> list:
     """扫描压缩包内 main.log 条目文件名中的时间戳（去重），返回 [(时间字符串, datetime)]
 
-    只筛选文件名包含 main.log 的条目（如 main.log_2022_9_16_9_37.gz），
-    这些文件的时间戳是日志记录的权威时间戳，任一命中目标时间窗口即可验证通过。
+    筛选文件名包含 main.log 的条目（如 main.log_2022_9_16_9_37.gz），
+    这些文件的时间戳是日志记录的权威时间戳，任一命中目标时间窗口即验证通过。
     """
     times = []
     seen = set()
@@ -10383,7 +10383,7 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
             except Exception as e:
                 logger.warning("gmlogger 分卷下载失败 %s: %s", base, e)
                 return {"status": "failed", "reason": f"gmlogger 下载失败: {e}", "main_entries": [], "main_times": []}
-            # 打开压缩包（支持 zip/7z/tar），查找 main 相关文件并提取时间
+            # 打开压缩包，查找 main 相关文件并提取时间
             ok, names = _diag_archive_names(merged)
             if not ok:
                 logger.warning("gmlogger 解压失败 %s: %s", base, names)
@@ -10393,13 +10393,15 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
             if not main_names:
                 main_names = [n for n in names if "main" in os.path.basename(n).lower()]
             main_times = []
-            need_head = []  # 文件名无时间的 main 文件，待批量读头部提取首条日志时间戳
-            # 遍历所有 main 文件提取时间（修复：原先仅取前 5 个，当包内含多日 main.log 时可能遗漏目标日期）
+            _times_seen = set()  # 时间去重
+            # 遍历所有 main 文件名提取日期（不解压读内容）
             for n in main_names:
                 bname = os.path.basename(n)
                 parsed = _diag_parse_entry_time(bname)
                 if parsed:
-                    main_times.append(parsed)
+                    if parsed[0] not in _times_seen:
+                        _times_seen.add(parsed[0])
+                        main_times.append(parsed)
                     continue
                 # 文件名下划线分隔日期时间（如 main_2026_08_30_10_39.log）
                 mu = _re.search(r"(20\d{2})[-_]?(\d{2})[-_]?(\d{2})[-_ ]?(\d{2})[-_](\d{2})(?:[-_](\d{2}))?", bname)
@@ -10407,22 +10409,12 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                     try:
                         ts = datetime(int(mu.group(1)), int(mu.group(2)), int(mu.group(3)),
                                       int(mu.group(4)), int(mu.group(5)), int(mu.group(6) or 0))
-                        main_times.append((ts.strftime("%Y-%m-%d %H:%M:%S"), ts))
-                        continue
+                        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
+                        if ts_str not in _times_seen:
+                            _times_seen.add(ts_str)
+                            main_times.append((ts_str, ts))
                     except ValueError:
                         pass
-                # 限制头部读取数量（避免大量 I/O），仅对前 10 个无文件名时间的文件读头部
-                if len(need_head) < 10:
-                    need_head.append(n)
-            # 批量读文件头部+尾部提取日志时间戳（头部无日期时从尾部兜底）
-            if need_head:
-                heads = _diag_archive_read_heads(merged, need_head, 65536, read_tail=True)
-                for n in need_head:
-                    mh = _re.search(r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})", heads.get(n, ""))
-                    if mh:
-                        ts = _ts_parse_datetime(mh.group(1).replace("T", " "))
-                        if ts:
-                            main_times.append((ts.strftime("%Y-%m-%d %H:%M:%S"), ts))
             logger.info("gmlogger 内包探测: base=%s, 文件 %d 个, main 文件 %d 个, 提取时间 %d 个",
                         base, len(names), len(main_names), len(main_times))
             # 全部条目文件名时间戳（任一命中目标窗口即验证通过）
