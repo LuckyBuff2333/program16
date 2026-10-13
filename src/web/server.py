@@ -10971,7 +10971,7 @@ def _ocr_readtext(reader, image):
     for item in results:
         text = item[1] if len(item) > 1 else ""
         conf = item[2] if len(item) > 2 else 1.0
-        if conf < 0.3 and text and _time_like.match(text.strip()):
+        if conf < 0.15 and text and _time_like.match(text.strip()):
             logger.info("OCR 过滤低置信度时间类文本: '%s' (conf=%.2f)", text, conf)
             continue
         filtered.append(item)
