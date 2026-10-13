@@ -240,12 +240,12 @@
               <el-button v-if="running.batchOneClick && batchAi.continuous" type="danger" @click="batchAiAbort && batchAiAbort.abort()">停止</el-button>
             </el-form-item>
           </el-form>
-          <!-- 执行参数 -->
+          <!-- 执行参数（只读，从配置页读取） -->
           <div v-if="batchAi.execMode" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;font-size:12px;color:#606266">
-            <span>分析并发:</span><el-input-number v-model="batchAi.analysisConcurrency" :min="1" :max="50" size="small" style="width:80px" controls-position="right"></el-input-number>
-            <span>下载并发:</span><el-input-number v-model="batchAi.downloadConcurrency" :min="1" :max="20" size="small" style="width:80px" controls-position="right"></el-input-number>
-            <span>模型:</span><el-input v-model="batchAi.model" size="small" style="width:140px"></el-input>
-            <span>触发来源:</span><el-input v-model="batchAi.triggerSource" size="small" style="width:80px"></el-input>
+            <span>分析并发:</span><el-tag size="small" type="info">{{ batchAi.analysisConcurrency }}</el-tag>
+            <span>下载并发:</span><el-tag size="small" type="info">{{ batchAi.downloadConcurrency }}</el-tag>
+            <span>模型:</span><el-tag size="small" type="info">{{ batchAi.model }}</el-tag>
+            <span>触发来源:</span><el-tag size="small" type="info">{{ batchAi.triggerSource }}</el-tag>
           </div>
           <el-form inline style="margin-bottom:8px">
             <el-form-item style="margin-bottom:0">
@@ -971,6 +971,20 @@
                   <el-form-item label="项目名称">
                     <el-input v-model="paramsData.params.project_name" placeholder="如 Jira日志分析工具" style="max-width:300px"></el-input>
                   </el-form-item>
+                  <el-form-item label="分析并发数">
+                    <el-input-number v-model="paramsData.params.analysis_concurrency" :min="1" :max="50" controls-position="right"></el-input-number>
+                    <span style="margin-left:8px;font-size:12px;color:#909399">AI分析并行数</span>
+                  </el-form-item>
+                  <el-form-item label="下载并发数">
+                    <el-input-number v-model="paramsData.params.download_concurrency" :min="1" :max="20" controls-position="right"></el-input-number>
+                    <span style="margin-left:8px;font-size:12px;color:#909399">附件下载并行数</span>
+                  </el-form-item>
+                  <el-form-item label="模型">
+                    <el-input v-model="paramsData.params.model" placeholder="如 deepseek-v-pro" style="max-width:300px"></el-input>
+                  </el-form-item>
+                  <el-form-item label="触发来源">
+                    <el-input v-model="paramsData.params.trigger_source" placeholder="如 线上/PC" style="max-width:200px"></el-input>
+                  </el-form-item>
                 </el-form>
               </el-card>
 
@@ -1395,12 +1409,12 @@
                     <el-button v-if="running.batchOneClick && batchAi.continuous" type="danger" @click="batchAiAbort && batchAiAbort.abort()">停止</el-button>
                   </el-form-item>
                 </el-form>
-                <!-- 执行参数 -->
+                <!-- 执行参数（只读，从配置页读取） -->
                 <div v-if="batchAi.execMode" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;font-size:12px;color:#606266">
-                  <span>分析并发:</span><el-input-number v-model="batchAi.analysisConcurrency" :min="1" :max="50" size="small" style="width:80px" controls-position="right"></el-input-number>
-                  <span>下载并发:</span><el-input-number v-model="batchAi.downloadConcurrency" :min="1" :max="20" size="small" style="width:80px" controls-position="right"></el-input-number>
-                  <span>模型:</span><el-input v-model="batchAi.model" size="small" style="width:140px"></el-input>
-                  <span>触发来源:</span><el-input v-model="batchAi.triggerSource" size="small" style="width:80px"></el-input>
+                  <span>分析并发:</span><el-tag size="small" type="info">{{ batchAi.analysisConcurrency }}</el-tag>
+                  <span>下载并发:</span><el-tag size="small" type="info">{{ batchAi.downloadConcurrency }}</el-tag>
+                  <span>模型:</span><el-tag size="small" type="info">{{ batchAi.model }}</el-tag>
+                  <span>触发来源:</span><el-tag size="small" type="info">{{ batchAi.triggerSource }}</el-tag>
                   <el-checkbox v-model="batchAi.parallelExtractTrigger" style="margin-left:4px;font-size:12px"><span>并行提取触发时间</span></el-checkbox>
                 </div>
                 <el-form inline style="margin-bottom:8px">
@@ -3409,7 +3423,7 @@ createApp({
       configPanel: 'api',  // 配置页当前子面板
       paramsData: {  // 参数配置数据
         loaded: false, saving: false,
-        params: { version: '1.0.0', project_name: 'Jira日志分析工具', trigger_parallel: 8, ocr_parallel: 2 },
+        params: { version: '1.0.0', project_name: 'Jira日志分析工具', trigger_parallel: 8, ocr_parallel: 2, analysis_concurrency: 5, download_concurrency: 2, model: 'deepseek-v-pro', trigger_source: '线上' },
         jqls: [],
       },
       dailyRows: [], dailyDate: '', dailyColumns: [], dailyLoading: false, syncCloudLoading: false,
@@ -5468,10 +5482,7 @@ createApp({
     },
     // 切换PC/线上时自动填充对应的默认执行参数
     setBatchMeta(target, mode) {
-      const defaults = mode === 'online'
-        ? { analysisConcurrency: 5, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上' }
-        : { analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC' };
-      Object.assign(this[target], defaults);
+      // 切换执行模式时不再覆盖分析并发/下载并发/模型/触发来源（已移至配置页管理）
     },
     // 一键执行批量分析（支持持续执行模式：搜索/导入→过滤→[抽样→执行]×N轮）
     async batchAiOneClick() {
@@ -7678,13 +7689,29 @@ createApp({
       } catch (e) { /* 错误已提示 */ } finally { this.running.saveConfig = false; }
     },
     // 加载参数配置
+    // 启动时加载配置并同步到批量执行参数（轻量调用，不标记 paramsData.loaded）
+    async _initBatchParams() {
+      try {
+        const body = await this.api('/api/params');
+        const p = body.params || {};
+        this.batchAi.analysisConcurrency = p.analysis_concurrency || 5;
+        this.batchAi.downloadConcurrency = p.download_concurrency || 2;
+        this.batchAi.model = p.model || 'deepseek-v-pro';
+        this.batchAi.triggerSource = p.trigger_source || '线上';
+      } catch (_) {}
+    },
     async loadParams() {
       try {
         const body = await this.api('/api/params');
         this.paramsData.params = Object.assign(
-          { version: '1.0.0', project_name: 'Jira日志分析工具', trigger_parallel: 8, ocr_parallel: 2 },
+          { version: '1.0.0', project_name: 'Jira日志分析工具', trigger_parallel: 8, ocr_parallel: 2, analysis_concurrency: 5, download_concurrency: 2, model: 'deepseek-v-pro', trigger_source: '线上' },
           body.params || {}
         );
+        // 加载完成后同步到批量执行参数
+        this.batchAi.analysisConcurrency = this.paramsData.params.analysis_concurrency;
+        this.batchAi.downloadConcurrency = this.paramsData.params.download_concurrency;
+        this.batchAi.model = this.paramsData.params.model;
+        this.batchAi.triggerSource = this.paramsData.params.trigger_source;
         this.paramsData.jqls = (body.jqls || []).map((item, i) => ({
           id: item.id || `JQL${i + 1}`,
           label: item.label || '',
@@ -7704,6 +7731,11 @@ createApp({
           jqls: this.paramsData.jqls.map(j => ({ id: j.id, label: j.label, jql: j.jql })),
         };
         const body = await this.api('/api/params', { method: 'POST', body: JSON.stringify(payload) });
+        // 保存成功后同步到批量执行参数
+        this.batchAi.analysisConcurrency = this.paramsData.params.analysis_concurrency;
+        this.batchAi.downloadConcurrency = this.paramsData.params.download_concurrency;
+        this.batchAi.model = this.paramsData.params.model;
+        this.batchAi.triggerSource = this.paramsData.params.trigger_source;
         ElementPlus.ElMessage.success(body.message);
       } catch (e) {
         ElementPlus.ElMessage.error('保存参数配置失败: ' + (e.message || e));
@@ -8222,7 +8254,7 @@ createApp({
     };
     try {
       await Promise.allSettled([
-        this.loadConfig(), this.loadOverview(),
+        this.loadConfig(), this.loadOverview(), this._initBatchParams(),
       ]);
     } catch (e) { /* 个别接口失败不影响页面展示 */ }
     this.loadSmokeTestConfig();
