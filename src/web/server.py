@@ -10475,13 +10475,16 @@ def _get_rapid_ocr():
 
 
 def _rapid_ocr_readtext(image):
-    """调用 RapidOCR 识别图像，返回与 EasyOCR 兼容的 [bbox, text, conf] 格式"""
+    """调用 RapidOCR 识别图像，返回与 EasyOCR 兼容的 [bbox, text, conf] 格式
+
+    降低 box_thresh/text_score 至 0.3（默认 0.5 太高，低质量视频帧检测不到文本）
+    与 EasyOCR 的 text_threshold=0.25 对齐，避免不必要的回退。
+    """
     engine = _get_rapid_ocr()
     if engine is None:
         return []
     try:
-        import numpy as np
-        result, elapse = engine(image)
+        result, elapse = engine(image, box_thresh=0.3, text_score=0.3)
         if not result:
             return []
         items = []
@@ -10962,7 +10965,7 @@ def _ocr_readtext(reader, image):
     if not results or _avg_conf < 0.3:
         if reader is not None:
             logger.info("RapidOCR %s（avg_conf=%.2f），回退 EasyOCR",
-                       "不可用" if not results else f"质量偏低", _avg_conf)
+                       "未识别到文本" if not results else f"质量偏低", _avg_conf)
             try:
                 easy_results = reader.readtext(image, canvas_size=2560, mag_ratio=1.5,
                                               text_threshold=0.25, low_text=0.3)
