@@ -2673,15 +2673,28 @@
 
             <!-- 15. 冒烟测试用例列表 -->
             <div v-else-if="testPanel === 'smoke_test'" key="smoke_test" class="test-panel">
-              <div class="section-title">冒烟测试用例（20条）</div>
+              <div class="section-title">冒烟测试用例（{{ smokeTestCases.length }} 条）</div>
               <el-alert type="info" :closable="false"
-                title="每次发版前必跑，覆盖7个维度（正常流程/文件名类型/无main/视频类型/压缩包/压测Pipeline/失败速度），共20条P0级用例。数据来源：Troubleshoot沉淀365条 + 批量执行CSV 7947条。"></el-alert>
+                title="每次发版前必跑，覆盖多个维度。新问题Jira会持续归纳新增，每周统计更新一次。数据来源：Troubleshoot沉淀 + 批量执行CSV + 历史报错经验。"></el-alert>
+
+              <!-- 维度统计卡片 -->
+              <div class="stat-row" style="margin-top:14px;grid-template-columns:repeat(auto-fill,minmax(150px,1fr))">
+                <div v-for="ds in smokeDimStats" :key="ds.dim" class="stat-card" style="padding:12px">
+                  <div class="num" style="font-size:24px">{{ ds.count }}</div>
+                  <div class="label" style="font-size:12px;margin-top:2px">
+                    <el-tag size="small" :type="ds.type" style="margin-right:4px">{{ ds.dim }}</el-tag>
+                  </div>
+                </div>
+              </div>
 
               <el-card shadow="never" style="margin-top:14px">
                 <template #header>
                   <div style="display:flex;justify-content:space-between;align-items:center">
                     <span style="font-weight:700">冒烟用例明细</span>
-                    <el-tag type="success">共 20 条</el-tag>
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <span style="font-size:12px;color:#909399">更新于 {{ smokeTestLastUpdate }}</span>
+                      <el-tag type="success">共 {{ smokeTestCases.length }} 条</el-tag>
+                    </div>
                   </div>
                 </template>
                 <el-table :data="smokeTestCases" stripe size="small" border>
@@ -3426,9 +3439,19 @@ createApp({
         { tc: 'SM-19', name: 'AI接口不可达快速失败', jira: '任意Jira', precondition: '断开内网/停掉分析服务', expected: 'Step1失败+接口不可达提示', checkpoint: '不卡死，<10s快速失败', dim: '失败速度' },
         { tc: 'SM-20', name: '日志过滤机制问题', jira: 'VCU-535944', precondition: 'Closed；gm包内有日志但被时间过滤排除', expected: '识别出过滤逻辑问题，输出告警', checkpoint: '错误类型含“过滤”', dim: '失败速度' },
       ],
+      smokeTestLastUpdate: '2026-10-13',
     };
   },
   computed: {
+    smokeDimStats() {
+      const dimMap = {};
+      const typeMap = { '正常流程': 'success', '文件名类型': 'warning', '视频类型': '', '无main文件': 'info', '压缩包类型': 'info', '压测/Pipeline': 'danger', '失败速度': 'danger' };
+      this.smokeTestCases.forEach(c => {
+        if (!dimMap[c.dim]) dimMap[c.dim] = { dim: c.dim, count: 0, type: typeMap[c.dim] || 'info' };
+        dimMap[c.dim].count++;
+      });
+      return Object.values(dimMap);
+    },
     filteredErrorStatsRecords() {
       const records = this.onlineFollowup.errorStats.records;
       const filter = this.onlineFollowup.errorStats.successFilter;
