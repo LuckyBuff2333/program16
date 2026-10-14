@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>每日测试综合报告 · 2026-10-10 ~ 2026-10-11</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+:root{--bg:#0f1117;--card:#1a1d2e;--border:#2a2d3e;--text:#e2e8f0;--muted:#8892a8;
+  --accent:#6366f1;--green:#22c55e;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;--cyan:#06b6d4;--purple:#a78bfa}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+  background:var(--bg);color:var(--text);line-height:1.7;padding:24px}
+.container{max-width:1360px;margin:0 auto}
+h1{font-size:28px;font-weight:700;background:linear-gradient(135deg,#6366f1,#a78bfa);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.subtitle{color:var(--muted);font-size:13px;margin-bottom:28px}
+/* --- 信息表 --- */
+.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0;
+  background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:22px}
+.info-item{padding:14px 18px;border-right:1px solid var(--border);border-bottom:1px solid var(--border)}
+.info-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.info-val{font-size:15px;font-weight:600;margin-top:2px}
+/* --- KPI --- */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:12px;margin-bottom:22px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
+.card.g::before{background:var(--green)}.card.r::before{background:var(--red)}
+.card.b::before{background:var(--blue)}.card.o::before{background:var(--orange)}
+.card.c::before{background:var(--cyan)}.card.p::before{background:var(--purple)}
+.card-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.card-value{font-size:26px;font-weight:700;margin:2px 0}
+.card-sub{font-size:11px;color:var(--muted)}
+/* --- 通用 --- */
+.green{color:var(--green)}.red{color:var(--red)}.orange{color:var(--orange)}
+.blue{color:var(--blue)}.cyan{color:var(--cyan)}.purple{color:var(--purple)}
+.section{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;margin-bottom:22px}
+.section h2{font-size:16px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block}
+.chart-box{width:100%;height:420px}
+.chart-sm{width:100%;height:340px}
+.chart-lg{width:100%;height:480px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--border)}
+th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+tr:last-child td{border-bottom:none}
+.badge{display:inline-block;padding:2px 10px;border-radius:999px;font-size:11px;font-weight:600}
+.b-green{background:rgba(34,197,94,.12);color:var(--green)}
+.b-red{background:rgba(239,68,68,.12);color:var(--red)}
+.b-orange{background:rgba(245,158,11,.12);color:var(--orange)}
+.b-gray{background:rgba(136,146,168,.12);color:var(--muted)}
+.b-blue{background:rgba(59,130,246,.12);color:var(--blue)}
+.b-cyan{background:rgba(6,182,212,.12);color:var(--cyan)}
+.b-purple{background:rgba(167,139,250,.12);color:var(--purple)}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+@media(max-width:900px){.grid-2,.grid-3{grid-template-columns:1fr}}
+/* --- 对比条 --- */
+.cmp-row{display:flex;gap:12px;margin-bottom:22px;flex-wrap:wrap}
+.cmp-item{flex:1;min-width:140px;background:var(--card);border:1px solid var(--border);
+  border-radius:10px;padding:14px;text-align:center}
+.cmp-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;margin-bottom:4px}
+.cmp-val{font-size:20px;font-weight:700}
+.cmp-sub{font-size:11px;color:var(--muted);margin-top:2px}
+/* --- 进度条 --- */
+.prog-wrap{margin:8px 0}
+.prog-bar{height:8px;border-radius:4px;background:#1e2030;overflow:hidden}
+.prog-fill{height:100%;border-radius:4px;transition:width .3s}
+.prog-label{font-size:11px;color:var(--muted);display:flex;justify-content:space-between;margin-top:3px}
+/* --- 结论 --- */
+.conclusion{background:linear-gradient(135deg,rgba(99,102,241,.06),rgba(167,139,250,.06));
+  border:1px solid rgba(99,102,241,.2);border-radius:12px;padding:24px;margin-bottom:24px}
+.conclusion h2{color:#a78bfa;margin-bottom:10px}
+.conclusion ul{padding-left:20px}
+.conclusion li{margin-bottom:6px}
+.conclusion strong{color:var(--orange)}
+.footer{text-align:center;color:var(--muted);font-size:11px;padding:20px 0}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>每日测试综合报告</h1>
+  <p class="subtitle">覆盖日期：2026-10-10 ~ 2026-10-11 · 生成时间：2026-10-14 00:31</p>
+
+  <!-- ① 测试基础信息 -->
+  <div class="section">
+    <h2><span class="dot" style="background:var(--blue)"></span>测试基础信息</h2>
+    <div class="info-grid"><div class="info-item"><div class="info-label">测试日期范围</div><div class="info-val">2026-10-10 ~ 2026-10-11</div></div>
+<div class="info-item"><div class="info-label">AI 模型</div><div class="info-val">deepseek-v-pro</div></div>
+<div class="info-item"><div class="info-label">总批次数</div><div class="info-val">16 批</div></div>
+<div class="info-item"><div class="info-label">总提交 Bug</div><div class="info-val">751 个</div></div>
+<div class="info-item"><div class="info-label">多维表格匹配</div><div class="info-val">751 个</div></div>
+<div class="info-item"><div class="info-label">多维表格总记录</div><div class="info-val">3984 条</div></div>
+<div class="info-item"><div class="info-label">持续执行会话</div><div class="info-val">1 组</div></div>
+<div class="info-item"><div class="info-label">单次执行批次</div><div class="info-val">3 批</div></div>
+<div class="info-item"><div class="info-label">触发来源</div><div class="info-val">PC 15批 · 线上 1批</div></div>
+<div class="info-item"><div class="info-label">执行时间跨度</div><div class="info-val">2026-10-10 01:11 ~ 2026-10-11 18:16</div></div>
+</div>
+  </div>
+
+  <!-- ② 报告汇总 KPI -->
+  <div class="section">
+    <h2><span class="dot" style="background:var(--green)"></span>报告汇总</h2>
+    <div class="cards"><div class="card g"><div class="card-label">分析成功率</div><div class="card-value">70.0%</div><div class="card-sub">526 / 751</div></div><div class="card g"><div class="card-label">分析成功</div><div class="card-value">526</div><div class="card-sub">占比 70.0%</div></div><div class="card r"><div class="card-label">分析失败</div><div class="card-value">171</div><div class="card-sub">占比 22.8%</div></div><div class="card o"><div class="card-label">未找到结果</div><div class="card-value">54</div><div class="card-sub">占比 7.2%</div></div><div class="card c"><div class="card-label">平均分析耗时</div><div class="card-value">17m38s</div><div class="card-sub">P95: 24m13s</div></div><div class="card b"><div class="card-label">总分析时间</div><div class="card-value">154h39m30s</div><div class="card-sub">所有批次累计</div></div><div class="card p"><div class="card-label">总墙钟时间</div><div class="card-value">39h00m13s</div><div class="card-sub">含等待/排队</div></div><div class="card b"><div class="card-label">最快 / 最慢</div><div class="card-value">2m38s / 31m09s</div><div class="card-sub">单条 Bug 耗时</div></div></div>
+    <div class="prog-wrap">
+<div class="prog-bar">
+  <div class="prog-fill" style="width:70.0%;background:var(--green);display:inline-block"></div>
+  <div class="prog-fill" style="width:22.8%;background:var(--red);display:inline-block"></div>
+  <div class="prog-fill" style="width:7.2%;background:#4b5563;display:inline-block"></div>
+</div>
+<div class="prog-label">
+  <span><span style="color:var(--green)">■</span> 成功 70.0%</span>
+  <span><span style="color:var(--red)">■</span> 失败 22.8%</span>
+  <span><span style="color:#4b5563">■</span> 未找到 7.2%</span>
+</div></div>
+  </div>
+
+  <!-- ③ PC vs 线上来源对比 -->
+  <div class="section">
+    <h2><span class="dot" style="background:var(--cyan)"></span>触发来源对比：PC vs 线上</h2>
+    <div class="cmp-row">
+      <div class="cmp-item" style="border-top:3px solid var(--blue)">
+        <div class="cmp-lbl">PC 批次</div><div class="cmp-val blue">15 批</div>
+        <div class="cmp-sub">提交 701 · 匹配 701</div>
+      </div>
+      <div class="cmp-item" style="border-top:3px solid var(--green)">
+        <div class="cmp-lbl">PC 成功率</div><div class="cmp-val green">71.2%</div>
+        <div class="cmp-sub">499 成功 / 163 失败</div>
+      </div>
+      <div class="cmp-item" style="border-top:3px solid var(--cyan)">
+        <div class="cmp-lbl">PC 平均耗时</div><div class="cmp-val cyan">17m34s</div>
+        <div class="cmp-sub">P95 24m13s</div>
+      </div>
+      <div class="cmp-item" style="border-top:3px solid var(--orange)">
+        <div class="cmp-lbl">线上 批次</div><div class="cmp-val orange">1 批</div>
+        <div class="cmp-sub">提交 50 · 匹配 50</div>
+      </div>
+      <div class="cmp-item" style="border-top:3px solid var(--red)">
+        <div class="cmp-lbl">线上 成功率</div><div class="cmp-val red">54.0%</div>
+        <div class="cmp-sub">27 成功 / 50 提交失败</div>
+      </div>
+      <div class="cmp-item" style="border-top:3px solid var(--purple)">
+        <div class="cmp-lbl">线上 平均耗时</div><div class="cmp-val purple">18m46s</div>
+        <div class="cmp-sub">502错误无有效数据</div>
+      </div>
+    </div>
+    <div class="grid-2">
+      <div id="chartSrcPie" class="chart-sm"></div>
+      <div id="chartSrcDaily" class="chart-sm"></div>
+    </div>
+  </div>
+  <!-- ④ 单次执行批次报告 -->
+  <div class="section">
+    <h2><span class="dot" style="background:var(--orange)"></span>单次执行批次</h2>
+    <div style="border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-size:15px;font-weight:600">线上2026-10-10 011156 <span class="badge b-red">线上</span></div>
+        <div style="font-size:12px;color:var(--muted)">2026-10-10 01:11:18</div>
+      </div>
+      <div class="info-grid"><div class="info-item"><div class="info-label">提交总数</div><div class="info-val">50</div></div>
+<div class="info-item"><div class="info-label">提交成功</div><div class="info-val" style="color:#22c55e">0</div></div>
+<div class="info-item"><div class="info-label">提交失败</div><div class="info-val" style="color:#ef4444">50</div></div>
+<div class="info-item"><div class="info-label">多维表格匹配</div><div class="info-val">50</div></div>
+<div class="info-item"><div class="info-label">分析成功</div><div class="info-val" style="color:#22c55e">27</div></div>
+<div class="info-item"><div class="info-label">分析失败</div><div class="info-val" style="color:#ef4444">8</div></div>
+<div class="info-item"><div class="info-label">成功率</div><div class="info-val" style="color:#ef4444">54.0%</div></div>
+<div class="info-item"><div class="info-label">平均耗时</div><div class="info-val">18m46s</div></div>
+<div class="info-item"><div class="info-label">墙钟时间</div><div class="info-val">18h03m06s</div></div>
+<div class="info-item"><div class="info-label">最慢单条</div><div class="info-val">27m36s</div></div>
+</div>
+      <div class="prog-wrap">
+<div class="prog-bar">
+  <div class="prog-fill" style="width:54.0%;background:var(--green);display:inline-block"></div>
+  <div class="prog-fill" style="width:16.0%;background:var(--red);display:inline-block"></div>
+  <div class="prog-fill" style="width:30.0%;background:#4b5563;display:inline-block"></div>
+</div>
+<div class="prog-label">
+  <span><span style="color:var(--green)">■</span> 成功 54.0%</span>
+  <span><span style="color:var(--red)">■</span> 失败 16.0%</span>
+  <span><span style="color:#4b5563">■</span> 未找到 30.0%</span>
+</div></div>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-size:15px;font-weight:600">2026-10-10_175449 <span class="badge b-blue">PC</span></div>
+        <div style="font-size:12px;color:var(--muted)">2026-10-10 17:54:29</div>
+      </div>
+      <div class="info-grid"><div class="info-item"><div class="info-label">提交总数</div><div class="info-val">50</div></div>
+<div class="info-item"><div class="info-label">提交成功</div><div class="info-val" style="color:#22c55e">50</div></div>
+<div class="info-item"><div class="info-label">提交失败</div><div class="info-val">0</div></div>
+<div class="info-item"><div class="info-label">多维表格匹配</div><div class="info-val">50</div></div>
+<div class="info-item"><div class="info-label">分析成功</div><div class="info-val" style="color:#22c55e">38</div></div>
+<div class="info-item"><div class="info-label">分析失败</div><div class="info-val" style="color:#ef4444">9</div></div>
+<div class="info-item"><div class="info-label">成功率</div><div class="info-val" style="color:#f59e0b">76.0%</div></div>
+<div class="info-item"><div class="info-label">平均耗时</div><div class="info-val">18m16s</div></div>
+<div class="info-item"><div class="info-label">墙钟时间</div><div class="info-val">1h32m12s</div></div>
+<div class="info-item"><div class="info-label">最慢单条</div><div class="info-val">27m36s</div></div>
+</div>
+      <div class="prog-wrap">
+<div class="prog-bar">
+  <div class="prog-fill" style="width:76.0%;background:var(--green);display:inline-block"></div>
+  <div class="prog-fill" style="width:18.0%;background:var(--red);display:inline-block"></div>
+  <div class="prog-fill" style="width:6.0%;background:#4b5563;display:inline-block"></div>
+</div>
+<div class="prog-label">
+  <span><span style="color:var(--green)">■</span> 成功 76.0%</span>
+  <span><span style="color:var(--red)">■</span> 失败 18.0%</span>
+  <span><span style="color:#4b5563">■</span> 未找到 6.0%</span>
+</div></div>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-size:15px;font-weight:600">2026-10-10_single_pc_230341 <span class="badge b-blue">PC</span></div>
+        <div style="font-size:12px;color:var(--muted)">2026-10-10 23:03:32</div>
+      </div>
+      <div class="info-grid"><div class="info-item"><div class="info-label">提交总数</div><div class="info-val">1</div></div>
+<div class="info-item"><div class="info-label">提交成功</div><div class="info-val" style="color:#22c55e">1</div></div>
+<div class="info-item"><div class="info-label">提交失败</div><div class="info-val">0</div></div>
+<div class="info-item"><div class="info-label">多维表格匹配</div><div class="info-val">1</div></div>
+<div class="info-item"><div class="info-label">分析成功</div><div class="info-val" style="color:#22c55e">0</div></div>
+<div class="info-item"><div class="info-label">分析失败</div><div class="info-val" style="color:#ef4444">1</div></div>
+<div class="info-item"><div class="info-label">成功率</div><div class="info-val" style="color:#ef4444">0.0%</div></div>
+<div class="info-item"><div class="info-label">平均耗时</div><div class="info-val">—</div></div>
+<div class="info-item"><div class="info-label">墙钟时间</div><div class="info-val">23s</div></div>
+<div class="info-item"><div class="info-label">最慢单条</div><div class="info-val">—</div></div>
+</div>
+      <div class="prog-wrap">
+<div class="prog-bar">
+  <div class="prog-fill" style="width:0.0%;background:var(--green);display:inline-block"></div>
+  <div class="prog-fill" style="width:100.0%;background:var(--red);display:inline-block"></div>
+  <div class="prog-fill" style="width:0.0%;background:#4b5563;display:inline-block"></div>
+</div>
+<div class="prog-label">
+  <span><span style="color:var(--green)">■</span> 成功 0.0%</span>
+  <span><span style="color:var(--red)">■</span> 失败 100.0%</span>
+  <span><span style="color:#4b5563">■</span> 未找到 0.0%</span>
+</div></div>
+    </div>
+  </div>
+  <!-- ⑤ 持续执行聚合报告: 2026-10-11_bot_continuous -->
+  <div class="section">
+    <h2><span class="dot" style="background:var(--purple)"></span>持续执行聚合报告 · 2026-10-11（13 轮）</h2>
+    <div class="info-grid"><div class="info-item"><div class="info-label">执行日期</div><div class="info-val">2026-10-11</div></div>
+<div class="info-item"><div class="info-label">持续轮数</div><div class="info-val">13 轮</div></div>
+<div class="info-item"><div class="info-label">执行时间</div><div class="info-val">2026-10-11 00:06:02 ~ 2026-10-11 18:16:22</div></div>
+<div class="info-item"><div class="info-label">总提交 Bug</div><div class="info-val">650</div></div>
+<div class="info-item"><div class="info-label">多维表格匹配</div><div class="info-val">650</div></div>
+<div class="info-item"><div class="info-label">触发来源</div><div class="info-val">PC 13批 · 线上 0批</div></div>
+<div class="info-item"><div class="info-label">AI 模型</div><div class="info-val">deepseek-v-pro</div></div>
+</div>
+    <div class="cards"><div class="card g"><div class="card-label">成功率</div><div class="card-value">70.9%</div><div class="card-sub">461/650</div></div><div class="card g"><div class="card-label">分析成功</div><div class="card-value">461</div><div class="card-sub">占比 70.9%</div></div><div class="card r"><div class="card-label">分析失败</div><div class="card-value">153</div><div class="card-sub">占比 23.5%</div></div><div class="card o"><div class="card-label">未找到</div><div class="card-value">36</div><div class="card-sub">占比 5.5%</div></div><div class="card c"><div class="card-label">平均分析耗时</div><div class="card-value">17m31s</div><div class="card-sub">P50 17m36s · P95 24m13s</div></div><div class="card b"><div class="card-label">总分析时间</div><div class="card-value">134h38m08s</div><div class="card-sub">所有轮次累计</div></div><div class="card p"><div class="card-label">总墙钟时间</div><div class="card-value">19h24m32s</div><div class="card-sub">含排队等待</div></div><div class="card b"><div class="card-label">最快 / 最慢</div><div class="card-value">2m38s / 31m09s</div><div class="card-sub">单条 Bug</div></div></div>
+    <div class="prog-wrap">
+<div class="prog-bar">
+  <div class="prog-fill" style="width:70.9%;background:var(--green);display:inline-block"></div>
+  <div class="prog-fill" style="width:23.5%;background:var(--red);display:inline-block"></div>
+  <div class="prog-fill" style="width:5.5%;background:#4b5563;display:inline-block"></div>
+</div>
+<div class="prog-label">
+  <span><span style="color:var(--green)">■</span> 成功 70.9%</span>
+  <span><span style="color:var(--red)">■</span> 失败 23.5%</span>
+  <span><span style="color:#4b5563">■</span> 未找到 5.5%</span>
+</div></div>
+
+    <!-- 每轮详情表 -->
+    <h2 style="margin-top:20px"><span class="dot" style="background:var(--cyan)"></span>各轮次详情</h2>
+    <table>
+      <thead><tr>
+        <th>轮次</th><th>执行时间</th><th>提交</th><th>匹配</th>
+        <th>成功</th><th>失败</th><th>未找到</th><th>成功率</th>
+        <th>平均耗时</th><th>最慢</th><th>墙钟</th>
+      </tr></thead>
+      <tbody><tr>
+  <td style="font-weight:600">R1</td>
+  <td style="font-size:12px">2026-10-11 00:06:02</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">18</td>
+  <td style="color:#ef4444">31</td>
+  <td style="color:#8892a8">1</td>
+  <td style="color:#ef4444;font-weight:700">36.0%</td>
+  <td>14m58s</td>
+  <td>21m28s</td>
+  <td>47m49s</td>
+</tr><tr>
+  <td style="font-weight:600">R2</td>
+  <td style="font-size:12px">2026-10-11 01:36:51</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">38</td>
+  <td style="color:#ef4444">11</td>
+  <td style="color:#8892a8">1</td>
+  <td style="color:#f59e0b;font-weight:700">76.0%</td>
+  <td>15m33s</td>
+  <td>18m32s</td>
+  <td>1h19m41s</td>
+</tr><tr>
+  <td style="font-weight:600">R3</td>
+  <td style="font-size:12px">2026-10-11 03:07:47</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">34</td>
+  <td style="color:#ef4444">13</td>
+  <td style="color:#8892a8">3</td>
+  <td style="color:#f59e0b;font-weight:700">68.0%</td>
+  <td>18m01s</td>
+  <td>25m47s</td>
+  <td>1h26m50s</td>
+</tr><tr>
+  <td style="font-weight:600">R4</td>
+  <td style="font-size:12px">2026-10-11 04:38:31</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">35</td>
+  <td style="color:#ef4444">15</td>
+  <td style="color:#8892a8">0</td>
+  <td style="color:#f59e0b;font-weight:700">70.0%</td>
+  <td>16m04s</td>
+  <td>21m25s</td>
+  <td>1h16m21s</td>
+</tr><tr>
+  <td style="font-weight:600">R5</td>
+  <td style="font-size:12px">2026-10-11 06:09:14</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">37</td>
+  <td style="color:#ef4444">12</td>
+  <td style="color:#8892a8">1</td>
+  <td style="color:#f59e0b;font-weight:700">74.0%</td>
+  <td>16m14s</td>
+  <td>30m12s</td>
+  <td>1h20m39s</td>
+</tr><tr>
+  <td style="font-weight:600">R6</td>
+  <td style="font-size:12px">2026-10-11 07:39:58</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">40</td>
+  <td style="color:#ef4444">9</td>
+  <td style="color:#8892a8">1</td>
+  <td style="color:#22c55e;font-weight:700">80.0%</td>
+  <td>15m46s</td>
+  <td>21m50s</td>
+  <td>1h17m42s</td>
+</tr><tr>
+  <td style="font-weight:600">R7</td>
+  <td style="font-size:12px">2026-10-11 09:10:50</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">38</td>
+  <td style="color:#ef4444">11</td>
+  <td style="color:#8892a8">1</td>
+  <td style="color:#f59e0b;font-weight:700">76.0%</td>
+  <td>16m44s</td>
+  <td>25m21s</td>
+  <td>1h21m30s</td>
+</tr><tr>
+  <td style="font-weight:600">R8</td>
+  <td style="font-size:12px">2026-10-11 10:41:42</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">44</td>
+  <td style="color:#ef4444">6</td>
+  <td style="color:#8892a8">0</td>
+  <td style="color:#22c55e;font-weight:700">88.0%</td>
+  <td>18m01s</td>
+  <td>28m24s</td>
+  <td>1h43m28s</td>
+</tr><tr>
+  <td style="font-weight:600">R9</td>
+  <td style="font-size:12px">2026-10-11 12:12:33</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">38</td>
+  <td style="color:#ef4444">10</td>
+  <td style="color:#8892a8">2</td>
+  <td style="color:#f59e0b;font-weight:700">76.0%</td>
+  <td>20m39s</td>
+  <td>26m50s</td>
+  <td>2h00m35s</td>
+</tr><tr>
+  <td style="font-weight:600">R10</td>
+  <td style="font-size:12px">2026-10-11 13:43:24</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">38</td>
+  <td style="color:#ef4444">11</td>
+  <td style="color:#8892a8">1</td>
+  <td style="color:#f59e0b;font-weight:700">76.0%</td>
+  <td>17m42s</td>
+  <td>31m09s</td>
+  <td>2h04m28s</td>
+</tr><tr>
+  <td style="font-weight:600">R11</td>
+  <td style="font-size:12px">2026-10-11 15:14:15</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">39</td>
+  <td style="color:#ef4444">10</td>
+  <td style="color:#8892a8">1</td>
+  <td style="color:#f59e0b;font-weight:700">78.0%</td>
+  <td>20m17s</td>
+  <td>29m10s</td>
+  <td>1h59m47s</td>
+</tr><tr>
+  <td style="font-weight:600">R12</td>
+  <td style="font-size:12px">2026-10-11 16:45:06</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">39</td>
+  <td style="color:#ef4444">11</td>
+  <td style="color:#8892a8">0</td>
+  <td style="color:#f59e0b;font-weight:700">78.0%</td>
+  <td>18m13s</td>
+  <td>25m08s</td>
+  <td>1h40m29s</td>
+</tr><tr>
+  <td style="font-weight:600">R13</td>
+  <td style="font-size:12px">2026-10-11 18:16:22</td>
+  <td>50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">23</td>
+  <td style="color:#ef4444">3</td>
+  <td style="color:#8892a8">24</td>
+  <td style="color:#ef4444;font-weight:700">46.0%</td>
+  <td>18m18s</td>
+  <td>22m54s</td>
+  <td>1h05m13s</td>
+</tr></tbody></table>
+    <!-- 持续执行图表 -->
+    <div class="grid-2" style="margin-top:18px">
+      <div id="chart_2026-10-11_bot_continuous_rate" class="chart-sm"></div>
+      <div id="chart_2026-10-11_bot_continuous_stack" class="chart-sm"></div>
+    </div>
+  </div>
+  <!-- ⑥ 失败归类分析 -->
+  <div class="section">
+    <h2><span class="dot" style="background:var(--red)"></span>失败归类分析</h2>
+    <div class="cmp-row">
+      <div class="cmp-item" style="border-top:3px solid var(--green)">
+        <div class="cmp-lbl">分析成功</div><div class="cmp-val green">525</div>
+        <div class="cmp-sub">占比 78.9%</div>
+      </div>
+      <div class="cmp-item" style="border-top:3px solid var(--red)">
+        <div class="cmp-lbl">分析失败</div><div class="cmp-val red">140</div>
+        <div class="cmp-sub">占比 21.1%</div>
+      </div>
+      <div class="cmp-item" style="border-top:3px solid var(--orange)">
+        <div class="cmp-lbl">未找到结果</div><div class="cmp-val orange">54</div>
+        <div class="cmp-sub">多维表格无对应记录</div>
+      </div>
+      <div class="cmp-item" style="border-top:3px solid var(--blue)">
+        <div class="cmp-lbl">提交失败</div><div class="cmp-val blue">50</div>
+        <div class="cmp-sub">502/网络错误等</div>
+      </div>
+    </div>
+    <!-- 每日失败分类表 -->
+    <table>
+      <thead><tr><th>日期</th><th>总Bug</th><th>成功</th><th>失败</th><th>成功率</th><th>平均耗时</th><th>触发来源构成</th></tr></thead>
+      <tbody><tr>
+  <td style="font-weight:600">2026-10-10</td><td>53</td>
+  <td style="color:#22c55e">41</td><td style="color:#ef4444">12</td>
+  <td style="color:#f59e0b;font-weight:700">77.4%</td>
+  <td>14m44s</td>
+  <td style="font-size:12px;color:#8892a8">jira_analyze: 48 · parseFullTicket: 5</td>
+</tr><tr>
+  <td style="font-weight:600">2026-10-11</td><td>612</td>
+  <td style="color:#22c55e">484</td><td style="color:#ef4444">128</td>
+  <td style="color:#f59e0b;font-weight:700">79.1%</td>
+  <td>14m33s</td>
+  <td style="font-size:12px;color:#8892a8">jira_analyze: 612</td>
+</tr></tbody></table>
+    <div class="grid-2" style="margin-top:18px">
+      <div id="chartFailType" class="chart-sm"></div>
+      <div id="chartSourceDist" class="chart-sm"></div>
+    </div>
+  </div>
+  <!-- ⑦ 全量批次明细 -->
+  <div class="section">
+    <h2><span class="dot"></span>全量批次执行明细</h2>
+    <table>
+      <thead><tr>
+        <th>#</th><th>批次名称</th><th>来源</th><th>提交</th><th>成功</th><th>失败</th>
+        <th>匹配</th><th>分析成功</th><th>分析失败</th><th>成功率</th><th>平均耗时</th><th>墙钟</th>
+      </tr></thead>
+      <tbody><tr>
+  <td>1</td><td style="font-size:12px">2026-10-10 011156</td>
+  <td><span class="badge b-red">线上</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">0</td>
+  <td style="color:#ef4444">50</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">27</td>
+  <td style="color:#ef4444">8</td>
+  <td style="color:#ef4444;font-weight:700">54.0%</td>
+  <td>18m46s</td>
+  <td>18h03m06s</td>
+</tr><tr>
+  <td>2</td><td style="font-size:12px">2026-10-10_175449</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">38</td>
+  <td style="color:#ef4444">9</td>
+  <td style="color:#f59e0b;font-weight:700">76.0%</td>
+  <td>18m16s</td>
+  <td>1h32m12s</td>
+</tr><tr>
+  <td>3</td><td style="font-size:12px">2026-10-10_single_pc_230341</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>1</td>
+  <td style="color:#22c55e">1</td>
+  <td style="color:#ef4444">0</td>
+  <td>1</td>
+  <td style="color:#22c55e;font-weight:700">0</td>
+  <td style="color:#ef4444">1</td>
+  <td style="color:#ef4444;font-weight:700">0.0%</td>
+  <td>—</td>
+  <td>23s</td>
+</tr><tr>
+  <td>4</td><td style="font-size:12px">2026-10-11_bot_pc_r1_000606</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">18</td>
+  <td style="color:#ef4444">31</td>
+  <td style="color:#ef4444;font-weight:700">36.0%</td>
+  <td>14m58s</td>
+  <td>47m49s</td>
+</tr><tr>
+  <td>5</td><td style="font-size:12px">2026-10-11_bot_pc_r2_013655</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">38</td>
+  <td style="color:#ef4444">11</td>
+  <td style="color:#f59e0b;font-weight:700">76.0%</td>
+  <td>15m33s</td>
+  <td>1h19m41s</td>
+</tr><tr>
+  <td>6</td><td style="font-size:12px">2026-10-11_bot_pc_r3_030750</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">34</td>
+  <td style="color:#ef4444">13</td>
+  <td style="color:#f59e0b;font-weight:700">68.0%</td>
+  <td>18m01s</td>
+  <td>1h26m50s</td>
+</tr><tr>
+  <td>7</td><td style="font-size:12px">2026-10-11_bot_pc_r4_043832</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">35</td>
+  <td style="color:#ef4444">15</td>
+  <td style="color:#f59e0b;font-weight:700">70.0%</td>
+  <td>16m04s</td>
+  <td>1h16m21s</td>
+</tr><tr>
+  <td>8</td><td style="font-size:12px">2026-10-11_bot_pc_r5_060916</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">37</td>
+  <td style="color:#ef4444">12</td>
+  <td style="color:#f59e0b;font-weight:700">74.0%</td>
+  <td>16m14s</td>
+  <td>1h20m39s</td>
+</tr><tr>
+  <td>9</td><td style="font-size:12px">2026-10-11_bot_pc_r6_074001</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">40</td>
+  <td style="color:#ef4444">9</td>
+  <td style="color:#22c55e;font-weight:700">80.0%</td>
+  <td>15m46s</td>
+  <td>1h17m42s</td>
+</tr><tr>
+  <td>10</td><td style="font-size:12px">2026-10-11_bot_pc_r7_091053</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">38</td>
+  <td style="color:#ef4444">11</td>
+  <td style="color:#f59e0b;font-weight:700">76.0%</td>
+  <td>16m44s</td>
+  <td>1h21m30s</td>
+</tr><tr>
+  <td>11</td><td style="font-size:12px">2026-10-11_bot_pc_r8_104145</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">44</td>
+  <td style="color:#ef4444">6</td>
+  <td style="color:#22c55e;font-weight:700">88.0%</td>
+  <td>18m01s</td>
+  <td>1h43m28s</td>
+</tr><tr>
+  <td>12</td><td style="font-size:12px">2026-10-11_bot_pc_r9_121236</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">38</td>
+  <td style="color:#ef4444">10</td>
+  <td style="color:#f59e0b;font-weight:700">76.0%</td>
+  <td>20m39s</td>
+  <td>2h00m35s</td>
+</tr><tr>
+  <td>13</td><td style="font-size:12px">2026-10-11_bot_pc_r10_134327</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">38</td>
+  <td style="color:#ef4444">11</td>
+  <td style="color:#f59e0b;font-weight:700">76.0%</td>
+  <td>17m42s</td>
+  <td>2h04m28s</td>
+</tr><tr>
+  <td>14</td><td style="font-size:12px">2026-10-11_bot_pc_r11_151424</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">39</td>
+  <td style="color:#ef4444">10</td>
+  <td style="color:#f59e0b;font-weight:700">78.0%</td>
+  <td>20m17s</td>
+  <td>1h59m47s</td>
+</tr><tr>
+  <td>15</td><td style="font-size:12px">2026-10-11_bot_pc_r12_164531</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">39</td>
+  <td style="color:#ef4444">11</td>
+  <td style="color:#f59e0b;font-weight:700">78.0%</td>
+  <td>18m13s</td>
+  <td>1h40m29s</td>
+</tr><tr>
+  <td>16</td><td style="font-size:12px">2026-10-11_bot_pc_r13_181625</td>
+  <td><span class="badge b-blue">PC</span></td>
+  <td>50</td>
+  <td style="color:#22c55e">50</td>
+  <td style="color:#ef4444">0</td>
+  <td>50</td>
+  <td style="color:#22c55e;font-weight:700">23</td>
+  <td style="color:#ef4444">3</td>
+  <td style="color:#ef4444;font-weight:700">46.0%</td>
+  <td>18m18s</td>
+  <td>1h05m13s</td>
+</tr></tbody></table></div>
+  <div class="conclusion">
+    <h2>分析结论</h2>
+    <ul><li>本报告覆盖 <strong>2026-10-10 ~ 2026-10-11</strong>，共 <strong>16 个批次</strong>（751 个Bug），整体成功率 <strong>70.0%</strong></li><li><strong>线上批次</strong>：1批共50个Bug，提交失败50个（502 Bad Gateway），成功率 <strong>54.0%</strong></li><li><strong>PC批次</strong>：15批，成功率 <strong>71.2%</strong>，平均耗时 17m34s，P95 24m13s</li><li>持续执行会话（2026-10-11）：<strong>13轮</strong>，成功率 70.9%，总分析时间 134h38m08s</li><li>失败主因：分析失败 140 个（21.1%），未找到 54 个，提交失败 50 个</li><li>建议：① 排查线上 502 错误根因；② 关注低成功率批次（R1 36%）的并发策略；③ 优化 P95 长尾耗时</li></ul></div>
+  <div class="footer">Bug文档沉淀工具 · 每日测试综合报告 · 2026-10-10 ~ 2026-10-11 · 2026-10-14</div>
+</div>
+<script>
+var C={green:'#22c55e',red:'#ef4444',orange:'#f59e0b',blue:'#3b82f6',purple:'#a78bfa',gray:'#4b5563',cyan:'#06b6d4'};
+var charts=[];
+function mk(id,opt){var el=document.getElementById(id);if(!el)return null;
+  var c=echarts.init(el,'dark');c.setOption(opt);charts.push(c);return c}
+var darkBase={backgroundColor:'transparent',
+  textStyle:{color:'#8892a8'},
+  tooltip:{trigger:'axis',axisPointer:{type:'shadow'}}};
+
+// 来源饼图
+mk('chartSrcPie',Object.assign({},darkBase,{
+  tooltip:{trigger:'item',formatter:'{b}: {c} ({d}%)'},
+  legend:{top:0,textStyle:{color:'#8892a8',fontSize:11}},
+  title:{text:'触发来源构成',left:'center',top:0,textStyle:{color:'#e2e8f0',fontSize:14}},
+  series:[{type:'pie',radius:['35%','65%'],center:['50%','55%'],
+    label:{color:'#e2e8f0',fontSize:12},
+    data:[{"value": 660, "name": "jira_analyze"}, {"value": 5, "name": "parseFullTicket"}]
+  }]
+}));
+
+// 每日 PC/线上分布
+mk('chartSrcDaily',Object.assign({},darkBase,{
+  legend:{top:0,textStyle:{color:'#8892a8',fontSize:11}},
+  grid:{left:50,right:20,top:45,bottom:35},
+  xAxis:{type:'category',data:["2026-10-10", "2026-10-11"],axisLine:{lineStyle:{color:'#2a2d3e'}},axisLabel:{color:'#8892a8'}},
+  yAxis:{type:'value',splitLine:{lineStyle:{color:'#1e2030'}},axisLabel:{color:'#8892a8'}},
+  series:[
+    {name:'成功',type:'bar',stack:'t',barWidth:40,data:[41, 484],itemStyle:{color:C.green}},
+    {name:'失败',type:'bar',stack:'t',data:[12, 128],itemStyle:{color:C.red}}
+  ]
+}));
+
+// 失败归类图
+mk('chartFailType',Object.assign({},darkBase,{
+  legend:{top:0,textStyle:{color:'#8892a8',fontSize:11}},
+  grid:{left:50,right:20,top:45,bottom:35},
+  xAxis:{type:'category',data:["2026-10-10", "2026-10-11"],axisLine:{lineStyle:{color:'#2a2d3e'}},axisLabel:{color:'#8892a8'}},
+  yAxis:{type:'value',splitLine:{lineStyle:{color:'#1e2030'}},axisLabel:{color:'#8892a8'}},
+  series:[
+    {name:'成功',type:'bar',stack:'t',barWidth:50,data:[41, 484],itemStyle:{color:C.green}},
+    {name:'失败',type:'bar',stack:'t',data:[12, 128],itemStyle:{color:C.red}}
+  ]
+}));
+
+// 来源分布
+mk('chartSourceDist',Object.assign({},darkBase,{
+  tooltip:{trigger:'item',formatter:'{b}: {c} ({d}%)'},
+  legend:{top:0,textStyle:{color:'#8892a8',fontSize:11}},
+  title:{text:'触发来源占比',left:'center',top:0,textStyle:{color:'#e2e8f0',fontSize:14}},
+  series:[{type:'pie',radius:['35%','65%'],center:['50%','55%'],
+    label:{color:'#e2e8f0',fontSize:12},
+    data:[{"value": 660, "name": "jira_analyze"}, {"value": 5, "name": "parseFullTicket"}]
+  }]
+}));
+
+// 持续执行 2026-10-11_bot_continuous 成功率趋势
+mk('chart_2026-10-11_bot_continuous_rate',Object.assign({},darkBase,{
+  grid:{left:50,right:20,top:30,bottom:40},
+  xAxis:{type:'category',data:["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13"],axisLine:{lineStyle:{color:'#2a2d3e'}},axisLabel:{color:'#8892a8'}},
+  yAxis:{type:'value',max:100,splitLine:{lineStyle:{color:'#1e2030'}},axisLabel:{color:'#8892a8',formatter:'{value}%'}},
+  series:[{name:'成功率',type:'line',smooth:true,data:[36.0, 76.0, 68.0, 70.0, 74.0, 80.0, 76.0, 88.0, 76.0, 76.0, 78.0, 78.0, 46.0],
+    lineStyle:{color:C.cyan,width:2},itemStyle:{color:C.cyan},
+    areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,
+      colorStops:[{offset:0,color:'rgba(6,182,212,.3)'},{offset:1,color:'rgba(6,182,212,0)'}]}},
+    markLine:{silent:true,data:[{yAxis:80,label:{formatter:'目标80%',color:C.green,fontSize:10,position:'insideEndTop'},
+      lineStyle:{color:C.green,type:'dashed',opacity:.5}}]}
+  }]
+}));
+
+// 持续执行 2026-10-11_bot_continuous 堆叠柱状图
+mk('chart_2026-10-11_bot_continuous_stack',Object.assign({},darkBase,{
+  legend:{top:0,textStyle:{color:'#8892a8',fontSize:11}},
+  grid:{left:50,right:20,top:45,bottom:40},
+  xAxis:{type:'category',data:["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13"],axisLine:{lineStyle:{color:'#2a2d3e'}},axisLabel:{color:'#8892a8'}},
+  yAxis:{type:'value',splitLine:{lineStyle:{color:'#1e2030'}},axisLabel:{color:'#8892a8'}},
+  series:[
+    {name:'成功',type:'bar',stack:'t',barWidth:24,data:[18, 38, 34, 35, 37, 40, 38, 44, 38, 38, 39, 39, 23],itemStyle:{color:C.green},
+     label:{show:true,color:'#fff',fontSize:10,formatter:function(p){return p.value>0?p.value:''}}},
+    {name:'失败',type:'bar',stack:'t',data:[31, 11, 13, 15, 12, 9, 11, 6, 10, 11, 10, 11, 3],itemStyle:{color:C.red},
+     label:{show:true,color:'#fff',fontSize:10,formatter:function(p){return p.value>0?p.value:''}}},
+    {name:'未找到',type:'bar',stack:'t',data:[1, 1, 3, 0, 1, 1, 1, 0, 2, 1, 1, 0, 24],itemStyle:{color:C.gray},
+     label:{show:true,color:'#fff',fontSize:10,formatter:function(p){return p.value>0?p.value:''}}}
+  ]
+}));
+
+window.addEventListener('resize',function(){charts.forEach(function(c){c.resize()})});
+</script></body></html>

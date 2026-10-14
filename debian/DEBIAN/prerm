@@ -1,0 +1,10 @@
+#!/bin/bash
+# 卸载前执行：停止运行中的服务
+set -e
+
+# 停止可能正在运行的 bug-doc-tool 进程
+if pgrep -f "bug-doc-tool" > /dev/null 2>&1; then
+    echo "[bug-doc-tool] 检测到运行中的进程，正在停止..."
+    pkill -f "bug-doc-tool" 2>/dev/null || true
+    sleep 2
+fi

@@ -1,0 +1,2 @@
+2026-08-14 14:07:01,242 [INFO] db - 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_compare_steps_high_simila0/test.db
+2026-08-14 14:07:01,249 [INFO] similarity - 步骤相似度比对完成: 平均得分 1.000

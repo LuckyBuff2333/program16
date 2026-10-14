@@ -1,0 +1,2 @@
+INFO     db:db.py:56 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_forward_comment_with_keyw0/test.db
+INFO     filter:filter.py:122 评论过滤完成: 1 条评论提取出 1 条分析步骤

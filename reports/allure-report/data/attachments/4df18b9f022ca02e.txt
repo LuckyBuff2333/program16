@@ -1,0 +1,3 @@
+INFO     db:db.py:56 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_empty_and_none_comments0/test.db
+INFO     filter:filter.py:122 评论过滤完成: 0 条评论提取出 0 条分析步骤
+INFO     filter:filter.py:122 评论过滤完成: 2 条评论提取出 0 条分析步骤
