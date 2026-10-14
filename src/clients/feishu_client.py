@@ -1308,6 +1308,154 @@ def create_docx_document(title: str, md_content: str, folder_token: str = "") ->
     return {"document_id": doc_id, "url": doc_url}
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# [预留] user_access_token 过期自动刷新辅助函数（来自远程分支，暂未接入现有流程）
+# 当前本地使用 app_id + app_secret 的 tenant_access_token 方案，已足够持久。
+# 待将来需要更精确的鉴权错误检测时，将现有函数中的
+#   resp.status_code in (401, 400)  替换为  _is_doc_auth_error(resp)
+# 即可启用。
+# ──────────────────────────────────────────────────────────────────────────────
+
+# 飞书文档 API 鉴权相关错误码（HTTP 200 但 body code 表示 token 失效）
+_DOC_AUTH_ERR_CODES = (99991661, 99991663, 99991668, 99991672, 99991677, 20001)
+
+
+def _doc_auth_headers() -> dict:
+    """[预留] 构造最新 doc token 的请求头"""
+    return {"Authorization": f"Bearer {_get_doc_token()}", "Content-Type": "application/json"}
+
+
+def _doc_api_code(resp) -> int:
+    """[预留] 安全提取飞书 API 响应体中的 code 字段"""
+    try:
+        return resp.json().get("code", -1)
+    except Exception:
+        return -1
+
+
+def _is_doc_auth_error(resp) -> bool:
+    """[预留] 判断响应是否为鉴权失效（HTTP 401/403 或飞书特定 token 错误码）"""
+    return resp.status_code in (401, 403) or _doc_api_code(resp) in _DOC_AUTH_ERR_CODES
+
+
+# ── [预留] 文档子块操作函数 ──────────────────────────────────────────────────
+# 以下 3 个函数是对 update_docx_content 内部逻辑的拆分重构，
+# 当前未接入，待将来需要更健壮的文档更新流程时替换现有内联实现。
+# 并发写锁使用 src.core.resource_lock.KeyedLockPool。
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _count_doc_children(document_id: str, headers: dict, list_url: str) -> int:
+    """[预留] 获取文档子块总数（分页遍历），鉴权失效时自动刷新 token 重试，失败返回 -1"""
+    child_count = 0
+    page_token = ""
+    while True:
+        params = {"page_size": 500, "document_revision_id": -1}
+        if page_token:
+            params["page_token"] = page_token
+        resp = httpx.get(list_url, headers=headers, params=params, timeout=30, verify=False)
+        # 鉴权失效时自动刷新 token 并重试一次
+        if _is_doc_auth_error(resp):
+            logger.warning("文档子块查询鉴权失效(document_id=%s, status=%s, code=%s)，尝试刷新token重试",
+                           document_id, resp.status_code, _doc_api_code(resp))
+            if _refresh_user_token(force=True):
+                headers.update(_doc_auth_headers())
+                resp = httpx.get(list_url, headers=headers, params=params, timeout=30, verify=False)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.error("获取文档子块失败(document_id=%s): %s (code=%s)",
+                         document_id, data.get("msg"), data.get("code"))
+            return -1
+        items = data.get("data", {}).get("items", [])
+        child_count += len(items)
+        if not data.get("data", {}).get("has_more", False):
+            break
+        page_token = data.get("data", {}).get("page_token", "")
+    return child_count
+
+
+def _delete_doc_children(document_id: str, headers: dict, child_count: int) -> bool:
+    """[预留] 分批删除文档所有子块（带退避+子块计数校验），最多 10 轮"""
+    import json as _json
+    del_url = f"{_FEISHU_API}/docx/v1/documents/{document_id}/blocks/{document_id}/children/batch_delete"
+    list_url = f"{_FEISHU_API}/docx/v1/documents/{document_id}/blocks/{document_id}/children"
+    remaining = child_count
+    backoff = 0.5
+    for round_no in range(1, 11):
+        # 已删除干净
+        if remaining <= 0:
+            logger.info("文档子块已清除 document_id=%s, 第%d轮检查剩余0 (原%d块)", document_id, round_no, child_count)
+            return True
+        # 每轮删除 min(剩余, 500) 块，避免 end_index 过大导致 API 超时
+        batch_size = min(remaining, 500)
+        try:
+            del_body = _json.dumps({"start_index": 0, "end_index": batch_size})
+            resp = httpx.request("DELETE", del_url, headers=headers, content=del_body, timeout=30, verify=False)
+            # 鉴权失效时自动刷新 token 并重试一次
+            if _is_doc_auth_error(resp):
+                logger.warning("文档子块删除鉴权失效(document_id=%s, 第%d轮 status=%s, code=%s)，尝试刷新token重试",
+                               document_id, round_no, resp.status_code, _doc_api_code(resp))
+                if _refresh_user_token(force=True):
+                    headers.update(_doc_auth_headers())
+                    resp = httpx.request("DELETE", del_url, headers=headers, content=del_body, timeout=30, verify=False)
+            resp.raise_for_status()
+            rd = resp.json()
+            if rd.get("code") != 0:
+                logger.warning("删除旧文档块API返回异常: document_id=%s, 第%d轮 批量%d块 剩余%d块 %s (code=%s)",
+                               document_id, round_no, batch_size, remaining, rd.get("msg"), rd.get("code"))
+        except Exception as e:
+            logger.warning("删除旧文档块异常: document_id=%s, 第%d轮 剩余%d块 %s",
+                           document_id, round_no, remaining, e, exc_info=True)
+        time.sleep(backoff)
+        backoff = min(backoff * 1.5, 3.0)
+        # 重新查询剩余子块数（比旧的 end_index=10000 暴力方式更精确）
+        try:
+            check = _count_doc_children(document_id, headers, list_url)
+            remaining = check if check >= 0 else remaining
+        except Exception as e:
+            logger.warning("删除后校验子块数异常: document_id=%s, 第%d轮 %s", document_id, round_no, e)
+        logger.info("删除进度: document_id=%s, 第%d轮 原有 %d, 剩余 %d", document_id, round_no, child_count, remaining)
+        if remaining == 0:
+            return True
+    logger.error("文档子块清除超时: document_id=%s, 10轮后仍剩余%d块(原%d块)，可能存在不可删除的块",
+                 document_id, remaining, child_count)
+    return False
+
+
+def _write_doc_blocks(document_id: str, headers: dict, blocks: list) -> bool:
+    """[预留] 分批写入文档块（每批最多50块），鉴权失效时自动刷新重试"""
+    add_url = f"{_FEISHU_API}/docx/v1/documents/{document_id}/blocks/{document_id}/children"
+    total_batches = (len(blocks) + 49) // 50
+    write_success = 0
+    for start in range(0, len(blocks), 50):
+        batch_no = start // 50 + 1
+        batch = blocks[start:start + 50]
+        payload = {"children": batch, "index": -1}
+        try:
+            r = httpx.post(add_url, headers=headers, json=payload, timeout=30, verify=False)
+            # 鉴权失效时自动刷新 token 并重试一次
+            if _is_doc_auth_error(r):
+                logger.warning("文档写入鉴权失效(document_id=%s, 批次%d/%d, status=%s, code=%s)，尝试刷新token重试",
+                               document_id, batch_no, total_batches, r.status_code, _doc_api_code(r))
+                if _refresh_user_token(force=True):
+                    headers.update(_doc_auth_headers())
+                    r = httpx.post(add_url, headers=headers, json=payload, timeout=30, verify=False)
+            r.raise_for_status()
+            rd = r.json()
+            if rd.get("code") == 0:
+                write_success += 1
+            else:
+                logger.warning("添加文档块失败(document_id=%s, 批次%d/%d): %s (code=%s)",
+                               document_id, batch_no, total_batches, rd.get("msg"), rd.get("code"))
+        except Exception as e:
+            logger.warning("添加文档块异常(document_id=%s, 批次%d/%d): %s", document_id, batch_no, total_batches, e)
+    if write_success < total_batches:
+        logger.error("文档写入不完整: document_id=%s, %d/%d 批次成功", document_id, write_success, total_batches)
+        return False
+    return True
+
+
 def update_docx_content(document_id: str, md_content: str) -> bool:
     """更新已有飞书文档的内容：清除旧内容并写入新内容（保持文档链接不变）
 

@@ -15,7 +15,7 @@ from src.config import PROJECT_ROOT, get_path, load_config, setup_logger
 logger = setup_logger("ai_log")
 
 # 本地测试数据表
-TESTDATA_CSV = os.path.join(PROJECT_ROOT, "testdata", "bug_test_data.csv")
+TESTDATA_CSV = os.path.join(PROJECT_ROOT, "tests", "testdata", "bug_test_data.csv")
 
 
 def _load_testdata_row(bugid: str):
@@ -98,7 +98,7 @@ MOCK_DOC_STEPS = {
 
 def _build_testdata_report(row: dict) -> str:
     """基于测试数据行构造分析报告：根因取自表格，分析依据取自日志有效行"""
-    log_path = os.path.join(PROJECT_ROOT, "testdata", row.get("日志文件", ""))
+    log_path = os.path.join(PROJECT_ROOT, "tests", "testdata", row.get("日志文件", ""))
     valid_logs = _extract_valid_logs(log_path)
     bugid = row["bugid"]
     lines = [

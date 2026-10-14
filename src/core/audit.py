@@ -32,7 +32,7 @@ def _spotcheck_day_dir() -> str:
     """获取当日 spotcheck 目录：spotcheck/日期/"""
     from datetime import datetime
     date_str = datetime.now().strftime("%Y-%m-%d")
-    spotcheck_dir = os.path.join(get_path("report_dir"), "..", "spotcheck", date_str)
+    spotcheck_dir = os.path.join(get_path("report_dir"), "spotcheck", date_str)
     os.makedirs(spotcheck_dir, exist_ok=True)
     return os.path.abspath(spotcheck_dir)
 
