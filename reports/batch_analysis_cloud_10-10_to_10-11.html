@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>批次分析报告 · 10-10 ~ 10-11 · 云端数据</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+:root{--bg:#0f1117;--card:#1a1d2e;--border:#2a2d3e;--text:#e2e8f0;--muted:#8892a8;--accent:#6366f1;--green:#22c55e;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;--cyan:#06b6d4;--purple:#a78bfa}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);line-height:1.7;padding:20px}
+.container{max-width:1400px;margin:0 auto}
+h1{font-size:26px;font-weight:700;background:linear-gradient(135deg,#6366f1,#a78bfa);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.subtitle{color:var(--muted);font-size:13px;margin:4px 0 24px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+@media(max-width:1000px){.grid-2,.grid-3,.grid-4{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px}
+.card-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.card-value{font-size:28px;font-weight:700;margin:4px 0}
+.card-sub{font-size:11px;color:var(--muted)}
+.section{margin:28px 0}
+.section-title{font-size:16px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.section-title::before{content:'';display:inline-block;width:4px;height:18px;background:var(--accent);border-radius:2px}
+.chart-box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:20px}
+.chart-title{font-size:14px;font-weight:600;margin-bottom:10px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.3px;position:sticky;top:0;background:var(--card)}
+tr:hover{background:rgba(99,102,241,.06)}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.tag-ok{background:rgba(34,197,94,.15);color:var(--green)}
+.tag-fail{background:rgba(239,68,68,.15);color:var(--red)}
+.tag-warn{background:rgba(245,158,11,.15);color:var(--orange)}
+.tag-info{background:rgba(59,130,246,.15);color:var(--blue)}
+.bar{height:6px;border-radius:3px;background:#2a2d3e;overflow:hidden;position:relative}
+.bar-fill{height:100%;border-radius:3px;transition:width .3s}
+.green{color:var(--green)}.red{color:var(--red)}.orange{color:var(--orange)}.blue{color:var(--blue)}.cyan{color:var(--cyan)}.purple{color:var(--purple)}
+.bg-green{background:var(--green)}.bg-red{background:var(--red)}.bg-orange{background:var(--orange)}.bg-blue{background:var(--blue)}
+.conclusion{background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(167,139,250,.05));border:1px solid rgba(99,102,241,.25);border-radius:12px;padding:20px;margin-top:24px}
+.conclusion h3{font-size:15px;color:var(--accent);margin-bottom:12px}
+.conclusion li{margin:6px 0;font-size:13px;line-height:1.7}
+.table-wrap{max-height:500px;overflow:auto;border-radius:8px;border:1px solid var(--border)}
+.batch-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.batch-meta{font-size:11px;color:var(--muted)}
+.timeline-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.tl-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.tl-time{font-size:12px;color:var(--muted);min-width:80px}
+.tl-label{font-size:12px}
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>批次分析报告 · 10-10 ~ 10-11</h1>
+<p class="subtitle">数据来源：飞书云端文件夹 + 多维表格数据沉淀表 · 生成时间：2026-10-11 19:17</p>
+
+<!-- ========== 顶部概览 ========== -->
+<div class="grid-4">
+  <div class="card"><div class="card-label">总批次数</div><div class="card-value cyan">16</div><div class="card-sub">10-10: 3个 · 10-11: 13个</div></div>
+  <div class="card"><div class="card-label">总提交Bug</div><div class="card-value blue">701</div><div class="card-sub">10-10: 101个 · 10-11: 650个</div></div>
+  <div class="card"><div class="card-label">多维表格分析成功</div><div class="card-value green">525</div><div class="card-sub">总匹配 658 / 成功率 79.8%</div></div>
+  <div class="card"><div class="card-label">分析耗时均值</div><div class="card-value purple">14.8min</div><div class="card-sub">中位数 16.6min · 最大 31.2min</div></div>
+</div>
+
+<!-- ========== 每日汇总 ========== -->
+<div class="section">
+  <div class="section-title">每日分析结果汇总（多维表格 · 按分析完成日期）</div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="batch-header">
+        <div><span class="tag tag-info">2026-10-10</span></div>
+        <div class="batch-meta">来源: jira_analyze(48) + parseFullTicket(5)</div>
+      </div>
+      <div class="grid-4" style="margin-top:12px">
+        <div><div class="card-label">完成数</div><div style="font-size:22px;font-weight:700">53</div></div>
+        <div><div class="card-label">成功</div><div style="font-size:22px;font-weight:700" class="green">41</div></div>
+        <div><div class="card-label">失败</div><div style="font-size:22px;font-weight:700" class="red">12</div></div>
+        <div><div class="card-label">成功率</div><div style="font-size:22px;font-weight:700" class="green">77.4%</div></div>
+      </div>
+      <div style="margin-top:10px;font-size:12px;color:var(--muted)">耗时: 均 884.7s(14.7min) · 最大 1780.2s(29.7min) · 范围 00:00~23:00</div>
+    </div>
+    <div class="card">
+      <div class="batch-header">
+        <div><span class="tag tag-ok">2026-10-11</span></div>
+        <div class="batch-meta">来源: jira_analyze(612)</div>
+      </div>
+      <div class="grid-4" style="margin-top:12px">
+        <div><div class="card-label">完成数</div><div style="font-size:22px;font-weight:700">612</div></div>
+        <div><div class="card-label">成功</div><div style="font-size:22px;font-weight:700" class="green">484</div></div>
+        <div><div class="card-label">失败</div><div style="font-size:22px;font-weight:700" class="red">128</div></div>
+        <div><div class="card-label">成功率</div><div style="font-size:22px;font-weight:700" class="green">79.1%</div></div>
+      </div>
+      <div style="margin-top:10px;font-size:12px;color:var(--muted)">耗时: 均 873.4s(14.6min) · 最大 1869.9s(31.2min) · 00:09~19:16</div>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 图表区 ========== -->
+<div class="section">
+  <div class="section-title">图表分析</div>
+
+  <!-- 图1：每批次提交成功 vs 分析成功 -->
+  <div class="chart-box">
+    <div class="chart-title">每批次提交成功 vs 多维表格分析成功（柱状对比）</div>
+    <div id="chart_submit_vs_analysis" style="height:380px"></div>
+  </div>
+
+  <div class="grid-2">
+    <!-- 图2：每批次分析成功率 -->
+    <div class="chart-box">
+      <div class="chart-title">每批次分析成功率（多维表格匹配后）</div>
+      <div id="chart_success_rate" style="height:340px"></div>
+    </div>
+    <!-- 图3：每批次平均分析耗时 -->
+    <div class="chart-box">
+      <div class="chart-title">每批次平均分析耗时（分钟）</div>
+      <div id="chart_avg_duration" style="height:340px"></div>
+    </div>
+  </div>
+
+  <!-- 图4：10-11 按小时完成数分布 -->
+  <div class="chart-box">
+    <div class="chart-title">10-11 分析完成时间分布（按小时）</div>
+    <div id="chart_hourly" style="height:300px"></div>
+  </div>
+
+  <!-- 图5：耗时分布直方图 -->
+  <div class="chart-box">
+    <div class="chart-title">所有批次分析耗时分布（秒）</div>
+    <div id="chart_duration_hist" style="height:300px"></div>
+  </div>
+</div>
+
+<!-- ========== 批次详情表 ========== -->
+<div class="section">
+  <div class="section-title">批次详情（云端文档 + 多维表格验证）</div>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>批次名称</th>
+        <th>执行时间</th>
+        <th>来源</th>
+        <th>提交</th>
+        <th>提交成功</th>
+        <th>表格匹配</th>
+        <th>分析成功</th>
+        <th>分析失败</th>
+        <th>未找到</th>
+        <th>成功率</th>
+        <th>平均耗时</th>
+        <th>最大耗时</th>
+        <th>状态</th>
+      </tr>
+    </thead>
+    <tbody id="batchTableBody"></tbody>
+  </table>
+  </div>
+</div>
+
+<!-- ========== 10-11 持续执行时间线 ========== -->
+<div class="section">
+  <div class="section-title">10-11 持续执行时间线（13轮 · 00:06 ~ 18:16）</div>
+  <div class="card" style="max-height:420px;overflow:auto">
+    <div id="timelineContainer"></div>
+  </div>
+</div>
+
+<!-- ========== 结论 ========== -->
+<div class="conclusion">
+  <h3>核心结论</h3>
+  <ol>
+    <li><strong>10-11 持续执行共 13 轮</strong>，每轮 50 个 Bug，全部提交成功（50/50），总计 <strong>650 个 Bug</strong></li>
+    <li><strong>多维表格实际分析成功 484 个</strong>（总完成 612，成功率 79.1%）；r13 仍有 24 个分析中</li>
+    <li><strong>每批次分析成功率 36%~88%</strong>，r1（首轮）最低 36%（凌晨首批 Bug 质量较低），r8 最高 88%</li>
+    <li><strong>平均分析耗时 14.6~20.7 分钟</strong>，总体中位数 16.6 分钟，P25=11.6min / P75=19.3min</li>
+    <li><strong>10-10 的线上批次全部 502 Bad Gateway</strong>（0/50 提交成功），但多维表格仍有 35 个匹配到结果（27 成功）</li>
+    <li><strong>10-10 的 PC 批次（17:54）</strong>提交 50/50，多维表格匹配 47 个（38 成功），成功率 76%</li>
+    <li><strong>持续执行间隔约 1.5 小时</strong>（每轮约 90 分钟），24 小时不间断运行</li>
+    <li><strong>每批次耗时呈"U 型曲线"</strong>：凌晨首批最快（~15min），白天高峰略慢（~18min），凌晨回落</li>
+  </ol>
+</div>
+
+</div><!-- container -->
+
+<script>
+const batchData = [
+  {name:"10-10 011156(线上)",folder:"10-10",exec:"10-10 01:11",src:"线上",total:50,submitOk:0,submitFail:50,btMatch:35,btOk:27,btFail:8,btMiss:15,avgDur:1126.1,maxDur:1656.2},
+  {name:"10-10 175449(PC)",folder:"10-10",exec:"10-10 17:54",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:47,btOk:38,btFail:9,btMiss:3,avgDur:1096.8,maxDur:1656.2},
+  {name:"10-10 230341(单)",folder:"10-10",exec:"10-10 23:03",src:"PC",total:1,submitOk:1,submitFail:0,btMatch:1,btOk:0,btFail:1,btMiss:0,avgDur:0,maxDur:0},
+  {name:"r1(00:06)",folder:"10-11",exec:"10-11 00:06",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:49,btOk:18,btFail:31,btMiss:1,avgDur:898.0,maxDur:1288.6},
+  {name:"r2(01:37)",folder:"10-11",exec:"10-11 01:37",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:49,btOk:38,btFail:11,btMiss:1,avgDur:933.7,maxDur:1112.2},
+  {name:"r3(03:08)",folder:"10-11",exec:"10-11 03:08",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:47,btOk:34,btFail:13,btMiss:3,avgDur:1081.4,maxDur:1547.9},
+  {name:"r4(04:39)",folder:"10-11",exec:"10-11 04:39",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:50,btOk:35,btFail:15,btMiss:0,avgDur:964.1,maxDur:1285.6},
+  {name:"r5(06:09)",folder:"10-11",exec:"10-11 06:09",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:49,btOk:37,btFail:12,btMiss:1,avgDur:974.7,maxDur:1812.8},
+  {name:"r6(07:40)",folder:"10-11",exec:"10-11 07:40",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:49,btOk:40,btFail:9,btMiss:1,avgDur:946.1,maxDur:1310.7},
+  {name:"r7(09:11)",folder:"10-11",exec:"10-11 09:11",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:49,btOk:38,btFail:11,btMiss:1,avgDur:1004.9,maxDur:1521.5},
+  {name:"r8(10:42)",folder:"10-11",exec:"10-11 10:42",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:50,btOk:44,btFail:6,btMiss:0,avgDur:1081.6,maxDur:1704.4},
+  {name:"r9(12:13)",folder:"10-11",exec:"10-11 12:13",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:48,btOk:38,btFail:10,btMiss:2,avgDur:1239.5,maxDur:1610.1},
+  {name:"r10(13:43)",folder:"10-11",exec:"10-11 13:43",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:49,btOk:38,btFail:11,btMiss:1,avgDur:1062.6,maxDur:1869.9},
+  {name:"r11(15:14)",folder:"10-11",exec:"10-11 15:14",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:49,btOk:39,btFail:10,btMiss:1,avgDur:1217.1,maxDur:1750.5},
+  {name:"r12(16:45)",folder:"10-11",exec:"10-11 16:45",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:50,btOk:39,btFail:11,btMiss:0,avgDur:1093.2,maxDur:1508.7},
+  {name:"r13(18:16)",folder:"10-11",exec:"10-11 18:16",src:"PC",total:50,submitOk:50,submitFail:0,btMatch:26,btOk:23,btFail:3,btMiss:24,avgDur:1098.7,maxDur:1374.0}
+];
+
+// ===== 图1: 提交成功 vs 分析成功 =====
+const chart1 = echarts.init(document.getElementById('chart_submit_vs_analysis'));
+chart1.setOption({
+  tooltip:{trigger:'axis'},
+  legend:{data:['提交成功','分析成功(多维表格)','分析失败'],textStyle:{color:'#8892a8'}},
+  grid:{left:50,right:20,bottom:60,top:40},
+  xAxis:{type:'category',data:batchData.map(b=>b.name),axisLabel:{rotate:35,color:'#8892a8',fontSize:10},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:{type:'value',name:'Bug数',nameTextStyle:{color:'#8892a8'},axisLabel:{color:'#8892a8'},splitLine:{lineStyle:{color:'#1e2030'}}},
+  series:[
+    {name:'提交成功',type:'bar',data:batchData.map(b=>b.submitOk),itemStyle:{color:'#3b82f6'},barGap:'10%'},
+    {name:'分析成功(多维表格)',type:'bar',data:batchData.map(b=>b.btOk),itemStyle:{color:'#22c55e'}},
+    {name:'分析失败',type:'bar',data:batchData.map(b=>b.btFail),itemStyle:{color:'#ef4444'}}
+  ]
+});
+
+// ===== 图2: 每批次成功率 =====
+const chart2 = echarts.init(document.getElementById('chart_success_rate'));
+const rateData = batchData.map(b => b.btMatch > 0 ? Math.round(b.btOk / b.btMatch * 100) : 0);
+chart2.setOption({
+  tooltip:{trigger:'axis',formatter:p=>`${p[0].name}<br/>成功率: ${p[0].value}%`},
+  grid:{left:45,right:15,bottom:60,top:20},
+  xAxis:{type:'category',data:batchData.map(b=>b.name),axisLabel:{rotate:40,color:'#8892a8',fontSize:9},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:{type:'value',max:100,axisLabel:{formatter:'{value}%',color:'#8892a8'},splitLine:{lineStyle:{color:'#1e2030'}}},
+  series:[{type:'bar',data:rateData.map(v=>({value:v,itemStyle:{color:v>=70?'#22c55e':v>=50?'#f59e0b':'#ef4444'}})),barWidth:'60%'}]
+});
+
+// ===== 图3: 平均耗时 =====
+const chart3 = echarts.init(document.getElementById('chart_avg_duration'));
+chart3.setOption({
+  tooltip:{trigger:'axis',formatter:p=>`${p[0].name}<br/>平均: ${(p[0].value).toFixed(1)}min<br/>最大: ${p[1]?p[1].value.toFixed(1):'-'}min`},
+  grid:{left:45,right:15,bottom:60,top:30},
+  xAxis:{type:'category',data:batchData.map(b=>b.name),axisLabel:{rotate:40,color:'#8892a8',fontSize:9},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:{type:'value',name:'分钟',nameTextStyle:{color:'#8892a8'},axisLabel:{color:'#8892a8'},splitLine:{lineStyle:{color:'#1e2030'}}},
+  series:[
+    {name:'平均耗时',type:'bar',data:batchData.map(b=>+(b.avgDur/60).toFixed(1)),itemStyle:{color:'#a78bfa'},barGap:'10%',barWidth:'40%'},
+    {name:'最大耗时',type:'line',data:batchData.map(b=>+(b.maxDur/60).toFixed(1)),lineStyle:{color:'#ef4444',width:2},symbol:'circle',symbolSize:6,itemStyle:{color:'#ef4444'}}
+  ]
+});
+
+// ===== 图4: 10-11 按小时完成数 =====
+const chart4 = echarts.init(document.getElementById('chart_hourly'));
+const hourlyData = [49,9,40,23,29,44,29,26,43,24,32,33,24,31,37,24,39,34,33,9];
+const hourlyLabels = Array.from({length:20},(_, i)=>`${String(i).padStart(2,'0')}:xx`);
+chart4.setOption({
+  tooltip:{trigger:'axis'},
+  grid:{left:45,right:15,bottom:30,top:20},
+  xAxis:{type:'category',data:hourlyLabels,axisLabel:{color:'#8892a8',fontSize:10},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:{type:'value',axisLabel:{color:'#8892a8'},splitLine:{lineStyle:{color:'#1e2030'}}},
+  series:[{type:'bar',data:hourlyData.map((v,i)=>({value:v,itemStyle:{color:i>=8&&i<=18?'#3b82f6':'#6366f1'}})),barWidth:'70%'}]
+});
+
+// ===== 图5: 耗时直方图 =====
+const chart5 = echarts.init(document.getElementById('chart_duration_hist'));
+// 收集所有durations
+const allDurations = [924.95,1193.76,1016.84,1320.91,1180.55,475.84,847.27,1419.89,1311.85,1245.04,1088.24,864.52,1656.16,1096.33,1169.8,1391.66,1085.03,1206.2,896.02,1409.53,658.38,1101.15,1263.23,1322.21,1467.8,1090.56,701.72,701.72,1016.84,1206.2,1245.04,1322.21,1656.16,1467.8,1409.53,1391.66,1169.8,1096.33,1180.55,1090.56,1085.03,1101.15,1088.24,896.02,821.03,864.52,475.84,658.38,847.27,924.95,1193.76,1311.85,1419.89,1303.32,1320.91,1337.17,1263.23,1315.07,1118.82,1303.65,990.29,738.1,903.3,793.29,647.57,324.83,1180.97,936.02,999.07,997.55,1288.64,1157.16,1223.89,1061.49,728.35,824.13,465.38,871.74,925.83,907.68,751.84,709.42,810.2,988.37,1053.09,854.66,796.37,974.69,940.05,1001.12,850.4,1084.74,868.75,977.39,1064.8,1061.97,1112.17,1000.03,1079.79,952.68,897.84,722.5,569.73,840.02,1083.31,1046.58,1027.77,1082.57,1028.04,1059.72,1002.17,914.16,894,765.37,844.37,826.22,903.64,964.34,870.61,780.56,694.37,880.18,1156.22,1172.01,169.33,1091.72,1453.49,1210.9,1529.92,1325.81,1316.25,1258.36,1325.66,1310.93,1233.16,1121.84,1135.1,981.42,1081.17,944.05,881.87,882.69,898.53,937.93,1547.88,1085.55,1108,1331.53,1153.16,992.65,1096.41,913.42,801.52,814.27,625.03,1115.38,244.77,1176.7,1092.89,1223.22,1040.97,1110.6,1285.58,996.09,996.77,982.2,1028.34,1125.42,1134.76,839.91,880.97,889.8,997.45,947.68,1045.19,1039.15,1119.33,881.7,1072.48,1076.56,961.67,954.45,971.47,1035.53,923.31,816.13,762.23,769.79,624.74,578.76,1033.27,997.08,1087.78,1113.06,1158.16,1056.14,997.85,158.44,697.49,1039.6,1037.82,1102.67,926.94,990.95,975.45,863.69,818.95,880.01,1029.11,1812.84,1174.41,1229.18,1030.45,1095.3,1095.32,1242.89,1397.48,1018.36,1010.72,929.37,864.59,889.12,819.83,768.34,576.42,614.11,529.61,1254.71,205.34,1158.38,1111.26,430.11,1194.81,1310.66,1201.57,1135.18,1235.87,1135.33,1202.97,912.82,1064.71,868.79,1000.04,1098.77,369.66,1028.21,1163.53,1076.06,983.53,736.86,886.38,820.28,747.43,851.61,960.73,944.79,965.29,1171.68,1066.55,1084.69,1099.72,920.94,882.39,878.94,708.72,613.82,361.95,922.77,924.37,1048.4,922.51,1069.74,914.1,925.25,837.09,939.45,972.59,890.78,727.79,1369.54,1521.49,1385.43,1339.41,1329.07,1275.8,1296.04,962.39,1147.17,1051.58,845.39,842.5,1036.28,1041.02,1097.65,831.23,696.76,1130.91,966.34,1024.24,920,940.15,838.35,791.08,717.26,693.93,926.7,997.23,981.91,862.49,1128.25,956.55,1076.47,1340.97,522.13,1121.63,1090.51,1027.88,1063.03,303.16,1096.42,1181.08,1704.39,1202.27,1067.59,1262.8,958.66,881.14,745.11,896.87,748.37,1111.55,314.96,1005.19,1202.55,1155.88,1173.97,1251.26,993.13,1016.7,1039.99,1355.65,1128.59,1265.51,1338.74,1520.03,1468.19,1452.05,1231.1,1420.78,1460.09,1476.48,1610.08,549.73,1427.32,1209.06,1453.2,1388.28,1274.01,865.33,1091.94,1408.97,1415.48,1479.11,1434.13,1382.31,1332.51,1087.77,1305.79,1171.43,1091.77,1014.36,974.32,1038.36,1213.79,1078.01,1040.88,799.56,1287.07,1179.14,1471.38,1412.47,1294.51,1441.17,1341.34,1191.35,1245.04,1162.37,1078.97,1007.26,966.77,1185.08,864.77,1758.61,1146.26,1179.57,1161.47,366.54,1181.66,1166.34,1132.29,1206.8,968.4,934.91,1045.73,1190.53,961.91,1187.64,1108.96,1044.24,1037.75,978.21,952.71,853.25,959.87,1005.73,299.63,997.33,1050.49,735.65,948.41,1015.77,1455.21,1177.68,1196.49,1869.87,1750.45,1650.94,1512.18,1421.76,1549.73,1550.03,1417.47,1053.17,1319.31,667.3,1339.11,1391.34,1431.56,1432.76,958.78,1326.66,1325.75,1195.81,1151.04,1158.08,1224.08,1086.45,1029.83,1077.1,1057.07,901.1,1110.78,976.49,1334.46,1236.15,1074.91,1055.05,1196.67,918.67,831.87,1092.03,1201.89,1170.49,1289.19,1154.08,1264.48,1200.79,1148.34,1125.13,1217.6,1063.87,1103.54,913.83,1007.48,1183.45,907.38,1336.04,1251.74,571.39,1235.39,331.34,1441.27,949.7,1488.76,1208.91,1248.51,1375.76,1188.6,1508.73,251.64,1426.52,1275.58,1193.34,1202.86,1051.07,584.25,1286.52,1149.61,1217.02,850.08,974.21,895.57,851.6,770.91,766.15,933.63,995.83,1106.95,1114.25,1177.78,1022.23,974.46,882.39,1373.99,1295.26,1150.21,1316.51,1208.34,906.29,1185.5,1119.75,1342.84,1210.37,1167.23,1095.65,1153.42];
+const bins = [0,120,300,600,900,1200,1500,1800,2000];
+const binLabels = ['<2min','2-5min','5-10min','10-15min','15-20min','20-25min','25-30min','30min+'];
+const binCounts = new Array(binLabels.length).fill(0);
+allDurations.forEach(d=>{for(let i=0;i<bins.length-1;i++){if(d>=bins[i]&&d<bins[i+1]){binCounts[i]++;break;if(i===bins.length-2)binCounts[bins.length-1]++;}}});
+// fix last bin
+const overMax = allDurations.filter(d=>d>=1800).length;
+binCounts[binCounts.length-1]=overMax;
+const binColors = ['#22c55e','#22c55e','#3b82f6','#3b82f6','#f59e0b','#f59e0b','#ef4444','#ef4444'];
+chart5.setOption({
+  tooltip:{trigger:'axis'},
+  grid:{left:45,right:15,bottom:30,top:20},
+  xAxis:{type:'category',data:binLabels,axisLabel:{color:'#8892a8'},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:{type:'value',name:'Bug数',nameTextStyle:{color:'#8892a8'},axisLabel:{color:'#8892a8'},splitLine:{lineStyle:{color:'#1e2030'}}},
+  series:[{type:'bar',data:binCounts.map((v,i)=>({value:v,itemStyle:{color:binColors[i]}})),barWidth:'65%'}]
+});
+
+// ===== 批次详情表 =====
+const tbody = document.getElementById('batchTableBody');
+batchData.forEach((b,i)=>{
+  const rate = b.btMatch > 0 ? (b.btOk/b.btMatch*100).toFixed(1) : '-';
+  const rateNum = parseFloat(rate);
+  const rateClass = rateNum>=70?'tag-ok':rateNum>=50?'tag-warn':'tag-fail';
+  const statusTag = b.btMiss > 10 ? '<span class="tag tag-warn">分析中</span>' : b.submitOk===0 ? '<span class="tag tag-fail">提交失败</span>' : rateNum>=70 ? '<span class="tag tag-ok">良好</span>' : '<span class="tag tag-warn">偏低</span>';
+  const avgMin = b.avgDur>0 ? (b.avgDur/60).toFixed(1)+'min' : '-';
+  const maxMin = b.maxDur>0 ? (b.maxDur/60).toFixed(1)+'min' : '-';
+  tbody.innerHTML += `<tr>
+    <td>${i+1}</td>
+    <td><strong>${b.name}</strong></td>
+    <td>${b.exec}</td>
+    <td><span class="tag ${b.src==='PC'?'tag-info':'tag-warn'}">${b.src}</span></td>
+    <td>${b.total}</td>
+    <td class="${b.submitOk>0?'green':'red'}">${b.submitOk}/${b.submitOk+b.submitFail}</td>
+    <td>${b.btMatch}/${b.total}</td>
+    <td class="green">${b.btOk}</td>
+    <td class="red">${b.btFail}</td>
+    <td>${b.btMiss>0?'<span class="orange">'+b.btMiss+'</span>':'0'}</td>
+    <td><span class="tag ${rateClass}">${rate}${rate!=='-'?'%':''}</span></td>
+    <td>${avgMin}</td>
+    <td>${maxMin}</td>
+    <td>${statusTag}</td>
+  </tr>`;
+});
+
+// ===== 时间线 =====
+const tlContainer = document.getElementById('timelineContainer');
+const timeline = [
+  {time:"00:06:02",label:"r1 提交 (50/50)",ok:true},
+  {time:"00:09~01:00",label:"r1 分析完成 (49/50, 18成功31失败)",ok:false},
+  {time:"01:36:51",label:"r2 提交 (50/50)",ok:true},
+  {time:"01:40~02:30",label:"r2 分析完成 (49/50, 38成功11失败)",ok:true},
+  {time:"03:07:47",label:"r3 提交 (50/50)",ok:true},
+  {time:"03:10~04:10",label:"r3 分析完成 (47/50, 34成功13失败)",ok:true},
+  {time:"04:38:31",label:"r4 提交 (50/50)",ok:true},
+  {time:"04:42~05:40",label:"r4 分析完成 (50/50, 35成功15失败)",ok:true},
+  {time:"06:09:14",label:"r5 提交 (50/50)",ok:true},
+  {time:"06:12~07:15",label:"r5 分析完成 (49/50, 37成功12失败)",ok:true},
+  {time:"07:39:58",label:"r6 提交 (50/50)",ok:true},
+  {time:"07:43~08:45",label:"r6 分析完成 (49/50, 40成功9失败)",ok:true},
+  {time:"09:10:50",label:"r7 提交 (50/50)",ok:true},
+  {time:"09:14~10:20",label:"r7 分析完成 (49/50, 38成功11失败)",ok:true},
+  {time:"10:41:42",label:"r8 提交 (50/50)",ok:true},
+  {time:"10:45~11:50",label:"r8 分析完成 (50/50, 44成功6失败)",ok:true},
+  {time:"12:12:33",label:"r9 提交 (50/50)",ok:true},
+  {time:"12:16~13:25",label:"r9 分析完成 (48/50, 38成功10失败)",ok:true},
+  {time:"13:43:24",label:"r10 提交 (50/50)",ok:true},
+  {time:"13:47~14:50",label:"r10 分析完成 (49/50, 38成功11失败)",ok:true},
+  {time:"15:14:15",label:"r11 提交 (50/50)",ok:true},
+  {time:"15:18~16:30",label:"r11 分析完成 (49/50, 39成功10失败)",ok:true},
+  {time:"16:45:06",label:"r12 提交 (50/50)",ok:true},
+  {time:"16:48~17:55",label:"r12 分析完成 (50/50, 39成功11失败)",ok:true},
+  {time:"18:16:22",label:"r13 提交 (50/50)",ok:true},
+  {time:"18:20~进行中",label:"r13 分析中 (26/50已匹配, 23成功3失败, 24待分析)",ok:false}
+];
+timeline.forEach(t=>{
+  tlContainer.innerHTML += `<div class="timeline-row">
+    <div class="tl-dot" style="background:${t.ok?'var(--green)':'var(--orange)'}"></div>
+    <div class="tl-time">${t.time}</div>
+    <div class="tl-label">${t.label}</div>
+  </div>`;
+});
+
+// 响应式
+window.addEventListener('resize',()=>{chart1.resize();chart2.resize();chart3.resize();chart4.resize();chart5.resize()});
+</script>
+</body>
+</html>
