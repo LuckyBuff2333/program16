@@ -19,8 +19,15 @@ from src.clients import ai_log_client, bug_source, jira_client
 from src.clients import diana_client as _diana_client
 from src.config import get_path, load_config, setup_logger, PROJECT_ROOT
 from src.core import doc_generator
+from src.services.report_ops import _delete_default_bitable_table
 
 _CACHE_BATCH_PROGRESS_FILE = os.path.join(PROJECT_ROOT, "data", "cache_batch_progress.json")
+
+# ── 云端缓存状态 ──
+_trigger_time_table_cache = {"app_token": "", "table_ids": [], "inited": False}
+_trigger_time_bugid_cache = {}  # {jira号: (table_id, record_id, trigger_time)}
+_last_cache_load_partial = False
+_TRIGGER_TIME_TABLE_LIMIT = 500
 
 # 从共享模块导入公共工具和状态
 from src.api.routes.shared import (
@@ -32,6 +39,8 @@ from src.api.routes.shared import (
     read_csv_rows as _read_csv_rows,
     ok as _ok,
     fail as _fail,
+    _bitable_bulk_cache,
+    _BITABLE_CACHE_TTL,
 )
 
 logger = setup_logger("services.trigger_ops")
@@ -665,7 +674,7 @@ def _load_cache_batch_progress() -> dict:
     try:
         if os.path.exists(_CACHE_BATCH_PROGRESS_FILE):
             with open(_CACHE_BATCH_PROGRESS_FILE, "r", encoding="utf-8") as f:
-                data = _json.load(f)
+                data = json.load(f)
             logger.info("加载本地缓存批量进度: %d 条记录", len(data))
             return data
     except Exception as e:
@@ -678,14 +687,14 @@ def _save_cache_batch_progress(progress: dict):
     try:
         os.makedirs(os.path.dirname(_CACHE_BATCH_PROGRESS_FILE), exist_ok=True)
         with open(_CACHE_BATCH_PROGRESS_FILE, "w", encoding="utf-8") as f:
-            _json.dump(progress, f, ensure_ascii=False, indent=2)
+            json.dump(progress, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.warning("保存本地缓存批量进度失败: %s", e)
 
 
 def _invalidate_bitable_cache():
     """清除批量加载缓存，在数据写入时调用"""
-    global _bitable_bulk_cache, _last_cache_load_partial
-    _bitable_bulk_cache = {}
+    global _last_cache_load_partial
+    _bitable_bulk_cache.clear()
     _last_cache_load_partial = False
 

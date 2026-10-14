@@ -74,6 +74,10 @@ bot_cancel_events: dict = {}
 # 当前正在执行的任务描述：{chat_id: 任务名称}
 bot_running_tasks: dict = {}
 
+# ── 多维表格批量缓存（全局共享，trigger_ops / report_ops 共用） ──
+_bitable_bulk_cache = {}  # key -> (timestamp, data)
+_BITABLE_CACHE_TTL = 300  # 5分钟
+
 # 自动检测停止标志
 auto_detect_stop = False
 
@@ -297,7 +301,35 @@ def get_prod_ai_url() -> str:
     return (cfg.get("prod_ai") or {}).get("url", _PROD_AI_URL_DEFAULT)
 
 
+def get_prod_ai_cfg() -> dict:
+    """读取线上AI分析接口完整配置，提供默认值"""
+    cfg = load_config()
+    pai = cfg.get("prod_ai") or {}
+    return {
+        "url": pai.get("url", _PROD_AI_URL_DEFAULT),
+        "bugid_field": pai.get("bugid_field", "jiraNumber"),
+        "trigger_time_field": pai.get("trigger_time_field", "questionTimes"),
+        "timeout": int(pai.get("timeout", 30)),
+        "mock": pai.get("mock", False),
+    }
+
+
+def build_prod_ai_payload(bugid: str, exec_time: str = None) -> dict:
+    """构建线上AI分析接口请求体，字段名从配置读取"""
+    pai = get_prod_ai_cfg()
+    payload = {pai["bugid_field"]: bugid}
+    if exec_time and pai["trigger_time_field"]:
+        # questionTimes 类型字段需要数组包装
+        if pai["trigger_time_field"] == "questionTimes":
+            payload[pai["trigger_time_field"]] = [exec_time]
+        else:
+            payload[pai["trigger_time_field"]] = exec_time
+    return payload
+
+
 _get_prod_ai_url = get_prod_ai_url
+_get_prod_ai_cfg = get_prod_ai_cfg
+_build_prod_ai_payload = build_prod_ai_payload
 
 
 def parse_bugids(raw: str) -> list:
