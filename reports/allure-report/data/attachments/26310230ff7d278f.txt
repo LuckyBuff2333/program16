@@ -1,0 +1,3 @@
+INFO     db:db.py:56 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_audit_empty_pool_raises0/test.db
+INFO     db:db.py:102 抽查候选池读取完成: 共 0 个已入库 bugid
+INFO     audit:audit.py:109 抽查候选: 库内 0 个, 已抽查 0 个, 可用 0 个

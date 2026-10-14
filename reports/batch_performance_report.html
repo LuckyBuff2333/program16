@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>持续执行批次耗时分析报告</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  :root { --bg: #0f1117; --card: #1a1d2e; --border: #2a2d3e; --text: #e2e8f0; --muted: #8892a8; --accent: #6366f1; --green: #22c55e; --red: #ef4444; --orange: #f59e0b; --blue: #3b82f6; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; padding: 24px; }
+  .container { max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; background: linear-gradient(135deg, #6366f1, #a78bfa); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 32px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-bottom: 32px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .card-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .card-value { font-size: 32px; font-weight: 700; }
+  .card-value.green { color: var(--green); }
+  .card-value.red { color: var(--red); }
+  .card-value.orange { color: var(--orange); }
+  .card-value.blue { color: var(--blue); }
+  .card-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
+  .section h2 { font-size: 18px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+  .section h2 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .chart-box { width: 100%; height: 400px; }
+  .chart-box-sm { width: 100%; height: 320px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  tr:last-child td { border-bottom: none; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge-green { background: rgba(34,197,94,.15); color: var(--green); }
+  .badge-red { background: rgba(239,68,68,.15); color: var(--red); }
+  .badge-orange { background: rgba(245,158,11,.15); color: var(--orange); }
+  .badge-gray { background: rgba(136,146,168,.15); color: var(--muted); }
+  .conclusion { background: linear-gradient(135deg, rgba(99,102,241,.08), rgba(167,139,250,.08)); border: 1px solid rgba(99,102,241,.25); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
+  .conclusion h2 { color: #a78bfa; margin-bottom: 12px; }
+  .conclusion ul { padding-left: 20px; }
+  .conclusion li { margin-bottom: 8px; color: var(--text); }
+  .conclusion li strong { color: var(--orange); }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
+  .timeline { position: relative; padding-left: 24px; }
+  .timeline::before { content: ''; position: absolute; left: 7px; top: 4px; bottom: 4px; width: 2px; background: var(--border); }
+  .timeline-item { position: relative; margin-bottom: 20px; }
+  .timeline-item::before { content: ''; position: absolute; left: -21px; top: 6px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--accent); background: var(--bg); }
+  .timeline-item.success::before { border-color: var(--green); background: var(--green); }
+  .timeline-item.fail::before { border-color: var(--red); background: var(--red); }
+  .timeline-time { font-size: 12px; color: var(--muted); }
+  .timeline-desc { font-size: 14px; margin-top: 2px; }
+  .footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>持续执行批次耗时分析报告</h1>
+  <p class="subtitle">数据范围：2026-10-09 ~ 2026-10-11 · 生成时间：2026-10-11</p>
+
+  <!-- KPI Cards -->
+  <div class="cards">
+    <div class="card">
+      <div class="card-label">总批次数</div>
+      <div class="card-value blue">5</div>
+      <div class="card-sub">含1次诊断扫描</div>
+    </div>
+    <div class="card">
+      <div class="card-label">全部完成批次</div>
+      <div class="card-value orange">2 / 5</div>
+      <div class="card-sub">仅 40% 批次全部Bug有结果</div>
+    </div>
+    <div class="card">
+      <div class="card-label">可信批次平均耗时</div>
+      <div class="card-value green">~16 min</div>
+      <div class="card-sub">凌晨低峰 ≤50 Bug</div>
+    </div>
+    <div class="card">
+      <div class="card-label">昨晚至今成功批次</div>
+      <div class="card-value red">0</div>
+      <div class="card-sub">10-10晚 ~ 10-11 全部失败</div>
+    </div>
+  </div>
+
+  <!-- 批次完成度表格 -->
+  <div class="section">
+    <h2><span class="dot"></span>全部批次完成度对比</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>批次提交时间</th><th>Bug数</th><th>有耗时(完成)</th><th>无耗时(未完成)</th>
+          <th>完成率</th><th>成功率</th><th>状态</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>10-09 00:24:39</td><td>50</td><td>50</td><td>0</td>
+          <td>100%</td><td>90% (45/5)</td>
+          <td><span class="badge badge-green">可信</span></td>
+        </tr>
+        <tr>
+          <td>10-09 01:55:39</td><td>16</td><td>16</td><td>0</td>
+          <td>100%</td><td>81.2% (13/3)</td>
+          <td><span class="badge badge-green">可信</span></td>
+        </tr>
+        <tr>
+          <td>10-09 20:56:17</td><td>100</td><td>80</td><td style="color:var(--red)">20</td>
+          <td>80%</td><td>62%</td>
+          <td><span class="badge badge-orange">部分完成</span></td>
+        </tr>
+        <tr>
+          <td>10-09 23:40:55</td><td>50</td><td>0</td><td style="color:var(--red)">50</td>
+          <td>0%</td><td>0%</td>
+          <td><span class="badge badge-red">全部超时</span></td>
+        </tr>
+        <tr>
+          <td>10-10 01:11:18</td><td>50</td><td>0</td><td style="color:var(--red)">50</td>
+          <td>0%</td><td>0%</td>
+          <td><span class="badge badge-red">502 Bad Gateway</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Charts Row -->
+  <div class="grid-2">
+    <div class="section">
+      <h2><span class="dot"></span>批次完成率 & 成功率</h2>
+      <div id="chart_completion" class="chart-box-sm"></div>
+    </div>
+    <div class="section">
+      <h2><span class="dot"></span>各批次Bug分布</h2>
+      <div id="chart_distribution" class="chart-box-sm"></div>
+    </div>
+  </div>
+
+  <!-- 可信批次详情 -->
+  <div class="section">
+    <h2><span class="dot"></span>可信批次墙钟耗时详情</h2>
+    <div id="chart_timeline" class="chart-box"></div>
+    <table style="margin-top:16px">
+      <thead><tr><th>批次</th><th>Bug数</th><th>提交时间</th><th>最后完成时间</th><th>墙钟耗时</th><th>平均耗时</th><th>最长单Bug</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>00:24:39</td><td>50</td><td>00:24:39</td><td>00:40:37</td>
+          <td style="color:var(--green);font-weight:700">15min 58s</td>
+          <td>8min 58s</td><td>VCU-553514 (958.6s)</td>
+        </tr>
+        <tr>
+          <td>01:55:39</td><td>16</td><td>01:55:39</td><td>02:10:31</td>
+          <td style="color:var(--green);font-weight:700">14min 52s</td>
+          <td>7min 41s</td><td>VCU-553293 (892.6s)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 单Bug耗时分布 -->
+  <div class="section">
+    <h2><span class="dot"></span>单Bug分析耗时分布（可信批次）</h2>
+    <div id="chart_duration_dist" class="chart-box-sm"></div>
+  </div>
+
+  <!-- 执行时间线 -->
+  <div class="section">
+    <h2><span class="dot"></span>执行时间线</h2>
+    <div class="timeline">
+      <div class="timeline-item success">
+        <div class="timeline-time">10-09 00:24:39</div>
+        <div class="timeline-desc">批次 50 Bug → <strong style="color:var(--green)">全部完成</strong>，成功率 90%，耗时 16min</div>
+      </div>
+      <div class="timeline-item success">
+        <div class="timeline-time">10-09 01:55:39</div>
+        <div class="timeline-desc">批次 16 Bug → <strong style="color:var(--green)">全部完成</strong>，成功率 81.2%，耗时 15min</div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-time">10-09 20:56:17</div>
+        <div class="timeline-desc">批次 100 Bug → <strong style="color:var(--orange)">仅80个完成</strong>，20个无耗时记录，成功率 62%</div>
+      </div>
+      <div class="timeline-item fail">
+        <div class="timeline-time">10-09 23:40:55</div>
+        <div class="timeline-desc">批次 50 Bug → <strong style="color:var(--red)">全部超时</strong>，0/50 完成</div>
+      </div>
+      <div class="timeline-item fail">
+        <div class="timeline-time">10-10 01:11:18</div>
+        <div class="timeline-desc">批次 50 Bug → <strong style="color:var(--red)">502 Bad Gateway</strong>，线上服务不可用，0/50 完成</div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-time">10-11 00:07 ~ 00:12</div>
+        <div class="timeline-desc">本地诊断扫描 10 Bug → Jira超时中断，8/10 结果写入</div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-time">10-11 16:16 ~ 16:34</div>
+        <div class="timeline-desc">本地诊断扫描 103 Bug → 92个缓存命中，11个新分析，84个结果写入</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 结论 -->
+  <div class="conclusion">
+    <h2>分析结论</h2>
+    <ul>
+      <li>5个线上批量分析批次中，仅 <strong>2个</strong>（凌晨低峰 ≤50 Bug）全部完成且有可信成功率（81~90%）</li>
+      <li>可信批次的实际墙钟完成时间约 <strong>15~16 分钟</strong>，单Bug平均耗时约 <strong>8~9 分钟</strong></li>
+      <li>100 Bug的大批次完成率仅 80%，且成功率降至 62%</li>
+      <li><strong>从10-10晚到10-11，没有任何一个线上批次成功</strong>：23:40批次全部超时，01:11批次遭遇502错误</li>
+      <li>凌晨时段(00:00~02:00)是执行窗口黄金期，非凌晨执行失败风险显著上升</li>
+      <li>单Bug耗时中位数约 500~600s，极端值可达 1110s（~18.5min），瓶颈在视频下载+OCR</li>
+    </ul>
+  </div>
+
+  <div class="footer">Bug文档沉淀工具 · 持续执行批次分析报告 · 自动生成于 2026-10-11</div>
+</div>
+
+<script>
+// 配色
+const colors = { green: '#22c55e', red: '#ef4444', orange: '#f59e0b', blue: '#3b82f6', purple: '#a78bfa', gray: '#4b5563' };
+
+// 1. 批次完成率 & 成功率
+const chart1 = echarts.init(document.getElementById('chart_completion'), 'dark');
+chart1.setOption({
+  backgroundColor: 'transparent',
+  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+  legend: { top: 0, textStyle: { color: '#8892a8', fontSize: 12 } },
+  grid: { left: 50, right: 20, top: 40, bottom: 40 },
+  xAxis: {
+    type: 'category',
+    data: ['00:24\n(50)', '01:55\n(16)', '20:56\n(100)', '23:40\n(50)', '10-10\n(50)'],
+    axisLine: { lineStyle: { color: '#2a2d3e' } },
+    axisLabel: { color: '#8892a8', fontSize: 11 }
+  },
+  yAxis: {
+    type: 'value', max: 100, splitLine: { lineStyle: { color: '#1e2030' } },
+    axisLabel: { color: '#8892a8', formatter: '{value}%' }
+  },
+  series: [
+    {
+      name: '完成率', type: 'bar', barWidth: 28,
+      data: [
+        { value: 100, itemStyle: { color: colors.green } },
+        { value: 100, itemStyle: { color: colors.green } },
+        { value: 80, itemStyle: { color: colors.orange } },
+        { value: 0, itemStyle: { color: colors.red } },
+        { value: 0, itemStyle: { color: colors.red } }
+      ],
+      label: { show: true, position: 'top', color: '#e2e8f0', fontSize: 12, formatter: '{c}%' }
+    },
+    {
+      name: '成功率', type: 'bar', barWidth: 28,
+      data: [
+        { value: 90, itemStyle: { color: '#6366f1' } },
+        { value: 81.2, itemStyle: { color: '#6366f1' } },
+        { value: 62, itemStyle: { color: '#818cf8' } },
+        { value: 0, itemStyle: { color: '#4b5563' } },
+        { value: 0, itemStyle: { color: '#4b5563' } }
+      ],
+      label: { show: true, position: 'top', color: '#a78bfa', fontSize: 12, formatter: '{c}%' }
+    }
+  ]
+});
+
+// 2. 各批次Bug分布（堆叠柱状图）
+const chart2 = echarts.init(document.getElementById('chart_distribution'), 'dark');
+chart2.setOption({
+  backgroundColor: 'transparent',
+  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+  legend: { top: 0, textStyle: { color: '#8892a8', fontSize: 12 } },
+  grid: { left: 50, right: 20, top: 40, bottom: 40 },
+  xAxis: {
+    type: 'category',
+    data: ['00:24\n(50)', '01:55\n(16)', '20:56\n(100)', '23:40\n(50)', '10-10\n(50)'],
+    axisLine: { lineStyle: { color: '#2a2d3e' } },
+    axisLabel: { color: '#8892a8', fontSize: 11 }
+  },
+  yAxis: {
+    type: 'value', splitLine: { lineStyle: { color: '#1e2030' } },
+    axisLabel: { color: '#8892a8' }
+  },
+  series: [
+    { name: '成功', type: 'bar', stack: 'total', barWidth: 36, data: [45, 13, 62, 0, 0], itemStyle: { color: colors.green }, label: { show: true, color: '#fff', fontSize: 11, formatter: p => p.value > 0 ? p.value : '' } },
+    { name: '失败(有耗时)', type: 'bar', stack: 'total', data: [5, 3, 18, 0, 0], itemStyle: { color: colors.orange }, label: { show: true, color: '#fff', fontSize: 11, formatter: p => p.value > 0 ? p.value : '' } },
+    { name: '未完成(无耗时)', type: 'bar', stack: 'total', data: [0, 0, 20, 50, 50], itemStyle: { color: colors.red }, label: { show: true, color: '#fff', fontSize: 11, formatter: p => p.value > 0 ? p.value : '' } }
+  ]
+});
+
+// 3. 可信批次墙钟时间线
+const chart3 = echarts.init(document.getElementById('chart_timeline'), 'dark');
+chart3.setOption({
+  backgroundColor: 'transparent',
+  tooltip: {
+    trigger: 'item',
+    formatter: function(p) {
+      return '<b>' + p.data[3] + '</b><br/>耗时: ' + p.data[1].toFixed(1) + 's (' + (p.data[1]/60).toFixed(1) + 'min)';
+    }
+  },
+  grid: { left: 80, right: 40, top: 40, bottom: 60 },
+  xAxis: {
+    type: 'category',
+    data: (function() {
+      var labels = [];
+      for (var i = 0; i < 50; i++) labels.push('Bug ' + (i+1));
+      return labels;
+    })(),
+    axisLabel: { show: false },
+    axisLine: { lineStyle: { color: '#2a2d3e' } },
+    name: '← 批次1 (00:24) 50个Bug →',
+    nameLocation: 'middle', nameGap: 30, nameTextStyle: { color: '#8892a8', fontSize: 12 }
+  },
+  yAxis: {
+    type: 'value', name: '分析耗时 (秒)', nameTextStyle: { color: '#8892a8' },
+    splitLine: { lineStyle: { color: '#1e2030' } },
+    axisLabel: { color: '#8892a8' }
+  },
+  series: [
+    {
+      name: '批次1 (00:24)', type: 'bar', barWidth: 8,
+      data: [67.4,69.99,131.92,139.87,185.56,185.74,193.89,198.89,200.68,307.24,
+             322.96,331.38,333.02,338.09,437.41,441.61,441.82,448.95,456.1,461.82,
+             462.93,464.94,466.04,471.36,476.77,484.95,499.05,515.35,524.03,525,
+             541.86,550.76,565.48,587.74,588.85,590.94,592.29,596.41,597.3,603.63,
+             605.44,608.24,609.01,612.8,615.95,619.48,623.35,623.77,658.85,663.83,
+             677.22,679.17,679.79,687.1,691.61,693.34,696.41,712.58,724.76,725.55,
+             727.06,731.95,748.36,753.78,761.14,764.93,779.72,814.86,831.89,846.35,
+             847.59,859.51,883.92,892.65,897.94,901.15,924.19,946.99,958.6,963.18,
+             964.42,973.56,1016.11,1030,1034.35,1049.29,1056.36,1071.54,1078.54,1091.11,1104.84].slice(0,50).map(function(v,i){ return [i, v, 0, 'VCU-Batch1-' + (i+1)]; }),
+      itemStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#6366f1'},{offset:1,color:'#3b82f6'}]) }
+    },
+    {
+      name: '958.6s (最长)', type: 'line', markLine: {
+        silent: true,
+        data: [{ yAxis: 958.6, label: { formatter: '批次1最长 958.6s (16min)', color: '#f59e0b', fontSize: 11 }, lineStyle: { color: '#f59e0b', type: 'dashed' } }]
+      }, data: []
+    },
+    {
+      name: '892.6s', type: 'line', markLine: {
+        silent: true,
+        data: [{ yAxis: 892.6, label: { formatter: '批次2最长 892.6s (15min)', color: '#22c55e', fontSize: 11 }, lineStyle: { color: '#22c55e', type: 'dashed' } }]
+      }, data: []
+    }
+  ]
+});
+
+// 4. 单Bug耗时分布直方图
+const chart4 = echarts.init(document.getElementById('chart_duration_dist'), 'dark');
+var durations = [67.4,69.99,131.92,139.87,185.56,185.74,193.89,198.89,200.68,307.24,
+  322.96,331.38,333.02,338.09,437.41,441.61,441.82,448.95,456.1,461.82,
+  462.93,464.94,466.04,471.36,476.77,484.95,499.05,515.35,524.03,
+  541.86,550.76,565.48,587.74,588.85,590.94,592.29,596.41,597.3,603.63,
+  605.44,608.24,609.01,612.8,615.95,619.48,623.35,623.77,658.85,663.83,
+  677.22,679.17,679.79,687.1,691.61,693.34,696.41,712.58,724.76,725.55,
+  727.06,731.95,748.36,753.78,761.14,764.93,779.72,814.86,831.89,846.35,
+  847.59,859.51,883.92,892.65,897.94,901.15,924.19,946.99,958.6,963.18,
+  964.42,973.56,1016.11,1030,1034.35,1049.29,1056.36,1071.54,1078.54,1091.11,1104.84,
+  78.26,78.3,198.89,307.24,403.18,441.82,461.4,462.93,609.01,657.22,691.61,712.58,892.65];
+var bins = [0,0,0,0,0,0,0,0,0,0,0,0];
+var binLabels = ['0-60','60-120','120-180','180-300','300-420','420-540','540-660','660-780','780-900','900-1020','1020-1140','1140+'];
+durations.forEach(function(d) {
+  if (d < 60) bins[0]++;
+  else if (d < 120) bins[1]++;
+  else if (d < 180) bins[2]++;
+  else if (d < 300) bins[3]++;
+  else if (d < 420) bins[4]++;
+  else if (d < 540) bins[5]++;
+  else if (d < 660) bins[6]++;
+  else if (d < 780) bins[7]++;
+  else if (d < 900) bins[8]++;
+  else if (d < 1020) bins[9]++;
+  else if (d < 1140) bins[10]++;
+  else bins[11]++;
+});
+chart4.setOption({
+  backgroundColor: 'transparent',
+  tooltip: { trigger: 'axis' },
+  grid: { left: 50, right: 20, top: 30, bottom: 50 },
+  xAxis: {
+    type: 'category', data: binLabels, name: '耗时区间 (秒)',
+    nameLocation: 'middle', nameGap: 30, nameTextStyle: { color: '#8892a8' },
+    axisLine: { lineStyle: { color: '#2a2d3e' } },
+    axisLabel: { color: '#8892a8', fontSize: 11, rotate: 30 }
+  },
+  yAxis: {
+    type: 'value', name: 'Bug数量',
+    nameTextStyle: { color: '#8892a8' },
+    splitLine: { lineStyle: { color: '#1e2030' } },
+    axisLabel: { color: '#8892a8' }
+  },
+  series: [{
+    type: 'bar', barWidth: '60%',
+    data: bins.map(function(v, i) {
+      var c = i < 3 ? colors.green : i < 6 ? colors.blue : i < 9 ? colors.orange : colors.red;
+      return { value: v, itemStyle: { color: c, borderRadius: [4,4,0,0] } };
+    }),
+    label: { show: true, position: 'top', color: '#e2e8f0', fontSize: 12, formatter: function(p) { return p.value > 0 ? p.value : ''; } }
+  }]
+});
+
+// 响应式
+window.addEventListener('resize', function() {
+  chart1.resize(); chart2.resize(); chart3.resize(); chart4.resize();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,2564 @@
+{
+  "generated_at": "2026-10-10 11:20",
+  "doc_count": 214,
+  "total_raw": 4639,
+  "pc_doc": 149,
+  "online_doc": 65,
+  "pc": {
+    "total": 2074,
+    "success": 1262,
+    "fail": 604,
+    "unmatched": 208,
+    "fixed": 7,
+    "exec_issue": 354,
+    "analysis_issue": 458,
+    "error_cats": [
+      [
+        "触发时间不准确",
+        280,
+        "分析问题"
+      ],
+      [
+        "未匹配数据沉淀",
+        208,
+        "执行问题"
+      ],
+      [
+        "日志文件缺失",
+        101,
+        "分析问题"
+      ],
+      [
+        "分析超时",
+        92,
+        "执行问题"
+      ],
+      [
+        "服务端报错",
+        48,
+        "执行问题"
+      ],
+      [
+        "AI模型调用失败",
+        27,
+        "分析问题"
+      ],
+      [
+        "无日志附件",
+        20,
+        "分析问题"
+      ],
+      [
+        "未知原因",
+        18,
+        "分析问题"
+      ],
+      [
+        "报告生成失败",
+        11,
+        "分析问题"
+      ],
+      [
+        "网络连接异常",
+        6,
+        "执行问题"
+      ],
+      [
+        "日志格式不支持",
+        1,
+        "分析问题"
+      ]
+    ],
+    "error_details": {
+      "日志文件缺失": [
+        {
+          "jira": "VCU-222900",
+          "error": "处理后未找到有效的日志文件（可能所有文件都不在时间范围内，或文件格式不支持）",
+          "trigger_time": "2025-07-04 14:44:42",
+          "exec_time": "2026-09-01 16:15:54",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-535944",
+          "error": "处理后未找到有效的日志文件（可能所有文件都不在时间范围内，或文件格式不支持）",
+          "trigger_time": "2026-08-22 14:02:42",
+          "exec_time": "2026-09-02 17:46:33",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-404934",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2025-10-29 15:18:42",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-408123",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2025-12-25 15:05:34",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-414331",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2026-12-16 15:53:13",
+          "exec_time": "2026-12-16 15:53:13",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-244366",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2025-09-25 20:30:52",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-413834",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2025-12-19 14:38:02",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-246134",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2025-10-30 16:52:23",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-407320",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2025-12-05 13:32:00",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-407059",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2025-11-11 14:23:57",
+          "exec_time": "2026-09-04 19:52:27",
+          "is_fixed": false
+        }
+      ],
+      "服务端报错": [
+        {
+          "jira": "VCU-405751",
+          "error": "服务有报错",
+          "trigger_time": "2025-12-23 10:52:34",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-446345",
+          "error": "服务有报错",
+          "trigger_time": "2026-03-17 14:04:22",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-420802",
+          "error": "服务有报错",
+          "trigger_time": "2026-01-04 14:25:35",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-535797",
+          "error": "服务有报错",
+          "trigger_time": "2026-08-21 14:15:52",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-445088",
+          "error": "服务有报错",
+          "trigger_time": "2026-01-15 09:35:47",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-231711",
+          "error": "服务有报错",
+          "trigger_time": "2025-08-04 16:22:27",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-512202",
+          "error": "服务有报错",
+          "trigger_time": "2026-06-29 16:04:37",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-447141",
+          "error": "服务有报错",
+          "trigger_time": "2026-03-19 14:10:56",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-488318",
+          "error": "服务有报错",
+          "trigger_time": "2026-05-15 16:07:59",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-408262",
+          "error": "服务有报错",
+          "trigger_time": "2025-12-10 13:51:01",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        }
+      ],
+      "触发时间不准确": [
+        {
+          "jira": "VCU-156273",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2024-04-29 01:55:43）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "2024-04-29 01:55:43",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-167929",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2026-09-03 13:45:56）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "",
+          "exec_time": "2026-09-03 13:45:56",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-76488",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2026-09-03 13:45:56）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "",
+          "exec_time": "2026-09-03 13:45:56",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-163505",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2026-09-03 13:45:56）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "",
+          "exec_time": "2026-09-03 13:45:56",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-538689",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2025-07-10 14:36:00）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "2026-08-28 14:37:46",
+          "exec_time": "2026-09-21 09:45:55",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-145444",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2026-09-03 13:45:56）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "",
+          "exec_time": "2026-09-03 13:45:56",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-231990",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2025-08-06 14:02:13）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "2025-08-06 14:02:13",
+          "exec_time": "2026-09-04 09:46:07",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-458223",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2026-03-25 23:36:18）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "2026-03-25 23:36:18",
+          "exec_time": "2026-09-04 10:37:51",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-414351",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2026-01-28 14:12:11）是否正确",
+          "trigger_time": "2026-01-28 14:12:11",
+          "exec_time": "2026-09-04 19:52:27",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-217729",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2025-07-19 17:28:12）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "2025-07-19 17:28:12",
+          "exec_time": "2026-09-07 10:49:37",
+          "is_fixed": false
+        }
+      ],
+      "报告生成失败": [
+        {
+          "jira": "VCU-226732",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2025-08-24 15:59:05",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-235522",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2025-09-23 00:01:27",
+          "exec_time": "2026-08-28 17:52:59",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-514542",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2026-07-02 14:52:06",
+          "exec_time": "2026-08-28 17:52:59",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-421857",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2026-01-08 17:57:04",
+          "exec_time": "2026-08-28 17:52:59",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-245709",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2025-11-08 18:54:42",
+          "exec_time": "2026-08-28 17:54:56",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-447187",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2026-03-19 14:44:47",
+          "exec_time": "2026-08-28 17:57:27",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-221592",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2025-07-17 22:01:53",
+          "exec_time": "2026-08-28 17:57:27",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-405706",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应，最后错误: ReadError:",
+          "trigger_time": "2025-12-17 14:47:00",
+          "exec_time": "2026-09-10 18:18:05",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-547249",
+          "error": "分析报告生成失败: 报告生成失败: Diana 请求异常: ReadError:",
+          "trigger_time": "2026-09-15 15:35:00",
+          "exec_time": "2026-09-29 20:55:13",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-548193",
+          "error": "分析报告生成失败: 报告生成失败: Diana 请求异常: ReadError:",
+          "trigger_time": "2026-09-17 11:38:00",
+          "exec_time": "2026-09-29 20:55:13",
+          "is_fixed": false
+        }
+      ],
+      "网络连接异常": [
+        {
+          "jira": "VCU-216137",
+          "error": "Server disconnected without sending a response.",
+          "trigger_time": "2025-07-18 14:54:27",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-484855",
+          "error": "All connection attempts failed",
+          "trigger_time": "2026-05-22 18:01:07",
+          "exec_time": "2026-08-26 19:43:44",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-134993",
+          "error": "分析报告生成失败: reasoning 第 1 轮 LLM 调用失败: 无法获取 Access Token: HTTPConnectionPool(host='aidm-issue.apps-qa.s",
+          "trigger_time": "2024-01-15 15:47:50",
+          "exec_time": "2026-08-27 19:24:38",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-230308",
+          "error": "All connection attempts failed",
+          "trigger_time": "2025-08-11 17:51:05",
+          "exec_time": "2026-08-27 22:20:46",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-445949",
+          "error": "Server disconnected without sending a response.",
+          "trigger_time": "2025-03-17 16:05:00",
+          "exec_time": "2026-09-10 18:18:05",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-465561",
+          "error": "分析报告生成失败: reasoning 第 18 轮 LLM 调用失败: Diana API 调用失败 (503): upstream connect error or disconnect/rese",
+          "trigger_time": "2026-04-01 17:04:00",
+          "exec_time": "2026-09-21 20:11:12",
+          "is_fixed": false
+        }
+      ],
+      "未匹配数据沉淀": [
+        {
+          "jira": "VCU-229263",
+          "error": "",
+          "trigger_time": "",
+          "exec_time": "2025-08-27 20:49:40",
+          "is_fixed": false
+        },
+        {
+          "jira": "7",
+          "error": "",
+          "trigger_time": "",
+          "exec_time": "2026-09-03 10:19:36",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-443446",
+          "error": "",
+          "trigger_time": "2026-02-05 12:17:42",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-519515",
+          "error": "",
+          "trigger_time": "2026-07-13 17:09:13",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-242056",
+          "error": "",
+          "trigger_time": "2025-09-29 10:36:52",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-498732",
+          "error": "",
+          "trigger_time": "2026-06-08 15:26:31",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-492871",
+          "error": "",
+          "trigger_time": "2026-05-26 15:13:30",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-486685",
+          "error": "",
+          "trigger_time": "2026-05-12 17:03:31",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-506472",
+          "error": "",
+          "trigger_time": "2026-06-24 13:13:53",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-409005",
+          "error": "",
+          "trigger_time": "2025-10-16 15:46:43",
+          "exec_time": "2026-09-04 19:48:30",
+          "is_fixed": false
+        }
+      ],
+      "AI模型调用失败": [
+        {
+          "jira": "VCU-244417",
+          "error": "分析报告生成失败: reasoning 第 1 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获取",
+          "trigger_time": "",
+          "exec_time": "2025-11-06 13:25:33",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-228592",
+          "error": "分析报告生成失败: reasoning 第 1 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获取",
+          "trigger_time": "",
+          "exec_time": "2025-08-11 17:47:32",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-449239",
+          "error": "分析报告生成失败: reasoning 第 1 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获取",
+          "trigger_time": "2026-03-24 11:31:33",
+          "exec_time": "2026-09-08 17:20:24",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-434726",
+          "error": "分析报告生成失败: reasoning 第 2 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获取",
+          "trigger_time": "2026-01-29 12:48:12",
+          "exec_time": "2026-09-08 18:02:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-215292",
+          "error": "分析报告生成失败: reasoning 第 15 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获",
+          "trigger_time": "2025-07-28 17:08:04",
+          "exec_time": "2026-09-08 18:02:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-230436",
+          "error": "分析报告生成失败: reasoning 第 12 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获",
+          "trigger_time": "2025-08-12 15:38:42",
+          "exec_time": "2026-09-08 18:02:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-422901",
+          "error": "分析报告生成失败: reasoning 第 6 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获取",
+          "trigger_time": "2026-02-07 10:42:22",
+          "exec_time": "2026-09-08 18:02:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-232965",
+          "error": "分析报告生成失败: reasoning 第 2 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获取",
+          "trigger_time": "2025-09-25 09:53:30",
+          "exec_time": "2026-09-08 18:02:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-488524",
+          "error": "分析报告生成失败: reasoning 第 20 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获",
+          "trigger_time": "2026-05-15 13:59:38",
+          "exec_time": "2026-09-08 18:02:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-230674",
+          "error": "分析报告生成失败: reasoning 第 20 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获",
+          "trigger_time": "2025-07-30 13:40:42",
+          "exec_time": "2026-09-08 18:02:53",
+          "is_fixed": false
+        }
+      ],
+      "未知原因": [
+        {
+          "jira": "VCU-422218",
+          "error": "",
+          "trigger_time": "",
+          "exec_time": "2026-02-03 11:02:33",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-531596",
+          "error": "",
+          "trigger_time": "",
+          "exec_time": "2026-08-13 13:23:30",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-498272",
+          "error": "",
+          "trigger_time": "",
+          "exec_time": "2026-06-05 13:46:44",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-487101",
+          "error": "",
+          "trigger_time": "2026-05-13 15:25:38",
+          "exec_time": "2026-09-04 09:46:07",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-488007",
+          "error": "",
+          "trigger_time": "2026-05-14 09:57:38",
+          "exec_time": "2026-09-07 15:05:54",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-239322",
+          "error": "",
+          "trigger_time": "2025-10-23 16:06:45",
+          "exec_time": "2026-09-07 15:05:54",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-232147",
+          "error": "",
+          "trigger_time": "2025-08-11 13:14:23",
+          "exec_time": "2026-09-08 18:02:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-218718",
+          "error": "",
+          "trigger_time": "2025-07-22 12:12:59",
+          "exec_time": "2026-08-26 19:43:44",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-147995",
+          "error": "",
+          "trigger_time": "2024-04-12 10:28:02",
+          "exec_time": "2026-08-26 19:43:44",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-79699",
+          "error": "",
+          "trigger_time": "2023-02-24 13:31:18",
+          "exec_time": "2026-08-27 19:24:38",
+          "is_fixed": false
+        }
+      ],
+      "无日志附件": [
+        {
+          "jira": "VCU-74986",
+          "error": "Issue VCU-74986 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2022-11-11 05:37:51",
+          "exec_time": "2026-09-04 10:37:51",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-519112",
+          "error": "Issue VCU-519112 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2026-07-13 13:57:25",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-404788",
+          "error": "Issue VCU-404788 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2026-01-10 12:25:42",
+          "exec_time": "2026-09-08 16:08:01",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-213970",
+          "error": "Issue VCU-213970 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2023-12-13 18:39:17",
+          "exec_time": "2026-08-28 17:54:56",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-200233",
+          "error": "Issue VCU-200233 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2025-04-01 20:10:13",
+          "exec_time": "2026-08-28 17:57:27",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-449416",
+          "error": "Issue VCU-449416 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2026-01-14 16:48:17",
+          "exec_time": "2026-08-31 14:30:12",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541504",
+          "error": "Issue VCU-541504 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2026-09-03 19:15:32",
+          "exec_time": "2026-09-10 11:23:42",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-543175",
+          "error": "Issue VCU-543175 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2026-09-07 17:27:34",
+          "exec_time": "2026-09-10 11:23:42",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-477823",
+          "error": "Issue VCU-477823 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2025-04-21 13:10:00",
+          "exec_time": "2026-09-10 18:18:05",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-537012",
+          "error": "Issue VCU-537012 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2026-08-25 19:06:09",
+          "exec_time": "2026-09-14 14:58:53",
+          "is_fixed": false
+        }
+      ],
+      "分析超时": [
+        {
+          "jira": "VCU-415681",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2026-01-29 16:25:07",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-233986",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2025-10-10 03:41:46",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-477299",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2026-04-17 16:12:05",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-226054",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2025-10-10 13:51:21",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-478336",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2026-04-21 09:45:50",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-447588",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2025-10-27 15:56:44",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-506502",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2026-06-24 10:23:02",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-230130",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2025-08-21 16:43:46",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-504333",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2026-06-17 17:04:43",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-218935",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2025-07-23 05:40:57",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        }
+      ],
+      "日志格式不支持": [
+        {
+          "jira": "VCU-549389",
+          "error": "解压后未找到可识别的日志文件，文件格式可能不支持",
+          "trigger_time": "2026-09-19 21:24:00",
+          "exec_time": "2026-09-28 20:38:57",
+          "is_fixed": false
+        }
+      ]
+    },
+    "daily": {
+      "2026-09-01": {
+        "total": 50,
+        "success": 16,
+        "fail": 34
+      },
+      "2026-09-02": {
+        "total": 51,
+        "success": 33,
+        "fail": 18
+      },
+      "2026-09-03": {
+        "total": 5,
+        "success": 0,
+        "fail": 5
+      },
+      "2026-09-04": {
+        "total": 128,
+        "success": 36,
+        "fail": 92
+      },
+      "2026-09-07": {
+        "total": 77,
+        "success": 50,
+        "fail": 27
+      },
+      "2026-09-08": {
+        "total": 94,
+        "success": 64,
+        "fail": 30
+      },
+      "2026-09-09": {
+        "total": 26,
+        "success": 7,
+        "fail": 19
+      },
+      "2026-09-10": {
+        "total": 120,
+        "success": 38,
+        "fail": 82
+      },
+      "2026-09-14": {
+        "total": 95,
+        "success": 19,
+        "fail": 76
+      },
+      "2026-09-15": {
+        "total": 25,
+        "success": 18,
+        "fail": 7
+      },
+      "2026-09-16": {
+        "total": 19,
+        "success": 11,
+        "fail": 8
+      },
+      "2026-09-17": {
+        "total": 20,
+        "success": 1,
+        "fail": 19
+      },
+      "2026-09-18": {
+        "total": 44,
+        "success": 44,
+        "fail": 0
+      },
+      "2026-09-19": {
+        "total": 19,
+        "success": 19,
+        "fail": 0
+      },
+      "2026-09-20": {
+        "total": 58,
+        "success": 57,
+        "fail": 1
+      },
+      "2026-09-21": {
+        "total": 105,
+        "success": 75,
+        "fail": 30
+      },
+      "2026-09-22": {
+        "total": 100,
+        "success": 64,
+        "fail": 36
+      },
+      "2026-09-23": {
+        "total": 2,
+        "success": 1,
+        "fail": 1
+      },
+      "2026-09-24": {
+        "total": 101,
+        "success": 15,
+        "fail": 86
+      },
+      "2026-09-26": {
+        "total": 100,
+        "success": 81,
+        "fail": 19
+      },
+      "2026-09-28": {
+        "total": 100,
+        "success": 83,
+        "fail": 17
+      },
+      "2026-09-29": {
+        "total": 300,
+        "success": 254,
+        "fail": 46
+      },
+      "2026-09-30": {
+        "total": 20,
+        "success": 16,
+        "fail": 4
+      }
+    }
+  },
+  "online": {
+    "total": 869,
+    "success": 407,
+    "fail": 315,
+    "unmatched": 147,
+    "fixed": 5,
+    "exec_issue": 268,
+    "analysis_issue": 194,
+    "error_cats": [
+      [
+        "未匹配数据沉淀",
+        147,
+        "执行问题"
+      ],
+      [
+        "磁盘空间不足",
+        119,
+        "执行问题"
+      ],
+      [
+        "触发时间不准确",
+        103,
+        "分析问题"
+      ],
+      [
+        "日志文件缺失",
+        77,
+        "分析问题"
+      ],
+      [
+        "无日志附件",
+        12,
+        "分析问题"
+      ],
+      [
+        "分析超时",
+        1,
+        "执行问题"
+      ],
+      [
+        "未知原因",
+        1,
+        "分析问题"
+      ],
+      [
+        "日志格式不支持",
+        1,
+        "分析问题"
+      ],
+      [
+        "服务进程异常",
+        1,
+        "执行问题"
+      ]
+    ],
+    "error_details": {
+      "未匹配数据沉淀": [
+        {
+          "jira": "VCU-541535",
+          "error": "",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-542212",
+          "error": "",
+          "trigger_time": "2026-09-04 18:50:44",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-542377",
+          "error": "",
+          "trigger_time": "2026-09-07 11:10:17",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-542381",
+          "error": "",
+          "trigger_time": "2026-09-07 11:21:19",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-542054",
+          "error": "",
+          "trigger_time": "1970-01-01 00:05:21",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-542383",
+          "error": "",
+          "trigger_time": "2026-09-07 11:28:11",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-536859",
+          "error": "",
+          "trigger_time": "2026-08-25 12:46:19",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-536821",
+          "error": "",
+          "trigger_time": "2026-09-01 10:52:40",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-537324",
+          "error": "",
+          "trigger_time": "2026-09-04 15:38:06",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-537477",
+          "error": "",
+          "trigger_time": "2026-08-26 14:53:16",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        }
+      ],
+      "触发时间不准确": [
+        {
+          "jira": "VCU-541534",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2026-07-13 18:19:21）是否正确",
+          "trigger_time": "2026-07-13 18:19:21",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541532",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2026-09-09 19:19:37）是否正确",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541544",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2026-09-09 19:19:37）是否正确",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541537",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2026-09-09 19:19:37）是否正确",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541536",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2026-09-09 19:19:37）是否正确",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541574",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2026-09-09 19:19:37）是否正确",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541566",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2026-09-09 19:19:37）是否正确",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541573",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2026-09-09 19:19:37）是否正确",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541576",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2026-09-09 19:19:37）是否正确",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541581",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2026-09-09 19:19:37）是否正确",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        }
+      ],
+      "无日志附件": [
+        {
+          "jira": "VCU-541540",
+          "error": "Issue VCU-541540 没有可下载的日志附件",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541578",
+          "error": "Issue VCU-541578 没有可下载的日志附件",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541589",
+          "error": "Issue VCU-541589 没有可下载的日志附件",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-544011",
+          "error": "Issue VCU-544011 没有可下载的日志附件",
+          "trigger_time": "2026-09-08 16:23:24",
+          "exec_time": "2026-09-11 16:15:55",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-221488",
+          "error": "Issue VCU-221488 没有可下载的日志附件",
+          "trigger_time": "2025-07-16 01:14:33",
+          "exec_time": "2026-09-23 23:31:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-222953",
+          "error": "Issue VCU-222953 没有可下载的日志附件",
+          "trigger_time": "2025-07-04 15:16:00",
+          "exec_time": "2026-09-24 03:50:41",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-409393",
+          "error": "Issue VCU-409393 没有可下载的日志附件",
+          "trigger_time": "2025-11-17 14:56:00",
+          "exec_time": "2026-09-24 03:50:41",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-236001",
+          "error": "Issue VCU-236001 没有可下载的日志附件",
+          "trigger_time": "2025-09-15 11:25:00",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-239062",
+          "error": "Issue VCU-239062 没有可下载的日志附件",
+          "trigger_time": "2025-11-25 10:20:18",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-226960",
+          "error": "Issue VCU-226960 没有可下载的日志附件",
+          "trigger_time": "2025-08-21 16:11:00",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        }
+      ],
+      "日志文件缺失": [
+        {
+          "jira": "VCU-541359",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2026-09-03 15:45:00",
+          "exec_time": "2026-09-10 18:02:08",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541927",
+          "error": "处理后未找到有效的日志文件（可能所有文件都不在时间范围内，或文件格式不支持）",
+          "trigger_time": "2026-09-04 14:32:00",
+          "exec_time": "2026-09-10 18:02:08",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-536887",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2026-08-25 15:08:00",
+          "exec_time": "2026-09-17 13:43:14",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-540797",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2026-09-02 14:33:00",
+          "exec_time": "2026-09-17 14:56:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-548460",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2026-09-17 13:25:00",
+          "exec_time": "2026-09-22 17:49:57",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-547890",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2026-09-16 16:02:53",
+          "exec_time": "2026-09-22 17:49:57",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-425421",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2026-03-05 15:53:00",
+          "exec_time": "2026-09-22 22:26:29",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-529944",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2026-08-07 13:41:00",
+          "exec_time": "2026-09-22 22:26:29",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-444817",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2026-03-13 15:29:00",
+          "exec_time": "2026-09-22 22:26:29",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-470045",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2026-05-18 18:06:00",
+          "exec_time": "2026-09-22 22:26:29",
+          "is_fixed": false
+        }
+      ],
+      "分析超时": [
+        {
+          "jira": "VCU-486577",
+          "error": "JIRA 网关分析任务执行超时或被取消",
+          "trigger_time": "2026-05-13 10:50:00",
+          "exec_time": "2026-09-22 22:26:29",
+          "is_fixed": false
+        }
+      ],
+      "磁盘空间不足": [
+        {
+          "jira": "VCU-217152",
+          "error": "[Errno 28] No space left on device: 'unzipped/jira/VCU-217152'",
+          "trigger_time": "2025-07-26 13:10:20",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-224480",
+          "error": "[Errno 28] No space left on device: 'unzipped/jira/VCU-224480/processing_manifest_af8997b1b6db49b598",
+          "trigger_time": "2025-07-12 09:32:00",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-229500",
+          "error": "[Errno 28] No space left on device: 'unzipped/jira/VCU-229500'",
+          "trigger_time": "2025-09-10 15:58:00",
+          "exec_time": "2026-09-24 03:50:41",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-213341",
+          "error": "[Errno 28] No space left on device: 'unzipped/jira/VCU-213341/processing_manifest_58b895914c25408ca6",
+          "trigger_time": "2025-06-30 16:10:00",
+          "exec_time": "2026-09-24 03:50:41",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-216136",
+          "error": "[Errno 28] No space left on device",
+          "trigger_time": "2025-07-19 09:22:00",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-207704",
+          "error": "[Errno 28] No space left on device: 'unzipped/jira/VCU-207704/processing_manifest_3ccbadc2630846c08a",
+          "trigger_time": "2025-06-04 16:07:00",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-210947",
+          "error": "[Errno 28] No space left on device: 'unzipped/jira/VCU-210947/processing_manifest_e7f98aa23e1449c2a2",
+          "trigger_time": "2025-06-13 15:29:00",
+          "exec_time": "2026-09-24 03:50:41",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-224679",
+          "error": "[Errno 28] No space left on device: 'unzipped/jira/VCU-224679'",
+          "trigger_time": "2025-07-12 14:58:23",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-218982",
+          "error": "[Errno 28] No space left on device: 'unzipped/jira/VCU-218982'",
+          "trigger_time": "2025-07-22 19:31:00",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-207194",
+          "error": "[Errno 28] No space left on device: 'unzipped/jira/VCU-207194'",
+          "trigger_time": "2025-06-28 12:44:00",
+          "exec_time": "2026-09-24 03:50:41",
+          "is_fixed": false
+        }
+      ],
+      "未知原因": [
+        {
+          "jira": "VCU-241008",
+          "error": "",
+          "trigger_time": "2025-10-15 14:16:00",
+          "exec_time": "2026-09-23 23:31:16",
+          "is_fixed": false
+        }
+      ],
+      "日志格式不支持": [
+        {
+          "jira": "VCU-552479",
+          "error": "解压后未找到可识别的日志文件，文件格式可能不支持",
+          "trigger_time": "2026-09-24 16:29:15",
+          "exec_time": "2026-09-30 19:37:46",
+          "is_fixed": false
+        }
+      ],
+      "服务进程异常": [
+        {
+          "jira": "VCU-548902",
+          "error": "未预期的错误: ProcessLookupError",
+          "trigger_time": "2026-09-18 10:22:00",
+          "exec_time": "2026-09-30 19:37:46",
+          "is_fixed": false
+        }
+      ]
+    },
+    "daily": {
+      "2026-09-09": {
+        "total": 94,
+        "success": 15,
+        "fail": 79
+      },
+      "2026-09-10": {
+        "total": 47,
+        "success": 2,
+        "fail": 45
+      },
+      "2026-09-11": {
+        "total": 25,
+        "success": 20,
+        "fail": 5
+      },
+      "2026-09-14": {
+        "total": 4,
+        "success": 4,
+        "fail": 0
+      },
+      "2026-09-15": {
+        "total": 21,
+        "success": 21,
+        "fail": 0
+      },
+      "2026-09-16": {
+        "total": 14,
+        "success": 13,
+        "fail": 1
+      },
+      "2026-09-17": {
+        "total": 9,
+        "success": 2,
+        "fail": 7
+      },
+      "2026-09-20": {
+        "total": 20,
+        "success": 1,
+        "fail": 19
+      },
+      "2026-09-21": {
+        "total": 30,
+        "success": 30,
+        "fail": 0
+      },
+      "2026-09-22": {
+        "total": 163,
+        "success": 125,
+        "fail": 38
+      },
+      "2026-09-23": {
+        "total": 148,
+        "success": 85,
+        "fail": 63
+      },
+      "2026-09-24": {
+        "total": 194,
+        "success": 32,
+        "fail": 162
+      },
+      "2026-09-30": {
+        "total": 100,
+        "success": 57,
+        "fail": 43
+      }
+    }
+  },
+  "all": {
+    "total": 2735,
+    "success": 1512,
+    "fail": 868,
+    "unmatched": 355,
+    "fixed": 16,
+    "exec_issue": 622,
+    "analysis_issue": 601,
+    "error_cats": [
+      [
+        "触发时间不准确",
+        361,
+        "分析问题"
+      ],
+      [
+        "未匹配数据沉淀",
+        355,
+        "执行问题"
+      ],
+      [
+        "日志文件缺失",
+        149,
+        "分析问题"
+      ],
+      [
+        "磁盘空间不足",
+        119,
+        "执行问题"
+      ],
+      [
+        "分析超时",
+        93,
+        "执行问题"
+      ],
+      [
+        "服务端报错",
+        48,
+        "执行问题"
+      ],
+      [
+        "无日志附件",
+        32,
+        "分析问题"
+      ],
+      [
+        "AI模型调用失败",
+        27,
+        "分析问题"
+      ],
+      [
+        "未知原因",
+        19,
+        "分析问题"
+      ],
+      [
+        "报告生成失败",
+        11,
+        "分析问题"
+      ],
+      [
+        "网络连接异常",
+        6,
+        "执行问题"
+      ],
+      [
+        "日志格式不支持",
+        2,
+        "分析问题"
+      ],
+      [
+        "服务进程异常",
+        1,
+        "执行问题"
+      ]
+    ],
+    "error_details": {
+      "分析超时": [
+        {
+          "jira": "VCU-544723",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2026-09-10 09:22:59",
+          "exec_time": "2026-09-14 17:53:59",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-537936",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2026-08-27 15:41:16",
+          "exec_time": "2026-09-14 17:53:59",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-515915",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2025-07-06 13:19:00",
+          "exec_time": "2026-09-10 18:18:05",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-233986",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2025-10-10 03:41:46",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-515866",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2026-07-02 15:52:00",
+          "exec_time": "2026-09-10 18:18:05",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-540885",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2026-09-02 17:19:03",
+          "exec_time": "2026-09-14 17:53:59",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-495100",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2025-06-01 15:16:00",
+          "exec_time": "2026-09-10 18:18:05",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-233369",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2025-09-23 11:33:25",
+          "exec_time": "2026-09-08 18:02:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-502335",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2026-06-15 13:04:00",
+          "exec_time": "2026-09-10 18:18:05",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-544165",
+          "error": "JIRA 分析任务执行超时或被取消",
+          "trigger_time": "2026-09-09 13:48:33",
+          "exec_time": "2026-09-14 17:53:59",
+          "is_fixed": false
+        }
+      ],
+      "触发时间不准确": [
+        {
+          "jira": "VCU-490376",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2026-05-21 10:21:51）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "2026-05-21 10:21:51",
+          "exec_time": "2026-09-24 18:20:21",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-466313",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2026-01-12 09:17:06）是否正确",
+          "trigger_time": "2026-01-12 09:17:06",
+          "exec_time": "2026-09-23 21:21:11",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-546255",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2026-09-14 10:29:02）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "2026-09-14 10:29:02",
+          "exec_time": "2026-09-16 12:21:58",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-194145",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2025-03-06 02:36:34）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "2025-03-06 02:36:34",
+          "exec_time": "2026-08-26 19:43:44",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-539768",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2026-09-01 14:11:30）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "2026-09-01 14:11:30",
+          "exec_time": "2026-09-14 14:58:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-540485",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2026-09-02 11:30:45）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "2026-09-02 11:30:45",
+          "exec_time": "2026-09-14 14:58:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-537658",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2026-08-26 10:27:25）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "2026-08-26 10:27:25",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-230330",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2025-08-14 18:45:00）是否正确",
+          "trigger_time": "2025-08-14 18:45:00",
+          "exec_time": "2026-09-24 01:41:24",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-482191",
+          "error": "时间过滤后日志为空（0行），无法进行分析。请检查问题时间（2026-04-27 16:02:49）是否正确，以及时间窗口（前5分钟~后5分钟）是否覆盖了问题发生时间。",
+          "trigger_time": "2026-04-27 16:02:49",
+          "exec_time": "2026-09-22 22:43:17",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-240956",
+          "error": "时间过滤后日志为空（0行），请检查问题时间（2025-10-11 17:52:00）是否正确",
+          "trigger_time": "2025-10-11 17:52:00",
+          "exec_time": "2026-09-24 01:41:24",
+          "is_fixed": false
+        }
+      ],
+      "报告生成失败": [
+        {
+          "jira": "VCU-548981",
+          "error": "分析报告生成失败: 报告生成失败: Diana 请求异常: ReadError:",
+          "trigger_time": "2026-09-18 20:18:00",
+          "exec_time": "2026-09-29 22:35:54",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-245709",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2025-11-08 18:54:42",
+          "exec_time": "2026-08-28 17:54:56",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-548193",
+          "error": "分析报告生成失败: 报告生成失败: Diana 请求异常: ReadError:",
+          "trigger_time": "2026-09-17 11:38:00",
+          "exec_time": "2026-09-29 20:55:13",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-221592",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2025-07-17 22:01:53",
+          "exec_time": "2026-08-28 17:57:27",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-514542",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2026-07-02 14:52:06",
+          "exec_time": "2026-08-28 17:52:59",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-235522",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2025-09-23 00:01:27",
+          "exec_time": "2026-08-28 17:52:59",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-547249",
+          "error": "分析报告生成失败: 报告生成失败: Diana 请求异常: ReadError:",
+          "trigger_time": "2026-09-15 15:35:00",
+          "exec_time": "2026-09-29 20:55:13",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-405706",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应，最后错误: ReadError:",
+          "trigger_time": "2025-12-17 14:47:00",
+          "exec_time": "2026-09-10 18:18:05",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-421857",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2026-01-08 17:57:04",
+          "exec_time": "2026-08-28 17:52:59",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-226732",
+          "error": "分析报告生成失败: 报告生成失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2025-08-24 15:59:05",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        }
+      ],
+      "未匹配数据沉淀": [
+        {
+          "jira": "VCU-236053",
+          "error": "",
+          "trigger_time": "2025-09-22 03:38:46",
+          "exec_time": "2026-09-04 19:52:27",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-416128",
+          "error": "",
+          "trigger_time": "2026-01-26 14:49:25",
+          "exec_time": "2026-09-04 19:52:27",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-541461",
+          "error": "",
+          "trigger_time": "2026-09-03 15:14:08",
+          "exec_time": "2026-09-10 18:02:08",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-519032",
+          "error": "",
+          "trigger_time": "2026-07-13 15:40:34",
+          "exec_time": "2026-09-04 19:52:27",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-538497",
+          "error": "",
+          "trigger_time": "2026-08-28 13:59:10",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-500630",
+          "error": "",
+          "trigger_time": "2026-06-11 10:50:42",
+          "exec_time": "2026-08-27 19:16:22",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-240343",
+          "error": "",
+          "trigger_time": "2025-10-27 18:30:20",
+          "exec_time": "2026-08-31 17:51:25",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-192736",
+          "error": "",
+          "trigger_time": "2025-03-27 20:11:33",
+          "exec_time": "2026-08-27 19:16:22",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-414550",
+          "error": "",
+          "trigger_time": "2026-12-30 13:12:58",
+          "exec_time": "2026-12-30 13:12:58",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-232442",
+          "error": "",
+          "trigger_time": "2025-07-31 19:58:06",
+          "exec_time": "2026-08-27 22:20:46",
+          "is_fixed": false
+        }
+      ],
+      "日志文件缺失": [
+        {
+          "jira": "VCU-244510",
+          "error": "处理后未找到有效的日志文件（可能所有文件都不在时间范围内，或文件格式不支持）",
+          "trigger_time": "2025-11-05 15:40:04",
+          "exec_time": "2026-09-24 18:20:21",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-404934",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2025-10-29 15:18:56",
+          "exec_time": "2026-09-22 17:49:57",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-234750",
+          "error": "处理后未找到有效的日志文件（可能所有文件都不在时间范围内，或文件格式不支持）",
+          "trigger_time": "2025-09-12 17:27:00",
+          "exec_time": "2026-09-22 22:43:17",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-407320",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2025-12-05 13:32:00",
+          "exec_time": "2026-09-22 17:49:57",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-520600",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2026-07-14 15:04:12",
+          "exec_time": "2026-09-22 16:53:38",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-245656",
+          "error": "处理后未找到有效的日志文件",
+          "trigger_time": "2025-11-07 15:34:00",
+          "exec_time": "2026-09-22 22:26:29",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-448759",
+          "error": "处理后未找到有效的日志文件（可能所有文件都不在时间范围内，或文件格式不支持）",
+          "trigger_time": "2026-03-24 13:06:05",
+          "exec_time": "2026-09-24 18:20:21",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-480418",
+          "error": "处理后未找到有效的日志文件（可能所有文件都不在时间范围内，或文件格式不支持）",
+          "trigger_time": "2026-04-24 15:08:59",
+          "exec_time": "2026-09-24 18:20:21",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-422319",
+          "error": "处理后未找到有效的日志文件（可能所有文件都不在时间范围内，或文件格式不支持）",
+          "trigger_time": "2026-02-06 16:26:52",
+          "exec_time": "2026-09-24 18:20:21",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-503086",
+          "error": "处理后未找到有效的日志文件（可能所有文件都不在时间范围内，或文件格式不支持）",
+          "trigger_time": "2026-06-16 14:17:38",
+          "exec_time": "2026-09-22 22:43:17",
+          "is_fixed": false
+        }
+      ],
+      "磁盘空间不足": [
+        {
+          "jira": "VCU-213341",
+          "error": "[Errno 28] No space left on device: 'unzipped/jira/VCU-213341/processing_manifest_58b895914c25408ca6",
+          "trigger_time": "2025-06-30 16:10:00",
+          "exec_time": "2026-09-24 03:50:41",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-241568",
+          "error": "[Errno 28] No space left on device: 'uploads/jira/VCU-241568'",
+          "trigger_time": "2025-10-15 20:51:00",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-227783",
+          "error": "[Errno 28] No space left on device: 'uploads/jira/VCU-227783'",
+          "trigger_time": "2025-08-16 16:47:13",
+          "exec_time": "2026-09-24 01:41:24",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-229041",
+          "error": "[Errno 28] No space left on device: 'uploads/jira/VCU-229041'",
+          "trigger_time": "2025-08-25 09:43:00",
+          "exec_time": "2026-09-24 03:50:41",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-229123",
+          "error": "[Errno 28] No space left on device: 'uploads/jira/VCU-229123'",
+          "trigger_time": "2025-08-26 15:26:15",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-235711",
+          "error": "[Errno 28] No space left on device: 'uploads/jira/VCU-235711'",
+          "trigger_time": "2025-09-25 15:58:00",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-217657",
+          "error": "[Errno 28] No space left on device: 'uploads/jira/VCU-217657'",
+          "trigger_time": "2025-07-27 16:13:26",
+          "exec_time": "2026-09-24 03:50:41",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-221268",
+          "error": "[Errno 28] No space left on device: 'unzipped/jira/VCU-221268'",
+          "trigger_time": "2025-07-14 22:42:00",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-229045",
+          "error": "[Errno 28] No space left on device: 'uploads/jira/VCU-229045'",
+          "trigger_time": "2025-08-19 14:38:00",
+          "exec_time": "2026-09-24 03:50:41",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-435433",
+          "error": "[Errno 28] No space left on device: 'uploads/jira/VCU-435433'",
+          "trigger_time": "2025-10-23 15:50:11",
+          "exec_time": "2026-09-24 03:50:41",
+          "is_fixed": false
+        }
+      ],
+      "AI模型调用失败": [
+        {
+          "jira": "VCU-488524",
+          "error": "分析报告生成失败: reasoning 第 20 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获",
+          "trigger_time": "2026-05-15 13:59:38",
+          "exec_time": "2026-09-08 18:02:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-228592",
+          "error": "分析报告生成失败: reasoning 第 1 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获取",
+          "trigger_time": "",
+          "exec_time": "2025-08-11 17:47:32",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-218646",
+          "error": "adjudication 失败: 经过 2 次尝试后仍未获取有效响应，最后错误: 流式响应读取超过 300s",
+          "trigger_time": "2025-07-22 11:50:00",
+          "exec_time": "2026-09-10 18:18:05",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-512090",
+          "error": "分析报告生成失败: reasoning 第 1 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获取",
+          "trigger_time": "2026-06-30 09:27:54",
+          "exec_time": "2026-09-09 14:43:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-230436",
+          "error": "分析报告生成失败: reasoning 第 12 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获",
+          "trigger_time": "2025-08-12 15:38:42",
+          "exec_time": "2026-09-08 18:02:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-488012",
+          "error": "reasoning 第 1 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2026-05-14 13:30:00",
+          "exec_time": "2026-09-09 14:43:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-422901",
+          "error": "分析报告生成失败: reasoning 第 6 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获取",
+          "trigger_time": "2026-02-07 10:42:22",
+          "exec_time": "2026-09-08 18:02:53",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-407094",
+          "error": "reasoning 第 2 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2025-11-18 10:16:00",
+          "exec_time": "2026-09-09 14:43:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-434837",
+          "error": "reasoning 第 3 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应",
+          "trigger_time": "2025-09-15 19:45:55",
+          "exec_time": "2026-09-09 14:43:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-244417",
+          "error": "分析报告生成失败: reasoning 第 1 轮 LLM 调用失败: ainvoke_tools: 经过 2 次尝试后仍未获取有效响应; adjudication 失败: 经过 2 次尝试后仍未获取",
+          "trigger_time": "",
+          "exec_time": "2025-11-06 13:25:33",
+          "is_fixed": false
+        }
+      ],
+      "无日志附件": [
+        {
+          "jira": "VCU-541540",
+          "error": "Issue VCU-541540 没有可下载的日志附件",
+          "trigger_time": "2026-09-09 19:19:37",
+          "exec_time": "2026-09-09 19:19:15",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-213970",
+          "error": "Issue VCU-213970 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2023-12-13 18:39:17",
+          "exec_time": "2026-08-28 17:54:56",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-74986",
+          "error": "Issue VCU-74986 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2022-11-11 05:37:51",
+          "exec_time": "2026-09-04 10:37:51",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-519112",
+          "error": "Issue VCU-519112 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2026-07-13 13:57:25",
+          "exec_time": "2026-09-07 18:11:16",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-200233",
+          "error": "Issue VCU-200233 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2025-04-01 20:10:13",
+          "exec_time": "2026-08-28 17:57:27",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-222953",
+          "error": "Issue VCU-222953 没有可下载的日志附件",
+          "trigger_time": "2025-07-04 15:16:00",
+          "exec_time": "2026-09-24 03:50:41",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-543410",
+          "error": "Issue VCU-543410 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "",
+          "exec_time": "2026-09-20 11:27:37",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-547223",
+          "error": "Issue VCU-547223 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2025-09-14 16:56:00",
+          "exec_time": "2026-09-26 21:09:34",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-216578",
+          "error": "Issue VCU-216578 没有可下载的日志附件",
+          "trigger_time": "2025-07-18 18:59:03",
+          "exec_time": "2026-09-24 05:57:39",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-543175",
+          "error": "Issue VCU-543175 没有可下载的日志附件。请确认日志文件已作为附件上传到 JIRA（视频/图片等非日志文件已自动跳过）。",
+          "trigger_time": "2026-09-07 17:27:34",
+          "exec_time": "2026-09-10 11:23:42",
+          "is_fixed": false
+        }
+      ],
+      "服务端报错": [
+        {
+          "jira": "VCU-536278",
+          "error": "服务有报错",
+          "trigger_time": "2026-08-24 13:38:05",
+          "exec_time": "2026-09-02 17:46:33",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-470109",
+          "error": "服务有报错",
+          "trigger_time": "2026-04-13 15:58:16",
+          "exec_time": "2026-09-02 17:46:33",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-495121",
+          "error": "服务有报错",
+          "trigger_time": "2026-06-01 15:24:07",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-491853",
+          "error": "服务有报错",
+          "trigger_time": "2026-05-22 10:31:44",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-488318",
+          "error": "服务有报错",
+          "trigger_time": "2026-05-15 16:07:59",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-241868",
+          "error": "服务有报错",
+          "trigger_time": "2025-10-03 08:42:54",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-238886",
+          "error": "服务有报错",
+          "trigger_time": "2025-10-27 14:04:58",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-417855",
+          "error": "服务有报错",
+          "trigger_time": "2026-01-17 18:20:25",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-420802",
+          "error": "服务有报错",
+          "trigger_time": "2026-01-04 14:25:35",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-232022",
+          "error": "服务有报错",
+          "trigger_time": "2025-08-02 10:14:04",
+          "exec_time": "2026-09-02 17:46:33",
+          "is_fixed": false
+        }
+      ],
+      "未知原因": [
+        {
+          "jira": "VCU-506104",
+          "error": "",
+          "trigger_time": "2026-06-23 16:56:11",
+          "exec_time": "2026-08-27 19:24:38",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-216037",
+          "error": "",
+          "trigger_time": "2025-07-24 15:13:05",
+          "exec_time": "2026-08-27 22:20:46",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-218718",
+          "error": "",
+          "trigger_time": "2025-07-22 12:12:59",
+          "exec_time": "2026-08-26 19:43:44",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-422218",
+          "error": "",
+          "trigger_time": "",
+          "exec_time": "2026-02-03 11:02:33",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-504895",
+          "error": "",
+          "trigger_time": "2026-06-18 09:48:00",
+          "exec_time": "2026-09-10 18:18:05",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-239322",
+          "error": "",
+          "trigger_time": "2025-10-23 16:06:45",
+          "exec_time": "2026-09-07 15:05:54",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-417228",
+          "error": "",
+          "trigger_time": "2026-01-07 19:44:12",
+          "exec_time": "2026-08-28 11:21:51",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-487101",
+          "error": "",
+          "trigger_time": "2026-05-13 15:25:38",
+          "exec_time": "2026-09-04 09:46:07",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-488007",
+          "error": "",
+          "trigger_time": "2026-05-14 09:57:38",
+          "exec_time": "2026-09-07 15:05:54",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-531596",
+          "error": "",
+          "trigger_time": "",
+          "exec_time": "2026-08-13 13:23:30",
+          "is_fixed": false
+        }
+      ],
+      "网络连接异常": [
+        {
+          "jira": "VCU-134993",
+          "error": "分析报告生成失败: reasoning 第 1 轮 LLM 调用失败: 无法获取 Access Token: HTTPConnectionPool(host='aidm-issue.apps-qa.s",
+          "trigger_time": "2024-01-15 15:47:50",
+          "exec_time": "2026-08-27 19:24:38",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-216137",
+          "error": "Server disconnected without sending a response.",
+          "trigger_time": "2025-07-18 14:54:27",
+          "exec_time": "2026-09-01 00:00:00",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-484855",
+          "error": "All connection attempts failed",
+          "trigger_time": "2026-05-22 18:01:07",
+          "exec_time": "2026-08-26 19:43:44",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-465561",
+          "error": "分析报告生成失败: reasoning 第 18 轮 LLM 调用失败: Diana API 调用失败 (503): upstream connect error or disconnect/rese",
+          "trigger_time": "2026-04-01 17:04:00",
+          "exec_time": "2026-09-21 20:11:12",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-445949",
+          "error": "Server disconnected without sending a response.",
+          "trigger_time": "2025-03-17 16:05:00",
+          "exec_time": "2026-09-10 18:18:05",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-230308",
+          "error": "All connection attempts failed",
+          "trigger_time": "2025-08-11 17:51:05",
+          "exec_time": "2026-08-27 22:20:46",
+          "is_fixed": false
+        }
+      ],
+      "日志格式不支持": [
+        {
+          "jira": "VCU-552479",
+          "error": "解压后未找到可识别的日志文件，文件格式可能不支持",
+          "trigger_time": "2026-09-24 16:29:15",
+          "exec_time": "2026-09-30 19:37:46",
+          "is_fixed": false
+        },
+        {
+          "jira": "VCU-549389",
+          "error": "解压后未找到可识别的日志文件，文件格式可能不支持",
+          "trigger_time": "2026-09-19 21:24:00",
+          "exec_time": "2026-09-28 20:38:57",
+          "is_fixed": false
+        }
+      ],
+      "服务进程异常": [
+        {
+          "jira": "VCU-548902",
+          "error": "未预期的错误: ProcessLookupError",
+          "trigger_time": "2026-09-18 10:22:00",
+          "exec_time": "2026-09-30 19:37:46",
+          "is_fixed": false
+        }
+      ]
+    },
+    "daily": {
+      "2026-09-01": {
+        "total": 48,
+        "success": 14,
+        "fail": 34
+      },
+      "2026-09-02": {
+        "total": 51,
+        "success": 33,
+        "fail": 18
+      },
+      "2026-09-03": {
+        "total": 5,
+        "success": 0,
+        "fail": 5
+      },
+      "2026-09-04": {
+        "total": 108,
+        "success": 26,
+        "fail": 82
+      },
+      "2026-09-07": {
+        "total": 64,
+        "success": 37,
+        "fail": 27
+      },
+      "2026-09-08": {
+        "total": 86,
+        "success": 57,
+        "fail": 29
+      },
+      "2026-09-09": {
+        "total": 111,
+        "success": 15,
+        "fail": 96
+      },
+      "2026-09-10": {
+        "total": 146,
+        "success": 31,
+        "fail": 115
+      },
+      "2026-09-11": {
+        "total": 20,
+        "success": 17,
+        "fail": 3
+      },
+      "2026-09-14": {
+        "total": 79,
+        "success": 5,
+        "fail": 74
+      },
+      "2026-09-15": {
+        "total": 27,
+        "success": 21,
+        "fail": 6
+      },
+      "2026-09-16": {
+        "total": 20,
+        "success": 15,
+        "fail": 5
+      },
+      "2026-09-17": {
+        "total": 27,
+        "success": 1,
+        "fail": 26
+      },
+      "2026-09-18": {
+        "total": 38,
+        "success": 38,
+        "fail": 0
+      },
+      "2026-09-19": {
+        "total": 19,
+        "success": 19,
+        "fail": 0
+      },
+      "2026-09-20": {
+        "total": 44,
+        "success": 24,
+        "fail": 20
+      },
+      "2026-09-21": {
+        "total": 110,
+        "success": 92,
+        "fail": 18
+      },
+      "2026-09-22": {
+        "total": 255,
+        "success": 185,
+        "fail": 70
+      },
+      "2026-09-23": {
+        "total": 150,
+        "success": 86,
+        "fail": 64
+      },
+      "2026-09-24": {
+        "total": 294,
+        "success": 46,
+        "fail": 248
+      },
+      "2026-09-26": {
+        "total": 100,
+        "success": 81,
+        "fail": 19
+      },
+      "2026-09-28": {
+        "total": 100,
+        "success": 83,
+        "fail": 17
+      },
+      "2026-09-29": {
+        "total": 300,
+        "success": 254,
+        "fail": 46
+      },
+      "2026-09-30": {
+        "total": 120,
+        "success": 73,
+        "fail": 47
+      }
+    }
+  },
+  "pc_dup": 1468,
+  "online_dup": 228,
+  "all_dup": 1904,
+  "fixed_details": [
+    {
+      "jira": "VCU-437813",
+      "mode": "PC",
+      "exec_time": "2026-09-02 17:42:42",
+      "trigger_time": "2026-03-03 03:30:25",
+      "model": "",
+      "analysis_result": "成功",
+      "error_msg": "",
+      "error_cat": "成功",
+      "error_tag": "",
+      "is_fixed": true,
+      "exec_count": 5
+    },
+    {
+      "jira": "VCU-137179",
+      "mode": "PC",
+      "exec_time": "2026-08-27 20:16:05",
+      "trigger_time": "2024-02-04 18:46:49",
+      "model": "",
+      "analysis_result": "成功",
+      "error_msg": "",
+      "error_cat": "成功",
+      "error_tag": "",
+      "is_fixed": true,
+      "exec_count": 6
+    },
+    {
+      "jira": "VCU-540559",
+      "mode": "PC",
+      "exec_time": "2026-09-15 14:20:27",
+      "trigger_time": "2026-08-31 18:48:00",
+      "model": "",
+      "analysis_result": "成功",
+      "error_msg": "",
+      "error_cat": "成功",
+      "error_tag": "",
+      "is_fixed": true,
+      "exec_count": 2
+    },
+    {
+      "jira": "VCU-537814",
+      "mode": "PC",
+      "exec_time": "2026-09-23 17:30:33",
+      "trigger_time": "2026-08-27 13:44:39",
+      "model": "",
+      "analysis_result": "成功",
+      "error_msg": "",
+      "error_cat": "成功",
+      "error_tag": "",
+      "is_fixed": true,
+      "exec_count": 6
+    },
+    {
+      "jira": "VCU-536767",
+      "mode": "PC",
+      "exec_time": "2026-09-20 11:27:37",
+      "trigger_time": "2026-08-25 15:31:00",
+      "model": "",
+      "analysis_result": "成功",
+      "error_msg": "",
+      "error_cat": "成功",
+      "error_tag": "",
+      "is_fixed": true,
+      "exec_count": 2
+    },
+    {
+      "jira": "VCU-544557",
+      "mode": "PC",
+      "exec_time": "2026-09-20 14:40:42",
+      "trigger_time": "2026-09-09 10:31:00",
+      "model": "",
+      "analysis_result": "成功",
+      "error_msg": "",
+      "error_cat": "成功",
+      "error_tag": "",
+      "is_fixed": true,
+      "exec_count": 3
+    },
+    {
+      "jira": "VCU-541387",
+      "mode": "PC",
+      "exec_time": "2026-09-20 11:27:37",
+      "trigger_time": "2026-09-03 13:11:40",
+      "model": "",
+      "analysis_result": "成功",
+      "error_msg": "",
+      "error_cat": "成功",
+      "error_tag": "",
+      "is_fixed": true,
+      "exec_count": 3
+    },
+    {
+      "jira": "VCU-546173",
+      "mode": "线上",
+      "exec_time": "2026-09-24 13:49:27",
+      "trigger_time": "2026-09-12 19:23:12",
+      "model": "",
+      "analysis_result": "成功",
+      "error_msg": "",
+      "error_cat": "成功",
+      "error_tag": "",
+      "is_fixed": true,
+      "exec_count": 5
+    },
+    {
+      "jira": "VCU-537814",
+      "mode": "线上",
+      "exec_time": "2026-09-17 13:43:14",
+      "trigger_time": "2026-08-27 13:44:39",
+      "model": "",
+      "analysis_result": "成功",
+      "error_msg": "",
+      "error_cat": "成功",
+      "error_tag": "",
+      "is_fixed": true,
+      "exec_count": 4
+    },
+    {
+      "jira": "VCU-549667",
+      "mode": "线上",
+      "exec_time": "2026-09-23 15:25:04",
+      "trigger_time": "2026-09-20 09:23:00",
+      "model": "",
+      "analysis_result": "成功",
+      "error_msg": "",
+      "error_cat": "成功",
+      "error_tag": "",
+      "is_fixed": true,
+      "exec_count": 2
+    },
+    {
+      "jira": "VCU-536767",
+      "mode": "线上",
+      "exec_time": "2026-09-24 13:49:27",
+      "trigger_time": "2026-08-25 15:31:00",
+      "model": "",
+      "analysis_result": "成功",
+      "error_msg": "",
+      "error_cat": "成功",
+      "error_tag": "",
+      "is_fixed": true,
+      "exec_count": 10
+    },
+    {
+      "jira": "VCU-544557",
+      "mode": "线上",
+      "exec_time": "2026-09-24 13:49:27",
+      "trigger_time": "2026-09-09 10:31:00",
+      "model": "",
+      "analysis_result": "成功",
+      "error_msg": "",
+      "error_cat": "成功",
+      "error_tag": "",
+      "is_fixed": true,
+      "exec_count": 7
+    }
+  ]
+}

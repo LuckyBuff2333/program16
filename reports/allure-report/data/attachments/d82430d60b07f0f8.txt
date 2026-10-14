@@ -1,0 +1,2 @@
+2026-08-14 14:07:01,385 [INFO] db - 数据库初始化完成: sqlite:///C:/Users/20637/AppData/Local/Temp/pytest-of-20637/pytest-27/test_config_save_and_reload0/test.db
+2026-08-14 14:07:01,416 [INFO] web - 配置已由页面更新: ['ai_log_api']

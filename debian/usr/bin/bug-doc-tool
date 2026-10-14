@@ -1,0 +1,18 @@
+#!/bin/bash
+# Bug 文档沉淀工具 启动器
+# 将调用转发到 /usr/lib/bug-doc-tool/bug-doc-tool
+
+INSTALL_DIR="/usr/lib/bug-doc-tool"
+EXEC="${INSTALL_DIR}/bug-doc-tool"
+
+if [ ! -x "${EXEC}" ]; then
+    echo "[ERROR] 未找到可执行文件: ${EXEC}" >&2
+    echo "请重新安装: sudo apt install --reinstall bug-doc-tool" >&2
+    exit 1
+fi
+
+# 切换到数据目录，确保 data/ 和 logs/ 写入到正确位置
+cd "${INSTALL_DIR}" 2>/dev/null || true
+
+# 转发所有参数
+exec "${EXEC}" "$@"
