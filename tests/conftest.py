@@ -1,8 +1,28 @@
-"""测试公共夹具：每个测试使用独立的临时数据库与临时输出目录"""
+"""测试公共夹具：sys.path 初始化、mock 模式、临时数据库与临时输出目录"""
+import os
+import sys
+
+# 确保 src 包可被导入（conftest 加载先于 test 文件收集）
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pytest
 
 from src import db
 from src import config as cfg_module
+
+
+# ── 全局 mock：在任何测试模块导入前生效 ──
+@pytest.fixture(autouse=True, scope="session")
+def _global_mock():
+    """测试环境强制 mock 模式，避免真实网络请求（session 级，最先执行）"""
+    cfg = cfg_module.load_config()
+    cfg.setdefault("jira_api", {})["mock"] = True
+    cfg.setdefault("ai_log_api", {})["mock"] = True
+    cfg.setdefault("diana", {})["mock"] = True
+    llm_cfg = cfg.get("llm_filter")
+    if llm_cfg:
+        llm_cfg["mock"] = True
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -31,19 +51,3 @@ def isolated_output(tmp_path, monkeypatch):
     monkeypatch.setitem(cfg_module.load_config()["output"], "report_dir", output_cfg["report_dir"])
     monkeypatch.setitem(cfg_module.load_config()["output"], "log_dir", output_cfg["log_dir"])
     yield
-
-
-@pytest.fixture(autouse=True)
-def llm_filter_mock(monkeypatch):
-    """测试环境强制 LLM 过滤为 mock 模式，避免真实 API 调用与网络依赖"""
-    llm_cfg = cfg_module.load_config().get("llm_filter")
-    if llm_cfg:
-        monkeypatch.setitem(llm_cfg, "mock", True)
-
-
-@pytest.fixture(autouse=True)
-def ai_log_api_mock(monkeypatch):
-    """测试环境强制 AI 日志分析接口为 mock 模式，避免依赖本地模拟服务"""
-    ai_cfg = cfg_module.load_config().get("ai_log_api")
-    if ai_cfg:
-        monkeypatch.setitem(ai_cfg, "mock", True)

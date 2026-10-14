@@ -3,7 +3,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.clients import feishu_client
-from src.web.server import (
+from src.api.server import (
     _get_trigger_time_table_cfg, _bitable_text,
     _TRIGGER_TIME_TABLE_LIMIT, _update_config_table_ids
 )

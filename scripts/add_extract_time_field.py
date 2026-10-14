@@ -3,7 +3,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.clients import feishu_client
-from src.web.server import _get_trigger_time_table_cfg
+from src.api.server import _get_trigger_time_table_cfg
 from datetime import datetime
 import httpx
 

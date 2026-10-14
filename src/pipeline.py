@@ -14,8 +14,13 @@ from src.core import doc_generator, filter as comment_filter
 from src.core import report as report_module
 from src.core import semantic as semantic_module
 from src.core import similarity
+from src.core import cache_manager
 
 logger = setup_logger("pipeline")
+
+# 创建专用于pipeline的缓存
+jira_issue_cache = cache_manager.get_cache('jira_issues', max_size=500, ttl=1800)  # 30分钟TTL
+ai_analysis_cache = cache_manager.get_cache('ai_analysis', max_size=200, ttl=3600)  # 1小时TTL
 
 
 def _extract_error_detail(e: Exception) -> str:
@@ -49,7 +54,7 @@ _TRIGGER_TIME_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 def _save_trigger_time(bugid: str, trigger_time: str):
     """将提取到的触发时间保存到云端 bitable，失败时降级写本地 CSV"""
     try:
-        from src.web.server import _save_trigger_time_to_cloud
+        from src.services.trigger_ops import _save_trigger_time_to_cloud
         _save_trigger_time_to_cloud(bugid, trigger_time)
         logger.info("触发时间已保存到云端: %s → %s", bugid, trigger_time)
         return
@@ -109,8 +114,15 @@ def supplement_row(row: dict) -> dict:
     feishu_link = (row.get("AI分析结果(飞书链接)") or "").strip()
     result = dict(row)
 
+    # 从缓存获取issue，如果不存在则获取并缓存
+    issue = jira_issue_cache.get(bugid)
+    if issue is None:
+        issue = jira_client.fetch_issue(bugid)
+        jira_issue_cache.put(bugid, issue)
+    else:
+        logger.info("bugid=%s 从缓存获取issue", bugid)
+
     # 前置检查：仅处理状态为 Closed 的 bug
-    issue = jira_client.fetch_issue(bugid)
     status = jira_client.extract_status(issue)
     if status and status.lower() != "closed":
         raise ValueError(f"Jira 状态为 [{status}]，仅 Closed 状态才进入补充流程")
@@ -137,16 +149,29 @@ def supplement_row(row: dict) -> dict:
     except FileNotFoundError:
         pass
     if not has_local_doc and not feishu_link:
-        try:
-            logger.info("bugid=%s 无本地文档且无飞书链接，调用 AI 日志分析接口生成报告", bugid)
-            response = ai_log_client.analyze_logs(bugid, trigger_time)
-            report_text = ai_log_client.extract_report(response)
+        # 尝试从AI分析缓存获取
+        analysis_key = f"{bugid}_{trigger_time}"
+        cached_analysis = ai_analysis_cache.get(analysis_key)
+        
+        if cached_analysis:
+            logger.info("bugid=%s 从缓存获取AI分析结果", bugid)
+            report_text = cached_analysis
+        else:
+            try:
+                logger.info("bugid=%s 无本地文档且无飞书链接，调用 AI 日志分析接口生成报告", bugid)
+                response = ai_log_client.analyze_logs(bugid, trigger_time)
+                report_text = ai_log_client.extract_report(response)
+                # 缓存分析结果
+                ai_analysis_cache.put(analysis_key, report_text)
+            except Exception as e:
+                logger.error("bugid=%s AI 日志分析失败（不阻断后续步骤）: %s", bugid, e)
+                result["AI分析结果(飞书链接)"] = f"失败: {_extract_error_detail(e)}"
+                report_text = None
+        
+        if report_text:
             doc_path = doc_generator.save_document(bugid, report_text)
             result["AI分析结果(飞书链接)"] = doc_path
             feishu_link = doc_path
-        except Exception as e:
-            logger.error("bugid=%s AI 日志分析失败（不阻断后续步骤）: %s", bugid, e)
-            result["AI分析结果(飞书链接)"] = f"失败: {_extract_error_detail(e)}"
     elif not has_local_doc and feishu_link and feishu_link.startswith("http"):
         # 有飞书链接但无本地文档：通过飞书 Open API 下载文档并保存为 md
         try:

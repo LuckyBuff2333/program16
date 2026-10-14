@@ -15,8 +15,6 @@ __pycache__/
 # 测试相关
 tests/
 conftest.py
-_test_final.py
-_wiki_check.py
 allure-results/
 allure-report/
 
@@ -47,9 +45,11 @@ screenshot_*.png
 # Debian 打包
 debian/
 
-# 测试数据（体积大）
-testdata/logs/
+# 前端（仅排除依赖，保留源码和构建产物）
+frontend/node_modules/
+frontend/.vite/
 
 # 脚本（宿主机用）
 scripts/
 spotcheck/
+study/

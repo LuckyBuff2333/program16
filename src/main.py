@@ -116,6 +116,25 @@ def cmd_web(args):
 
     logging.getLogger("uvicorn.access").addFilter(_FaviconFilter())
 
+    # uvicorn 日志统一写入 logs/ 目录（不再依赖外部重定向）
+    _log_dir = get_path("log_dir")
+    _date_str = datetime.now().strftime("%Y-%m-%d")
+    _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s")
+
+    _access_fh = logging.FileHandler(
+        os.path.join(_log_dir, f"access_{_date_str}.log"), encoding="utf-8"
+    )
+    _access_fh.setFormatter(_fmt)
+    _access_fh.addFilter(_FaviconFilter())
+    logging.getLogger("uvicorn.access").addHandler(_access_fh)
+
+    _error_fh = logging.FileHandler(
+        os.path.join(_log_dir, f"uvicorn_{_date_str}.log"), encoding="utf-8"
+    )
+    _error_fh.setFormatter(_fmt)
+    logging.getLogger("uvicorn.error").addHandler(_error_fh)
+    logging.getLogger("uvicorn").addHandler(_error_fh)
+
     url = f"http://127.0.0.1:{args.port}"
     # 清除上次的浏览器打开标记，确保本次启动可以打开
     import tempfile
@@ -124,21 +143,21 @@ def cmd_web(args):
         os.remove(_flag)
     except FileNotFoundError:
         pass
-    # 通过环境变量传递 URL，由 server.py startup 事件在服务就绪后打开浏览器
+    # 通过环境变量传递 URL，由 app.py startup 事件在服务就绪后打开浏览器
     os.environ["_WEB_OPEN_URL"] = url
     if is_frozen:
         print(f"前端页面已启动: {url}（按 Ctrl+C 停止服务）")
-        uvicorn.run("src.web.server:app", host="127.0.0.1", port=args.port,
+        uvicorn.run("src.api.app:app", host="127.0.0.1", port=args.port,
                     log_level="info")
     else:
         print(f"前端页面已启动: {url}（代码修改自动重载，在终端按 Ctrl+C 停止服务）")
-        uvicorn.run("src.web.server:app", host="127.0.0.1", port=args.port,
+        uvicorn.run("src.api.app:app", host="127.0.0.1", port=args.port,
                     log_level="info", reload=True, reload_dirs=["src"])
 
 
 def build_parser() -> argparse.ArgumentParser:
     """构建命令行参数解析器"""
-    parser = argparse.ArgumentParser(prog="bug-doc-tool", description="Bug 文档沉淀工具")
+    parser = argparse.ArgumentParser(prog="bug-doc-tool", description="AI应用测评平台")
     sub = parser.add_subparsers(dest="command", required=False)
 
     p_analyze = sub.add_parser("analyze", help="分析 bugid 列表（去重、AI 分析、比对、出报表）")
