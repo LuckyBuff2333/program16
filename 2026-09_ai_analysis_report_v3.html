@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>2026年9月 AI日志分析复盘报告（PC/线上分维度）</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;background:#f0f2f5;color:#333;line-height:1.7}
+.ctn{max-width:1480px;margin:0 auto;padding:24px}
+.hdr{background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);color:#fff;padding:44px 40px;border-radius:16px;margin-bottom:28px;position:relative;overflow:hidden}
+.hdr::after{content:'';position:absolute;top:-40%;right:-5%;width:360px;height:360px;background:radial-gradient(circle,rgba(102,126,234,0.12),transparent);border-radius:50%}
+.hdr h1{font-size:2.2em;margin-bottom:8px;position:relative;z-index:1}
+.hdr .sub{opacity:.78;font-size:1em;position:relative;z-index:1}
+.card{background:#fff;border-radius:14px;padding:26px;margin-bottom:24px;box-shadow:0 1px 6px rgba(0,0,0,.05);border:1px solid #e8ecf1}
+.card h2{font-size:1.3em;margin-bottom:18px;padding-bottom:12px;border-bottom:2px solid #f0f2f5;display:flex;align-items:center;gap:10px}
+.ico{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1em}
+/* PC/线上分栏 */
+.split{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+@media(max-width:900px){.split{grid-template-columns:1fr}}
+.mode-card{border-radius:12px;padding:22px;position:relative;overflow:hidden}
+.mode-card.pc{background:linear-gradient(135deg,#e3f2fd,#bbdefb);border:1px solid #90caf9}
+.mode-card.online{background:linear-gradient(135deg,#fce4ec,#f8bbd0);border:1px solid #f48fb1}
+.mode-card .mode-label{font-size:1.3em;font-weight:700;margin-bottom:12px}
+.mode-card.pc .mode-label{color:#1565c0}
+.mode-card.online .mode-label{color:#c62828}
+.mode-card .mode-num{font-size:2.6em;font-weight:800;line-height:1.1}
+.mode-card.pc .mode-num{color:#1976d2}
+.mode-card.online .mode-num{color:#d32f2f}
+.mode-card .mode-sub{font-size:.88em;color:#555;margin-top:6px}
+.mode-card .mode-row{display:flex;justify-content:space-between;padding:4px 0;font-size:.88em;border-bottom:1px solid rgba(0,0,0,.06)}
+.mode-card .mode-row:last-child{border:none}
+/* Tags */
+.tag{display:inline-block;padding:2px 10px;border-radius:10px;font-size:.76em;font-weight:600;letter-spacing:.3px}
+.tag-pc{background:#e3f2fd;color:#1565c0}
+.tag-online{background:#fce4ec;color:#c62828}
+.tag-exec{background:#e8eaf6;color:#3949ab}
+.tag-analysis{background:#fce4ec;color:#c62828}
+.tag-fixed{background:#e8f5e9;color:#2e7d32}
+.tag-ok{background:#d4edda;color:#155724}
+.tag-err{background:#f8d7da;color:#721c24}
+.tag-warn{background:#fff3cd;color:#856404}
+/* Charts */
+.chart-row{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+@media(max-width:900px){.chart-row{grid-template-columns:1fr}}
+.chart-box{position:relative;height:320px}
+/* Bar */
+.bar-row{display:flex;align-items:center;gap:8px;margin:5px 0}
+.bar-lbl{width:140px;font-size:.83em;text-align:right;flex-shrink:0}
+.bar-track{flex:1;height:24px;background:#f0f2f5;border-radius:5px;overflow:hidden;display:flex}
+.bar-seg{height:100%;display:flex;align-items:center;padding:0 6px;font-size:.75em;color:#fff;font-weight:600;white-space:nowrap;min-width:18px}
+.bar-seg.pc{background:linear-gradient(90deg,#42a5f5,#1976d2)}
+.bar-seg.online{background:linear-gradient(90deg,#ef5350,#c62828)}
+.bar-cnt{font-size:.82em;color:#64748b;flex-shrink:0;width:70px}
+/* Error sections */
+.err-sec{margin:14px 0;border-radius:10px;overflow:hidden;border:1px solid #e8ecf1}
+.err-hdr{padding:14px 18px;display:flex;align-items:center;gap:10px}
+.err-hdr.exec-bg{background:linear-gradient(135deg,#e8eaf6,#c5cae9)}
+.err-hdr.analysis-bg{background:linear-gradient(135deg,#fce4ec,#f8bbd0)}
+.err-hdr h3{font-size:1em;flex:1}
+.err-hdr .badge{background:rgba(0,0,0,.07);padding:2px 10px;border-radius:10px;font-size:.83em;font-weight:600}
+.err-body{padding:14px 18px;background:#fff;font-size:.92em}
+.err-body ul{margin:6px 0 0 18px}
+.err-body li{margin:3px 0;color:#4a5568}
+.fixed-badge{display:inline-block;background:#4caf50;color:#fff;padding:1px 8px;border-radius:8px;font-size:.73em;font-weight:600;margin-left:4px}
+/* Recommendations */
+.rec{background:linear-gradient(135deg,#e3f2fd,#bbdefb);border-radius:12px;padding:20px;margin:14px 0;border-left:4px solid #1976d2}
+.rec h4{color:#0d47a1;margin-bottom:8px;font-size:1em}
+.rec ul{margin:0 0 0 18px}
+.rec li{margin:5px 0;color:#1565c0;font-size:.9em}
+.code{background:#1e293b;color:#e2e8f0;padding:10px 16px;border-radius:8px;font-family:'Cascadia Code',monospace;font-size:.8em;overflow-x:auto;margin:8px 0;line-height:1.5}
+/* Tables */
+table{width:100%;border-collapse:collapse;font-size:.86em}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid #f0f2f5}
+th{background:#f8fafc;font-weight:600;color:#475569}
+tr:hover{background:#f8fafc}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0;font-size:.86em}
+.legend-item{display:flex;align-items:center;gap:5px}
+.legend-dot{width:12px;height:12px;border-radius:3px}
+.footer{text-align:center;padding:28px;color:#94a3b8;font-size:.86em}
+.progress{display:flex;height:26px;border-radius:8px;overflow:hidden;margin:6px 0}
+.progress div{display:flex;align-items:center;justify-content:center;color:#fff;font-size:.78em;font-weight:600}
+</style>
+</head>
+<body>
+<div class="ctn">
+<div class="hdr">
+    <h1>📊 2026年9月 AI日志分析复盘报告</h1>
+    <p class="sub">PC / 线上 分维度统计 · 报告周期 2026-09-01~30 · 生成 2026-10-10 · 数据源: 云端 214 份执行文档 + 3,324 条数据沉淀</p>
+</div>
+
+<!-- 1. 总体 + PC/线上 分栏 -->
+<div class="card">
+    <h2><span class="ico" style="background:#e8eaf6">📈</span>总体概况（PC / 线上分别去重）</h2>
+    <div class="split">
+        <div class="mode-card pc">
+            <div class="mode-label">💻 PC 执行</div>
+            <div class="mode-num">60.8%</div>
+            <div class="mode-sub">成功率（1,262 / 2,074）</div>
+            <div style="margin-top:12px">
+                <div class="mode-row"><span>执行文档</span><span><strong>149</strong> 份</span></div>
+                <div class="mode-row"><span>原始记录</span><span>3,542 条</span></div>
+                <div class="mode-row"><span>去重后 Jira</span><span><strong>2,074</strong> 个（去重 1,468）</span></div>
+                <div class="mode-row"><span>分析成功</span><span style="color:#2e7d32"><strong>1,262</strong></span></div>
+                <div class="mode-row"><span>分析失败</span><span style="color:#c62828"><strong>604</strong></span></div>
+                <div class="mode-row"><span>未匹配沉淀表</span><span style="color:#f57f17">208</span></div>
+                <div class="mode-row"><span>已修复</span><span style="color:#2e7d32">7 条 ✅</span></div>
+            </div>
+            <div class="progress" style="margin-top:10px">
+                <div style="width:60.8%;background:linear-gradient(90deg,#42a5f5,#1976d2)">1,262 成功</div>
+                <div style="width:29.1%;background:linear-gradient(90deg,#ef5350,#c62828)">604</div>
+                <div style="width:10.1%;background:#feca57">208</div>
+            </div>
+        </div>
+        <div class="mode-card online">
+            <div class="mode-label">🌐 线上执行</div>
+            <div class="mode-num">46.8%</div>
+            <div class="mode-sub">成功率（407 / 869）</div>
+            <div style="margin-top:12px">
+                <div class="mode-row"><span>执行文档</span><span><strong>65</strong> 份</span></div>
+                <div class="mode-row"><span>原始记录</span><span>1,097 条</span></div>
+                <div class="mode-row"><span>去重后 Jira</span><span><strong>869</strong> 个（去重 228）</span></div>
+                <div class="mode-row"><span>分析成功</span><span style="color:#2e7d32"><strong>407</strong></span></div>
+                <div class="mode-row"><span>分析失败</span><span style="color:#c62828"><strong>315</strong></span></div>
+                <div class="mode-row"><span>未匹配沉淀表</span><span style="color:#f57f17">147</span></div>
+                <div class="mode-row"><span>已修复</span><span style="color:#2e7d32">5 条 ✅</span></div>
+            </div>
+            <div class="progress" style="margin-top:10px">
+                <div style="width:46.8%;background:linear-gradient(90deg,#ef5350,#c62828)">407 成功</div>
+                <div style="width:36.3%;background:linear-gradient(90deg,#ff7043,#d84315)">315</div>
+                <div style="width:16.9%;background:#feca57">147</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 2. PC vs 线上对比 -->
+<div class="card">
+    <h2><span class="ico" style="background:#fff3e0">⚖️</span>PC vs 线上 执行问题/分析问题 对比</h2>
+    <div class="chart-row">
+        <div class="chart-box"><canvas id="typeCompare"></canvas></div>
+        <div>
+            <table>
+                <thead><tr><th>维度</th><th>💻 PC</th><th>🌐 线上</th></tr></thead>
+                <tbody>
+                    <tr><td>去重后总数</td><td>2,074</td><td>869</td></tr>
+                    <tr><td>成功率</td><td><strong style="color:#2e7d32">60.8%</strong></td><td><strong style="color:#c62828">46.8%</strong></td></tr>
+                    <tr><td>🔧 执行问题</td><td>354 条</td><td>268 条</td></tr>
+                    <tr><td>🔬 分析问题</td><td>458 条</td><td>194 条</td></tr>
+                    <tr><td>主要执行问题</td><td>未匹配沉淀(208)<br>超时(92)<br>服务报错(48)</td><td>未匹配沉淀(147)<br>磁盘满(119)<br>超时(1)</td></tr>
+                    <tr><td>主要分析问题</td><td>触发时间不准(280)<br>日志缺失(101)<br>AI模型(27)</td><td>触发时间不准(103)<br>日志缺失(77)<br>无附件(12)</td></tr>
+                    <tr><td>已修复</td><td>7 条</td><td>5 条</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 3. 每日趋势 -->
+<div class="chart-row">
+    <div class="card">
+        <h2><span class="ico" style="background:#e3f2fd">💻</span>PC 每日执行趋势</h2>
+        <div class="chart-box"><canvas id="pcChart"></canvas></div>
+    </div>
+    <div class="card">
+        <h2><span class="ico" style="background:#fce4ec">🌐</span>线上 每日执行趋势</h2>
+        <div class="chart-box"><canvas id="onChart"></canvas></div>
+    </div>
+</div>
+
+<!-- 4. 错误类型对比 -->
+<div class="card">
+    <h2><span class="ico" style="background:#f3e5f5">📊</span>错误类型 PC / 线上对比</h2>
+    <div id="errBars"></div>
+    <div class="legend" style="margin-top:10px">
+        <div class="legend-item"><div class="legend-dot" style="background:#1976d2"></div>💻 PC</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#c62828"></div>🌐 线上</div>
+        <div class="legend-item"><span class="tag tag-exec">🔧 执行问题</span></div>
+        <div class="legend-item"><span class="tag tag-analysis">🔬 分析问题</span></div>
+    </div>
+</div>
+
+<!-- 5. PC 错误详情 -->
+<div class="card">
+    <h2><span class="ico" style="background:#e3f2fd">💻</span>PC 错误类型详细分析</h2>
+
+    <div class="err-sec">
+        <div class="err-hdr analysis-bg"><span class="tag tag-analysis">🔬 分析问题</span><h3>触发时间不准确 <span class="badge">280 条</span></h3><span class="fixed-badge">5 已修复</span></div>
+        <div class="err-body">
+            <p><strong>错误：</strong><code>时间过滤后日志为空（0行），请检查问题时间是否正确</code></p>
+            <p><strong>根因：</strong>触发时间提取不准确，视频文件名时间与实际触发时间偏差大</p>
+            <p><strong>已修复：</strong>5 条在触发时间修正后重新执行成功 ✅</p>
+            <ul><li>VCU-540559：13:59:53→18:48:00 → 9/15 成功</li><li>VCU-541387：17:07:04→13:11:40 → 9/20 成功</li><li>VCU-537814：重新执行成功</li></ul>
+        </div>
+    </div>
+
+    <div class="err-sec">
+        <div class="err-hdr exec-bg"><span class="tag tag-exec">🔧 执行问题</span><h3>未匹配数据沉淀表 <span class="badge">208 条</span></h3></div>
+        <div class="err-body"><p>批量执行成功但数据沉淀表格中找不到匹配分析结果</p><ul><li>分析任务异步未完成</li><li>分析结果写入其他表格</li></ul></div>
+    </div>
+
+    <div class="err-sec">
+        <div class="err-hdr analysis-bg"><span class="tag tag-analysis">🔬 分析问题</span><h3>日志文件缺失 <span class="badge">101 条</span></h3></div>
+        <div class="err-body"><p><code>处理后未找到有效的日志文件</code></p><ul><li>触发时间窗口内无日志</li><li>RAR格式缺少unrar工具</li></ul></div>
+    </div>
+
+    <div class="err-sec">
+        <div class="err-hdr exec-bg"><span class="tag tag-exec">🔧 执行问题</span><h3>分析超时 <span class="badge">92 条</span></h3></div>
+        <div class="err-body"><p><code>JIRA 分析任务执行超时或被取消</code></p><p>集中在 9/7~9/10，分析服务负载高</p></div>
+    </div>
+
+    <div class="err-sec">
+        <div class="err-hdr exec-bg"><span class="tag tag-exec">🔧 执行问题</span><h3>服务端报错 <span class="badge">48 条</span></h3></div>
+        <div class="err-body"><p><code>服务有报错</code> · 集中在 9/1，分析服务不稳定</p></div>
+    </div>
+
+    <div class="err-sec">
+        <div class="err-hdr analysis-bg"><span class="tag tag-analysis">🔬 分析问题</span><h3>AI模型调用失败 <span class="badge">27 条</span></h3></div>
+        <div class="err-body"><p><code>reasoning 第 N 轮 LLM 调用失败</code> · 大模型API不稳定</p></div>
+    </div>
+</div>
+
+<!-- 6. 线上 错误详情 -->
+<div class="card">
+    <h2><span class="ico" style="background:#fce4ec">🌐</span>线上 错误类型详细分析</h2>
+
+    <div class="err-sec">
+        <div class="err-hdr exec-bg"><span class="tag tag-exec">🔧 执行问题</span><h3>未匹配数据沉淀表 <span class="badge">147 条</span></h3></div>
+        <div class="err-body"><p>线上执行成功但沉淀表无匹配。线上异步模式结果回写延迟是主因。</p></div>
+    </div>
+
+    <div class="err-sec">
+        <div class="err-hdr exec-bg"><span class="tag tag-exec">🔧 执行问题</span><h3>磁盘空间不足 <span class="badge">119 条</span></h3><span class="fixed-badge">3 已修复</span></div>
+        <div class="err-body">
+            <p><strong>错误：</strong><code>[Errno 28] No space left on device</code></p>
+            <p><strong>集中爆发：</strong>2026-09-24，线上服务器 unzipped/ 目录磁盘耗尽</p>
+            <p><strong>已修复：</strong>清理磁盘后 3 条重新执行成功 ✅</p>
+            <ul><li>VCU-536767：9/24 磁盘满 → 9/24 13:49 成功</li><li>VCU-544557：同日恢复</li><li>VCU-546173：同日恢复</li></ul>
+        </div>
+    </div>
+
+    <div class="err-sec">
+        <div class="err-hdr analysis-bg"><span class="tag tag-analysis">🔬 分析问题</span><h3>触发时间不准确 <span class="badge">103 条</span></h3></div>
+        <div class="err-body"><p><code>时间过滤后日志为空（0行）</code></p><p>与PC端相同问题，但线上占比更低（11.9% vs PC 13.5%）</p></div>
+    </div>
+
+    <div class="err-sec">
+        <div class="err-hdr analysis-bg"><span class="tag tag-analysis">🔬 分析问题</span><h3>日志文件缺失 <span class="badge">77 条</span></h3></div>
+        <div class="err-body"><p><code>处理后未找到有效的日志文件</code></p></div>
+    </div>
+
+    <div class="err-sec">
+        <div class="err-hdr analysis-bg"><span class="tag tag-analysis">🔬 分析问题</span><h3>无日志附件 <span class="badge">12 条</span></h3></div>
+        <div class="err-body"><p>Jira 附件仅含视频/图片，无可分析日志</p></div>
+    </div>
+</div>
+
+<!-- 7. 已修复记录 -->
+<div class="card">
+    <h2><span class="ico" style="background:#e8f5e9">✅</span>已修复记录（12 条，PC 7 + 线上 5）</h2>
+    <table>
+        <thead><tr><th>Jira号</th><th>模式</th><th>修复类型</th><th>触发时间修正</th><th>修复成功日期</th></tr></thead>
+        <tbody>
+            <tr><td>VCU-540559</td><td><span class="tag tag-pc">PC</span></td><td>触发时间修正</td><td>13:59:53 → 18:48:00</td><td>09-15</td></tr>
+            <tr><td>VCU-541387</td><td><span class="tag tag-pc">PC</span></td><td>触发时间修正</td><td>17:07:04 → 13:11:40</td><td>09-20</td></tr>
+            <tr><td>VCU-437813</td><td><span class="tag tag-pc">PC</span></td><td>触发时间修正</td><td>05:00:15 → 03:30:25</td><td>09-02</td></tr>
+            <tr><td>VCU-537814</td><td><span class="tag tag-pc">PC</span></td><td>重试成功</td><td>-</td><td>09-23</td></tr>
+            <tr><td>VCU-137179</td><td><span class="tag tag-pc">PC</span></td><td>重试成功</td><td>-</td><td>08-27</td></tr>
+            <tr><td>VCU-536767</td><td><span class="tag tag-pc">PC</span> <span class="tag tag-online">线上</span></td><td><span class="tag tag-exec">磁盘恢复</span></td><td>-</td><td>09-24 13:49</td></tr>
+            <tr><td>VCU-544557</td><td><span class="tag tag-pc">PC</span> <span class="tag tag-online">线上</span></td><td><span class="tag tag-exec">磁盘恢复</span></td><td>-</td><td>09-24 13:49</td></tr>
+            <tr><td>VCU-549667</td><td><span class="tag tag-online">线上</span></td><td>触发时间修正</td><td>18:09:55 → 10:31:00</td><td>09-23</td></tr>
+            <tr><td>VCU-546173</td><td><span class="tag tag-online">线上</span></td><td>重试成功</td><td>-</td><td>09-24</td></tr>
+        </tbody>
+    </table>
+    <p style="margin-top:12px;font-size:.88em;color:#64748b">注：VCU-536767 和 VCU-544557 在 PC 和线上均有执行记录，两种模式下均修复成功</p>
+</div>
+
+<!-- 8. 修复建议 -->
+<div class="card">
+    <h2><span class="ico" style="background:#e3f2fd">🛠️</span>分模式修复建议</h2>
+
+    <div class="rec">
+        <h4>🔧 P0 - 磁盘监控（线上专属问题） <span class="tag tag-online">线上</span> <span class="tag tag-exec">执行问题</span></h4>
+        <ul><li>unzipped/ 目录自动清理（保留3天）</li><li>磁盘使用率 >80% 告警，>90% 暂停执行</li><li>影响：119条/月 → 预期降至 0</li></ul>
+    </div>
+
+    <div class="rec">
+        <h4>🔧 P0 - 分析超时重试 <span class="tag tag-pc">PC</span> <span class="tag tag-exec">执行问题</span></h4>
+        <ul><li>PC端异步分析增加轮询重试（最多3次）</li><li>超时阈值 15min → 25min</li><li>影响：92条/月 → 预期降至 ~30</li></ul>
+    </div>
+
+    <div class="rec">
+        <h4>🔬 P1 - 触发时间提取（两端共同问题） <span class="tag tag-pc">PC</span> <span class="tag tag-online">线上</span> <span class="tag tag-analysis">分析问题</span></h4>
+        <ul><li>PC+线上共 383 条触发时间不准（PC 280 + 线上 103）</li><li>优先从 Jira 描述提取，降低视频文件名依赖</li><li>支持中文分号、独立时间格式、时间合理性校验</li><li>9月已修复：分号归一化 + 独立时间正则</li></ul>
+    </div>
+
+    <div class="rec">
+        <h4>🔧 P1 - 沉淀表匹配优化 <span class="tag tag-pc">PC</span> <span class="tag tag-online">线上</span> <span class="tag tag-exec">执行问题</span></h4>
+        <ul><li>PC 208条 + 线上 147条 = 355条未匹配</li><li>线上异步结果回写延迟：增加延迟查询机制</li><li>PC端分析接口返回后主动写入沉淀表</li></ul>
+    </div>
+
+    <div style="margin-top:14px;padding:14px;background:#f0fdf4;border-radius:8px;font-size:.88em;border:1px solid #bbf7d0">
+        <strong>📊 预期效果：</strong>全部实施后，PC 成功率 60.8%→<strong>~78%</strong>，线上 46.8%→<strong>~68%</strong>，综合 55.3%→<strong>~74%</strong>
+    </div>
+</div>
+
+<div class="footer"><p>Bug文档沉淀工具 · AI日志分析复盘 · PC/线上分维度 · 2026-10-10</p></div>
+</div>
+
+<script>
+const PC_DAYS=["09-01","09-02","09-03","09-04","09-07","09-08","09-09","09-10","09-14","09-15","09-16","09-17","09-18","09-19","09-20","09-21","09-22","09-23","09-24","09-26","09-28","09-29","09-30"];
+const PC_OK=[16,33,0,36,50,64,7,38,19,18,11,1,44,19,57,75,64,1,15,81,83,254,16];
+const PC_FAIL=[34,18,5,92,27,30,19,82,76,7,8,19,0,0,1,30,36,1,86,19,17,46,4];
+const ON_DAYS=["09-09","09-10","09-11","09-14","09-15","09-16","09-17","09-20","09-21","09-22","09-23","09-24","09-30"];
+const ON_OK=[15,2,20,4,21,13,2,1,30,125,85,32,57];
+const ON_FAIL=[79,45,5,0,0,1,7,19,0,38,63,162,43];
+
+function mkBarChart(id,labels,ok,fail,c1,c2){
+    new Chart(document.getElementById(id),{type:'bar',data:{labels,datasets:[
+        {label:'成功',data:ok,backgroundColor:c1,borderWidth:0,stack:'s'},
+        {label:'失败',data:fail,backgroundColor:c2,borderWidth:0,stack:'s'}
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top'}},scales:{x:{stacked:true,ticks:{maxRotation:45}},y:{stacked:true,beginAtZero:true}}}});
+}
+mkBarChart('pcChart',PC_DAYS,PC_OK,PC_FAIL,'rgba(66,165,245,.75)','rgba(239,83,80,.65)');
+mkBarChart('onChart',ON_DAYS,ON_OK,ON_FAIL,'rgba(239,83,80,.75)','rgba(255,112,67,.65)');
+
+// 执行问题vs分析问题对比
+new Chart(document.getElementById('typeCompare'),{type:'bar',data:{
+    labels:['💻 PC','🌐 线上'],
+    datasets:[
+        {label:'🔧 执行问题',data:[354,268],backgroundColor:'rgba(102,126,234,.75)',borderWidth:0},
+        {label:'🔬 分析问题',data:[458,194],backgroundColor:'rgba(240,147,251,.75)',borderWidth:0},
+        {label:'✅ 已修复',data:[7,5],backgroundColor:'rgba(76,175,80,.75)',borderWidth:0}
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top'}},scales:{y:{beginAtZero:true}}}});
+
+// 错误类型对比 bar
+const errCats=['触发时间不准','未匹配沉淀表','日志文件缺失','磁盘空间不足','分析超时','服务端报错','AI模型调用失败','无日志附件','未知原因','报告生成失败'];
+const pcErr=[280,208,101,0,92,48,27,20,18,11];
+const onErr=[103,147,77,119,1,0,0,12,1,0];
+const execTypes=new Set(['未匹配沉淀表','磁盘空间不足','分析超时','服务端报错']);
+
+let html='';
+for(let i=0;i<errCats.length;i++){
+    const total=pcErr[i]+onErr[i];
+    if(total===0)continue;
+    const max=Math.max(...pcErr.map((a,j)=>a+onErr[j]));
+    const tag=execTypes.has(errCats[i])?'<span class="tag tag-exec">执行</span>':'<span class="tag tag-analysis">分析</span>';
+    html+=`<div class="bar-row"><div class="bar-lbl">${tag} ${errCats[i]}</div><div class="bar-track"><div class="bar-seg pc" style="width:${pcErr[i]/max*100}%">${pcErr[i]||''}</div><div class="bar-seg online" style="width:${onErr[i]/max*100}%">${onErr[i]||''}</div></div><div class="bar-cnt">共${total}</div></div>`;
+}
+document.getElementById('errBars').innerHTML=html;
+</script>
+</body>
+</html>

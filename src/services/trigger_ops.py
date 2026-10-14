@@ -50,6 +50,11 @@ _timestudy_ctx: dict = {}
 _timestudy_lock = threading.Lock()
 _record_write_lock = threading.Lock()
 
+# ── 云端飞书表格批量缓存 ──
+_bitable_bulk_cache = {}  # key -> (timestamp, data)
+_BITABLE_CACHE_TTL = 300  # 5分钟
+_last_cache_load_partial = False
+
 # 需要从 server.py 延迟导入的函数（在函数体内 import）
 # _bot_get_trigger_times 等依赖 diagnostics 的函数留在 server.py
 
