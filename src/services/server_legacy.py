@@ -39,6 +39,8 @@ from src.api.routes.shared import (
     is_bitable_excluded as _is_bitable_excluded,
     flatten_bitable_record as _flatten_bitable_record,
     get_prod_ai_url as _get_prod_ai_url,
+    get_prod_ai_cfg as _get_prod_ai_cfg,
+    build_prod_ai_payload as _build_prod_ai_payload,
     ts_parse_datetime as _ts_parse_datetime,
     read_csv_rows as _read_csv_rows,
     parse_conf as _parse_conf,
@@ -2107,8 +2109,8 @@ def _bot_trigger_and_reply(chat_id: str, bugids: list, trigger_times: dict, real
             continue
         try:
             if exec_mode == "online":
-                payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
-                resp = http_post(_get_prod_ai_url(), payload, timeout=30)
+                payload = _build_prod_ai_payload(bugid, exec_time)
+                resp = http_post(_get_prod_ai_url(), payload, timeout=_get_prod_ai_cfg()["timeout"])
             else:
                 payload = {cfg["bugid_field"]: bugid}
                 if cfg.get("trigger_time_field"):
@@ -2315,8 +2317,8 @@ def _bot_run_single_execute(chat_id: str, bugids: list, exec_mode: str = "pc"):
             exec_time = trigger_times.get(bugid)
             try:
                 if exec_mode == "online":
-                    payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
-                    resp = http_post(_get_prod_ai_url(), payload, timeout=30)
+                    payload = _build_prod_ai_payload(bugid, exec_time)
+                    resp = http_post(_get_prod_ai_url(), payload, timeout=_get_prod_ai_cfg()["timeout"])
                 else:
                     cfg = load_config()["ai_log_api"]
                     payload = {cfg["bugid_field"]: bugid}
@@ -2467,7 +2469,7 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "
                 # 使用较短超时以实现快速中断
                 _exec_timeout = 15
                 if exec_mode == "online":
-                    payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
+                    payload = _build_prod_ai_payload(bugid, exec_time)
                     resp = http_post(_get_prod_ai_url(), payload, timeout=_exec_timeout)
                 else:
                     cfg = load_config()["ai_log_api"]
@@ -5853,7 +5855,7 @@ def _bot_run_11_1_continuous(chat_id: str, diff_records: list, batch_size: int,
                     break
                 exec_time = trigger_times.get(bugid, "")
                 try:
-                    payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
+                    payload = _build_prod_ai_payload(bugid, exec_time)
                     resp = http_post(_get_prod_ai_url(), payload, timeout=15)
                     resp_code = resp.get("code") if isinstance(resp, dict) else None
                     if resp_code in (200, 0, "200"):
