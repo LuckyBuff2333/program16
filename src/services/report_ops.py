@@ -32,6 +32,8 @@ from src.api.routes.shared import (
     parse_markdown_batch_table as _parse_markdown_batch_table,
     ok as _ok,
     fail as _fail,
+    _bitable_bulk_cache,
+    _BITABLE_CACHE_TTL,
 )
 
 logger = setup_logger("services.report_ops")

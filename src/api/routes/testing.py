@@ -14,9 +14,11 @@ from src.api.routes.shared import (
     _STUDY_DIR,
     _UNANALYZED_DIR,
     _bitable_text,
+    _build_prod_ai_payload,
     _calc_smoke_duration,
     _compare_single_bug,
     _flatten_bitable_record,
+    _get_prod_ai_cfg,
     _get_prod_ai_url,
     _is_bitable_excluded,
     _parse_bugids,
@@ -2305,10 +2307,8 @@ async def test_prod_batch_run(request: Request):
                 return
             try:
                 if exec_mode == "online":
-                    payload = {"jiraNumber": bugid}
-                    if exec_time:
-                        payload["questionTimes"] = [exec_time]
-                    resp = http_post(_get_prod_ai_url(), payload, timeout=30)
+                    payload = _build_prod_ai_payload(bugid, exec_time)
+                    resp = http_post(_get_prod_ai_url(), payload, timeout=_get_prod_ai_cfg()["timeout"])
                 else:
                     cfg = load_config()["ai_log_api"]
                     payload = {cfg["bugid_field"]: bugid}
@@ -3265,10 +3265,8 @@ async def auto_detect_run(request: Request):
                     results.append({"Jira号": bugid, "执行结果": "失败", "备注": "无触发时间"})
                     continue
                 try:
-                    payload = {"jiraNumber": bugid}
-                    if exec_time:
-                        payload["questionTimes"] = [exec_time]
-                    resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=30))
+                    payload = _build_prod_ai_payload(bugid, exec_time)
+                    resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=_get_prod_ai_cfg()["timeout"]))
                     resp_code = resp.get("code") if isinstance(resp, dict) else None
                     resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
                     is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
@@ -3493,8 +3491,8 @@ async def regression_run(request: Request):
                     continue
                 try:
                     if exec_mode == "online":
-                        payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
-                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=30))
+                        payload = _build_prod_ai_payload(bugid, exec_time)
+                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=_get_prod_ai_cfg()["timeout"]))
                     else:
                         payload = {pc_cfg.get("bugid_field", "jira号"): bugid}
                         if pc_cfg.get("trigger_time_field"):
@@ -3595,8 +3593,8 @@ async def ab_experiment(request: Request):
                     break
                 try:
                     if module == "prod_batch":
-                        payload = {"jiraNumber": bugid}
-                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=30))
+                        payload = _build_prod_ai_payload(bugid)
+                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=_get_prod_ai_cfg()["timeout"]))
                         resp_code = resp.get("code") if isinstance(resp, dict) else None
                         is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
                         results.append({"bugid": bugid, "success": is_ok})
