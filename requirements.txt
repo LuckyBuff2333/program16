@@ -16,4 +16,5 @@ allure-pytest>=2.13.0
 opencv-python-headless>=4.8.0
 av>=14.0.0
 easyocr>=1.7.0
+rapidocr_onnxruntime>=1.4.0
 python-multipart>=0.0.5
