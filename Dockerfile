@@ -1,4 +1,13 @@
-# 多阶段构建：减小最终镜像体积
+# 多阶段构建：前端构建 + Python 运行
+FROM node:22-alpine AS frontend-builder
+
+WORKDIR /fe
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY frontend/ ./
+RUN npm run build
+
+# ---- Python 构建阶段 ----
 FROM python:3.12-slim AS builder
 
 WORKDIR /build
@@ -36,6 +45,9 @@ WORKDIR /app
 COPY src/ ./src/
 COPY requirements.txt ./
 
+# 复制前端构建产物
+COPY --from=frontend-builder /fe/dist ./frontend/dist
+
 # 创建持久化目录挂载点
 RUN mkdir -p config data docs reports logs
 
@@ -55,4 +67,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -sf http://127.0.0.1:8060/ || exit 1
 
 # 入口脚本：初始化数据库 + 启动 uvicorn（绑定 0.0.0.0 以支持外部访问）
-CMD ["sh", "-c", "python -c 'from src import db; db.init_db()' && exec uvicorn src.web.server:app --host 0.0.0.0 --port 8060 --log-level info"]
+CMD ["sh", "-c", "python -c 'from src import db; db.init_db()' && exec uvicorn src.api.app:app --host 0.0.0.0 --port 8060 --log-level info"]

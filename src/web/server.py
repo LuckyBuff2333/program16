@@ -928,6 +928,37 @@ def _process_bot_command(chat_id: str, text: str):
             feishu_client.send_bot_message(chat_id, f"自学习分析失败: {e}")
         return
 
+    # 触发时间自学习：发送 timestudy 触发分析
+    if text.strip().lower() in ("timestudy", "自学习", "触发时间学习"):
+        feishu_client.send_bot_message(chat_id, "正在分析触发时间提取记录...")
+        try:
+            patterns = _timestudy_analyze()
+            total = patterns.get("total_records", 0)
+            rate = patterns.get("success_rate", 0)
+            err_dist = patterns.get("error_distribution", {})
+            src_dist = patterns.get("source_distribution", {})
+            # 构建摘要消息
+            lines = [f"触发时间自学习分析完成",
+                     f"总记录: {total} 条",
+                     f"成功率: {rate}%",
+                     f"用户修正: {patterns.get('corrected_count', 0)} 条",
+                     f"12h转换: {patterns.get('h12_count', 0)} 条", ""]
+            if src_dist:
+                lines.append("提取来源分布:")
+                for src, cnt in list(src_dist.items())[:5]:
+                    lines.append(f"  {src}: {cnt}次")
+                lines.append("")
+            if err_dist:
+                lines.append("错误类型Top5:")
+                for err, cnt in list(err_dist.items())[:5]:
+                    lines.append(f"  {err}: {cnt}次")
+            else:
+                lines.append("无错误记录")
+            feishu_client.send_bot_message(chat_id, "\n".join(lines))
+        except Exception as e:
+            feishu_client.send_bot_message(chat_id, f"自学习分析失败: {e}")
+        return
+
     # 帮助/功能菜单：显示菜单并等待子功能输入
     if any(kw in text for kw in ("功能", "帮助", "菜单", "help")):
         _set_bot_session(chat_id, "wait_menu")

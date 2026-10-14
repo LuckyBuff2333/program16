@@ -5,13 +5,13 @@ import yaml
 from fastapi.testclient import TestClient
 
 from src import config as cfg_module
-from src.web import server
+from src.api.app import create_app
 
 
 @pytest.fixture()
 def client():
     """FastAPI 测试客户端"""
-    return TestClient(server.app)
+    return TestClient(create_app())
 
 
 @pytest.fixture()

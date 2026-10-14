@@ -137,18 +137,18 @@ fi
 if [ -d "data" ]; then
     cp -r data "${LIB_DIR}/"
 fi
-if [ -d "testdata" ]; then
-    cp -r testdata "${LIB_DIR}/"
+if [ -d "tests/testdata" ]; then
+    mkdir -p "${LIB_DIR}/tests"
+    cp -r tests/testdata "${LIB_DIR}/tests/"
 fi
 if [ -d "tools/models" ]; then
     mkdir -p "${LIB_DIR}/tools"
     cp -r tools/models "${LIB_DIR}/tools/"
 fi
-# 复制前端文件
-mkdir -p "${LIB_DIR}/src/web"
-cp src/web/index.html "${LIB_DIR}/src/web/" 2>/dev/null || true
-if [ -d "src/web/static" ]; then
-    cp -r src/web/static "${LIB_DIR}/src/web/"
+# 复制前端构建产物
+if [ -d "frontend/dist" ]; then
+    mkdir -p "${LIB_DIR}/frontend"
+    cp -r frontend/dist "${LIB_DIR}/frontend/"
 fi
 
 # ---- 构建 deb ----

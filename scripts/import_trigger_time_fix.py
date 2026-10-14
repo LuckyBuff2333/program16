@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import openpyxl
 from datetime import datetime
 from src.clients import feishu_client
-from src.web.server import (
+from src.api.server import (
     _get_trigger_time_table_cfg, _load_cloud_trigger_cache,
     _create_trigger_time_subtable, _update_config_table_ids,
     _TRIGGER_TIME_TABLE_LIMIT

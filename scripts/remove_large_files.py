@@ -17,6 +17,8 @@ paths = [
     "data/",
     "__pycache__/",
     "src/web/__pycache__/",
+    "src/api/__pycache__/",
+    "src/api/routes/__pycache__/",
     ".idea/",
     ".pytest_cache/",
     "src/__pycache__/",

@@ -1,4 +1,4 @@
-# Bug 文档沉淀工具
+# AI应用测评平台
 
 基于 AI 日志分析工具的 Bug 文档沉淀与故障分析闭环工具，实现「bugid 去重 → AI 分析生成文档 → Jira 报错原因/评论比对 → 每日结论报表 → 知识库手工入库」的完整流程。
 
@@ -48,14 +48,19 @@ python -m src.main report --date 2026-08-12
 python -m src.main audit
 python -m src.main audit --count 20
 
-# 启动前端可视化页面（默认端口 8060，自动打开浏览器）
+# 启动 Web 服务（默认端口 8060，自动打开浏览器）
+# 生产模式：后端 serve frontend/dist/ 构建产物
 python -m src.main web
 python -m src.main web --port 8080
+
+# 开发模式：前端 Vite dev server + 后端 API（热重载）
+cd frontend && npm run dev    # 前端 :5173
+cd .. && python -m src.main web  # 后端 :8060
 ```
 
 ## 前端页面（python -m src.main web）
 
-基于 Vue 3 + Element Plus + Flask 的可视化页面，顶部切换两个页面：
+基于 Vue 3 + Element Plus + FastAPI 的可视化页面，顶部切换两个页面：
 
 **线上流程页面**（三个页签）：
 
@@ -93,7 +98,8 @@ src/pipeline.py        主流程编排（结果不写库，只出文档与结论
 src/db.py              数据库层（bugid 只读去重、抽查候选池与库存储字段只读查询）
 src/clients/           外部接口客户端（AI 分析、Jira、知识库，支持 mock）
 src/core/              核心处理（评论过滤、相似性比对、文档生成、报表、随机抽查复核）
-src/web/               前端可视化页面（Flask API + Vue3/Element Plus 单页）
+src/api/               后端 API 层（FastAPI + 路由模块，serve 前端构建产物）
+frontend/              前端项目（Vite + Vue 3 + Element Plus，npm run build 构建）
 tests/                 pytest 测试用例
 docs/                  运行期生成的分析文档（按日期分文件夹）
 reports/               每日结论报表、抽查审核表格 audit_comparison.csv、已抽查记录 audited_bugids.csv
