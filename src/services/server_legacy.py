@@ -219,6 +219,9 @@ _SPLIT_ARCHIVE_RE = re.compile(r"\.\d{2,3}$")
 
 _ARCHIVE_PROBE_MAX_BYTES = 200 * 1024 * 1024
 
+# 视频文件后缀
+_VIDEO_SUFFIXES = (".mp4", ".avi", ".mov", ".mkv")
+
 _UNANALYZED_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "unanalyzed")
 
 _AI_INIT_FIELD_ID = "customfield_13714"  # AI Init Analysis Result
@@ -3270,6 +3273,51 @@ def _diag_match_time_window(filename: str, target_time: str, minutes: int = 5):
     if abs((file_dt - target_dt).total_seconds()) <= minutes * 60:
         return True, file_str
     return False, file_str
+
+
+def _jira_att_auth() -> tuple:
+    """构造下载 Jira 压缩包附件的认证头与超时，返回 (headers, timeout)"""
+    jcfg = load_config().get("jira_api", {})
+    headers = {}
+    token = jcfg.get("token", "")
+    if token:
+        if jcfg.get("auth_type", "bearer").lower() == "bearer":
+            headers["Authorization"] = f"Bearer {token}"
+        elif jcfg.get("username"):
+            import base64
+            headers["Authorization"] = "Basic " + base64.b64encode(
+                f"{jcfg['username']}:{token}".encode()).decode()
+    timeout = max(int(jcfg.get("timeout", 30)), 120)
+    return headers, timeout
+
+
+def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
+    """判断 Jira 是否含可用日志（gmlogger）。智能回退：
+
+    1) 附件文件名含 gmlogger/main.log → 直接判定有（快，不下载）；
+    2) 否则仅对≤ 200MB 的单卷压缩包下载探测包内是否有 main 文件；
+       分卷压缩包(.001/.002 等)或超大包一律跳过（避免 GB 级下载拖垮）。
+    """
+    names = [(a.get("filename", "") or "").lower() for a in attachments]
+    # 有直接的 gmlogger 文件（或 main.log）就算有，不需要解压
+    if any("gmlogger" in n or "main.log" in n for n in names):
+        return True
+    headers, timeout = _jira_att_auth()
+    for att in attachments:
+        fn = (att.get("filename", "") or "").lower()
+        if not _ARCHIVE_NAME_RE.search(fn):
+            continue
+        # 跳过：分卷压缩包（如 xxx.7z.001），多卷无法只读目录且体积极大
+        if _SPLIT_ARCHIVE_RE.search(fn):
+            continue
+        # 跳过：超过探测上限的包，避免整包下载
+        if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
+            continue
+        res = _diag_list_archive_entries(att.get("content", ""), headers, timeout, bugid, filename=att.get("filename", ""))
+        if res.get("ok") and any("main" in os.path.basename(e).lower() for e in res.get("entries", [])):
+            logger.info("无gmlogger文件名，但压缩包 %s 内含 main 文件，判定有日志 (%s)", fn, bugid)
+            return True
+    return False
 
 
 def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid: str = "", filename: str = "") -> dict:

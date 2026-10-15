@@ -352,6 +352,7 @@ export default {
         const resp = await fetch('/api/test/prod_batch_run', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ bugids: this.batchAi.selected, trigger_times: this.batchAi.triggerTimes, skip_existing: false,
+            exec_mode: this.batchAi.execMode,
             analysis_concurrency: this.batchAi.analysisConcurrency, download_concurrency: this.batchAi.downloadConcurrency,
             model: this.batchAi.model, trigger_source: this.batchAi.triggerSource, software_version: this.batchAi.softwareVersion }),
           signal: this.batchAiAbort.signal,

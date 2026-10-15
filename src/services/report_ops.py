@@ -36,6 +36,9 @@ from src.api.routes.shared import (
 
 logger = setup_logger("services.report_ops")
 
+# 从 trigger_ops 共享飞书表格批量缓存
+from src.services.trigger_ops import _bitable_bulk_cache, _BITABLE_CACHE_TTL
+
 # 云端批次记录缓存：{日期: {"ts": 缓存时间, "data": {jira号: 执行信息}}}
 _cloud_batch_cache = {}
 _CLOUD_CACHE_TTL = 300  # 缓存有效期 5 分钟

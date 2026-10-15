@@ -5,7 +5,7 @@
 视频触发时间提取是触发时间获取的**兜底手段**，当评论/字段提取（`extract_trigger_time_from_issue`）未命中时启用。  
 核心思路：从 Jira Bug 单附件中的视频帧 OCR 识别屏幕时钟，再与 gmlogger 压缩包时间交叉验证，确认时间有效性。
 
-入口函数：`_diag_extract_time_from_video_simple()`（`src/web/server.py`）
+入口函数：`_diag_extract_time_from_video_simple()`（`src/services/server_legacy.py`）
 
 ---
 
@@ -250,16 +250,17 @@ flowchart LR
 
 | 模块 | 文件 | 核心函数 |
 |------|------|---------|
-| 视频提取主逻辑 | `src/web/server.py` | `_diag_extract_time_from_video_simple()` |
-| 视频优先级排序 | `src/web/server.py` | `_rank_videos()` |
-| 帧提取（GPU优先） | `src/web/server.py` | `_extract_video_frames_gpu()` |
-| 帧差法时钟定位 | `src/web/server.py` | `_frame_diff_clock_ocr()` |
-| 统一 OCR 接口 | `src/web/server.py` | `_ocr_readtext()` |
-| RapidOCR 引擎 | `src/web/server.py` | `_rapid_ocr_readtext()` |
-| gmlogger 时间解析 | `src/web/server.py` | `_diag_gmlogger_times()` |
-| gmlogger 智能匹配 | `src/web/server.py` | `_find_closest_gmlogger()` / `_build_gmlogger_info()` |
-| 数字混淆纠正 | `src/web/server.py` | `_correct_ocr_by_reference()` |
-| OCR 文本预处理 | `src/web/server.py` | `_fix_ocr_missing_colon()` / `_preprocess_ocr_datetime()` |
-| 文件名时间回退 | `src/web/server.py` | `_parse_video_filename_time()` |
-| 图片 OCR 兜底 | `src/web/server.py` | `_image_fallback_time()` |
+| 视频提取主逻辑 | `src/services/server_legacy.py` | `_diag_extract_time_from_video_simple()` |
+| 视频优先级排序 | `src/services/server_legacy.py` | `_rank_videos()` |
+| 帧提取（GPU优先） | `src/services/server_legacy.py` | `_extract_video_frames_gpu()` |
+| 帧差法时钟定位 | `src/services/server_legacy.py` | `_frame_diff_clock_ocr()` |
+| 统一 OCR 接口 | `src/services/server_legacy.py` | `_ocr_readtext()` |
+| RapidOCR 引擎 | `src/services/server_legacy.py` | `_rapid_ocr_readtext()` |
+| gmlogger 时间解析 | `src/services/server_legacy.py` | `_diag_gmlogger_times()` |
+| gmlogger 智能匹配 | `src/services/server_legacy.py` | `_find_closest_gmlogger()` / `_build_gmlogger_info()` |
+| 数字混淆纠正 | `src/services/server_legacy.py` | `_correct_ocr_by_reference()` |
+| OCR 文本预处理 | `src/services/server_legacy.py` | `_fix_ocr_missing_colon()` / `_preprocess_ocr_datetime()` |
+| 文件名时间回退 | `src/services/server_legacy.py` | `_parse_video_filename_time()` |
+| 图片 OCR 兜底 | `src/services/server_legacy.py` | `_image_fallback_time()` |
+| gmlogger 智能检测 | `src/services/server_legacy.py` | `_has_gmlogger_logs()` / `_jira_att_auth()` |
 | 视频缓存 | `data/video_time_cache.json` | `_load_video_time_cache()` / `_save_video_time_cache()` |

@@ -54,6 +54,13 @@ _record_write_lock = threading.Lock()
 _bitable_bulk_cache = {}  # key -> (timestamp, data)
 _BITABLE_CACHE_TTL = 300  # 5分钟
 _last_cache_load_partial = False
+_trigger_time_table_cache = {"app_token": "", "table_ids": [], "inited": False}
+
+# 单条记录缓存：bugid -> (table_id, record_id, trigger_time)
+_trigger_time_bugid_cache = {}
+
+# 单表记录上限
+_TRIGGER_TIME_TABLE_LIMIT = 500
 
 # 需要从 server.py 延迟导入的函数（在函数体内 import）
 # _bot_get_trigger_times 等依赖 diagnostics 的函数留在 server.py
