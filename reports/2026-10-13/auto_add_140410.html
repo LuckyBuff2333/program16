@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>批次执行报告 · auto_add_140410</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+:root{--bg:#0f1117;--card:#1a1d2e;--border:#2a2d3e;--text:#e2e8f0;--muted:#8892a8;--accent:#6366f1;--green:#22c55e;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;--cyan:#06b6d4;--purple:#a78bfa}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);line-height:1.7;padding:20px}
+.container{max-width:1400px;margin:0 auto}
+h1{font-size:26px;font-weight:700;background:linear-gradient(135deg,#6366f1,#a78bfa);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.subtitle{color:var(--muted);font-size:13px;margin:4px 0 24px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+@media(max-width:1000px){.grid-2,.grid-3,.grid-4{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px}
+.card-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.card-value{font-size:28px;font-weight:700;margin:4px 0}
+.card-sub{font-size:11px;color:var(--muted)}
+.section{margin:28px 0}
+.section-title{font-size:16px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.section-title::before{content:'';display:inline-block;width:4px;height:18px;background:var(--accent);border-radius:2px}
+.chart-box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:20px}
+.chart-title{font-size:14px;font-weight:600;margin-bottom:10px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.3px;position:sticky;top:0;background:var(--card)}
+tr:hover{background:rgba(99,102,241,.06)}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.tag-ok{background:rgba(34,197,94,.15);color:var(--green)}
+.tag-fail{background:rgba(239,68,68,.15);color:var(--red)}
+.tag-warn{background:rgba(245,158,11,.15);color:var(--orange)}
+.tag-info{background:rgba(59,130,246,.15);color:var(--blue)}
+.bar{height:6px;border-radius:3px;background:#2a2d3e;overflow:hidden;position:relative}
+.green{color:var(--green)}.red{color:var(--red)}.orange{color:var(--orange)}.blue{color:var(--blue)}.cyan{color:var(--cyan)}.purple{color:var(--purple)}
+.bg-green{background:var(--green)}.bg-red{background:var(--red)}.bg-blue{background:var(--blue)}
+.conclusion{background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(167,139,250,.05));border:1px solid rgba(99,102,241,.25);border-radius:12px;padding:20px;margin-top:24px}
+.conclusion h3{font-size:15px;color:var(--accent);margin-bottom:12px}
+.conclusion li{margin:6px 0;font-size:13px;line-height:1.7}
+.table-wrap{max-height:500px;overflow:auto;border-radius:8px;border:1px solid var(--border)}
+.batch-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.batch-meta{font-size:11px;color:var(--muted)}
+.footer{text-align:center;color:var(--muted);font-size:11px;padding:24px 0}
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>批次执行报告 · auto_add_140410</h1>
+<p class="subtitle">数据来源：日报 HTML + 多维表格分析结果 · 生成时间：2026-10-15 13:46</p>
+
+<!-- ========== 顶部概览 ========== -->
+<div class="grid-4">
+  <div class="card"><div class="card-label">提交总数</div><div class="card-value blue">8</div>
+    <div class="card-sub">来源: 线上</div></div>
+  <div class="card"><div class="card-label">提交成功</div><div class="card-value green">2</div>
+    <div class="card-sub">提交成功率 25.0%</div></div>
+  <div class="card"><div class="card-label">多维表格分析成功</div><div class="card-value green">0</div>
+    <div class="card-sub">匹配 0 / 成功率 0%</div></div>
+  <div class="card"><div class="card-label">分析耗时均值</div><div class="card-value purple">0min</div>
+    <div class="card-sub">最大 0min</div></div>
+</div>
+
+<!-- ========== 批次配置 + 多维表格汇总 ========== -->
+<div class="section">
+  <div class="section-title">批次信息 & 多维表格分析</div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="batch-header">
+        <div><span class="tag tag-warn">线上</span></div>
+        <div class="batch-meta">auto_add_140410 · 10-13 14:04</div>
+      </div>
+      <div class="grid-4" style="margin-top:12px">
+        <div><div class="card-label">提交数</div><div style="font-size:22px;font-weight:700">8</div></div>
+        <div><div class="card-label">成功</div><div style="font-size:22px;font-weight:700" class="green">2</div></div>
+        <div><div class="card-label">失败</div><div style="font-size:22px;font-weight:700" class="red">6</div></div>
+        <div><div class="card-label">提交成功率</div><div style="font-size:22px;font-weight:700" class="green">25.0%</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="batch-header">
+        <div>多维表格验证</div>
+        <div class="batch-meta">匹配 0 / 总 8</div>
+      </div>
+      <div class="grid-4" style="margin-top:12px">
+        <div><div class="card-label">表格匹配</div><div style="font-size:22px;font-weight:700" class="blue">0</div></div>
+        <div><div class="card-label">分析成功</div><div style="font-size:22px;font-weight:700" class="green">0</div></div>
+        <div><div class="card-label">分析失败</div><div style="font-size:22px;font-weight:700" class="red">0</div></div>
+        <div><div class="card-label">未匹配</div><div style="font-size:22px;font-weight:700" class="orange">8</div></div>
+      </div>
+      
+<div class="card" style="border-left:3px solid var(--orange);margin-top:12px">
+  <div class="card-label">分析中（待出结果）</div>
+  <div class="card-value orange" style="font-size:18px">2 个</div>
+  <div class="card-sub">VCU-555145、VCU-555159</div>
+</div>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 图表区 ========== -->
+<div class="section">
+  <div class="section-title">图表分析</div>
+
+  <div class="grid-2">
+    <!-- 图1：提交 & 分析结果 -->
+    <div class="chart-box">
+      <div class="chart-title">提交 & 多维表格分析结果</div>
+      <div id="chart_result" style="height:320px"></div>
+    </div>
+    <!-- 图2：分析结果饼图 -->
+    <div class="chart-box">
+      <div class="chart-title">多维表格分析分布</div>
+      <div id="chart_analysis_pie" style="height:320px"></div>
+    </div>
+  </div>
+
+  <!-- 图3：耗时 -->
+  <div class="chart-box">
+    <div class="chart-title">分析耗时统计</div>
+    <div id="chart_duration" style="height:280px"></div>
+  </div>
+</div>
+
+<!-- ========== 失败详情 ========== -->
+
+<div class="conclusion">
+  <h3>核心结论</h3>
+  <ol>
+    <li><strong>auto_add_140410</strong> 共提交 <strong>8</strong> 个 Bug，提交成功率 <strong>25.0%</strong>（2/8）</li>
+    <li>多维表格匹配 <strong>0</strong> 个，分析成功 <strong>0</strong> 个，成功率 <strong>0%</strong></li>
+    <li>未匹配多维表格 <strong>8</strong> 个（可能尚在分析中）</li>
+    <li>尚在分析中：<strong>VCU-555145、VCU-555159</strong>，后续成功率可能提升</li>
+    <li>分析耗时均值 <strong>0min</strong>，最大 <strong>0min</strong></li>
+  </ol>
+</div>
+
+<div class="footer">Bug文档沉淀工具 · 批次执行报告 · auto_add_140410 · 2026-10-15 13:46</div>
+</div><!-- container -->
+
+<script>
+// ===== 图1: 提交 & 分析结果 =====
+const chart1 = echarts.init(document.getElementById('chart_result'));
+chart1.setOption({
+  tooltip:{trigger:'axis'},
+  legend:{data:['提交成功','分析成功','分析失败','未匹配'],textStyle:{color:'#8892a8'}},
+  grid:{left:50,right:20,bottom:30,top:40},
+  xAxis:{type:'category',data:['auto_add_140410'],axisLabel:{color:'#8892a8'},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:{type:'value',name:'Bug数',nameTextStyle:{color:'#8892a8'},axisLabel:{color:'#8892a8'},splitLine:{lineStyle:{color:'#1e2030'}}},
+  series:[
+    {name:'提交成功',type:'bar',data:[2],itemStyle:{color:'#3b82f6'}},
+    {name:'分析成功',type:'bar',data:[0],itemStyle:{color:'#22c55e'}},
+    {name:'分析失败',type:'bar',data:[0],itemStyle:{color:'#ef4444'}},
+    {name:'未匹配',type:'bar',data:[8],itemStyle:{color:'#f59e0b'}}
+  ]
+});
+
+// ===== 图2: 多维表格分析饼图 =====
+const chart2 = echarts.init(document.getElementById('chart_analysis_pie'));
+chart2.setOption({
+  tooltip:{trigger:'item',formatter:'{b}: {c} ({d}%)'},
+  legend:{bottom:10,textStyle:{color:'#8892a8'}},
+  series:[{
+    type:'pie',radius:['40%','70%'],center:['50%','45%'],
+    label:{color:'#e2e8f0',fontSize:12},
+    data:[
+      {value:0,name:'分析成功',itemStyle:{color:'#22c55e'}},
+      {value:0,name:'分析失败',itemStyle:{color:'#ef4444'}},
+      {value:8,name:'未匹配',itemStyle:{color:'#f59e0b'}}
+    ]
+  }]
+});
+
+// ===== 图3: 耗时统计 =====
+const chart3 = echarts.init(document.getElementById('chart_duration'));
+chart3.setOption({
+  tooltip:{trigger:'axis'},
+  grid:{left:50,right:20,bottom:30,top:30},
+  xAxis:{type:'category',data:['平均耗时','最大耗时'],axisLabel:{color:'#8892a8'},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:{type:'value',name:'分钟',nameTextStyle:{color:'#8892a8'},axisLabel:{color:'#8892a8'},splitLine:{lineStyle:{color:'#1e2030'}}},
+  series:[{
+    type:'bar',barWidth:'45%',
+    data:[
+      {value:0,itemStyle:{color:'#a78bfa'}},
+      {value:0,itemStyle:{color:'#ef4444'}}
+    ],
+    label:{show:true,position:'top',color:'#e2e8f0',formatter:p=>p.value+'min'}
+  }]
+});
+
+window.addEventListener('resize',()=>{chart1.resize();chart2.resize();chart3.resize()});
+</script>
+</body>
+</html>
