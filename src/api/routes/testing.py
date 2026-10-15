@@ -277,7 +277,7 @@ async def test_batch_ai_extract_times(request: Request):
         _batch_save_trigger_times_to_cloud, _save_trigger_time_to_csv,
     )
     from src.services.report_ops import _load_bitable_success_jiras
-    from src.services.server_legacy import _diag_extract_time_from_video_simple
+    from src.services.server_legacy import _diag_extract_time_from_video_simple, _has_gmlogger_logs, _diag_extract_time_from_images
     body = await request.json() or {}
     keys = body.get("keys") or []
     filter_existing = body.get("filter_existing", False)  # 过滤多维表格中已有数据
@@ -397,28 +397,68 @@ async def test_batch_ai_extract_times(request: Request):
 
                 async def _process_one(key):
                     """处理单条触发时间提取，返回 (key, status, tt_val)"""
+                    def _should_stop():
+                        return _batch_extract_stop_event.is_set() or stop_event.is_set()
                     status = "success"
                     tt_val = ""
                     try:
+                        if _should_stop():
+                            return key, "stopped", ""
                         issue = await asyncio.wait_for(
                             loop.run_in_executor(None, _jc.fetch_issue, key),
                             timeout=30)
+                        if _should_stop():
+                            return key, "stopped", ""
                         attachments = (issue.get("fields") or {}).get("attachment") or []
-                        has_gmlogger = any("gmlogger" in (att.get("filename", "") or "").lower() for att in attachments)
-                        if not has_gmlogger:
+                        _has_log = await loop.run_in_executor(None, _has_gmlogger_logs, attachments, key)
+                        if not _has_log:
+                            # 无gmlogger且包内无main → 不写空标记，下次仍可重新检查
                             return key, "no_gmlogger", ""
+                        if _should_stop():
+                            return key, "stopped", ""
                         tt = ""
                         if video_fallback:
+                            # 勾选"视频提取优先"：视频 → 评论 → 图片
                             async with _ocr_sem:
+                                if _should_stop():
+                                    return key, "stopped", ""
                                 video_tt = await loop.run_in_executor(
                                     None, _diag_extract_time_from_video_simple, issue)
                             if video_tt:
                                 tt = video_tt
                                 sources[key] = "视频提取"
-                        if not tt:
+                            if not tt:
+                                tt = _jc.extract_trigger_time_from_issue(issue)
+                                if tt:
+                                    sources[key] = "新提取"
+                        else:
+                            # 默认不勾选：评论 → 视频 → 图片
                             tt = _jc.extract_trigger_time_from_issue(issue)
                             if tt:
                                 sources[key] = "新提取"
+                            if not tt:
+                                async with _ocr_sem:
+                                    if _should_stop():
+                                        return key, "stopped", ""
+                                    video_tt = await loop.run_in_executor(
+                                        None, _diag_extract_time_from_video_simple, issue)
+                                if video_tt:
+                                    tt = video_tt
+                                    sources[key] = "视频提取"
+                        # 图片OCR最终兜底（两种模式都走）
+                        if not tt:
+                            if _should_stop():
+                                return key, "stopped", ""
+                            cfg_api = load_config().get("jira_api", {})
+                            img_h = {}
+                            img_tok = cfg_api.get("token", "")
+                            if img_tok:
+                                img_h["Authorization"] = f"Bearer {img_tok}"
+                            img_to = max(int(cfg_api.get("timeout", 30)), 120)
+                            img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, key)
+                            if img_tt:
+                                tt = img_tt
+                                sources[key] = "图片提取"
                         if tt:
                             trigger_times[key] = tt
                             tt_val = tt
@@ -441,8 +481,9 @@ async def test_batch_ai_extract_times(request: Request):
                     return key, status, tt_val
 
                 if parallel and len(need_fetch) > 1:
-                    # ── 并行模式：Semaphore(8) 控制并发 ──
-                    sem = asyncio.Semaphore(8)
+                    # ── 并行模式：从配置读取并发数 ──
+                    _trigger_parallel = load_config().get("params", {}).get("trigger_parallel", 8)
+                    sem = asyncio.Semaphore(_trigger_parallel)
                     async def _sem_process(key):
                         async with sem:
                             if interrupted or _batch_extract_stop_event.is_set() or stop_event.is_set():
@@ -461,7 +502,7 @@ async def test_batch_ai_extract_times(request: Request):
                                 t.cancel()
                             break
                         key, status, tt_val = await coro
-                        if status == "skipped":
+                        if status == "skipped" or status == "stopped":
                             continue
                         if status == "no_gmlogger":
                             sources[key] = "无gmlogger"
@@ -498,6 +539,10 @@ async def test_batch_ai_extract_times(request: Request):
                             interrupted = True
                             break
                         key, status, tt_val = await _process_one(key)
+                        if status == "stopped":
+                            logger.info("前端停止信号触发（_process_one内部检测），优雅中断（已完成 %d/%d）", i, len(need_fetch))
+                            interrupted = True
+                            break
                         if status == "no_gmlogger":
                             sources[key] = "无gmlogger"
                             skip_no_gmlogger += 1
@@ -639,7 +684,7 @@ async def test_batch_ai_sample(request: Request):
         _batch_save_trigger_times_to_cloud,
     )
     from src.services.report_ops import _load_all_doc_jira_keys
-    from src.services.server_legacy import _diag_extract_time_from_video_simple
+    from src.services.server_legacy import _diag_extract_time_from_video_simple, _has_gmlogger_logs, _diag_extract_time_from_images
     body = await request.json() or {}
     keys = body.get("keys") or []
     count = int(body.get("count", 0))
@@ -707,10 +752,28 @@ async def test_batch_ai_sample(request: Request):
                 try:
                     from src.clients import jira_client as _jc
                     issue = _jc.fetch_issue(k)
-                    # 视频 OCR 提取优先级最高
-                    tt = _diag_extract_time_from_video_simple(issue)
+                    # gmlogger 前置检查：无 gmlogger 附件直接跳过（与批量提取保持一致）
+                    attachments = (issue.get("fields") or {}).get("attachment") or []
+                    if not _has_gmlogger_logs(attachments, k):
+                        logger.info("抽样提取: %s 无gmlogger附件，跳过", k)
+                        extract_failed += 1
+                        continue
+                    # 评论/字段提取优先（文本提取准确率最高且速度最快）
+                    tt = _jc.extract_trigger_time_from_issue(issue)
                     if not tt:
-                        tt = _jc.extract_trigger_time_from_issue(issue)
+                        # 文本未命中，视频OCR兜底
+                        tt = _diag_extract_time_from_video_simple(issue)
+                    if not tt:
+                        # 视频也未命中，图片OCR再兜底
+                        cfg_api = load_config().get("jira_api", {})
+                        img_h = {}
+                        img_tok = cfg_api.get("token", "")
+                        if img_tok:
+                            img_h["Authorization"] = f"Bearer {img_tok}"
+                        img_to = max(int(cfg_api.get("timeout", 30)), 120)
+                        img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, k)
+                        if img_tt:
+                            tt = img_tt
                     # 防御性处理：确保 tt 是字符串
                     if tt and not isinstance(tt, str):
                         if hasattr(tt, 'strftime'):
@@ -1143,6 +1206,7 @@ async def test_trigger_time(request: Request):
         _load_trigger_times_from_cloud,
         _save_trigger_time_to_cloud,
     )
+    from src.services.server_legacy import _diag_extract_time_from_video_simple, _has_gmlogger_logs, _diag_extract_time_from_images
     body = await request.json() or {}
     bugid = str(body.get("bugid", "")).strip()
     if not bugid:
@@ -1159,17 +1223,43 @@ async def test_trigger_time(request: Request):
             }, f"云端已有触发时间: {cached_time}")
         # 云端无记录，从 Jira 提取
         issue = jira_client.fetch_issue(bugid)
+        # gmlogger 前置检查
+        attachments = (issue.get("fields") or {}).get("attachment") or []
+        if not _has_gmlogger_logs(attachments, bugid):
+            return _fail("无gmlogger附件，跳过提取")
+        # 评论/字段提取优先（文本提取准确率最高且速度最快）
         trigger_time = jira_client.extract_trigger_time_from_issue(issue)
+        source = "jira_comment"
         if not trigger_time:
-            return _fail("提取失败，评论区未获取到时间内容")
+            # 文本未命中，视频OCR兜底
+            trigger_time = _diag_extract_time_from_video_simple(issue)
+            if trigger_time:
+                source = "video_ocr"
+        if not trigger_time:
+            # 视频也未命中，图片OCR再兜底
+            cfg_api = load_config().get("jira_api", {})
+            img_h = {}
+            img_tok = cfg_api.get("token", "")
+            if img_tok:
+                img_h["Authorization"] = f"Bearer {img_tok}"
+            img_to = max(int(cfg_api.get("timeout", 30)), 120)
+            img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, bugid)
+            if img_tt:
+                trigger_time = img_tt
+                source = "image_ocr"
+        if not trigger_time:
+            return _fail("提取失败，评论/视频/图片均未获取到时间内容")
+        # 防御性处理：确保 tt 是字符串
+        if not isinstance(trigger_time, str):
+            trigger_time = trigger_time.strftime("%Y-%m-%d %H:%M:%S") if hasattr(trigger_time, 'strftime') else str(trigger_time)
         # 提取成功后保存到云端+本地
         _save_trigger_time_to_cloud(bugid, trigger_time)
         comments = jira_client.extract_comments(issue)
         return _ok({
             "trigger_time": trigger_time,
             "comment_count": len(comments),
-            "source": "jira",
-        }, f"Jira提取成功，从 {len(comments)} 条评论中提取到触发时间")
+            "source": source,
+        }, f"Jira提取成功({source})，从 {len(comments)} 条评论中提取到触发时间")
     except Exception as e:
         logger.error("触发时间提取失败: %s", e)
         return _fail(str(e))
@@ -2127,7 +2217,11 @@ async def test_prod_batch_run(request: Request):
     filter_pc_only = body.get("filter_pc_only", False)  # 仅过滤PC来源的正确+通用失败
     filter_online_only = body.get("filter_online_only", False)  # 仅过滤线上来源的正确+通用失败
     max_count = int(body.get("max_count") or 0)  # 抽取数量上限，0 表示不限制
-    exec_mode = body.get("exec_mode", "online")  # 执行模式：online(线上) / pc
+    exec_mode = body.get("exec_mode") or ""  # 执行模式：online(线上) / pc
+    # 兼容旧版前端未传 exec_mode 时，从 trigger_source 推断
+    if not exec_mode:
+        _ts = (body.get("trigger_source") or "").upper()
+        exec_mode = "pc" if _ts in ("PC", "JIRA_ANALYZE") else "online"
     # 前端已提取的触发时间（抽样步骤已获取，优先使用避免重复提取）
     frontend_trigger_times = body.get("trigger_times") or {}
     # 批量执行元数据
@@ -2250,20 +2344,40 @@ async def test_prod_batch_run(request: Request):
             pending_pool = pending_pool[extract_batch_size:]
             if not batch:
                 break
+            from src.services.server_legacy import _diag_extract_time_from_video_simple, _has_gmlogger_logs, _diag_extract_time_from_images
             from src.clients import jira_client as _jc
             def _extract_one(bugid):
                 try:
                     issue = _jc.fetch_issue(bugid)
-                    tt = _diag_extract_time_from_video_simple(issue)
-                    if tt:
-                        if not isinstance(tt, str):
-                            tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
-                        return bugid, tt
+                    # gmlogger 前置检查：无 gmlogger 附件直接跳过所有时间提取（与机器人流程一致）
+                    attachments = (issue.get("fields") or {}).get("attachment") or []
+                    if not _has_gmlogger_logs(attachments, bugid):
+                        logger.info("触发时间: %s 无gmlogger附件，跳过", bugid)
+                        return bugid, None  # None 表示无gmlogger，不写空标签
+                    # 评论/字段提取优先（基于对比实验结果：文本提取准确率最高且速度最快）
                     tt = _jc.extract_trigger_time_from_issue(issue)
                     if tt:
                         if not isinstance(tt, str):
                             tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
                         return bugid, tt
+                    # 文本未命中，视频OCR兜底
+                    tt = _diag_extract_time_from_video_simple(issue)
+                    if tt:
+                        if not isinstance(tt, str):
+                            tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
+                        return bugid, tt
+                    # 视频也未命中，图片OCR再兜底
+                    cfg_api = load_config().get("jira_api", {})
+                    img_h = {}
+                    img_tok = cfg_api.get("token", "")
+                    if img_tok:
+                        img_h["Authorization"] = f"Bearer {img_tok}"
+                    img_to = max(int(cfg_api.get("timeout", 30)), 120)
+                    img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, bugid)
+                    if img_tt:
+                        if not isinstance(img_tt, str):
+                            img_tt = img_tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(img_tt, 'strftime') else str(img_tt)
+                        return bugid, img_tt
                 except Exception:
                     pass
                 return bugid, ""
@@ -2278,6 +2392,8 @@ async def test_prod_batch_run(request: Request):
                         if tt:
                             trigger_times[bugid] = tt
                             _save_trigger_time_to_cloud(bugid, tt)
+                        elif tt is None:
+                            pass  # 无gmlogger，不写空标签到云端（下次仍可重试）
                         else:
                             _save_trigger_time_to_cloud(bugid, "")
                     except Exception:
@@ -2292,6 +2408,11 @@ async def test_prod_batch_run(request: Request):
         yield f"data: {_json.dumps({'type': 'extract_done', 'total': len(run_bugids), 'with_time': len(trigger_times), 'without_time': skipped_no_time, 'skip_empty_mark': skip_empty_mark}, ensure_ascii=False)}\n\n"
         # 批量执行接口（支持PC/线上模式）
         result_queue = queue.Queue()
+        import threading as _th
+        _exec_concurrency = int(body.get("analysis_concurrency") or 5)
+        _exec_sem = _th.Semaphore(_exec_concurrency)  # 执行阶段并发控制
+        _MAX_RETRIES = 1  # 失败后重试次数
+        _RETRY_DELAY = 3  # 重试间隔（秒）
 
         def _run_one(bugid):
             if stop_event.is_set():
@@ -2305,32 +2426,46 @@ async def test_prod_batch_run(request: Request):
                                   "执行时间": batch_start_time,
                                   "status": "fail", "msg": "无触发时间"})
                 return
-            try:
-                if exec_mode == "online":
-                    payload = _build_prod_ai_payload(bugid, exec_time)
-                    resp = http_post(_get_prod_ai_url(), payload, timeout=_get_prod_ai_cfg()["timeout"])
-                else:
-                    cfg = load_config()["ai_log_api"]
-                    payload = {cfg["bugid_field"]: bugid}
-                    if cfg.get("trigger_time_field") and exec_time:
-                        payload[cfg["trigger_time_field"]] = exec_time
-                    resp = http_post(cfg["url"], payload, timeout=int(cfg.get("timeout", 60)))
+            last_err = ""
+            for _attempt in range(1 + _MAX_RETRIES):
                 if stop_event.is_set():
                     return
-                resp_code = resp.get("code") if isinstance(resp, dict) else None
-                resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
-                is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
-                if is_ok and exec_mode == "pc":
-                    is_ok = any(kw in resp_msg for kw in ["分析任务已启动", "后台处理", "正在分析"])
-                result_queue.put({"Jira号": bugid, "执行结果": "成功" if is_ok else "失败",
-                                  "备注": resp_msg[:200], "触发时间": exec_time,
-                                  "执行时间": batch_start_time,
-                                  "status": "success" if is_ok else "fail", "msg": resp_msg[:100]})
-            except Exception as e:
-                result_queue.put({"Jira号": bugid, "执行结果": "失败",
-                                  "备注": str(e)[:200], "触发时间": trigger_times.get(bugid, ""),
-                                  "执行时间": batch_start_time,
-                                  "status": "fail", "msg": str(e)[:100]})
+                try:
+                    with _exec_sem:
+                        if exec_mode == "online":
+                            payload = _build_prod_ai_payload(bugid, exec_time)
+                            resp = http_post(_get_prod_ai_url(), payload, timeout=_get_prod_ai_cfg()["timeout"])
+                        else:
+                            cfg = load_config()["ai_log_api"]
+                            payload = {cfg["bugid_field"]: bugid}
+                            if cfg.get("trigger_time_field") and exec_time:
+                                payload[cfg["trigger_time_field"]] = exec_time
+                            resp = http_post(cfg["url"], payload, timeout=int(cfg.get("timeout", 60)))
+                    if stop_event.is_set():
+                        return
+                    resp_code = resp.get("code") if isinstance(resp, dict) else None
+                    resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
+                    is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
+                    if is_ok and exec_mode == "pc":
+                        is_ok = any(kw in resp_msg for kw in ["分析任务已启动", "后台处理", "正在分析"])
+                    retry_note = f"（重试成功）" if _attempt > 0 else ""
+                    result_queue.put({"Jira号": bugid, "执行结果": "成功" if is_ok else "失败",
+                                      "备注": f"{retry_note}{resp_msg[:200]}", "触发时间": exec_time,
+                                      "执行时间": batch_start_time,
+                                      "status": "success" if is_ok else "fail", "msg": f"{retry_note}{resp_msg[:100]}"})
+                    return  # 成功或业务失败都不重试，只有异常才重试
+                except Exception as e:
+                    last_err = str(e)[:200]
+                    if _attempt < _MAX_RETRIES:
+                        logger.info("%s 执行失败(第%d次)，%ds后重试: %s", bugid, _attempt + 1, _RETRY_DELAY, last_err)
+                        import time as _time
+                        _time.sleep(_RETRY_DELAY)
+            # 所有重试耗尽
+            retry_note = "（已重试）" if _MAX_RETRIES > 0 else ""
+            result_queue.put({"Jira号": bugid, "执行结果": "失败",
+                              "备注": f"{retry_note}{last_err}", "触发时间": trigger_times.get(bugid, ""),
+                              "执行时间": batch_start_time,
+                              "status": "fail", "msg": f"{retry_note}{last_err[:100]}"})
 
         for bugid in run_bugids:
             loop.run_in_executor(None, _run_one, bugid)
