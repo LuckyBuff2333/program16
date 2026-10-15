@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>批次执行报告 · batch_175230</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+:root{--bg:#0f1117;--card:#1a1d2e;--border:#2a2d3e;--text:#e2e8f0;--muted:#8892a8;--accent:#6366f1;--green:#22c55e;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;--cyan:#06b6d4;--purple:#a78bfa}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);line-height:1.7;padding:20px}
+.container{max-width:1400px;margin:0 auto}
+h1{font-size:26px;font-weight:700;background:linear-gradient(135deg,#6366f1,#a78bfa);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.subtitle{color:var(--muted);font-size:13px;margin:4px 0 24px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+@media(max-width:1000px){.grid-2,.grid-3,.grid-4{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px}
+.card-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.card-value{font-size:28px;font-weight:700;margin:4px 0}
+.card-sub{font-size:11px;color:var(--muted)}
+.section{margin:28px 0}
+.section-title{font-size:16px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.section-title::before{content:'';display:inline-block;width:4px;height:18px;background:var(--accent);border-radius:2px}
+.chart-box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:20px}
+.chart-title{font-size:14px;font-weight:600;margin-bottom:10px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.3px;position:sticky;top:0;background:var(--card)}
+tr:hover{background:rgba(99,102,241,.06)}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.tag-ok{background:rgba(34,197,94,.15);color:var(--green)}
+.tag-fail{background:rgba(239,68,68,.15);color:var(--red)}
+.tag-warn{background:rgba(245,158,11,.15);color:var(--orange)}
+.tag-info{background:rgba(59,130,246,.15);color:var(--blue)}
+.bar{height:6px;border-radius:3px;background:#2a2d3e;overflow:hidden;position:relative}
+.bar-fill{height:100%;border-radius:3px;transition:width .3s}
+.green{color:var(--green)}.red{color:var(--red)}.orange{color:var(--orange)}.blue{color:var(--blue)}.cyan{color:var(--cyan)}.purple{color:var(--purple)}
+.bg-green{background:var(--green)}.bg-red{background:var(--red)}.bg-orange{background:var(--orange)}.bg-blue{background:var(--blue)}
+.conclusion{background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(167,139,250,.05));border:1px solid rgba(99,102,241,.25);border-radius:12px;padding:20px;margin-top:24px}
+.conclusion h3{font-size:15px;color:var(--accent);margin-bottom:12px}
+.conclusion li{margin:6px 0;font-size:13px;line-height:1.7}
+.table-wrap{max-height:500px;overflow:auto;border-radius:8px;border:1px solid var(--border)}
+.batch-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.batch-meta{font-size:11px;color:var(--muted)}
+.footer{text-align:center;color:var(--muted);font-size:11px;padding:24px 0}
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>批次执行报告 · batch_175230</h1>
+<p class="subtitle">数据来源：批次 CSV · 生成时间：2026-10-15 13:41</p>
+
+<!-- ========== 顶部概览 ========== -->
+<div class="grid-4">
+  <div class="card"><div class="card-label">提交总数</div><div class="card-value blue">1</div>
+    <div class="card-sub">来源: PC</div></div>
+  <div class="card"><div class="card-label">提交成功</div><div class="card-value green">0</div>
+    <div class="card-sub">占比 0.0%</div></div>
+  <div class="card"><div class="card-label">提交失败</div><div class="card-value red">1</div>
+    <div class="card-sub">占比 100.0%</div></div>
+  <div class="card"><div class="card-label">成功率</div><div class="card-value red">0.0%</div>
+    <div class="card-sub">0/1</div></div>
+</div>
+
+<!-- ========== 批次配置信息 ========== -->
+<div class="section">
+  <div class="section-title">批次配置</div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="batch-header">
+        <div><span class="tag tag-info">PC</span></div>
+        <div class="batch-meta">batch_175230 · 2026-10-14 17:52:29</div>
+      </div>
+      <div class="grid-4" style="margin-top:12px">
+        <div><div class="card-label">模型</div><div style="font-size:16px;font-weight:700" class="purple">deepseek-v-pro</div></div>
+        <div><div class="card-label">分析并发</div><div style="font-size:16px;font-weight:700">10</div></div>
+        <div><div class="card-label">下载并发</div><div style="font-size:16px;font-weight:700">4</div></div>
+        <div><div class="card-label">接口来源</div><div style="font-size:16px;font-weight:700" class="cyan">jira_analyze</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="batch-header">
+        <div>触发时间统计</div>
+        <div class="batch-meta">有触发时间 0 · 无触发时间 1</div>
+      </div>
+      <div class="grid-4" style="margin-top:12px">
+        <div><div class="card-label">有触发时间</div><div style="font-size:22px;font-weight:700" class="green">0</div></div>
+        <div><div class="card-label">无触发时间</div><div style="font-size:22px;font-weight:700" class="red">1</div></div>
+        <div><div class="card-label">无触发时间占比</div><div style="font-size:22px;font-weight:700" class="orange">100.0%</div></div>
+        <div><div class="card-label">提交失败(有触发)</div><div style="font-size:22px;font-weight:700" class="red">0</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 图表区 ========== -->
+<div class="section">
+  <div class="section-title">图表分析</div>
+
+  <div class="grid-2">
+    <!-- 图1：成功/失败饼图 -->
+    <div class="chart-box">
+      <div class="chart-title">执行结果分布</div>
+      <div id="chart_result_pie" style="height:320px"></div>
+    </div>
+    <!-- 图2：失败归类饼图 -->
+    <div class="chart-box">
+      <div class="chart-title">失败原因归类</div>
+      <div id="chart_fail_cats" style="height:320px"></div>
+    </div>
+  </div>
+
+  <!-- 图3：触发时间有无柱状图 -->
+  <div class="chart-box">
+    <div class="chart-title">触发时间 & 执行结果对比</div>
+    <div id="chart_trigger_bar" style="height:280px"></div>
+  </div>
+</div>
+
+<!-- ========== 失败详情 ========== -->
+<div class="section">
+  <div class="section-title">失败归类详情</div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>失败分类</th><th>数量</th><th>占比</th><th>示例 Jira</th></tr></thead>
+    <tbody><tr>
+      <td><span class="tag tag-fail">无触发时间</span></td>
+      <td class="red" style="font-weight:600">1</td>
+      <td>100.0%</td>
+      <td style="font-size:11px;color:var(--muted)">VCU-413634</td>
+    </tr></tbody></table></div></div>
+<!-- ========== Jira 提交详情 ========== -->
+<div class="section">
+  <div class="section-title">Jira 提交详情</div>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Jira号</th>
+        <th>触发时间</th>
+        <th>执行结果</th>
+        <th>报告长度</th>
+        <th>备注</th>
+      </tr>
+    </thead>
+    <tbody id="jiraTableBody"></tbody>
+  </table>
+  </div>
+</div>
+
+<!-- ========== 结论 ========== -->
+<div class="conclusion"><h3>核心结论</h3><ol><li><strong>batch_175230</strong> 共提交 <strong>1</strong> 个 Bug，来源 <strong>PC</strong>，执行时间 2026-10-14 17:52:29，使用模型 <strong>deepseek-v-pro</strong></li><li>提交失败 <strong>1</strong> 个（100.0%），其中 <strong>1</strong> 个因无触发时间</li><li>失败原因分布：无触发时间(1个)</li><li>整体表现 <strong class="red">偏差</strong>，需要重点关注失败项</li></ol></div><div class="footer">Bug文档沉淀工具 · 批次执行报告 · batch_175230 · 2026-10-15 13:41</div></div><!-- container -->
+
+<script>
+const failCats = [{"name": "无触发时间", "value": 1}];
+const jiras = [{"jira": "VCU-413634", "trigger_time": "", "result": "失败", "is_ok": false, "remark": "无触发时间", "report_len": "0"}];
+const totalOk = 0;
+const totalFail = 1;
+const triggerOk = 0;
+const triggerNo = 1;
+
+// ===== 图1: 执行结果饼图 =====
+const chart1 = echarts.init(document.getElementById('chart_result_pie'));
+chart1.setOption({
+  tooltip:{trigger:'item',formatter:'{b}: {c} ({d}%)'},
+  legend:{bottom:10,textStyle:{color:'#8892a8'}},
+  series:[{
+    type:'pie',radius:['40%','70%'],center:['50%','45%'],
+    label:{color:'#e2e8f0',fontSize:12},
+    data:[
+      {value:totalOk,name:'成功',itemStyle:{color:'#22c55e'}},
+      {value:totalFail,name:'失败',itemStyle:{color:'#ef4444'}}
+    ]
+  }]
+});
+
+// ===== 图2: 失败归类饼图 =====
+const chart2 = echarts.init(document.getElementById('chart_fail_cats'));
+const catColors = ['#ef4444','#f59e0b','#3b82f6','#a78bfa','#06b6d4','#22c55e','#ec4899'];
+chart2.setOption({
+  tooltip:{trigger:'item',formatter:'{b}: {c} ({d}%)'},
+  legend:{bottom:10,textStyle:{color:'#8892a8',fontSize:10}},
+  series:[{
+    type:'pie',radius:['35%','65%'],center:['50%','42%'],
+    label:{color:'#e2e8f0',fontSize:11},
+    data:failCats.map((c,i)=>({value:c.value,name:c.name,itemStyle:{color:catColors[i%catColors.length]}}))
+  }]
+});
+
+// ===== 图3: 触发时间 & 执行结果 =====
+const chart3 = echarts.init(document.getElementById('chart_trigger_bar'));
+chart3.setOption({
+  tooltip:{trigger:'axis'},
+  legend:{data:['有触发时间','无触发时间'],textStyle:{color:'#8892a8'}},
+  grid:{left:50,right:20,bottom:30,top:40},
+  xAxis:{type:'category',data:['提交总数','成功','失败'],axisLabel:{color:'#8892a8'},axisLine:{lineStyle:{color:'#2a2d3e'}}},
+  yAxis:{type:'value',name:'Bug数',nameTextStyle:{color:'#8892a8'},axisLabel:{color:'#8892a8'},splitLine:{lineStyle:{color:'#1e2030'}}},
+  series:[
+    {name:'有触发时间',type:'bar',stack:'total',
+      data:[triggerOk, jiras.filter(j=>j.is_ok&&j.trigger_time).length, jiras.filter(j=>!j.is_ok&&j.trigger_time).length],
+      itemStyle:{color:'#22c55e'}},
+    {name:'无触发时间',type:'bar',stack:'total',
+      data:[triggerNo, jiras.filter(j=>j.is_ok&&!j.trigger_time).length, jiras.filter(j=>!j.is_ok&&!j.trigger_time).length],
+      itemStyle:{color:'#ef4444'}}
+  ]
+});
+
+// ===== Jira 详情表 =====
+const tbody = document.getElementById('jiraTableBody');
+jiras.forEach((j,i)=>{
+  const tagCls = j.is_ok ? 'tag-ok' : 'tag-fail';
+  const resultText = j.is_ok ? '成功' : '失败';
+  const rc = j.is_ok ? 'green' : 'red';
+  tbody.innerHTML += `<tr>
+    <td>${i+1}</td>
+    <td style="font-weight:600">${j.jira}</td>
+    <td style="font-size:11px">${j.trigger_time||'—'}</td>
+    <td><span class="tag ${tagCls}">${resultText}</span></td>
+    <td>${j.report_len||'—'}</td>
+    <td style="font-size:11px;color:var(--muted);max-width:300px;overflow:hidden;text-overflow:ellipsis">${j.remark||'—'}</td>
+  </tr>`;
+});
+
+// 响应式
+window.addEventListener('resize',()=>{chart1.resize();chart2.resize();chart3.resize()});
+</script>
+</body>
+</html>
