@@ -1778,13 +1778,17 @@ async def _verify_write_bitable_impl(request: Request):
         return _fail(f"写入多维表格失败: {e}")
 
 
-def _scan_all_batch_records() -> list:
+def _scan_all_batch_records(after_date: str = "") -> list:
     """扫描所有批量执行记录（本地 + 云端），返回批次列表
 
+    :param after_date: 日期过滤（YYYY-MM-DD），跳过该日期之前的批次
     :return: [{batch_id, date, name, source, total, success, fail, base_info, jira_list}]
     """
     batches = []
     doc_dir = get_path("doc_dir")
+    cutoff_date = after_date[:10] if after_date else ""  # YYYY-MM-DD
+    # 从配置读取 Jira 号字段名，兼容旧版 CSV 的 "jira号"/"Jira号" 列名
+    _jira_col = load_config().get("feishu_bitable", {}).get("bugid_field", "jira号")
 
     def _process_csv(path: str, date_str: str, name: str) -> dict:
         """处理单个 CSV 文件，返回批次信息"""
@@ -1796,7 +1800,7 @@ def _scan_all_batch_records() -> list:
         source = ""
         base_info = {"分析并发数": "", "下载并发数": "", "模型": ""}
         for r in rows:
-            jira_no = (r.get("jira号") or r.get("Jira号") or "").strip()
+            jira_no = (r.get(_jira_col) or r.get("jira号") or r.get("Jira号") or "").strip()
             if jira_no:
                 jira_list.append(jira_no)
             if (r.get("执行结果") or "").strip() == "成功":
@@ -1818,6 +1822,8 @@ def _scan_all_batch_records() -> list:
     # 路径1：本地 docs/日期/batch_*.csv
     if os.path.isdir(doc_dir):
         for date_folder in sorted(os.listdir(doc_dir), reverse=True):
+            if cutoff_date and date_folder < cutoff_date:
+                continue
             day_dir = os.path.join(doc_dir, date_folder)
             if not os.path.isdir(day_dir):
                 continue
@@ -1829,14 +1835,20 @@ def _scan_all_batch_records() -> list:
                     info["batch_id"] = f"{date_folder}/{fname.replace('.csv', '')}"
                     batches.append(info)
 
-    # 路径2：本地 data/unanalyzed/prod_batch_*.csv
+    # 路径2：本地 data/unanalyzed/prod_batch_*.csv 和 regression_*.csv
     unanalyzed_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "unanalyzed")
     if os.path.isdir(unanalyzed_dir):
         for fname in sorted(os.listdir(unanalyzed_dir)):
-            if not fname.startswith("prod_batch_") or not fname.endswith(".csv"):
+            if not fname.endswith(".csv"):
+                continue
+            is_prod = fname.startswith("prod_batch_")
+            is_regr = fname.startswith("regression_")
+            if not is_prod and not is_regr:
                 continue
             parts = fname.replace(".csv", "").split("_")
             date_str = f"{parts[2]}-{parts[3]}-{parts[4]}" if len(parts) >= 5 else ""
+            if cutoff_date and date_str and date_str < cutoff_date:
+                continue
             info = _process_csv(os.path.join(unanalyzed_dir, fname), date_str, fname.replace(".csv", ""))
             if info:
                 info["batch_id"] = f"unanalyzed/{fname.replace('.csv', '')}"
@@ -1853,7 +1865,10 @@ def _scan_all_batch_records() -> list:
                 if f.get("type") != "docx":
                     continue
                 fname = f.get("name", "")
-                f_folder = f.get("folder", "")
+                f_folder = f.get("folder", "")  # 日期子文件夹名，如 2026-10-11
+                # 按日期跳过旧文件夹
+                if cutoff_date and f_folder and f_folder < cutoff_date:
+                    continue
                 doc_token = f.get("token", "")
                 if not doc_token or not fname.startswith(("批量执行", "线上批量执行")):
                     continue
@@ -1870,7 +1885,7 @@ def _scan_all_batch_records() -> list:
                     source = ""
                     base_info = {"分析并发数": "", "下载并发数": "", "模型": ""}
                     for r in batch_rows:
-                        jira_no = (r.get("jira号") or r.get("Jira号") or "").strip()
+                        jira_no = (r.get(_jira_col) or r.get("jira号") or r.get("Jira号") or "").strip()
                         if jira_no:
                             jira_list.append(jira_no)
                         if (r.get("执行结果") or "").strip() == "成功":

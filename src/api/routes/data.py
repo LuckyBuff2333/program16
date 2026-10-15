@@ -198,44 +198,62 @@ def data_history_jira(
     batch_name: str = Query(default="", description="批次名称"),
     batch_created: str = Query(default="", description="创建时间"),
 ):
-    """数据面板：从云端文档读取批次 Jira 列表并聚合多维表格匹配记录"""
+    """数据面板：从云端文档读取批次 Jira 列表并聚合多维表格匹配记录，支持多批次（逗号分隔 token）"""
     from src.clients import feishu_client
     from src.api.routes.shared import bitable_text as _bitable_text, ok as _ok, fail as _fail, flatten_bitable_record as _flatten_bitable_record, parse_markdown_batch_table as _parse_markdown_batch_table
     if not batch_token:
         return _fail("缺少 batch_token 参数")
-    batch_exec_time = ""
-    m = re.search(r"(\d{4}-\d{2}-\d{2})[_\s](\d{6})", batch_name or "")
-    if m:
-        batch_exec_time = f"{m.group(1)} {m.group(2)[:2]}:{m.group(2)[2:4]}:{m.group(2)[4:]}"
-    if not batch_exec_time and batch_created:
-        try:
-            ts = int(batch_created)
-            batch_exec_time = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-        except (ValueError, TypeError, OSError):
-            iso_m = re.search(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})", batch_created)
-            if iso_m:
-                batch_exec_time = f"{iso_m.group(1)} {iso_m.group(2)}"
-    if batch_exec_time:
-        logger.info("批次过滤时间: %s（来源: %s）", batch_exec_time, "文档名" if m else "created_time")
-    try:
-        md = feishu_client.fetch_docx_as_markdown(batch_token)
-    except Exception as e:
-        logger.warning("读取云端批次文档失败: %s", e)
-        return _fail(f"读取云端文档失败: {e}")
-    batch_rows = _parse_markdown_batch_table(md)
+    # 支持多批次：逗号分隔的 token
+    tokens = [t.strip() for t in batch_token.split(",") if t.strip()]
+    names = [n.strip() for n in (batch_name or "").split(",")]
+    createds = [c.strip() for c in (batch_created or "").split(",")]
+    # 解析每个批次的执行时间
+    batch_exec_times = []
+    for i, tk in enumerate(tokens):
+        nm = names[i] if i < len(names) else ""
+        ct = createds[i] if i < len(createds) else ""
+        exec_time = ""
+        m = re.search(r"(\d{4}-\d{2}-\d{2})[_\s](\d{6})", nm)
+        if m:
+            exec_time = f"{m.group(1)} {m.group(2)[:2]}:{m.group(2)[2:4]}:{m.group(2)[4:]}"
+        if not exec_time and ct:
+            try:
+                ts = int(ct)
+                exec_time = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError, OSError):
+                iso_m = re.search(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})", ct)
+                if iso_m:
+                    exec_time = f"{iso_m.group(1)} {iso_m.group(2)}"
+        batch_exec_times.append(exec_time)
+    if any(batch_exec_times):
+        logger.info("多批次过滤时间: %s", batch_exec_times)
+    # 遍历所有批次文档，收集 Jira 列表
     jira_list = []
-    for r in batch_rows:
-        jira_no = (r.get("jira号") or "").strip()
-        if jira_no:
-            jira_list.append({
-                "jira号": jira_no,
-                "执行结果": (r.get("执行结果") or "").strip(),
-                "执行时间": (r.get("执行时间") or "").strip(),
-                "备注": (r.get("备注") or "").strip(),
-            })
+    jira_seen = set()  # 跨批次去重
+    for i, tk in enumerate(tokens):
+        try:
+            md = feishu_client.fetch_docx_as_markdown(tk)
+        except Exception as e:
+            logger.warning("读取云端批次文档 %s 失败: %s", tk, e)
+            continue
+        batch_rows = _parse_markdown_batch_table(md)
+        exec_time = batch_exec_times[i] if i < len(batch_exec_times) else ""
+        for r in batch_rows:
+            jira_no = (r.get("jira号") or "").strip()
+            if jira_no and jira_no not in jira_seen:
+                jira_seen.add(jira_no)
+                jira_list.append({
+                    "jira号": jira_no,
+                    "执行结果": (r.get("执行结果") or "").strip(),
+                    "执行时间": (r.get("执行时间") or "").strip(),
+                    "备注": (r.get("备注") or "").strip(),
+                    "_exec_time": exec_time,
+                })
     if not jira_list:
         return _ok({"rows": [], "count": 0}, "该批次无有效 Jira 记录")
     jira_set = set(item["jira号"] for item in jira_list)
+    # 取所有批次中最早的时间作为兜底过滤（多批次时放宽过滤条件）
+    earliest_time = min((t for t in batch_exec_times if t), default="")
     cfg = load_config().get("feishu_bitable", {})
     app_token = cfg.get("app_token", "")
     table_id = cfg.get("table_id", "")
@@ -250,7 +268,7 @@ def data_history_jira(
                 jira_key = _bitable_text(fields.get(bugid_field, ""))
                 if jira_key and jira_key in jira_set:
                     rec_done = _bitable_text(fields.get("分析完成时间", ""))
-                    if batch_exec_time and (not rec_done or rec_done < batch_exec_time):
+                    if earliest_time and (not rec_done or rec_done < earliest_time):
                         continue
                     bitable_records_map.setdefault(jira_key, []).append(
                         _flatten_bitable_record(fields, report_field))
