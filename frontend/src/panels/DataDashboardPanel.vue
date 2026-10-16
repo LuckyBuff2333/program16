@@ -26,49 +26,6 @@
       </div>
     </div>
 
-    <!-- 概览卡片 -->
-    <div v-if="summary.total_batches > 0" class="db-stats">
-      <div class="db-stat-card" style="--accent:#409eff;--bg:linear-gradient(135deg,#e8f4fd,#f0f7ff)">
-        <div class="db-stat-icon">📦</div>
-        <div class="db-stat-body">
-          <div class="db-stat-value">{{ summary.total_batches }}</div>
-          <div class="db-stat-label">批次数</div>
-        </div>
-        <div class="db-stat-foot">PC {{ summary.pc_batches }} · 线上 {{ summary.online_batches }}</div>
-      </div>
-      <div class="db-stat-card" style="--accent:#6366f1;--bg:linear-gradient(135deg,#eef2ff,#f5f3ff)">
-        <div class="db-stat-icon">📋</div>
-        <div class="db-stat-body">
-          <div class="db-stat-value">{{ summary.total_submit }}</div>
-          <div class="db-stat-label">总提交</div>
-        </div>
-        <div class="db-stat-foot">
-          <span style="color:#67c23a">{{ summary.total_ok }}</span> 成功 ·
-          <span style="color:#f56c6c">{{ summary.total_fail }}</span> 失败
-        </div>
-      </div>
-      <div class="db-stat-card" style="--accent:#67c23a;--bg:linear-gradient(135deg,#f0fdf4,#ecfdf5)">
-        <div class="db-stat-icon">✅</div>
-        <div class="db-stat-body">
-          <div class="db-stat-value" :style="{ color: summary.submit_rate >= 80 ? '#16a34a' : summary.submit_rate >= 60 ? '#d97706' : '#dc2626' }">
-            {{ summary.submit_rate }}%
-          </div>
-          <div class="db-stat-label">提交成功率</div>
-        </div>
-        <div class="db-stat-foot">{{ summary.total_ok }} / {{ summary.total_submit }}</div>
-      </div>
-      <div class="db-stat-card" style="--accent:#a78bfa;--bg:linear-gradient(135deg,#faf5ff,#f5f3ff)">
-        <div class="db-stat-icon">🔬</div>
-        <div class="db-stat-body">
-          <div class="db-stat-value" :style="{ color: dashDetail.bt_match > 0 ? '#7c3aed' : '#c0c4cc' }">
-            {{ dashDetail.bt_match > 0 ? (dashDetail.bt_ok / dashDetail.bt_match * 100).toFixed(1) + '%' : '-' }}
-          </div>
-          <div class="db-stat-label">分析成功率</div>
-        </div>
-        <div class="db-stat-foot">匹配 {{ dashDetail.bt_match }} · 成功 {{ dashDetail.bt_ok }} · 失败 {{ dashDetail.bt_fail }}</div>
-      </div>
-    </div>
-
     <!-- 空状态 -->
     <el-empty v-if="!dataLoading && summary.total_batches === 0" description="该日期无批次数据"
       :image-size="80" style="padding:60px 0" />
@@ -110,8 +67,12 @@
             </div>
             <el-tag v-if="batch.has_report" type="success" size="small" effect="plain" round
               class="db-report-tag" @click.stop="openReport(batch)">报告 ↗</el-tag>
+            <el-tag v-else-if="batch.all_failed" type="danger" size="small" effect="dark" round>
+              全部失败
+            </el-tag>
             <el-tag v-else type="info" size="small" effect="plain" round>无报告</el-tag>
-            <span class="db-expand-arrow" :class="{ 'rotated': expandedName === batch.name }">▸</span>
+            <span class="db-expand-arrow"
+              :class="{ 'rotated': expandedName === batch.name, 'is-disabled': batch.all_failed }">▸</span>
           </div>
         </div>
 
@@ -250,12 +211,20 @@ export default {
       if (row._detail || row._detailLoading) return;
       row._detailLoading = true;
       try {
-        const r = await api(`/api/dashboard/batch_detail?date=${this.selectedDate}&batch=${row.name}`);
+        const ids = (row.rows || []).map(r => r['jira号'] || r.jira号 || '').filter(Boolean).join(',');
+        const url = ids
+          ? `/api/dashboard/batch_detail?date=${this.selectedDate}&batch=${encodeURIComponent(row.name)}&jira_ids=${encodeURIComponent(ids)}`
+          : `/api/dashboard/batch_detail?date=${this.selectedDate}&batch=${encodeURIComponent(row.name)}`;
+        const r = await api(url);
         row._detail = r.data;
         this.recalcDetail();
       } catch (e) { ElMessage.warning('批次详情加载失败: ' + (e.message || e)); } finally { row._detailLoading = false; }
     },
     toggleBatch(batch) {
+      if (batch.all_failed) {
+        ElMessage.info('该批次全部失败，仅展示不分析');
+        return;
+      }
       if (this.expandedName === batch.name) { this.expandedName = ''; return; }
       this.expandedName = batch.name;
       this.loadBatchDetail(batch);
@@ -353,6 +322,7 @@ export default {
 .db-report-tag { cursor: pointer; }
 .db-expand-arrow { font-size: 16px; color: #c0c4cc; transition: transform .25s ease; }
 .db-expand-arrow.rotated { transform: rotate(90deg); color: #409eff; }
+.db-expand-arrow.is-disabled { color: #e5e7eb; cursor: not-allowed; }
 
 /* ── 展开详情 ── */
 .db-batch-body { padding: 16px 22px 18px; border-top: 1px solid #ebeef5; background: #fafbfd; }

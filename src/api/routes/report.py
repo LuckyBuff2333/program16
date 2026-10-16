@@ -1,5 +1,7 @@
 """报表查询路由：日报/周报/抽查/批量执行等报表端点"""
 import os
+import time
+import threading
 from datetime import datetime
 
 from fastapi import APIRouter, Request, Query
@@ -10,6 +12,16 @@ from src.schemas.report import ClassifyDocsRequest
 
 logger = setup_logger("web.report")
 router = APIRouter()
+
+# ── 云端看板缓存（按日期，60 秒 TTL）──
+_dashboard_cloud_cache = {}  # {date_str: {"ts": float, "batches": list}}
+_dashboard_cache_lock = threading.Lock()
+_DASHBOARD_CLOUD_TTL = 60
+
+# ── 任务总览缓存（按日期，120 秒 TTL）──
+_task_overview_cache = {}  # {date_str: {"ts": float, "data": dict}}
+_task_overview_lock = threading.Lock()
+_TASK_OVERVIEW_TTL = 120
 
 
 @router.get("/api/report/audit_failed", response_model=ApiResponse)
@@ -359,72 +371,128 @@ def dashboard_dates():
 
 @router.get("/api/dashboard/data", response_model=ApiResponse)
 def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-DD，默认今天")):
-    """获取指定日期的看板数据：批次列表 + 汇总统计"""
+    """获取指定日期的看板数据：优先云端批次，本地 CSV 作补充"""
+    import re as _re
     import csv as _csv
     date_str = date or datetime.now().strftime("%Y-%m-%d")
-    docs_dir = os.path.join(PROJECT_ROOT, "docs", date_str)
     reports_dir = os.path.join(PROJECT_ROOT, "reports", date_str)
 
-    if not os.path.isdir(docs_dir):
-        from src.api.routes.shared import ok as _ok
-        return _ok({"date": date_str, "batches": [], "summary": {"total_batches": 0, "total_submit": 0}})
+    # ── 1. 云端优先：缓存命中则直接用 ──
+    cloud_batches = None
+    with _dashboard_cache_lock:
+        cached = _dashboard_cloud_cache.get(date_str)
+        if cached and time.time() - cached["ts"] < _DASHBOARD_CLOUD_TTL:
+            cloud_batches = cached["batches"]
+    if cloud_batches is None:
+        cloud_batches = _fetch_cloud_batches_for_date(date_str)
+        with _dashboard_cache_lock:
+            _dashboard_cloud_cache[date_str] = {"ts": time.time(), "batches": cloud_batches}
 
     batches = []
-    for f in sorted(os.listdir(docs_dir)):
-        if not f.endswith(".csv"):
-            continue
-        if not (f.startswith("batch_") or f.startswith("prod_batch_")):
-            continue
-        batch_name = f.replace(".csv", "")
-        source = "线上" if f.startswith("prod_batch_") else "PC"
-        csv_path = os.path.join(docs_dir, f)
-        rows = []
-        try:
-            with open(csv_path, encoding="utf-8-sig") as fh:
-                rows = list(_csv.DictReader(fh))
-        except Exception:
-            pass
+    seen_names = set()  # 用于本地补充时去重（按 (执行时间+条数) 作为稳定 key）
+
+    # ── 2. 云端批次构建 ──
+    for cb in cloud_batches:
+        name = cb["name"]
+        token = cb["token"]
+        rows = cb.get("rows") or []
         total = len(rows)
-        submit_ok = sum(1 for r in rows if r.get("执行结果", "").strip() not in ("失败", ""))
+        if total == 0:
+            continue
+        # 解析批次名提取执行时间：线上批量执行 YYYY-MM-DD HHMMSS (n/m)
+        exec_time = ""
+        m = _re.search(r"(\d{4}-\d{2}-\d{2})\s+(\d{6})", name)
+        if m:
+            exec_time = f"{m.group(1)} {m.group(2)[:2]}:{m.group(2)[2:4]}:{m.group(2)[4:]}"
+        submit_ok = sum(1 for r in rows if (r.get("执行结果") or "").strip() not in ("失败", ""))
         submit_fail = total - submit_ok
-        # 取第一条的元数据
-        exec_time = rows[0].get("执行时间", "").strip() if rows else ""
-        model = rows[0].get("模型", "").strip() if rows else ""
-        trigger_src = rows[0].get("触发来源", "").strip() if rows else ""
-        if trigger_src:
-            source = trigger_src
-        # 检查批次报 HTML
-        batch_html = os.path.join(reports_dir, f"{batch_name}_{date_str}.html")
-        batch_html_legacy = os.path.join(reports_dir, f"{batch_name}.html")
+        source = (rows[0].get("触发来源") or "").strip() if rows else ""
+        if not source:
+            source = "线上" if "线上" in name else "PC"
+        model = (rows[0].get("模型") or "").strip() if rows else ""
+        all_failed = total > 0 and submit_ok == 0
+        # 报告 HTML
+        safe = _re.sub(r"[^\w\-.]", "_", name)
+        batch_html = os.path.join(reports_dir, f"{safe}_{date_str}.html")
+        batch_html_legacy = os.path.join(reports_dir, f"{safe}.html")
         has_report = os.path.exists(batch_html) or os.path.exists(batch_html_legacy)
         report_file = ""
         if os.path.exists(batch_html):
-            report_file = f"{batch_name}_{date_str}.html"
+            report_file = f"{safe}_{date_str}.html"
         elif os.path.exists(batch_html_legacy):
-            report_file = f"{batch_name}.html"
-
+            report_file = f"{safe}.html"
         batches.append({
-            "name": batch_name,
-            "source": source,
-            "total": total,
-            "submit_ok": submit_ok,
-            "submit_fail": submit_fail,
-            "exec_time": exec_time,
-            "model": model,
-            "has_report": has_report,
-            "report_file": report_file,
+            "name": name, "source": source, "total": total,
+            "submit_ok": submit_ok, "submit_fail": submit_fail,
+            "exec_time": exec_time, "model": model,
+            "has_report": has_report, "report_file": report_file,
+            "all_failed": all_failed, "is_cloud": True, "token": token,
+            "rows": [{
+                "jira号": (r.get("jira号") or "").strip(),
+                "执行结果": (r.get("执行结果") or "").strip(),
+                "触发时间": (r.get("触发时间") or "").strip(),
+                "执行时间": (r.get("执行时间") or "").strip(),
+                "备注": (r.get("备注") or "").strip(),
+            } for r in rows],
         })
+        # 生成稳定 key 供本地去重
+        seen_names.add((exec_time, total))
 
-    # 汇总
+    # ── 3. 本地 CSV 补充（仅云端为空时启用，或本地有而云端无的批次） ──
+    docs_dir = os.path.join(PROJECT_ROOT, "docs", date_str)
+    if os.path.isdir(docs_dir) and not cloud_batches:
+        for f in sorted(os.listdir(docs_dir)):
+            if not f.endswith(".csv"):
+                continue
+            if not (f.startswith("batch_") or f.startswith("prod_batch_")):
+                continue
+            batch_name = f.replace(".csv", "")
+            source = "线上" if f.startswith("prod_batch_") else "PC"
+            csv_path = os.path.join(docs_dir, f)
+            rows = []
+            try:
+                with open(csv_path, encoding="utf-8-sig") as fh:
+                    rows = list(_csv.DictReader(fh))
+            except Exception:
+                pass
+            total = len(rows)
+            if total == 0:
+                continue
+            submit_ok = sum(1 for r in rows if r.get("执行结果", "").strip() not in ("失败", ""))
+            submit_fail = total - submit_ok
+            exec_time = rows[0].get("执行时间", "").strip() if rows else ""
+            model = rows[0].get("模型", "").strip() if rows else ""
+            trigger_src = rows[0].get("触发来源", "").strip() if rows else ""
+            if trigger_src:
+                source = trigger_src
+            if (exec_time, total) in seen_names:
+                continue  # 云端已有，跳过
+            seen_names.add((exec_time, total))
+            batch_html = os.path.join(reports_dir, f"{batch_name}_{date_str}.html")
+            batch_html_legacy = os.path.join(reports_dir, f"{batch_name}.html")
+            has_report = os.path.exists(batch_html) or os.path.exists(batch_html_legacy)
+            report_file = ""
+            if os.path.exists(batch_html):
+                report_file = f"{batch_name}_{date_str}.html"
+            elif os.path.exists(batch_html_legacy):
+                report_file = f"{batch_name}.html"
+            batches.append({
+                "name": batch_name, "source": source, "total": total,
+                "submit_ok": submit_ok, "submit_fail": submit_fail,
+                "exec_time": exec_time, "model": model,
+                "has_report": has_report, "report_file": report_file,
+                "all_failed": total > 0 and submit_ok == 0,
+                "is_cloud": False, "token": "",
+            })
+
+    # ── 4. 汇总 ──
     total_submit = sum(b["total"] for b in batches)
     total_ok = sum(b["submit_ok"] for b in batches)
     total_fail = sum(b["submit_fail"] for b in batches)
     pc_batches = sum(1 for b in batches if b["source"] == "PC")
     online_batches = sum(1 for b in batches if b["source"] != "PC")
-    # 日报 HTML
     daily_html = os.path.join(reports_dir, f"daily_report_{date_str}.html")
     has_daily_report = os.path.exists(daily_html)
-
     summary = {
         "total_batches": len(batches),
         "total_submit": total_submit,
@@ -432,34 +500,191 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
         "total_fail": total_fail,
         "pc_batches": pc_batches,
         "online_batches": online_batches,
-        "submit_rate": round(total_ok / total * 100, 1) if total else 0,
+        "submit_rate": round(total_ok / total_submit * 100, 1) if total_submit else 0,
         "has_daily_report": has_daily_report,
+        "cloud_count": sum(1 for b in batches if b.get("is_cloud")),
     }
-
     from src.api.routes.shared import ok as _ok
-    logger.info("看板数据: %s, %d 批次, %d 提交", date_str, len(batches), total_submit)
+    logger.info("看板数据: %s, %d 批次(云端 %d), %d 提交",
+                date_str, len(batches), summary["cloud_count"], total_submit)
     return _ok({"date": date_str, "batches": batches, "summary": summary})
+
+
+@router.get("/api/dashboard/task_overview", response_model=ApiResponse)
+def dashboard_task_overview(
+    date: str = Query(default=None, description="日期 YYYY-MM-DD，默认今天"),
+    force: bool = Query(default=False, description="强制刷新缓存"),
+):
+    """任务总览：5 维度统计（执行总数/成功/分析中/待排查/待重试）"""
+    from src.api.routes.shared import bitable_text as _bt, ok as _ok
+    date_str = date or datetime.now().strftime("%Y-%m-%d")
+    # ── 缓存检查 ──
+    if not force:
+        with _task_overview_lock:
+            cached = _task_overview_cache.get(date_str)
+            if cached and time.time() - cached["ts"] < _TASK_OVERVIEW_TTL:
+                return _ok(cached["data"])
+    # ── 1. 收集今日所有去重 Jira 号 ──
+    cloud_batches = None
+    with _dashboard_cache_lock:
+        cached = _dashboard_cloud_cache.get(date_str)
+        if cached and time.time() - cached["ts"] < _DASHBOARD_CLOUD_TTL:
+            cloud_batches = cached["batches"]
+    if cloud_batches is None:
+        cloud_batches = _fetch_cloud_batches_for_date(date_str)
+        with _dashboard_cache_lock:
+            _dashboard_cloud_cache[date_str] = {"ts": time.time(), "batches": cloud_batches}
+    jira_exec = {}  # {jira_id: {"exec_ok": bool, "exec_time": str, "trigger_time": str}}
+    for cb in cloud_batches:
+        for row in (cb.get("rows") or []):
+            jid = (row.get("jira号") or "").strip()
+            if not jid or jid in jira_exec:
+                continue
+            result = (row.get("执行结果") or "").strip()
+            jira_exec[jid] = {
+                "exec_ok": result not in ("失败", ""),
+                "exec_time": (row.get("执行时间") or "").strip(),
+                "trigger_time": (row.get("触发时间") or "").strip(),
+            }
+    all_ids = sorted(jira_exec.keys())
+    # ── 2. 查多维表格建立分析结果映射（含完成时间/耗时/错误/人工审核） ──
+    bt_map = {}  # {jira_id: [{result, done_time, duration, error_info, human_review}, ...]}
+    if all_ids:
+        try:
+            from src.clients import feishu_client
+            cfg = load_config().get("feishu_bitable", {})
+            app_token = cfg.get("app_token", "")
+            table_id = cfg.get("table_id", "")
+            bugid_field = cfg.get("bugid_field", "jira号")
+            if app_token and table_id:
+                records = feishu_client.list_bitable_records(app_token, table_id)
+                id_set = set(all_ids)
+                for rec in records:
+                    fields = rec.get("fields", {})
+                    jk = _bt(fields.get(bugid_field, ""))
+                    if jk and jk in id_set:
+                        bt_map.setdefault(jk, []).append({
+                            "result": _bt(fields.get("分析结果", "")).strip(),
+                            "done_time": _bt(fields.get("分析完成时间", "")).strip(),
+                            "duration": _bt(fields.get("分析耗时", "")).strip(),
+                            "error_info": (_bt(fields.get("错误信息", "")) or "")[:120],
+                            "human_review": _bt(fields.get("人工审核结果", "")).strip(),
+                        })
+        except Exception as e:
+            logger.warning("任务总览-多维表格查询失败: %s", e)
+    # ── 3. 分类统计（时间匹配：只取本次执行后的分析记录） ──
+    total_rows, success_rows, analyzing_rows, investigate_rows, retry_rows = [], [], [], [], []
+    for jid in all_ids:
+        exec_info = jira_exec[jid]
+        exec_time = exec_info["exec_time"]
+        recs = bt_map.get(jid, [])
+        # 按分析完成时间筛选：只取执行时间之后的记录
+        matched = [r for r in recs if r["done_time"] and r["done_time"] >= exec_time] if exec_time else recs
+        if not matched:
+            matched = recs  # 回退到全部记录
+        # 取最新一条
+        latest = None
+        if matched:
+            matched.sort(key=lambda r: r["done_time"] or "")
+            latest = matched[-1]
+        # 构建行数据
+        base = {"jira": jid}
+        if latest and latest["result"] == "成功":
+            success_rows.append({**base, "duration": latest["duration"]})
+            total_rows.append({**base, "status": "分析完成"})
+        elif not recs:
+            total_rows.append({**base, "status": "分析中"})
+            analyzing_rows.append({**base, "exec_time": exec_info["exec_time"], "trigger_time": exec_info["trigger_time"]})
+        elif exec_info["exec_ok"]:
+            total_rows.append({**base, "status": "分析完成" if recs else "分析中"})
+            retry_rows.append({**base, "done_time": latest["done_time"] if latest else "", "human_review": latest["human_review"] if latest else ""})
+        else:
+            total_rows.append({**base, "status": "分析完成" if recs else "分析中"})
+            investigate_rows.append({**base, "done_time": latest["done_time"] if latest else "", "error_info": latest["error_info"] if latest else ""})
+    result = {
+        "total": len(all_ids),
+        "all_rows": total_rows,
+        "success": {"count": len(success_rows), "rows": success_rows},
+        "analyzing": {"count": len(analyzing_rows), "rows": analyzing_rows},
+        "investigate": {"count": len(investigate_rows), "rows": investigate_rows},
+        "retry": {"count": len(retry_rows), "rows": retry_rows},
+    }
+    with _task_overview_lock:
+        _task_overview_cache[date_str] = {"ts": time.time(), "data": result}
+    logger.info("任务总览: %s, 总数=%d 成功=%d 分析中=%d 待排查=%d 待重试=%d",
+                date_str, len(all_ids), len(success_rows),
+                len(analyzing_rows), len(investigate_rows), len(retry_rows))
+    return _ok(result)
+
+
+def _fetch_cloud_batches_for_date(date_str: str) -> list:
+    """从云端拉取指定日期的所有批次（含行数据），失败返回 []"""
+    try:
+        from src.clients import feishu_client
+        from src.api.routes.shared import parse_markdown_batch_table as _parse
+        from src.api.routes.data import _get_batch_folder_token
+    except Exception as e:
+        logger.warning("云端看板依赖加载失败: %s", e)
+        return []
+    folder_token = _get_batch_folder_token()
+    if not folder_token:
+        return []
+    try:
+        all_files = feishu_client.list_folder_files(folder_token, recursive=True)
+    except Exception as e:
+        logger.warning("云端列文件失败(%s): %s", date_str, e)
+        return []
+    cloud_docs = [f for f in all_files
+                  if f.get("folder") == date_str
+                  and f.get("type") == "docx"
+                  and f.get("token")]
+    result = []
+    for doc in cloud_docs:
+        token = doc.get("token", "")
+        name = doc.get("name", "") or token
+        try:
+            md = feishu_client.fetch_docx_as_markdown(token)
+            rows = _parse(md) or []
+        except Exception as e:
+            logger.warning("云端批次读取失败 %s/%s: %s", date_str, name, e)
+            rows = []
+        result.append({"name": name, "token": token, "rows": rows})
+    # 按名称（含时间）倒序：最新在前
+    result.sort(key=lambda b: b["name"], reverse=True)
+    return result
 
 
 @router.get("/api/dashboard/batch_detail", response_model=ApiResponse)
 def dashboard_batch_detail(
     date: str = Query(..., description="日期"),
     batch: str = Query(..., description="批次名"),
+    jira_ids: str = Query(default="", description="jira号列表，逗号分隔（云端批次直接传）"),
 ):
-    """获取单个批次的详细信息（含多维表格交叉分析）"""
-    import csv as _csv
-    docs_dir = os.path.join(PROJECT_ROOT, "docs", date)
-    csv_path = os.path.join(docs_dir, f"{batch}.csv")
-    if not os.path.exists(csv_path):
-        from src.api.routes.shared import fail as _fail
-        return _fail(f"找不到批次 CSV: {batch}")
-    rows = []
-    with open(csv_path, encoding="utf-8-sig") as fh:
-        rows = list(_csv.DictReader(fh))
-    rows = [{k.replace("\ufeff", "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in r.items()} for r in rows]
+    """获取单个批次的详细信息（含多维表格交叉分析）
 
-    # 多维表格交叉
-    jira_ids = [r.get("jira号", "") for r in rows]
+    支持两种模式：
+    - 云端模式：前端传 jira_ids，后端用其查多维表格
+    - 本地模式：后端从 docs/{date}/{batch}.csv 读
+    """
+    import csv as _csv
+    # ── 行数据：优先用前端传的 jira_ids，回退本地 CSV ──
+    ids = [x.strip() for x in jira_ids.split(",") if x.strip()]
+    rows = []
+    if ids:
+        rows = [{"jira号": jid, "执行时间": ""} for jid in ids]
+    else:
+        docs_dir = os.path.join(PROJECT_ROOT, "docs", date)
+        csv_path = os.path.join(docs_dir, f"{batch}.csv")
+        if not os.path.exists(csv_path):
+            from src.api.routes.shared import fail as _fail
+            return _fail(f"找不到批次 CSV: {batch}")
+        with open(csv_path, encoding="utf-8-sig") as fh:
+            rows = list(_csv.DictReader(fh))
+        rows = [{k.replace("\ufeff", "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in r.items()} for r in rows]
+
+    # ── 多维表格交叉 ──
+    jira_ids_list = [r.get("jira号", "") for r in rows if r.get("jira号")]
+    jira_ids_set = set(jira_ids_list)
     bt_map = {}
     bt_ok = bt_fail = bt_miss = 0
     fail_cats = {}
@@ -474,17 +699,19 @@ def dashboard_batch_detail(
         table_id = cfg.get("table_id", "")
         bugid_field = cfg.get("bugid_field", "jira号")
         report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
-        if app_token and table_id:
+        if app_token and table_id and jira_ids_set:
             records = feishu_client.list_bitable_records(app_token, table_id)
             from src.api.routes.shared import bitable_text as _bt
             for rec in records:
                 fields = rec.get("fields", {})
                 jk = _bt(fields.get(bugid_field, ""))
-                if jk and jk in set(jira_ids):
+                if jk and jk in jira_ids_set:
                     bt_map.setdefault(jk, []).append(
                         _flatten_bitable_record_all(fields, report_field))
             for r in rows:
                 jid = r.get("jira号", "")
+                if not jid:
+                    continue
                 bt_recs = bt_map.get(jid, [])
                 if not bt_recs:
                     bt_miss += 1

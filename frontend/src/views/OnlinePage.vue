@@ -2,13 +2,84 @@
   <div>
   <el-tabs :model-value="tab" @update:model-value="$emit('update:tab', $event)" type="border-card" class="online-tabs" @tab-click="activeFailCat = ''">
 
-    <!-- 页签1：流程可视化 -->
-    <el-tab-pane label="流程可视化" name="flow">
-      <div class="stat-row">
-        <div class="stat-card"><div class="num">{{ overview.daily_total || 0 }}</div><div class="label">今日补充总数</div></div>
-        <div class="stat-card"><div class="num" style="color:#389e0d">{{ overview.daily_complete || 0 }}</div><div class="label">已完整（5字段全填充）</div></div>
-        <div class="stat-card"><div class="num" style="color:#d48806">{{ overview.daily_incomplete || 0 }}</div><div class="label">待补充（字段缺失）</div></div>
-        <div class="stat-card"><div class="num" style="color:#b25e09">{{ overview.audited_total || 0 }}</div><div class="label">累计已抽查</div></div>
+    <!-- 页签1：任务总览 -->
+    <el-tab-pane label="任务总览" name="flow">
+      <div class="to-head">
+        <span class="to-title">任务总览</span>
+        <el-button :loading="toLoading" @click="refreshTaskOverview" round size="small" style="margin-left:10px">
+          <span v-if="!toLoading" style="margin-right:2px">↻</span> 刷新
+        </el-button>
+      </div>
+      <div v-if="toLoaded || toLoading" class="to-grid">
+        <div class="to-card to-click" :class="{ 'is-active': activeCat === 'total' }" style="--accent:#409eff;--bg:linear-gradient(135deg,#e8f4fd,#f0f7ff)" @click="selectCategory('total')">
+          <div class="to-icon">📦</div>
+          <div class="to-body"><div class="to-value">{{ taskOv.total }}</div><div class="to-label">今日执行总数</div></div>
+          <div class="to-foot">去重 Jira 号</div>
+        </div>
+        <div class="to-card to-click" :class="{ 'is-active': activeCat === 'success' }" style="--accent:#16a34a;--bg:linear-gradient(135deg,#f0fdf4,#ecfdf5)" @click="selectCategory('success')">
+          <div class="to-icon">✅</div>
+          <div class="to-body"><div class="to-value" style="color:#16a34a">{{ taskOv.success.count }}</div><div class="to-label">成功数量</div></div>
+          <div class="to-foot">多维表格分析成功</div>
+        </div>
+        <div class="to-card to-click" :class="{ 'is-active': activeCat === 'analyzing' }" style="--accent:#d97706;--bg:linear-gradient(135deg,#fffbeb,#fef3c7)" @click="selectCategory('analyzing')">
+          <div class="to-icon">⏳</div>
+          <div class="to-body"><div class="to-value" style="color:#d97706">{{ taskOv.analyzing.count }}</div><div class="to-label">分析中</div></div>
+          <div class="to-foot">多维表格暂无数据</div>
+        </div>
+        <div class="to-card to-click" :class="{ 'is-active': activeCat === 'investigate' }" style="--accent:#dc2626;--bg:linear-gradient(135deg,#fef2f2,#fee2e2)" @click="selectCategory('investigate')">
+          <div class="to-icon">🔍</div>
+          <div class="to-body"><div class="to-value" style="color:#dc2626">{{ taskOv.investigate.count }}</div><div class="to-label">待排查</div></div>
+          <div class="to-foot">执行失败且分析失败</div>
+        </div>
+        <div class="to-card to-click" :class="{ 'is-active': activeCat === 'retry' }" style="--accent:#7c3aed;--bg:linear-gradient(135deg,#f5f3ff,#ede9fe)" @click="selectCategory('retry')">
+          <div class="to-icon">🔄</div>
+          <div class="to-body"><div class="to-value" style="color:#7c3aed">{{ taskOv.retry.count }}</div><div class="to-label">待重试</div></div>
+          <div class="to-foot">执行成功但分析失败</div>
+        </div>
+      </div>
+      <el-empty v-else-if="!toLoading" description="点击刷新加载任务总览" :image-size="60" />
+
+      <!-- 任务总览详情表格 -->
+      <div v-if="activeCat && activeRows.length > 0" class="to-table-section" ref="toTable">
+        <div class="to-table-head">
+          <span class="to-table-title">{{ activeCatTitle }}</span>
+          <span class="to-table-count">{{ activeRows.length }} 条</span>
+        </div>
+        <el-table :data="activeRows" size="small" stripe border :max-height="tableMaxHeight"
+          :header-cell-style="{background:'#f5f7fa',color:'#303133',fontWeight:600}" style="width:100%">
+          <el-table-column type="index" label="#" width="50" />
+          <el-table-column prop="jira" label="Jira号" width="150" />
+          <!-- 执行总数：分析状态 -->
+          <template v-if="activeCat === 'total'">
+            <el-table-column prop="status" label="分析状态" min-width="120" align="center">
+              <template #default="{row}">
+                <el-tag :type="row.status === '分析完成' ? 'success' : row.status === '分析中' ? 'warning' : 'danger'" size="small" round>{{ row.status }}</el-tag>
+              </template>
+            </el-table-column>
+          </template>
+          <!-- 成功：总耗时 -->
+          <template v-else-if="activeCat === 'success'">
+            <el-table-column prop="duration" label="总耗时" min-width="140" />
+          </template>
+          <!-- 分析中：执行时间、触发时间 -->
+          <template v-else-if="activeCat === 'analyzing'">
+            <el-table-column prop="exec_time" label="执行时间" width="180" />
+            <el-table-column prop="trigger_time" label="触发时间" min-width="180" />
+          </template>
+          <!-- 待排查：分析完成时间、错误信息 -->
+          <template v-else-if="activeCat === 'investigate'">
+            <el-table-column prop="done_time" label="分析完成时间" width="180" />
+            <el-table-column prop="error_info" label="错误信息" min-width="260" show-overflow-tooltip />
+          </template>
+          <!-- 待重试：分析完成时间、人工审核结果 -->
+          <template v-else-if="activeCat === 'retry'">
+            <el-table-column prop="done_time" label="分析完成时间" width="180" />
+            <el-table-column prop="human_review" label="人工审核结果" min-width="200" show-overflow-tooltip />
+          </template>
+        </el-table>
+      </div>
+      <div v-else-if="activeCat && activeRows.length === 0" style="text-align:center;padding:40px 0;color:#909399">
+        该分类暂无数据
       </div>
     </el-tab-pane>
 
@@ -202,6 +273,10 @@ export default {
       activeFailCat: '',
       statsTab: 'error_stats',
       overview: { mock: {} as any, daily_total: 0, daily_complete: 0, daily_incomplete: 0, audited_total: 0, today: '' },
+      taskOv: { total: 0, all_rows: [], success: { count: 0, rows: [] }, analyzing: { count: 0, rows: [] }, investigate: { count: 0, rows: [] }, retry: { count: 0, rows: [] } },
+      toLoading: false,
+      toLoaded: false,
+      activeCat: '',
       config: { prod_ai: {} as any, ai_log_api: {} as any, jira_api: {} as any, diana: {} as any, feishu_bitable: {} as any, feishu_bot: {} as any, knowledge_base_api: {} as any, similarity: {} as any, audit: {} as any, database: {} as any },
       apiSections: [
         { key: 'prod_ai', title: '线上AI日志分析接口' },
@@ -224,9 +299,24 @@ export default {
   },
   mounted() {
     this.loadConfig();
-    this.loadOverview();
+    this.loadFlowStats();
+    this.loadTaskOverview();
   },
   computed: {
+    activeRows() {
+      if (!this.activeCat) return [];
+      if (this.activeCat === 'total') return this.taskOv.all_rows || [];
+      return (this.taskOv[this.activeCat] && this.taskOv[this.activeCat].rows) || [];
+    },
+    activeCatTitle() {
+      const map = { total: '今日执行总数', success: '成功数量', analyzing: '分析中', investigate: '待排查', retry: '待重试' };
+      return map[this.activeCat] || '';
+    },
+    tableMaxHeight() {
+      if (!this.$refs.toTable) return 500;
+      const rect = this.$refs.toTable.getBoundingClientRect();
+      return Math.max(200, window.innerHeight - rect.top - 60);
+    },
     filteredErrorStatsRecords() {
       const records = this.errorStats.records;
       const filter = this.errorStats.successFilter;
@@ -257,7 +347,7 @@ export default {
         payload.output = (this.config as any).output;
         const body = await api('/api/config', { method: 'POST', body: JSON.stringify(payload) });
         ElMessage.success(body.message);
-        await this.loadOverview();
+        await this.loadFlowStats();
       } catch (e) { /* 错误已提示 */ } finally { this.running.saveConfig = false; }
     },
     openAddField(sectionKey: string) {
@@ -294,8 +384,29 @@ export default {
       delete obj._newKey;
       this.config[sectionKey][fieldName] = { ...obj };
     },
-    async loadOverview() {
+    async loadFlowStats() {
       try { const body = await api('/api/overview'); this.overview = body.data; } catch (_) {}
+    },
+    async loadTaskOverview(force = false) {
+      this.toLoading = true;
+      try {
+        const url = force
+          ? '/api/dashboard/task_overview?force=true'
+          : '/api/dashboard/task_overview';
+        const r = await api(url);
+        this.taskOv = r.data;
+        this.toLoaded = true;
+      } catch (e) { ElMessage.error('任务总览加载失败: ' + (e.message || e)); } finally { this.toLoading = false; }
+    },
+    refreshTaskOverview() { this.loadTaskOverview(true); },
+    selectCategory(cat: string) {
+      this.activeCat = this.activeCat === cat ? '' : cat;
+      if (this.activeCat) {
+        this.$nextTick(() => {
+          const el = this.$refs.toTable;
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        });
+      }
     },
     async queryErrorStats(useTime) {
       const afterTime = useTime ? (this.errorStats.afterTime || '') : '';
@@ -360,3 +471,42 @@ export default {
   },
 };
 </script>
+
+<style scoped>
+/* ── 任务总览 ── */
+.to-head { display: flex; align-items: center; margin-bottom: 16px; }
+.to-title { font-size: 16px; font-weight: 700; color: #1f3b73; }
+.to-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 20px; }
+.to-card {
+  background: var(--bg, #f5f7fa); border-radius: 12px; padding: 18px 20px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  border: 1px solid rgba(0,0,0,.04);
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+.to-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,.06); }
+.to-click { cursor: pointer; }
+.to-click:active { transform: translateY(0); }
+.to-click.is-active { border: 2px solid var(--accent); box-shadow: 0 0 0 3px rgba(64,158,255,.12); }
+.to-icon { font-size: 28px; line-height: 1; }
+.to-body { flex: 1; min-width: 0; }
+.to-value { font-size: 26px; font-weight: 800; color: #1a202c; line-height: 1.2; }
+.to-label { font-size: 12px; color: #718096; margin-top: 2px; }
+.to-foot { width: 100%; font-size: 11px; color: #909399; padding-top: 6px; border-top: 1px solid rgba(0,0,0,.05); }
+.to-jira-list { max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.to-jira-item { padding: 6px 12px; font-size: 13px; font-family: 'Consolas','Monaco',monospace; color: #303133; border-radius: 4px; transition: background .15s ease; }
+.to-jira-item:hover { background: #f0f2f5; }
+/* ── 详情表格 ── */
+.to-table-section { margin-top: 18px; display: flex; flex-direction: column; overflow: hidden; }
+.to-table-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.to-table-title { font-size: 14px; font-weight: 700; color: #1f3b73; }
+.to-table-count { font-size: 12px; color: #909399; }
+@media (max-width: 1100px) { .to-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 700px) { .to-grid { grid-template-columns: repeat(2, 1fr); } }
+</style>
+
+<!-- 非 scoped 样式：强制表格铺满宽度 -->
+<style>
+.to-table-section .el-table { width: 100% !important; }
+.to-table-section .el-table__body-wrapper { width: 100% !important; }
+.to-table-section table { width: 100% !important; table-layout: fixed !important; }
+</style>
