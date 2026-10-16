@@ -328,6 +328,204 @@ def report_batch(date: str = Query(default=None, description="日期 YYYY-MM-DD"
     return _ok(all_rows)
 
 
+# ──────────────────────────────────────────────
+# 数据看板 API
+# ──────────────────────────────────────────────
+
+@router.get("/api/dashboard/dates", response_model=ApiResponse)
+def dashboard_dates():
+    """列出所有有批次 CSV 数据的日期（按倒序）"""
+    docs_dir = os.path.join(PROJECT_ROOT, "docs")
+    reports_dir = os.path.join(PROJECT_ROOT, "reports")
+    dates = []
+    if os.path.isdir(docs_dir):
+        for d in sorted(os.listdir(docs_dir), reverse=True):
+            date_dir = os.path.join(docs_dir, d)
+            if not os.path.isdir(date_dir):
+                continue
+            csvs = [f for f in os.listdir(date_dir)
+                    if f.endswith(".csv") and (f.startswith("batch_") or f.startswith("prod_batch_"))]
+            if csvs:
+                # 检查日报 HTML 是否存在
+                daily_html = os.path.join(reports_dir, d, f"daily_report_{d}.html")
+                dates.append({
+                    "date": d,
+                    "batch_count": len(csvs),
+                    "has_daily_report": os.path.exists(daily_html),
+                })
+    from src.api.routes.shared import ok as _ok
+    return _ok(dates)
+
+
+@router.get("/api/dashboard/data", response_model=ApiResponse)
+def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-DD，默认今天")):
+    """获取指定日期的看板数据：批次列表 + 汇总统计"""
+    import csv as _csv
+    date_str = date or datetime.now().strftime("%Y-%m-%d")
+    docs_dir = os.path.join(PROJECT_ROOT, "docs", date_str)
+    reports_dir = os.path.join(PROJECT_ROOT, "reports", date_str)
+
+    if not os.path.isdir(docs_dir):
+        from src.api.routes.shared import ok as _ok
+        return _ok({"date": date_str, "batches": [], "summary": {"total_batches": 0, "total_submit": 0}})
+
+    batches = []
+    for f in sorted(os.listdir(docs_dir)):
+        if not f.endswith(".csv"):
+            continue
+        if not (f.startswith("batch_") or f.startswith("prod_batch_")):
+            continue
+        batch_name = f.replace(".csv", "")
+        source = "线上" if f.startswith("prod_batch_") else "PC"
+        csv_path = os.path.join(docs_dir, f)
+        rows = []
+        try:
+            with open(csv_path, encoding="utf-8-sig") as fh:
+                rows = list(_csv.DictReader(fh))
+        except Exception:
+            pass
+        total = len(rows)
+        submit_ok = sum(1 for r in rows if r.get("执行结果", "").strip() not in ("失败", ""))
+        submit_fail = total - submit_ok
+        # 取第一条的元数据
+        exec_time = rows[0].get("执行时间", "").strip() if rows else ""
+        model = rows[0].get("模型", "").strip() if rows else ""
+        trigger_src = rows[0].get("触发来源", "").strip() if rows else ""
+        if trigger_src:
+            source = trigger_src
+        # 检查批次报 HTML
+        batch_html = os.path.join(reports_dir, f"{batch_name}_{date_str}.html")
+        batch_html_legacy = os.path.join(reports_dir, f"{batch_name}.html")
+        has_report = os.path.exists(batch_html) or os.path.exists(batch_html_legacy)
+        report_file = ""
+        if os.path.exists(batch_html):
+            report_file = f"{batch_name}_{date_str}.html"
+        elif os.path.exists(batch_html_legacy):
+            report_file = f"{batch_name}.html"
+
+        batches.append({
+            "name": batch_name,
+            "source": source,
+            "total": total,
+            "submit_ok": submit_ok,
+            "submit_fail": submit_fail,
+            "exec_time": exec_time,
+            "model": model,
+            "has_report": has_report,
+            "report_file": report_file,
+        })
+
+    # 汇总
+    total_submit = sum(b["total"] for b in batches)
+    total_ok = sum(b["submit_ok"] for b in batches)
+    total_fail = sum(b["submit_fail"] for b in batches)
+    pc_batches = sum(1 for b in batches if b["source"] == "PC")
+    online_batches = sum(1 for b in batches if b["source"] != "PC")
+    # 日报 HTML
+    daily_html = os.path.join(reports_dir, f"daily_report_{date_str}.html")
+    has_daily_report = os.path.exists(daily_html)
+
+    summary = {
+        "total_batches": len(batches),
+        "total_submit": total_submit,
+        "total_ok": total_ok,
+        "total_fail": total_fail,
+        "pc_batches": pc_batches,
+        "online_batches": online_batches,
+        "submit_rate": round(total_ok / total * 100, 1) if total else 0,
+        "has_daily_report": has_daily_report,
+    }
+
+    from src.api.routes.shared import ok as _ok
+    logger.info("看板数据: %s, %d 批次, %d 提交", date_str, len(batches), total_submit)
+    return _ok({"date": date_str, "batches": batches, "summary": summary})
+
+
+@router.get("/api/dashboard/batch_detail", response_model=ApiResponse)
+def dashboard_batch_detail(
+    date: str = Query(..., description="日期"),
+    batch: str = Query(..., description="批次名"),
+):
+    """获取单个批次的详细信息（含多维表格交叉分析）"""
+    import csv as _csv
+    docs_dir = os.path.join(PROJECT_ROOT, "docs", date)
+    csv_path = os.path.join(docs_dir, f"{batch}.csv")
+    if not os.path.exists(csv_path):
+        from src.api.routes.shared import fail as _fail
+        return _fail(f"找不到批次 CSV: {batch}")
+    rows = []
+    with open(csv_path, encoding="utf-8-sig") as fh:
+        rows = list(_csv.DictReader(fh))
+    rows = [{k.replace("\ufeff", "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in r.items()} for r in rows]
+
+    # 多维表格交叉
+    jira_ids = [r.get("jira号", "") for r in rows]
+    bt_map = {}
+    bt_ok = bt_fail = bt_miss = 0
+    fail_cats = {}
+    durations = []
+    try:
+        from src.clients import feishu_client
+        from src.services.report_ops import (
+            _flatten_bitable_record_all, _classify_failure, _parse_dur_sec,
+        )
+        cfg = load_config().get("feishu_bitable", {})
+        app_token = cfg.get("app_token", "")
+        table_id = cfg.get("table_id", "")
+        bugid_field = cfg.get("bugid_field", "jira号")
+        report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
+        if app_token and table_id:
+            records = feishu_client.list_bitable_records(app_token, table_id)
+            from src.api.routes.shared import bitable_text as _bt
+            for rec in records:
+                fields = rec.get("fields", {})
+                jk = _bt(fields.get(bugid_field, ""))
+                if jk and jk in set(jira_ids):
+                    bt_map.setdefault(jk, []).append(
+                        _flatten_bitable_record_all(fields, report_field))
+            for r in rows:
+                jid = r.get("jira号", "")
+                bt_recs = bt_map.get(jid, [])
+                if not bt_recs:
+                    bt_miss += 1
+                    continue
+                exec_t = r.get("执行时间", "")
+                cands = [x for x in bt_recs if x.get("分析完成时间", "") and x["分析完成时间"] >= exec_t]
+                if not cands:
+                    cands = bt_recs
+                cands.sort(key=lambda x: x.get("分析完成时间", ""))
+                ok_recs = [x for x in cands if x.get("分析结果", "") == "成功"]
+                bf = ok_recs[0] if ok_recs else cands[-1]
+                result = bf.get("分析结果", "")
+                dur = _parse_dur_sec(bf.get("分析耗时", ""))
+                if dur > 0:
+                    durations.append(dur)
+                if result == "成功":
+                    bt_ok += 1
+                else:
+                    bt_fail += 1
+                    err = (bf.get("错误信息", "") or "")[:80]
+                    cat = _classify_failure(jid, bf)
+                    fail_cats[cat] = fail_cats.get(cat, 0) + 1
+    except Exception as e:
+        logger.warning("看板批次详情-多维表格查询失败: %s", e)
+
+    bt_match = bt_ok + bt_fail
+    avg_dur = round(sum(durations) / len(durations)) if durations else 0
+    max_dur = max(durations) if durations else 0
+
+    from src.api.routes.shared import ok as _ok
+    return _ok({
+        "name": batch, "date": date,
+        "bt_ok": bt_ok, "bt_fail": bt_fail, "bt_miss": bt_miss,
+        "bt_match": bt_match,
+        "rate": round(bt_ok / bt_match * 100, 1) if bt_match else 0,
+        "avg_dur": avg_dur, "max_dur": max_dur,
+        "fail_cats": fail_cats,
+        "total": len(rows),
+    })
+
+
 @router.get("/api/report/verify", response_model=ApiResponse)
 def report_verify(date: str = Query(default=None, description="日期 YYYY-MM-DD")):
     """按日期查询结果验证记录"""

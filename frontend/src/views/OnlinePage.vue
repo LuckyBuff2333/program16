@@ -149,7 +149,7 @@
 
     <!-- 页签：数据看板 -->
     <el-tab-pane label="数据看板" name="data">
-      <el-empty description="功能开发中…" />
+      <DataDashboardPanel />
     </el-tab-pane>
 
   </el-tabs>
@@ -188,10 +188,11 @@
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, colWidth, verdictStyle, fieldLabel } from '../composables/utils';
 import ConfigTuningPanel from '../panels/ConfigTuningPanel.vue';
+import DataDashboardPanel from '../panels/DataDashboardPanel.vue';
 
 export default {
   name: 'OnlinePage',
-  components: { ConfigTuningPanel },
+  components: { ConfigTuningPanel, DataDashboardPanel },
   props: {
     tab: { type: String, default: 'flow' },
   },

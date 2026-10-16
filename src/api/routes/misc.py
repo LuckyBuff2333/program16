@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 
 from src.schemas.common import ApiResponse
+from src.config import PROJECT_ROOT
 
 router = APIRouter()
 
@@ -115,3 +116,7 @@ def mount_frontend_assets(app):
     assets_dir = os.path.join(_FRONTEND_DIST, "assets")
     if os.path.isdir(assets_dir):
         app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+    # 挂载 reports 目录，使报告 HTML 可通过浏览器访问
+    reports_dir = os.path.join(PROJECT_ROOT, "reports")
+    if os.path.isdir(reports_dir):
+        app.mount("/reports", StaticFiles(directory=reports_dir), name="report-files")
