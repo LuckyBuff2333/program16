@@ -69,15 +69,15 @@ async def troubleshoot_search_jira(req: SearchJiraRequest):
 
 @router.post("/api/troubleshoot/cancel_diag", response_model=ApiResponse)
 async def troubleshoot_cancel_diag(req: CancelDiagRequest):
-    from src.api.routes.shared import _diag_cancel
+    from src.api.routes.shared import diag_cancel
     bugids = req.bugids
     if bugids:
         for bugid in bugids:
-            _diag_cancel[bugid] = True
+            diag_cancel[bugid] = True
         return ok(None, f"已发送取消信号: {', '.join(bugids)}")
-    for bugid in list(_diag_cancel):
-        _diag_cancel[bugid] = True
-    return ok(None, f"已发送全部取消信号: {len(_diag_cancel)} 个")
+    for bugid in list(diag_cancel):
+        diag_cancel[bugid] = True
+    return ok(None, f"已发送全部取消信号: {len(diag_cancel)} 个")
 
 
 @router.post("/api/troubleshoot/diagnose", response_model=ApiResponse)
@@ -86,7 +86,7 @@ def troubleshoot_diagnose(req: DiagnoseRequest):
     from src.api.routes.shared import (
         ok as _ok,
         fail as _fail,
-        _diag_cancel,
+        diag_cancel,
         get_diag_executor as _get_diag_executor,
         _DIAG_TIMEOUT_SECONDS,
     )
@@ -113,7 +113,7 @@ def troubleshoot_diagnose(req: DiagnoseRequest):
             del cache[k]
         if removed:
             _save_video_time_cache()
-    _diag_cancel[bugid] = False
+    diag_cancel[bugid] = False
     try:
         if not force:
             cached = _load_diagnose_cache(bugid)
@@ -129,11 +129,11 @@ def troubleshoot_diagnose(req: DiagnoseRequest):
         try:
             return future.result(timeout=_DIAG_TIMEOUT_SECONDS)
         except _futures.TimeoutError:
-            _diag_cancel[bugid] = True
+            diag_cancel[bugid] = True
             return fail(f"{bugid} 诊断超时（超过{_DIAG_TIMEOUT_SECONDS}秒），请稍后重试")
     finally:
-        if not _diag_cancel.get(bugid):
-            _diag_cancel.pop(bugid, None)
+        if not diag_cancel.get(bugid):
+            diag_cancel.pop(bugid, None)
 
 
 @router.post("/api/troubleshoot/update_cache", response_model=ApiResponse)

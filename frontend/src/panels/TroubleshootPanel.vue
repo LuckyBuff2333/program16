@@ -638,6 +638,9 @@ export default {
       finally { st.diagnosing = false; }
     },
     async applySuggestedTime(row) {
+      if (!row?.bugid || !row?.suggested_time) {
+        return ElMessage.warning('缺少 bugid 或建议时间');
+      }
       try {
         const body = await api('/api/trigger_time/update', {
           method: 'POST', body: JSON.stringify({ bugid: row.bugid, new_time: row.suggested_time })
@@ -706,6 +709,7 @@ export default {
     async saveSuggestion() {
       const ed = this.troubleshoot.correctionEditor;
       if (!ed.row || ed.saving) return;
+      if (!ed.row.bugid) return ElMessage.warning('缺少 bugid');
       ed.saving = true;
       const row = ed.row;
       try {

@@ -337,8 +337,8 @@ def export_trigger_time_issues(items: list[dict], folder_token: str = "") -> dic
 
 # 无需深入分析的预归类类别（前端优先展示，单独成表）
 _SKIP_ANALYSIS_CATEGORIES = {
-    "待后端开发排查", "磁盘空间不足", "服务运行问题",
-    "接口并发响应问题", "接口连接问题", "接口响应问题",
+    "待后端开发排查", "磁盘空间不足", "服务关闭",
+    "并发过多", "IT侧服务停止", "接口连接问题", "接口响应问题",
     "分析任务执行超时，跳过排查", "问题重复", "问题未复现",
 }
 
@@ -347,24 +347,47 @@ def _diag_pre_classify(err_msg: str) -> str:
     """根据失败原因文本预归类，无法判定时返回空串"""
     import re
     msg = err_msg or ""
+    # 无错误信息 → 服务关闭
+    if not msg:
+        return "服务关闭"
     if "未找到问题时间" in msg:
         return "触发时间问题"
     if "没有可下载的日志附件" in msg:
         return "无gmlogger"
-    if "分析任务执行超时" in msg or "分析任务被取消" in msg:
+    # JIRA/网关超时 → 分析任务执行超时（区别于并发过多）
+    if ("JIRA 分析任务执行超时" in msg or "JIRA 网关分析任务执行超时" in msg):
         return "分析任务执行超时，跳过排查"
-    if re.search(r"第\d+轮.*调用失败", msg):
-        return "待后端开发排查"
+    # 普通分析任务超时 → 并发过多
+    if "分析任务执行超时" in msg or "分析任务被取消" in msg:
+        return "并发过多"
+    # reasoning 第N轮 LLM 调用失败 → 并发过多
+    if "reasoning 第" in msg and "轮 LLM 调用失败" in msg:
+        return "并发过多"
     if "no space left on device" in msg.lower() or "Errno 28" in msg:
         return "磁盘空间不足"
-    if "adjudication" in msg or "未获取有效响应" in msg or "LLM 调用失败" in msg or "调用失败" in msg:
-        return "接口拥堵手动中断"
+    # 模型调用失败 → 服务停止
+    if msg.startswith("模型调用失败"):
+        return "IT侧服务停止"
+    # adjudication 失败 / 分析报告生成失败 / LLM调用失败 → 并发过多
+    if ("adjudication" in msg or "未获取有效响应" in msg or "LLM 调用失败" in msg
+            or "分析报告生成失败" in msg):
+        return "并发过多"
+    # 504/502 网关错误 → 并发过多
+    if "504 Gateway Timeout" in msg or "502 Bad Gateway" in msg:
+        return "并发过多"
+    # server disconnected → 服务关闭
     if "server disconnected" in msg.lower() or "disconnected without sending" in msg.lower():
-        return "服务运行问题"
+        return "服务关闭"
+    # 服务有报错 → 服务关闭
+    if msg == "服务有报错":
+        return "服务关闭"
     low = msg.lower()
     if ("all connection attempts failed" in low or "connecterror" in low
             or "连接失败" in msg or "无法连接" in msg or "connection refused" in low):
-        return "接口连接问题"
+        return "服务关闭"
+    # HTTPStatusError → 待后端开发排查
+    if "HTTPStatusError" in msg:
+        return "待后端开发排查"
     if "时间过滤后日志为空" in msg or "未找到有效的日志文件" in msg:
         return ""  # 需下载附件比对时间后才能判定
     return "待后端开发排查"
@@ -383,27 +406,43 @@ def batch_pre_classify(records: list[dict]) -> dict:
         done_time = rec.get("done_time", "")
         problem_time = rec.get("problem_time", "")
         category = ""
-        # 1. 无报错信息或“服务有报错”
+        # 1. 无报错信息或“服务有报错” → 服务关闭
         if not err_msg or err_msg == "服务有报错":
-            category = "服务有报错，跳过排查" if err_msg else "无报错信息，跳过排查"
-        # 2. 人工审核结果倒推
+            category = "服务关闭"
+        # 2. 人工审核结果倒推（从多维表格读取）
         if not category and human_review and human_review not in ("-", "None"):
-            if "模型调用失败" in human_review:
+            if "并发过多" in human_review or "接口拥堵" in human_review or "手动中断" in human_review:
+                category = "并发过多"
+            elif "模型调用失败" in human_review or "IT侧服务停止" in human_review or "服务停止" in human_review:
+                category = "IT侧服务停止"
+            elif "服务关闭" in human_review or "服务有报错" in human_review:
+                category = "服务关闭"
+            elif "待后端开发排查" in human_review:
                 category = "待后端开发排查"
-            elif "接口拥堵" in human_review or "手动中断" in human_review:
-                category = "接口并发响应问题"
             elif "接口无响应" in human_review or "连接失败" in human_review:
                 category = "接口响应问题"
-            elif "服务有报错" in human_review or "无报错信息" in human_review:
-                category = "服务运行问题"
-            elif "执行超时" in human_review:
+            elif "JIRA Server" in human_review or "过载" in human_review or "网络抖动" in human_review:
+                category = "并发过多"
+            elif "执行超时" in human_review or "JIRA 分析任务执行超时" in human_review:
                 category = "分析任务执行超时，跳过排查"
             elif "问题重复" in human_review:
                 category = "问题重复"
             elif "未复现" in human_review or "不复现" in human_review:
                 category = "问题未复现"
-            elif "无gmlogger" in human_review or "无gmlogger文件" in human_review or "损坏" in human_review:
+            elif "无gmlogger" in human_review or "无gmlogger文件" in human_review:
+                category = "无gmlogger"
+            elif "gmlogger文件已上传" in human_review:
+                category = "无gmlogger"
+            elif "损坏" in human_review or "日志文件已损坏" in human_review:
                 category = "日志过滤逻辑"
+            elif "磁盘空间不足" in human_review:
+                category = "磁盘空间不足"
+            elif "时间添加" in human_review or "时间异常" in human_review:
+                category = "触发时间问题"
+            elif "解压" in human_review or "unrar" in human_review or "RAR5" in human_review:
+                category = "解压问题"
+            elif "分析can信号" in human_review:
+                category = "分析can信号导致超时"
         # 3. 错误信息预归类
         if not category:
             category = _diag_pre_classify(err_msg)

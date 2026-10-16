@@ -419,44 +419,61 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
     cached = _load_diagnose_cache(jira_no)
     if cached and cached.get("category"):
         return cached["category"]
-    # 优先检查错误信息中的上游系统错误（504/500/502/503等）
     import re
     err_info = (bf.get("错误信息", "") or "").strip()
+    # 无错误信息或服务有报错 → 服务关闭
+    if not err_info or err_info == "服务有报错":
+        return "服务关闭"
+    # 504/502/503/500 网关错误 → 并发过多
     if any(code in err_info for code in ("504 Gateway Timeout", "502 Bad Gateway",
                                          "503 Service Unavailable", "500 Internal Server Error",
                                          "Gateway Timeout", "Service Unavailable")):
-        return "上游jira卡住问题"
-    # 模型调用失败：第x轮LLM调用失败 / 第x轮调用失败
-    if re.search(r"第\d+轮.*调用失败", err_info):
-        return "模型调用失败"
-    # 磁盘空间不足：No space left on device
+        return "并发过多"
+    # reasoning 第N轮 LLM 调用失败 → 并发过多
+    if "reasoning 第" in err_info and "轮 LLM 调用失败" in err_info:
+        return "并发过多"
+    # 模型调用失败 → IT侧服务停止
+    if err_info.startswith("模型调用失败"):
+        return "IT侧服务停止"
+    # 磁盘空间不足
     if "no space left on device" in err_info.lower() or "Errno 28" in err_info:
         return "磁盘空间不足"
+    # HTTPStatusError → 待后端开发排查
+    if "HTTPStatusError" in err_info:
+        return "待后端开发排查"
     review = (bf.get("人工审核结果", "") or "").strip()
     if not review or review in ("-", "None"):
-        return "待开发排查"
-    if "模型调用失败" in review:
-        return "模型调用失败"
+        return "待后端开发排查"
+    if "并发过多" in review or "接口拥堵" in review or "手动中断" in review:
+        return "并发过多"
+    if "模型调用失败" in review or "IT侧服务停止" in review or "服务停止" in review:
+        return "IT侧服务停止"
+    if "服务关闭" in review or "服务有报错" in review:
+        return "服务关闭"
+    if "待后端开发排查" in review:
+        return "待后端开发排查"
     if "时间添加" in review or "时间异常" in review:
         return "触发时间问题"
-    if "无gmlogger" in review or "无日志附件" in review or "损坏" in review:
+    if "无gmlogger" in review or "无日志附件" in review or "gmlogger文件已上传" in review:
+        return "无gmlogger"
+    if "损坏" in review or "日志文件已损坏" in review:
         return "日志过滤逻辑"
     if "日志里无对应" in review or "信息不全" in review:
         return "日志过滤逻辑"
-    if "解压问题" in review or "解压" in review:
+    if "解压" in review or "unrar" in review or "RAR5" in review:
         return "解压问题"
     if "接口无响应" in review:
         return "接口响应问题"
-    if "接口拥堵" in review or "手动中断" in review:
-        return "接口并发响应问题"
-    if "服务有报错" in review:
-        return "服务运行问题"
-    if "正常处理机制" in review:
-        return "正常处理机制"
-    if "执行超时" in review:
-        return "执行超时"
+    if "JIRA Server" in review or "过载" in review or "网络抖动" in review:
+        return "并发过多"
+    if "执行超时" in review or "JIRA 分析任务执行超时" in review:
+        return "分析任务执行超时，跳过排查"
     if "问题重复" in review:
         return "问题重复"
+    if "未复现" in review or "不复现" in review:
+        return "问题未复现"
+    if "磁盘空间不足" in review:
+        return "磁盘空间不足"
     if "待人工排查" in review:
         return "待人工排查"
     if "分析can信号导致超时" in review:
@@ -1473,14 +1490,19 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
     retry_result = ""
     final_category = category
 
-    if category == "接口连接问题" or "all connection attempts failed" in low:
-        ai_reason = msg or "All connection attempts failed"
-        human_reason = "接口无响应，待源泉排查"
+    if category == "服务关闭" or "all connection attempts failed" in low or "server disconnected" in low or msg == "服务有报错":
+        ai_reason = msg or "服务连接异常/报错/无错误信息"
+        human_reason = "服务关闭"
         retry_result = ""
-        final_category = "接口响应问题"
-    elif category == "模型调用失败" or category == "待后端开发排查":
-        ai_reason = msg or "LLM 调用失败"
-        human_reason = "模型调用失败"
+        final_category = "服务关闭"
+    elif category == "IT侧服务停止" or msg.startswith("模型调用失败"):
+        ai_reason = msg or "模型调用失败"
+        human_reason = "IT侧服务停止"
+        retry_result = ""
+        final_category = "IT侧服务停止"
+    elif category == "待后端开发排查" or "HTTPStatusError" in msg:
+        ai_reason = msg or "HTTPStatusError"
+        human_reason = "待后端开发排查"
         retry_result = ""
         final_category = "待后端开发排查"
     elif category == "磁盘空间不足":
@@ -1488,21 +1510,16 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         human_reason = "磁盘空间不足"
         retry_result = ""
         final_category = "磁盘空间不足"
-    elif category == "接口拥堵手动中断" or "adjudication" in low or "llm 调用失败" in low:
+    elif category == "并发过多" or "adjudication" in low or "llm 调用失败" in low or "reasoning 第" in msg:
         ai_reason = msg or "分析报告生成失败: LLM 调用失败或 adjudication 失败"
-        human_reason = "疑似接口拥堵导致的手动中断"
+        human_reason = "并发过多"
         retry_result = ""
-        final_category = "接口并发响应问题"
-    elif category == "服务运行问题" or "server disconnected" in low:
-        ai_reason = msg or "Server disconnected without sending a response."
-        human_reason = "服务有报错"
-        retry_result = ""
-        final_category = "服务运行问题"
-    elif category == "无gmlogger" or category == "无gmlogger文件":
+        final_category = "并发过多"
+    elif category == "无gmlogger":
         ai_reason = msg or "处理后未找到有效的日志文件（可能所有文件都不时间范围内，或文件格式不支持）"
-        human_reason = "无gmlogger文件"
-        retry_result = "失败，事实证明当前验证逻辑无法读取非gmlogger相关名称文件进行识别。"
-        final_category = "日志过滤逻辑"
+        human_reason = "无gmlogger"
+        retry_result = ""
+        final_category = "无gmlogger"
     elif category == "日志过滤逻辑":
         ai_reason = msg or "时间过滤后日志为空（0行），无法进行分析"
         if "压缩文件包已损坏" in detail or "损坏" in detail:
@@ -1524,11 +1541,11 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
             human_reason = "时间异常无对应日志，应该添加为正确的触发时间"
         retry_result = ""
         final_category = "触发时间问题"
-    elif category == "无报错信息，跳过排查":
+    elif category == "服务关闭":
         ai_reason = "无"
-        human_reason = "服务有报错"
+        human_reason = "服务关闭"
         retry_result = ""
-        final_category = "服务运行问题"
+        final_category = "服务关闭"
     elif category == "分析任务执行超时，跳过排查":
         ai_reason = msg or "JIRA 分析任务执行超时或被取消"
         human_reason = "JIRA 分析任务执行超时"
@@ -1573,7 +1590,7 @@ def _load_diagnose_cache(bugid: str) -> dict:
         return None
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
-            data = _json.load(f)
+            data = json.load(f)
         logger.info("诊断结果本地缓存命中: %s", bugid)
         return data
     except Exception as e:
@@ -1587,7 +1604,7 @@ def _save_diagnose_cache(bugid: str, result: dict):
     cache_path = os.path.join(cache_dir, f"{bugid}.json")
     try:
         with open(cache_path, "w", encoding="utf-8") as f:
-            _json.dump(result, f, ensure_ascii=False, indent=2)
+            json.dump(result, f, ensure_ascii=False, indent=2)
         logger.info("诊断结果已缓存: %s", cache_path)
     except Exception as e:
         logger.warning("诊断结果缓存失败 %s: %s", bugid, e)

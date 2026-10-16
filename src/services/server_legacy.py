@@ -1595,7 +1595,7 @@ def _bot_run_troubleshoot(chat_id: str, after_time: str):
                  f"失败记录: {total} 条（其中缓存命中: {cached_count} 条）",
                  ""]
         # 按用户要求的 4 类展示，其余合并到“其他”
-        main_cats = ["触发时间问题", "无gmlogger文件", "无报错信息，跳过排查", "分析任务执行超时，跳过排查"]
+        main_cats = ["触发时间问题", "无gmlogger", "服务关闭", "分析任务执行超时，跳过排查", "并发过多", "IT侧服务停止"]
         for cat in main_cats:
             if cat in categories:
                 lines.append(f"{cat}: {categories[cat]}/{total}")
@@ -6037,7 +6037,7 @@ def _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force=
             return _ok(cached, f"{bugid} 诊断结果（本地缓存）")
     # —— 无报错信息或“服务有报错”的记录不进行排查，直接跳过 ——
     if not err_msg or err_msg == "服务有报错":
-        skip_category = "服务有报错，跳过排查" if err_msg else "无报错信息，跳过排查"
+        skip_category = "服务关闭"
         report = _generate_troubleshoot_report(bugid, skip_category, err_msg, "")
         result = {"bugid": bugid, "category": skip_category, "problem_time": problem_time,
                   "archive_files": [], "detail": "多维表格记录无错误信息字段，无排查依据，已跳过",
@@ -6047,7 +6047,7 @@ def _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force=
     # —— 预归类：无需附件比对即可判定的场景 ——
     pre = _diag_pre_classify(err_msg)
     if pre:
-        conn_tip = "（建议：确认 AI 日志分析接口内外网可达性后重试，与触发时间/日志过滤无关）" if pre == "接口连接问题" else ""
+        conn_tip = "" if pre != "服务关闭" else "（建议：确认 AI 日志分析接口内外网可达性后重试）"
         report = _generate_troubleshoot_report(bugid, pre, err_msg, conn_tip)
         result = {"bugid": bugid, "category": pre, "problem_time": problem_time,
                     "archive_files": [], "detail": f"根据失败原因预归类：{pre}{conn_tip}",
@@ -6119,20 +6119,13 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                        "verify_status": "", "suggested_time": "", "report": report, "done_time": done_time}
             _save_diagnose_cache(bugid, result)
             return _ok(result, f"{bugid} 诊断完成：{category}")
-    # —— 识别 gmlogger 附件（文件名含 gmlogger 即算）——
-    gm_atts = [a for a in attachments if "gmlogger" in (a.get("filename", "") or "").lower()]
-    if not gm_atts:
-        # 归类：无gmlogger文件；其他压缩包兆底下载解压比对错误时间（前后5分钟）
-        _check_diag_cancel(bugid)
-        archive_results, matched_any = _diag_download_archives(attachments, headers, att_timeout, problem_time, bugid)
-        if matched_any:
-            category = "解压问题"
-            detail = f"无gmlogger文件，但解压文件中存在错误时间({problem_time})前后5分钟内对应文件，解压问题，待排查"
-            verify_status, suggested_time = "", ""
-        else:
-            category = "无gmlogger文件"
-            detail = f"该 Issue 共 {len(attachments)} 个附件中未找到 gmlogger 日志文件，无需提取时间"
-            verify_status, suggested_time = "", ""
+    # —— 识别 gmlogger 附件（智能检测：文件名含 gmlogger 或压缩包内含 main.log）——
+    if not _has_gmlogger_logs(attachments, bugid):
+        # 无 gmlogger 日志文件
+        category = "无gmlogger文件"
+        detail = f"该 Issue 共 {len(attachments)} 个附件中未找到 gmlogger 日志文件，无需提取时间"
+        verify_status, suggested_time = "", ""
+        archive_results = []
         report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time, archive_results)
         result = {"bugid": bugid, "category": category, "problem_time": problem_time,
                    "archive_files": archive_results, "detail": detail, "main_entries": [],
