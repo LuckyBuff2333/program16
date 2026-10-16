@@ -125,31 +125,57 @@
     <!-- 步骤②a：跳过排查的记录 -->
     <el-card v-if="getSkipDiagResults().length" shadow="never" style="margin-top:12px">
       <template #header>
-        <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <div style="display:flex;align-items:center;gap:8px">
             <el-tag type="info" size="small" effect="dark">跳过排查</el-tag>
-            <span style="font-weight:700">无需深入分析（{{ getSkipDiagResults().length }} 条）</span>
+            <span style="font-weight:700">无需深入分析（{{ getFilteredSkipResults().length }}/{{ getSkipDiagResults().length }} 条）</span>
           </div>
-          <div style="display:flex;align-items:center;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <el-select v-model="troubleshoot.skipCategoryFilter" size="small" placeholder="按错误类型筛选" clearable style="width:200px">
+              <el-option v-for="c in getSkipCategories()" :key="c" :label="c" :value="c"></el-option>
+            </el-select>
             <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteSkipReview"
-              :disabled="!getSkipDiagResults().filter(r => r.report && r.report.human_reason).length">
-              批量写入人工审核结果
+              :disabled="!getFilteredSkipResults().filter(r => r.report && r.report.human_reason).length">
+              批量写入人工审核{{ troubleshoot.skipCategoryFilter ? '（筛选）' : '' }}
             </el-button>
             <el-button size="small" type="primary" :loading="troubleshoot.sendingToDeveloper" @click="sendToDeveloper"
-              :disabled="!getSkipDiagResults().length">
-              发送给开发者
+              :disabled="!getFilteredSkipResults().length">
+              发送给开发者{{ troubleshoot.skipCategoryFilter ? '（筛选）' : '' }}
             </el-button>
           </div>
         </div>
       </template>
-      <el-table :data="getSkipDiagResults()" size="small" stripe border max-height="240" row-key="bugid">
+      <el-table :data="getFilteredSkipResults()" size="small" stripe border max-height="320" row-key="bugid">
         <el-table-column type="index" label="#" width="45"></el-table-column>
         <el-table-column prop="bugid" label="Jira号" width="120"></el-table-column>
         <el-table-column prop="category" label="问题归类" width="170">
           <template #default="{row}"><el-tag :type="diagCategoryTagType(row.category)" size="small">{{ row.category }}</el-tag></template>
         </el-table-column>
+        <el-table-column prop="err_msg" label="错误信息" min-width="200" show-overflow-tooltip>
+          <template #default="{row}">
+            <el-popover v-if="row.err_msg" placement="top" :width="400" trigger="hover">
+              <template #reference><span class="text-truncate-cell" style="color:#f56c6c">{{ row.err_msg }}</span></template>
+              <div style="white-space:pre-wrap;word-break:break-all;user-select:text;cursor:text;font-size:12px">{{ row.err_msg }}</div>
+            </el-popover>
+            <span v-else style="color:#c0c4cc">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="人工审核结果" min-width="200">
+          <template #default="{row}">
+            <div v-if="troubleshoot.editingSkipBugid === row.bugid" style="display:flex;align-items:center;gap:4px">
+              <el-input v-model="troubleshoot.editingSkipReason" size="small" placeholder="输入人工审核结果" autofocus
+                @keyup.enter="saveSkipHumanReason(row)"></el-input>
+              <el-button size="small" type="success" link @click="saveSkipHumanReason(row)">保存</el-button>
+              <el-button size="small" type="info" link @click="troubleshoot.editingSkipBugid=''">取消</el-button>
+            </div>
+            <div v-else style="display:flex;align-items:center;gap:6px">
+              <span v-if="row.report && row.report.human_reason" style="color:#e6a23c;font-weight:600;font-size:12px">{{ row.report.human_reason }}</span>
+              <span v-else style="color:#c0c4cc;font-size:12px">-</span>
+              <el-button link size="small" type="primary" style="color:#909399;font-size:12px" @click="startEditSkipHuman(row)">编辑</el-button>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column prop="done_time" label="分析完成时间" width="160"></el-table-column>
-        <el-table-column prop="detail" label="诊断详情" min-width="260" show-overflow-tooltip></el-table-column>
       </el-table>
     </el-card>
 
@@ -349,12 +375,12 @@
             <el-button size="small" @click="loadHistoryBatches" :loading="batchHistory.batchListLoading">刷新批次列表</el-button>
           </div>
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-            <el-select v-model="batchHistory.selectedBatch" size="small" placeholder="选择云端批次" filterable style="width:360px"
+            <el-select v-model="batchHistory.selectedBatches" multiple size="small" placeholder="选择云端批次（可多选）" filterable style="width:420px"
               :loading="batchHistory.batchListLoading" @change="onBatchHistorySelected">
               <el-option v-for="b in batchHistory.batchList" :key="b.value" :label="b.label" :value="b.value"></el-option>
             </el-select>
-            <el-button size="small" :disabled="!batchHistory.selectedBatch" :loading="batchHistory.previewLoading" @click="previewBatchHistory">预览</el-button>
-            <el-button type="primary" size="small" :disabled="!batchHistory.selectedBatch" :loading="batchHistory.jiraLoading" @click="loadHistoryJira">查询多维表格数据</el-button>
+            <el-button size="small" :disabled="!batchHistory.selectedBatches.length" :loading="batchHistory.previewLoading" @click="previewBatchHistory">预览</el-button>
+            <el-button type="primary" size="small" :disabled="!batchHistory.selectedBatches.length" :loading="batchHistory.jiraLoading" @click="loadHistoryJira">查询多维表格数据</el-button>
             <a v-if="batchHistory.selectedBatchUrl" :href="batchHistory.selectedBatchUrl" target="_blank" style="color:#409eff;font-size:12px;text-decoration:none">查看云端文档 ↗</a>
             <el-button v-if="batchHistory.jiraRows.length" type="success" size="small" :loading="batchHistory.assessing" @click="runBatchHistoryAssess">本批次质量评估</el-button>
           </div>
@@ -407,7 +433,7 @@
               </div>
             </el-card>
           </template>
-          <el-empty v-if="!batchHistory.jiraRows.length && !batchHistory.jiraLoading && !batchHistory.selectedBatch" description="请先选择批次并预览，确认后点击查询多维表格数据" :image-size="40"></el-empty>
+          <el-empty v-if="!batchHistory.jiraRows.length && !batchHistory.jiraLoading && !batchHistory.selectedBatches.length" description="请先选择批次并预览，确认后点击查询多维表格数据" :image-size="40"></el-empty>
         </el-card>
         <!-- 批次预览弹窗 -->
         <el-dialog v-model="batchHistory.previewVisible" title="批次预览" width="70%" destroy-on-close>
@@ -483,6 +509,7 @@ export default {
         afterTime: '', resultFilter: '失败', sourceFilter: '', dedup: true, noManualReview: false,
         querying: false, records: [], successRecords: [], queryingSuccess: false, successSearched: false,
         diagRunning: false, diagLoadingMap: {}, diagResults: [], categoryFilter: '',
+        skipCategoryFilter: '', editingSkipBugid: '', editingSkipReason: '',
         writingReview: false, sendingToDeveloper: false, exportingTriggerIssues: false, batchApplyingTime: false, onlyEmptyReview: false,
         stopFlag: false, abortController: null, skipVideoCache: false, execOnlyEmptyReview: false, preClassifying: false,
         correctionEditor: { visible: false, row: null, time: '', note: '', humanReason: '', matchedCategory: '', saving: false },
@@ -493,7 +520,7 @@ export default {
         rows: [], selectedRow: null, diagnosing: false, diagResult: null,
       },
       batchHistory: {
-        batchList: [] as any[], batchListLoading: false, selectedBatch: '',
+        batchList: [] as any[], batchListLoading: false, selectedBatches: [] as string[],
         previewVisible: false, previewRows: [] as any[], previewLoading: false, previewBatchLabel: '',
         selectedBatchUrl: '', assessResult: null as any, assessing: false,
         jiraRows: [] as any[], jiraLoading: false,
@@ -803,6 +830,24 @@ export default {
     getSkipDiagResults() {
       return (this.troubleshoot.diagResults || []).filter(r => r.needs_analysis === false);
     },
+    // 按错误类型筛选后的跳过记录
+    getSkipCategories() {
+      return [...new Set(this.getSkipDiagResults().map(r => r.category).filter(Boolean))];
+    },
+    getFilteredSkipResults() {
+      const rows = this.getSkipDiagResults();
+      if (!this.troubleshoot.skipCategoryFilter) return rows;
+      return rows.filter(r => r.category === this.troubleshoot.skipCategoryFilter);
+    },
+    startEditSkipHuman(row) {
+      this.troubleshoot.editingSkipBugid = row.bugid;
+      this.troubleshoot.editingSkipReason = (row.report && row.report.human_reason) || '';
+    },
+    saveSkipHumanReason(row) {
+      if (!row.report) row.report = {};
+      row.report.human_reason = this.troubleshoot.editingSkipReason;
+      this.troubleshoot.editingSkipBugid = '';
+    },
     // 需深入分析的记录（needs_analysis !== false）
     getAnalysisDiagResults() {
       return (this.troubleshoot.diagResults || []).filter(r => r.needs_analysis !== false);
@@ -832,7 +877,7 @@ export default {
     },
     // 发送给开发者（飞书机器人通知）
     async sendToDeveloper() {
-      const skipItems = this.getSkipDiagResults();
+      const skipItems = this.getFilteredSkipResults();
       if (!skipItems.length) return ElMessage.warning('无跳过排查的记录');
       try {
         await ElMessageBox.confirm(
@@ -852,9 +897,9 @@ export default {
       } catch (e) { ElMessage.error('发送失败: ' + (e.message || e)); }
       finally { this.troubleshoot.sendingToDeveloper = false; }
     },
-    // 批量写入跳过排查记录的人工审核结果
+    // 批量写入跳过排查记录的人工审核结果（仅写入当前筛选后的）
     async batchWriteSkipReview() {
-      const items = this.getSkipDiagResults()
+      const items = this.getFilteredSkipResults()
         .filter(r => r.report && r.report.human_reason)
         .map(r => ({ bugid: r.bugid, done_time: r.done_time, human_reason: r.report.human_reason }));
       if (!items.length) return ElMessage.warning('无有人工分析失败原因的跳过记录');
@@ -1003,12 +1048,12 @@ export default {
     },
     onBatchHistorySelected() {
       this.batchHistory.jiraRows = []; this.batchHistory.resultFilter = ''; this.batchHistory.sourceFilter = ''; this.batchHistory.keyword = ''; this.batchHistory.manualEmpty = false;
-      const selected = this.batchHistory.batchList.find((b: any) => b.value === this.batchHistory.selectedBatch);
-      this.batchHistory.selectedBatchUrl = selected ? (selected.url || '') : '';
+      const first = this.batchHistory.selectedBatches.length ? this.batchHistory.batchList.find((b: any) => b.value === this.batchHistory.selectedBatches[0]) : null;
+      this.batchHistory.selectedBatchUrl = first ? (first.url || '') : '';
     },
     async previewBatchHistory() {
-      if (!this.batchHistory.selectedBatch) return;
-      const batchToken = this.batchHistory.selectedBatch;
+      if (!this.batchHistory.selectedBatches.length) return;
+      const batchToken = this.batchHistory.selectedBatches[0];
       this.batchHistory.previewLoading = true; this.batchHistory.previewVisible = true;
       const selected = this.batchHistory.batchList.find((b: any) => b.value === batchToken);
       this.batchHistory.previewBatchLabel = selected ? selected.name : batchToken;
@@ -1016,14 +1061,18 @@ export default {
       catch (_) { this.batchHistory.previewRows = []; } finally { this.batchHistory.previewLoading = false; }
     },
     async loadHistoryJira() {
-      if (!this.batchHistory.selectedBatch) return;
-      const batchToken = this.batchHistory.selectedBatch;
-      const selected = this.batchHistory.batchList.find((b: any) => b.value === batchToken);
-      const batchName = selected ? (selected.name || '') : '';
-      const batchCreated = selected ? (selected.created_time || '') : '';
+      if (!this.batchHistory.selectedBatches.length) return;
+      // 拼接多选 token/name/created
+      const tokens: string[] = [], names: string[] = [], createds: string[] = [];
+      for (const val of this.batchHistory.selectedBatches) {
+        const sel = this.batchHistory.batchList.find((b: any) => b.value === val);
+        tokens.push(val);
+        names.push(sel ? (sel.name || '') : '');
+        createds.push(sel ? (sel.created_time || '') : '');
+      }
       this.batchHistory.jiraLoading = true;
       try {
-        const body = await api(`/api/data/history_jira?batch_token=${encodeURIComponent(batchToken)}&batch_name=${encodeURIComponent(batchName)}&batch_created=${encodeURIComponent(batchCreated)}`);
+        const body = await api(`/api/data/history_jira?batch_token=${encodeURIComponent(tokens.join(','))}&batch_name=${encodeURIComponent(names.join(','))}&batch_created=${encodeURIComponent(createds.join(','))}`);
         this.batchHistory.jiraRows = (body.data && body.data.rows) || [];
         ElMessage.success(body.message || `已加载 ${this.batchHistory.jiraRows.length} 条记录`);
       } catch (_) {} finally { this.batchHistory.jiraLoading = false; }
@@ -1043,7 +1092,7 @@ export default {
       this.batchHistory.assessing = true; this.batchHistory.assessResult = null;
       try {
         const bugids = this.batchHistory.jiraRows.map((r: any) => r['jira号']).filter(Boolean);
-        const selected = this.batchHistory.batchList.find((b: any) => b.value === this.batchHistory.selectedBatch);
+        const selected = this.batchHistory.batchList.find((b: any) => b.value === this.batchHistory.selectedBatches[0]);
         const docCreatedTime = selected ? (selected.created_time || '') : '';
         const body = await api('/api/test/batch_quality_assess', { method: 'POST', body: JSON.stringify({ bugids, doc_created_time: docCreatedTime }) });
         if (body.data) { const a = (body.data as any).assessment; this.batchHistory.assessResult = a; ElMessage.success(`评估完成: ${a.total}个`); }

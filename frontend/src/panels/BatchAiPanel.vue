@@ -225,6 +225,110 @@
         </el-table>
         <el-alert v-if="aiDirect.runDoneMsg" type="success" :closable="false" :title="aiDirect.runDoneMsg" style="margin-top:10px"></el-alert>
       </el-tab-pane>
+
+      <!-- ==================== 表单执行 ==================== -->
+      <el-tab-pane label="表单执行" name="form">
+        <!-- ① 上传文件 -->
+        <div class="exec-section">
+          <div class="section-label">上传表格文件</div>
+          <div class="action-bar">
+            <div class="action-left" style="gap:12px">
+              <el-upload :auto-upload="false" :show-file-list="false" accept=".csv,.xlsx,.xls" :on-change="onFormFileChange">
+                <el-button type="primary" size="default">选择文件</el-button>
+              </el-upload>
+              <span v-if="formExec.fileName" style="font-size:13px;color:#606266">{{ formExec.fileName }}</span>
+              <el-tag v-if="formExec.keys.length" type="success" size="small">{{ formExec.keys.length }} 个 Jira 号</el-tag>
+              <el-tag v-if="formExec.csvTimeCount" type="info" size="small">{{ formExec.csvTimeCount }} 个有触发时间</el-tag>
+            </div>
+            <div class="action-right">
+              <el-button size="default" :loading="formExec.uploading" :disabled="!formExec.rawFile" @click="uploadFormFile">解析文件</el-button>
+            </div>
+          </div>
+          <el-alert v-if="formExec.uploadMsg" :type="formExec.uploadError ? 'error' : 'success'" :closable="false" :title="formExec.uploadMsg" style="margin-top:8px"></el-alert>
+        </div>
+
+        <!-- ② 执行配置 -->
+        <div v-if="formExec.keys.length" class="exec-section">
+          <div class="section-label">执行配置</div>
+          <div class="action-bar">
+            <div class="action-left">
+              <el-radio-group v-model="formExec.execMode" size="default">
+                <el-radio value="pc" border @change="setBatchMeta('formExec','pc')">PC</el-radio>
+                <el-radio value="online" border @change="setBatchMeta('formExec','online')">线上</el-radio>
+              </el-radio-group>
+              <el-divider direction="vertical" />
+              <el-input-number v-model="formExec.sampleCount" :min="1" :max="200" size="default" style="width:110px" controls-position="right"></el-input-number>
+              <span class="field-hint">抽取数量</span>
+            </div>
+          </div>
+          <div class="continuous-bar">
+            <el-checkbox v-model="formExec.continuous">持续执行</el-checkbox>
+            <template v-if="formExec.continuous">
+              <span class="param-label">间隔</span>
+              <el-input-number v-model="formExec.interval" :min="1" :max="120" size="small" style="width:90px" controls-position="right"></el-input-number>
+              <span class="param-hint">min</span>
+              <span class="param-label">轮数</span>
+              <el-input-number v-model="formExec.rounds" :min="2" :max="100" size="small" style="width:90px" controls-position="right"></el-input-number>
+            </template>
+          </div>
+          <div class="params-grid" style="margin-top:10px">
+            <div class="param-item">
+              <span class="param-label">分析并发</span>
+              <el-input-number v-model="formExec.analysisConcurrency" :min="1" :max="50" size="small" style="width:90px" controls-position="right"></el-input-number>
+            </div>
+            <div class="param-item">
+              <span class="param-label">下载并发</span>
+              <el-input-number v-model="formExec.downloadConcurrency" :min="1" :max="20" size="small" style="width:90px" controls-position="right"></el-input-number>
+            </div>
+            <div class="param-item">
+              <span class="param-label">模型</span>
+              <el-input v-model="formExec.model" size="small" style="width:150px"></el-input>
+            </div>
+            <div class="param-item">
+              <span class="param-label">触发来源</span>
+              <el-input v-model="formExec.triggerSource" size="small" style="width:90px" disabled></el-input>
+            </div>
+          </div>
+        </div>
+
+        <!-- ③ 执行按钮 -->
+        <div v-if="formExec.keys.length" class="execute-bar">
+          <el-button type="primary" size="large" :loading="formExec.running" :disabled="!formExec.execMode" @click="startFormExec">
+            {{ formExec.continuous ? `持续执行（${formExec.rounds} 轮）` : '一键执行' }}
+          </el-button>
+          <el-button v-if="formExec.running" type="danger" size="large" @click="stopFormExec">停止</el-button>
+        </div>
+
+        <!-- ④ 执行进度 -->
+        <el-alert v-if="formExec.doneMsg" :type="formExec.doneError ? 'error' : 'success'" :closable="false" :title="formExec.doneMsg" style="margin-top:10px"></el-alert>
+        <div v-if="formExec.currentRound > 0" class="round-info" style="margin-top:8px">
+          <el-tag type="info">当前轮次: {{ formExec.currentRound }} / {{ formExec.continuous ? formExec.rounds : 1 }}</el-tag>
+        </div>
+        <div v-if="formExec.sampleStats" class="progress-card">
+          <div class="stats-row">
+            <el-tag type="info" size="small">总数: {{ formExec.totalKeys }}</el-tag>
+            <el-tag type="success" size="small">缓存命中: {{ formExec.sampleStats.cloud || 0 }}</el-tag>
+            <el-tag type="warning" size="small">新提取: {{ formExec.sampleStats.extracted || 0 }}</el-tag>
+            <el-tag v-if="formExec.sampleStats.failed" type="danger" size="small">提取失败: {{ formExec.sampleStats.failed }}</el-tag>
+          </div>
+        </div>
+        <!-- 无触发时间的 Jira 号 -->
+        <div v-if="formExec.noTimeJiras.length" class="progress-card" style="margin-top:6px">
+          <div style="font-size:12px;font-weight:600;color:#f56c6c;margin-bottom:4px">无触发时间（{{ formExec.noTimeJiras.length }} 个）</div>
+          <el-tag v-for="j in formExec.noTimeJiras" :key="j" type="danger" size="small" style="margin:2px">{{ j }}</el-tag>
+        </div>
+        <!-- 执行结果表格 -->
+        <el-table v-if="formExec.results.length" :data="formExec.results" size="small" stripe border max-height="260" style="margin-top:10px">
+          <el-table-column type="index" label="#" width="45"></el-table-column>
+          <el-table-column prop="jira号" label="Jira号" width="130"></el-table-column>
+          <el-table-column label="结果" width="80">
+            <template #default="{row}"><el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="触发时间" label="触发时间" width="160" show-overflow-tooltip></el-table-column>
+          <el-table-column prop="执行时间" label="执行时间" width="160" show-overflow-tooltip></el-table-column>
+          <el-table-column prop="备注" label="备注" show-overflow-tooltip></el-table-column>
+        </el-table>
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -250,6 +354,14 @@ export default {
         analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '',
         filterPcSuccess: false, filterOnlineSuccess: false,
         filterLoading: false, filterInfo: '',
+      },
+      formExec: {
+        rawFile: null, fileName: '', uploading: false, uploadMsg: '', uploadError: false,
+        keys: [], csvTriggerTimes: {}, csvTimeCount: 0, totalKeys: 0,
+        sampleCount: 10, continuous: false, interval: 5, rounds: 3,
+        execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC',
+        running: false, abortController: null, currentRound: 0,
+        results: [], noTimeJiras: [], sampleStats: null, doneMsg: '', doneError: false,
       },
       batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"', 'issuetype = bug AND text ~ "VCU" AND created >= "2026/08/15" AND created <= now() AND status != CLOSED', 'issuetype = bug AND text ~ "SGM_Navigation750" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed', 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")', 'issuetype = bug AND status != closed AND created >= "2026/09/01"'], jqlLabels: ['远控', 'coreservice', '导航', 'VCU近期未关闭', '8.25后已关闭导航', '8.25后远控', '8.25后coreservice', '8.25后RES1.0/1.1', '9.1新增非close'], sampleCount: 5, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, filterExistingSuccess: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '', envSavedMsg: '', rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, preSample: null },
     };
@@ -381,7 +493,7 @@ export default {
         ? { analysisConcurrency: 5, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上' }
         : { analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC' };
       Object.assign(this[target], defaults);
-      this.loadEnvSettings(mode);
+      this.loadEnvSettings(mode, target);
     },
     saveEnvSettings() {
       const mode = this.batchAi.execMode;
@@ -397,16 +509,15 @@ export default {
       this.batchAi.envSavedMsg = '已保存';
       setTimeout(() => { this.batchAi.envSavedMsg = ''; }, 2000);
     },
-    loadEnvSettings(mode) {
+    loadEnvSettings(mode, target = 'batchAi') {
       try {
-        const raw = localStorage.getItem(`envSettings_${mode || this.batchAi.execMode}`);
+        const raw = localStorage.getItem(`envSettings_${mode || this[target].execMode}`);
         if (!raw) return;
         const data = JSON.parse(raw);
-        if (data.analysisConcurrency) this.batchAi.analysisConcurrency = data.analysisConcurrency;
-        if (data.downloadConcurrency) this.batchAi.downloadConcurrency = data.downloadConcurrency;
-        if (data.model) this.batchAi.model = data.model;
-        if (data.triggerSource) this.batchAi.triggerSource = data.triggerSource;
-        if (data.softwareVersion !== undefined) this.batchAi.softwareVersion = data.softwareVersion;
+        if (data.analysisConcurrency) this[target].analysisConcurrency = data.analysisConcurrency;
+        if (data.downloadConcurrency) this[target].downloadConcurrency = data.downloadConcurrency;
+        if (data.model) this[target].model = data.model;
+        if (data.triggerSource) this[target].triggerSource = data.triggerSource;
       } catch (e) { /* ignore */ }
     },
     async batchAiOneClick() {
@@ -600,7 +711,97 @@ export default {
       } catch (e) { if (e.name === 'AbortError') ElMessage.warning('已停止'); else ElMessage.error('执行失败: ' + e.message); }
       finally { this.running.aiDirectRun = false; }
     },
-    stopAiDirectAnalyze() { if (this.aiDirectAbort) this.aiDirectAbort.abort(); }
+    stopAiDirectAnalyze() { if (this.aiDirectAbort) this.aiDirectAbort.abort(); },
+    // ========== 表单执行方法 ==========
+    onFormFileChange(file) {
+      this.formExec.rawFile = file.raw;
+      this.formExec.fileName = file.name;
+      this.formExec.uploadMsg = ''; this.formExec.uploadError = false;
+      this.formExec.keys = []; this.formExec.csvTriggerTimes = {}; this.formExec.csvTimeCount = 0;
+    },
+    async uploadFormFile() {
+      if (!this.formExec.rawFile) return ElMessage.warning('请先选择文件');
+      this.formExec.uploading = true; this.formExec.uploadMsg = ''; this.formExec.uploadError = false;
+      this.formExec.keys = []; this.formExec.csvTriggerTimes = {}; this.formExec.csvTimeCount = 0;
+      try {
+        const formData = new FormData();
+        formData.append('file', this.formExec.rawFile);
+        const resp = await fetch('/api/test/form_upload', { method: 'POST', body: formData });
+        const body = await resp.json();
+        if (body.code !== 200 && body.code !== 0) throw new Error(body.message || '解析失败');
+        this.formExec.keys = body.data.keys || [];
+        this.formExec.csvTriggerTimes = body.data.csv_trigger_times || {};
+        this.formExec.csvTimeCount = Object.keys(this.formExec.csvTriggerTimes).length;
+        this.formExec.totalKeys = this.formExec.keys.length;
+        this.formExec.uploadMsg = body.message || `解析完成: ${this.formExec.keys.length} 个 Jira 号`;
+      } catch (e) {
+        this.formExec.uploadMsg = '解析失败: ' + (e.message || '未知错误');
+        this.formExec.uploadError = true;
+      } finally { this.formExec.uploading = false; }
+    },
+    async startFormExec() {
+      if (!this.formExec.keys.length) return ElMessage.warning('请先上传并解析文件');
+      if (!this.formExec.execMode) return ElMessage.warning('请选择执行模式');
+      this.formExec.running = true; this.formExec.doneMsg = ''; this.formExec.doneError = false;
+      this.formExec.results = []; this.formExec.noTimeJiras = []; this.formExec.sampleStats = null;
+      this.formExec.currentRound = 0;
+      this.formExec.abortController = new AbortController();
+      try {
+        const resp = await fetch('/api/test/form_exec', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            keys: this.formExec.keys, csv_trigger_times: this.formExec.csvTriggerTimes,
+            sample_count: this.formExec.sampleCount, interval_min: this.formExec.continuous ? this.formExec.interval : 0,
+            total_rounds: this.formExec.continuous ? this.formExec.rounds : 1,
+            exec_mode: this.formExec.execMode,
+            analysis_concurrency: this.formExec.analysisConcurrency, download_concurrency: this.formExec.downloadConcurrency,
+            model: this.formExec.model, trigger_source: this.formExec.triggerSource,
+          }),
+          signal: this.formExec.abortController.signal,
+        });
+        const reader = resp.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read(); if (done) break;
+          buffer += decoder.decode(value, { stream: true }); const lines = buffer.split('\n'); buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const evt = JSON.parse(line.slice(6));
+              if (evt.type === 'cache') {
+                this.formExec.sampleStats = { cloud: evt.cached, pending: evt.pending };
+              } else if (evt.type === 'round') {
+                this.formExec.currentRound = evt.round;
+              } else if (evt.type === 'sample') {
+                this.formExec.sampleStats = { cloud: evt.cloud, extracted: evt.extracted, failed: evt.failed, selected: evt.selected };
+              } else if (evt.type === 'progress') {
+                this.formExec.results.push({
+                  'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : (evt.status === 'fail' ? '失败' : evt.status),
+                  '触发时间': '', '执行时间': '', '备注': evt.msg || '',
+                });
+              } else if (evt.type === 'no_time') {
+                this.formExec.noTimeJiras = evt.jiras || [];
+              } else if (evt.type === 'waiting') {
+                this.formExec.doneMsg = `第 ${evt.round} 轮完成，等待 ${evt.interval_min} 分钟后开始下一轮...`;
+              } else if (evt.type === 'done') {
+                let msg = `全部完成: ${evt.success}/${evt.total} 成功`;
+                if (evt.no_time_count) msg += `，${evt.no_time_count} 个无触发时间`;
+                if (evt.cloud_url) msg += `，已上传云端`;
+                this.formExec.doneMsg = msg;
+              } else if (evt.type === 'stopped') {
+                this.formExec.doneMsg = `已停止: ${evt.success}/${evt.total} 成功`;
+              } else if (evt.type === 'error') {
+                this.formExec.doneMsg = evt.message || '执行出错';
+                this.formExec.doneError = true;
+              }
+            } catch (e) { /* ignore */ }
+          }
+        }
+      } catch (e) {
+        if (e.name === 'AbortError') { this.formExec.doneMsg = '已停止'; }
+        else { this.formExec.doneMsg = '执行失败: ' + e.message; this.formExec.doneError = true; }
+      } finally { this.formExec.running = false; }
+    },
+    stopFormExec() { if (this.formExec.abortController) this.formExec.abortController.abort(); }
   },
 };
 </script>

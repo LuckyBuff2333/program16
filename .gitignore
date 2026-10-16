@@ -16,11 +16,18 @@ __pycache__/
 .pytest_cache/
 .venv/
 
+# 前端构建
+node_modules/
+frontend/dist/
+
+
 # IDE
 .idea/
 
 # 日志和数据（运行时生成）
 logs/
+*.log
+app.log
 data/*
 !data/daily_broadcast_config.json
 *.egg-info/
@@ -32,7 +39,4 @@ config/config.yaml
 *.tmp
 screenshot_*.png
 
-# 触发时间自学习（需推送到云端）
-# timestudy/records/        -- 按日期分文件，已追踪
-# timestudy/error_patterns*  -- 分析快照，已追踪
-# timestudy/optimization_log.md -- 优化日志，已追踪
+# 触发时间自学习（运行时生成，已迁移到 data/timestudy + reports/timestudy）

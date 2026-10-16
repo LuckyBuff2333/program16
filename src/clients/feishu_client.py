@@ -282,8 +282,8 @@ def get_tenant_access_token(app_id: str = None, app_secret: str = None) -> str:
 
 
 def _bitable_headers() -> dict:
-    """构造 Bitable API 请求头（Bearer Token 认证，优先 user_access_token）"""
-    token = _get_doc_token()
+    """构造 Bitable API 请求头（使用 tenant_access_token，自动刷新无需人工干预）"""
+    token = get_tenant_access_token()
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
@@ -373,14 +373,7 @@ def _paginate_get(url: str, headers: dict, params: dict,
 
 
 def _get_doc_token() -> str:
-    """获取文档 API 的认证 token：优先使用 user_access_token，为空时自动刷新，回退 tenant_access_token"""
-    cfg = _get_bitable_cfg()
-    user_token = cfg.get("user_access_token", "").strip()
-    if not user_token and cfg.get("user_refresh_token", "").strip():
-        # user_access_token 为空但有 refresh_token，自动尝试刷新
-        user_token = _refresh_user_token()
-    if user_token:
-        return user_token
+    """获取文档/云盘 API 的认证 token：统一使用 tenant_access_token（自动刷新，无需人工授权）"""
     return get_tenant_access_token()
 
 
@@ -1272,7 +1265,7 @@ def create_docx_document(title: str, md_content: str, folder_token: str = "") ->
             err_msg = err_body.get("msg", "")
             logger.error("创建飞书文档 HTTP 错误: status=%s, code=%s, msg=%s", e.response.status_code, err_code, err_msg)
             if err_code == 99991679:
-                raise ValueError(f"创建飞书文档失败: user_access_token 缺少 docx:document 权限，请重新授权 (code=99991679)")
+                raise ValueError(f"创建飞书文档失败: token 缺少 docx:document 权限，请检查应用权限配置 (code=99991679)")
             raise ValueError(f"创建飞书文档失败: {err_msg} (code={err_code}, status={e.response.status_code})")
         except ValueError:
             raise

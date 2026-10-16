@@ -1106,12 +1106,12 @@
           </div>
           <!-- 批次选择器 + 操作按钮 -->
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-            <el-select v-model="historySelectedBatch" size="small" placeholder="选择云端批次" filterable style="width:360px"
+            <el-select v-model="historySelectedBatches" multiple size="small" placeholder="选择云端批次（可多选）" filterable style="width:420px"
               :loading="historyBatchListLoading" @change="onBatchSelected">
               <el-option v-for="b in historyBatchList" :key="b.value" :label="b.label" :value="b.value"></el-option>
             </el-select>
-            <el-button size="small" :disabled="!historySelectedBatch" :loading="historyPreviewLoading" @click="previewBatch">预览</el-button>
-            <el-button type="primary" size="small" :disabled="!historySelectedBatch" :loading="historyJiraLoading" @click="loadHistoryJira">查询多维表格数据</el-button>
+            <el-button size="small" :disabled="!historySelectedBatches.length" :loading="historyPreviewLoading" @click="previewBatch">预览</el-button>
+            <el-button type="primary" size="small" :disabled="!historySelectedBatches.length" :loading="historyJiraLoading" @click="loadHistoryJira">查询多维表格数据</el-button>
             <a v-if="historySelectedBatchUrl" :href="historySelectedBatchUrl" target="_blank" style="color:#409eff;font-size:12px;text-decoration:none">查看云端文档 ↗</a>
             <el-button v-if="historyJiraRows.length" type="success" size="small" :loading="running.batchAssess" @click="runDashboardAssess">本批次质量评估</el-button>
           </div>
@@ -1181,7 +1181,7 @@
               <el-alert v-if="dashboardAssessResult.backfilled>0" type="warning" :closable="false" style="margin-top:6px" :title="`已补写 ${dashboardAssessResult.backfilled} 条缺失执行时间（值：${dashboardAssessResult.backfill_time}）`"></el-alert>
             </el-card>
           </template>
-          <el-empty v-if="!historyJiraRows.length && !historyJiraLoading && !historySelectedBatch" description="请先选择批次并预览，确认后点击“查询多维表格数据”" :image-size="40"></el-empty>
+          <el-empty v-if="!historyJiraRows.length && !historyJiraLoading && !historySelectedBatches.length" description="请先选择批次并预览，确认后点击“查询多维表格数据”" :image-size="40"></el-empty>
         </el-card>
         <!-- 批次预览弹窗 -->
         <el-dialog v-model="historyPreviewVisible" title="批次预览" width="70%" destroy-on-close>
@@ -2374,6 +2374,8 @@
                 <!-- 回归执行 -->
                 <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px;padding:8px 12px;background:#f5f7fa;border-radius:6px;flex-wrap:wrap">
                   <span style="font-weight:600;font-size:13px">回归执行</span>
+                  <el-tag v-if="onlineFollowup.errorStats.afterTime" type="info" size="small">{{ onlineFollowup.errorStats.afterTime }} 之后</el-tag>
+                  <el-tag v-else type="warning" size="small">全量历史</el-tag>
                   <el-radio-group v-model="onlineFollowup.regression.execMode" size="small">
                     <el-radio-button label="pc">PC执行</el-radio-button>
                     <el-radio-button label="online">线上执行</el-radio-button>
@@ -3438,7 +3440,7 @@ createApp({
       bitableConfMax: null, bitableDedup: false,
       bitableDateRange: null, bitableVisibleCols: [], bitableColPickerVisible: false,
       // 历史批量执行 Jira · 按批次查询多维表格状态
-      historyBatchList: [], historyBatchListLoading: false, historySelectedBatch: '',
+      historyBatchList: [], historyBatchListLoading: false, historySelectedBatches: [],
       historyPreviewVisible: false, historyPreviewRows: [], historyPreviewLoading: false, historyPreviewBatchLabel: '',
             historySelectedBatchUrl: '',
             dashboardAssessResult: null, dashboardAssessErr: '',
@@ -3792,14 +3794,14 @@ createApp({
       this.historyJiraSourceFilter = '';
       this.historyJiraKeyword = '';
       this.historyJiraManualEmpty = false;
-      // 查找选中批次的云端文档 URL
-      const selected = this.historyBatchList.find(b => b.value === this.historySelectedBatch);
-      this.historySelectedBatchUrl = selected ? (selected.url || '') : '';
+      // 查找第一个选中批次的云端文档 URL
+      const first = this.historySelectedBatches.length ? this.historyBatchList.find(b => b.value === this.historySelectedBatches[0]) : null;
+      this.historySelectedBatchUrl = first ? (first.url || '') : '';
     },
     // 预览选中批次的云端文档内容
     async previewBatch() {
-      if (!this.historySelectedBatch) return;
-      const batchToken = this.historySelectedBatch;
+      if (!this.historySelectedBatches.length) return;
+      const batchToken = this.historySelectedBatches[0];
       this.historyPreviewLoading = true;
       this.historyPreviewVisible = true;
       const selected = this.historyBatchList.find(b => b.value === batchToken);
@@ -3812,14 +3814,18 @@ createApp({
     },
     // 按批次查询多维表格聚合数据
     async loadHistoryJira() {
-      if (!this.historySelectedBatch) return;
-      const batchToken = this.historySelectedBatch;
-      const selected = this.historyBatchList.find(b => b.value === batchToken);
-      const batchName = selected ? (selected.name || '') : '';
-      const batchCreated = selected ? (selected.created_time || '') : '';
+      if (!this.historySelectedBatches.length) return;
+      // 拼接多选 token/name/created
+      const tokens = [], names = [], createds = [];
+      for (const val of this.historySelectedBatches) {
+        const sel = this.historyBatchList.find(b => b.value === val);
+        tokens.push(val);
+        names.push(sel ? (sel.name || '') : '');
+        createds.push(sel ? (sel.created_time || '') : '');
+      }
       this.historyJiraLoading = true;
       try {
-        const body = await this.api(`/api/data/history_jira?batch_token=${encodeURIComponent(batchToken)}&batch_name=${encodeURIComponent(batchName)}&batch_created=${encodeURIComponent(batchCreated)}`);
+        const body = await this.api(`/api/data/history_jira?batch_token=${encodeURIComponent(tokens.join(','))}&batch_name=${encodeURIComponent(names.join(','))}&batch_created=${encodeURIComponent(createds.join(','))}`);
         this.historyJiraRows = (body.data && body.data.rows) || [];
         ElementPlus.ElMessage.success(body.message || `已加载 ${this.historyJiraRows.length} 条记录`);
       } catch (e) { /* 已提示 */ }
@@ -5016,6 +5022,7 @@ createApp({
         const resp = await fetch('/api/test/regression_run', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            after_time: this.onlineFollowup.errorStats.afterTime || '',
             sample_count: this.onlineFollowup.regression.sampleCount,
             exec_mode: this.onlineFollowup.regression.execMode,
             interval_min: this.onlineFollowup.regression.intervalMin,
@@ -5037,7 +5044,8 @@ createApp({
             try {
               const evt = JSON.parse(line.slice(6));
               if (evt.type === 'search') {
-                this.onlineFollowup.regression.msg = `找到 ${evt.total} 个有成功记录的Jira号`;
+                const timeHint = this.onlineFollowup.errorStats.afterTime ? `（${this.onlineFollowup.errorStats.afterTime} 之后）` : '（全量）';
+                this.onlineFollowup.regression.msg = `找到 ${evt.total} 个有成功记录的Jira号${timeHint}`;
               } else if (evt.type === 'round') {
                 this.onlineFollowup.regression.msg = `=== 第 ${evt.round}/${evt.total_rounds} 轮 ===`;
               } else if (evt.type === 'sample') {
@@ -5641,7 +5649,7 @@ createApp({
       this.dashboardAssessResult = null; this.dashboardAssessErr = '';
       try {
         const bugids = this.historyJiraRows.map(r => r['jira号']).filter(Boolean);
-        const selected = this.historyBatchList.find(b => b.value === this.historySelectedBatch);
+        const selected = this.historyBatchList.find(b => b.value === this.historySelectedBatches[0]);
         const docCreatedTime = selected ? (selected.created_time || '') : '';
         const body = await this.api('/api/test/batch_quality_assess', {
           method: 'POST',

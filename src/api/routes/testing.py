@@ -3464,10 +3464,11 @@ async def regression_batches(request: Request):
     from src.services.report_ops import _scan_all_batch_records
     from src.clients import feishu_client
     try:
-        batches = await asyncio.get_event_loop().run_in_executor(None, _scan_all_batch_records)
+        batches = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _scan_all_batch_records(after_date=after_time))
     except Exception as e:
         return _fail(f"扫描批次记录失败: {e}")
-    # 按 after_time 过滤批次日期
+    # 二次过滤确保日期范围正确
     if after_time:
         batches = [b for b in batches if b.get("date", "") >= after_time[:10]]
     if not batches:
@@ -3555,25 +3556,34 @@ async def regression_run(request: Request):
         from src.api.routes.shared import batch_extract_stop_event as _stop_event
         _stop_event.clear()  # 新执行开始时清除停止标志
         loop = asyncio.get_event_loop()
+        # 读取配置中的 Jira 号字段名
+        cfg = load_config().get("feishu_bitable", {})
+        jira_col = cfg.get("bugid_field", "jira号")
         # 步骤1：获取候选 Jira 号（优先使用前端传入的 bugids）
         if input_bugids:
             candidates = list(dict.fromkeys(input_bugids))  # 去重且保序
             yield f"data: {_json.dumps({'type': 'search', 'total': len(candidates)}, ensure_ascii=False)}\n\n"
         else:
             try:
-                cfg = load_config().get("feishu_bitable", {})
                 at, tid = cfg.get("app_token", ""), cfg.get("table_id", "")
                 bf = cfg.get("bugid_field", "jira号")
                 if not at or not tid:
                     yield f"data: {_json.dumps({'type': 'error', 'message': '多维表格未配置'}, ensure_ascii=False)}\n\n"
                     return
                 records = await loop.run_in_executor(None, lambda: feishu_client.list_bitable_records(at, tid))
+                cutoff = _ts_parse_datetime(after_time) if after_time else None
                 stats = {}
                 for rec in records:
                     fields = rec.get("fields", {})
                     jn = _bitable_text(fields.get(bf, ""))
                     if not jn:
                         continue
+                    # 按分析完成时间过滤
+                    if cutoff:
+                        done_time = _bitable_text(fields.get("分析完成时间", ""))
+                        done_dt = _ts_parse_datetime(done_time) if done_time else None
+                        if not done_dt or done_dt <= cutoff:
+                            continue
                     result_status = _bitable_text(fields.get("分析结果", ""))
                     entry = stats.setdefault(jn, {"has_success": False, "fail_count": 0})
                     if result_status == "成功":
@@ -3622,7 +3632,7 @@ async def regression_run(request: Request):
                     return
                 exec_time = trigger_times.get(bugid, "")
                 if not exec_time:
-                    results.append({"Jira号": bugid, "执行结果": "失败", "备注": "无触发时间"})
+                    results.append({jira_col: bugid, "执行结果": "失败", "备注": "无触发时间"})
                     continue
                 try:
                     if exec_mode == "online":
@@ -3636,9 +3646,9 @@ async def regression_run(request: Request):
                     resp_code = resp.get("code") if isinstance(resp, dict) else None
                     resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
                     is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
-                    results.append({"Jira号": bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200]})
+                    results.append({jira_col: bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200]})
                 except Exception as e:
-                    results.append({"Jira号": bugid, "执行结果": "失败", "备注": str(e)[:200]})
+                    results.append({jira_col: bugid, "执行结果": "失败", "备注": str(e)[:200]})
                 yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(round_candidates), 'bugid': bugid, 'status': results[-1]['执行结果'], 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
             round_success = sum(1 for r in results if r["执行结果"] == "成功")
             round_fail = len(results) - round_success
@@ -3658,10 +3668,10 @@ async def regression_run(request: Request):
         try:
             with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
                 writer = _csv.writer(f)
-                writer.writerow(["Jira号", "执行结果", "触发时间", "执行时间", "备注",
+                writer.writerow([jira_col, "执行结果", "触发时间", "执行时间", "备注",
                                  "分析并发数", "下载并发数", "模型", "触发来源", "执行模式"])
                 for r in all_results:
-                    writer.writerow([r["Jira号"], r["执行结果"], trigger_times.get(r["Jira号"], ""),
+                    writer.writerow([r[jira_col], r["执行结果"], trigger_times.get(r[jira_col], ""),
                                      datetime.now().strftime("%Y-%m-%d %H:%M:%S"), r.get("备注", ""),
                                      _batch_meta["分析并发数"], _batch_meta["下载并发数"],
                                      _batch_meta["模型"], _batch_meta["触发来源"], mode_label])
@@ -4225,6 +4235,277 @@ async def study_analysis(request: Request):
             return _ok({"folders": folders}, f"找到 {len(folders)} 个分析文件夹")
     except Exception as e:
         return _fail(f"分析失败: {e}")
+
+
+# ========== 功能14：表单执行 ==========
+
+
+@router.post("/api/test/form_upload")
+async def form_upload(file: UploadFile = File(None)):
+    """表单执行：上传 CSV/Excel 文件，解析 Jira 号和触发时间"""
+    import os, csv as _csv, io
+    if not file or not file.filename:
+        return _fail("未找到上传文件")
+    ext = os.path.splitext(file.filename)[1].lower()
+    keys, csv_trigger_times, seen = [], {}, set()
+    try:
+        content = await file.read()
+        if ext in (".xlsx", ".xls"):
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True)
+                ws = wb.active
+                headers = [str(c.value or "").strip() for c in next(ws.iter_rows(min_row=1, max_row=1))]
+                # 查找 Jira 号和触发时间列索引
+                jira_idx = next((i for i, h in enumerate(headers) if h in ("jira号", "Jira号", "JIRA号", "VCU号", "bugid", "BugID")), None)
+                time_idx = next((i for i, h in enumerate(headers) if h in ("触发时间", "创建时间", "执行时间", "分析执行时间")), None)
+                if jira_idx is None:
+                    return _fail("Excel 文件中未找到 Jira 号列")
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    jira = str(row[jira_idx] or "").strip()
+                    if jira and jira not in seen:
+                        seen.add(jira)
+                        keys.append(jira)
+                        if time_idx is not None and time_idx < len(row):
+                            tt = str(row[time_idx] or "").strip()
+                            if tt:
+                                csv_trigger_times[jira] = tt
+            except ImportError:
+                return _fail("服务器未安装 openpyxl，请使用 CSV 格式上传")
+        else:
+            text = content.decode("utf-8-sig")
+            reader = _csv.DictReader(io.StringIO(text))
+            for row in reader:
+                jira = (row.get("jira号") or row.get("Jira号") or row.get("JIRA号") or row.get("VCU号") or row.get("bugid") or row.get("BugID") or "").strip()
+                if jira and jira not in seen:
+                    seen.add(jira)
+                    keys.append(jira)
+                    tt = (row.get("触发时间") or row.get("创建时间") or row.get("执行时间") or row.get("分析执行时间") or "").strip()
+                    if tt:
+                        csv_trigger_times[jira] = tt
+    except Exception as e:
+        return _fail(f"文件解析失败: {e}")
+    if not keys:
+        return _fail("文件中未找到有效 Jira 号")
+    msg = f"导入 {len(keys)} 个 Jira 号"
+    if csv_trigger_times:
+        msg += f"，其中 {len(csv_trigger_times)} 个有触发时间"
+    return _ok({"keys": keys, "csv_trigger_times": csv_trigger_times}, msg)
+
+
+@router.post("/api/test/form_exec")
+async def form_exec(request: Request):
+    """表单执行：多轮抽样 + 执行，SSE 实时推送，触发时间优先云端缓存→新提取"""
+    import os, re, json, random, csv as _csv, queue, asyncio, threading
+    import json as _json
+    from src.services.report_ops import _upload_batch_to_cloud
+    from src.services.trigger_ops import (
+        _load_cloud_trigger_cache, _save_trigger_time_to_csv,
+        _batch_save_trigger_times_to_cloud,
+    )
+    from src.services.report_ops import _load_all_doc_jira_keys
+    from src.services.server_legacy import _diag_extract_time_from_video_simple, _has_gmlogger_logs, _diag_extract_time_from_images
+    body = await request.json() or {}
+    keys = body.get("keys") or []
+    csv_trigger_times = body.get("csv_trigger_times") or {}
+    sample_count = max(1, int(body.get("sample_count", 10)))
+    interval_min = max(0, int(body.get("interval_min", 0)))
+    total_rounds = max(1, int(body.get("total_rounds", 1)))
+    exec_mode = str(body.get("exec_mode", "pc")).strip()
+    _batch_meta = {
+        "分析并发数": str(body.get("analysis_concurrency", "10")),
+        "下载并发数": str(body.get("download_concurrency", "4")),
+        "模型": str(body.get("model", "deepseek-v-pro")),
+        "触发来源": str(body.get("trigger_source", "PC")),
+    }
+    if not keys:
+        return _fail("待执行列表为空，请先上传文件")
+
+    async def event_generator():
+        from src.clients import jira_client as _jc
+        from src.clients.base import http_post
+        from src.api.routes.shared import batch_extract_stop_event as _stop_event
+        _stop_event.clear()
+        loop = asyncio.get_event_loop()
+        cfg = load_config()
+        cfg_api = cfg.get("ai_log_api", {})
+        # 去重 keys
+        seen_keys = set()
+        unique_keys = []
+        for k in keys:
+            if k not in seen_keys:
+                seen_keys.add(k)
+                unique_keys.append(k)
+        keys_dedup = unique_keys
+        yield f"data: {_json.dumps({'type': 'start', 'total': len(keys_dedup)}, ensure_ascii=False)}\n\n"
+        # 加载云端缓存
+        local_times, cloud_keys = _load_cloud_trigger_cache()
+        trigger_times = {}
+        for k in keys_dedup:
+            if k in local_times and local_times[k]:
+                trigger_times[k] = local_times[k]
+        # 合并 CSV 触发时间（云端优先）
+        for k in keys_dedup:
+            if k not in trigger_times and k in csv_trigger_times and csv_trigger_times[k]:
+                trigger_times[k] = csv_trigger_times[k]
+        # 分类
+        with_time = [k for k in keys_dedup if k in trigger_times]
+        pending_pool = [k for k in keys_dedup if k not in trigger_times and k not in cloud_keys]
+        random.shuffle(pending_pool)
+        yield f"data: {_json.dumps({'type': 'cache', 'cached': len(with_time), 'pending': len(pending_pool)}, ensure_ascii=False)}\n\n"
+        # PC 配置
+        pc_cfg = cfg_api if exec_mode != "online" else None
+        all_results = []
+        total_success, total_fail = 0, 0
+        all_no_time = []
+        # 多轮执行
+        for round_num in range(1, total_rounds + 1):
+            if _stop_event.is_set():
+                break
+            if total_rounds > 1:
+                yield f"data: {_json.dumps({'type': 'round', 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
+            # 本轮抽样：优先有触发时间的，不够则提取
+            remaining = sample_count
+            round_selected = []
+            round_cloud = 0
+            round_extracted = 0
+            round_extract_failed = 0
+            round_no_time = []
+            # 从有触发时间的池中抽取
+            available_with_time = [k for k in keys_dedup if k in trigger_times and k not in [r.get("bugid") for r in all_results]]
+            if available_with_time:
+                pick = min(remaining, len(available_with_time))
+                round_selected.extend(random.sample(available_with_time, pick))
+                round_cloud = pick
+                remaining -= pick
+            # 不够则从 pending_pool 提取
+            if remaining > 0 and pending_pool:
+                extract_batch = 20
+                _cloud_flush_counter = 0
+                new_to_cloud = {}
+                batch = pending_pool[:extract_batch * 3]  # 多取一些以防提取失败
+                pending_pool = pending_pool[len(batch):]
+                for k in batch:
+                    if remaining <= 0:
+                        break
+                    if _stop_event.is_set():
+                        break
+                    try:
+                        issue = await loop.run_in_executor(None, _jc.fetch_issue, k)
+                        attachments = (issue.get("fields") or {}).get("attachment") or []
+                        if not _has_gmlogger_logs(attachments, k):
+                            round_extract_failed += 1
+                            continue
+                        tt = await loop.run_in_executor(None, _jc.extract_trigger_time_from_issue, issue)
+                        if not tt:
+                            tt = await loop.run_in_executor(None, _diag_extract_time_from_video_simple, issue)
+                        if not tt:
+                            cfg_jira = cfg.get("jira_api", {})
+                            img_h, img_tok = {}, cfg_jira.get("token", "")
+                            if img_tok:
+                                img_h["Authorization"] = f"Bearer {img_tok}"
+                            img_to = max(int(cfg_jira.get("timeout", 30)), 120)
+                            img_result = await loop.run_in_executor(None, _diag_extract_time_from_images, issue, img_h, img_to, k)
+                            img_tt = img_result[0] if isinstance(img_result, tuple) else img_result
+                            if img_tt:
+                                tt = img_tt
+                        if tt and not isinstance(tt, str):
+                            tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
+                        if tt:
+                            trigger_times[k] = tt
+                            await loop.run_in_executor(None, _save_trigger_time_to_csv, k, tt)
+                            new_to_cloud[k] = tt
+                            round_selected.append(k)
+                            round_extracted += 1
+                            remaining -= 1
+                        else:
+                            await loop.run_in_executor(None, _save_trigger_time_to_csv, k, "")
+                            new_to_cloud[k] = ""
+                            round_extract_failed += 1
+                    except Exception as e:
+                        logger.warning("表单执行提取触发时间失败 %s: %s", k, e)
+                        await loop.run_in_executor(None, _save_trigger_time_to_csv, k, "")
+                        new_to_cloud[k] = ""
+                        round_extract_failed += 1
+                    _cloud_flush_counter += 1
+                    if _cloud_flush_counter >= 2 and new_to_cloud:
+                        await loop.run_in_executor(None, _batch_save_trigger_times_to_cloud, new_to_cloud)
+                        new_to_cloud.clear()
+                        _cloud_flush_counter = 0
+                if new_to_cloud:
+                    await loop.run_in_executor(None, _batch_save_trigger_times_to_cloud, new_to_cloud)
+            # 推送抽样结果
+            yield f"data: {_json.dumps({'type': 'sample', 'round': round_num, 'selected': len(round_selected), 'cloud': round_cloud, 'extracted': round_extracted, 'failed': round_extract_failed}, ensure_ascii=False)}\n\n"
+            # 本轮执行
+            batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            round_results = []
+            for bugid in round_selected:
+                if _stop_event.is_set():
+                    yield f"data: {_json.dumps({'type': 'stopped', 'total': len(all_results), 'success': total_success, 'fail': total_fail}, ensure_ascii=False)}\n\n"
+                    return
+                exec_time = trigger_times.get(bugid, "")
+                if not exec_time:
+                    round_results.append({"bugid": bugid, "执行结果": "失败", "备注": "无触发时间", "触发时间": "", "执行时间": batch_start})
+                    all_no_time.append(bugid)
+                    yield f"data: {_json.dumps({'type': 'progress', 'index': len(round_results), 'total': len(round_selected), 'bugid': bugid, 'status': 'fail', 'round': round_num}, ensure_ascii=False)}\n\n"
+                    continue
+                try:
+                    if exec_mode == "online":
+                        payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
+                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=30))
+                    else:
+                        payload = {cfg_api.get("bugid_field", "jira号"): bugid}
+                        if cfg_api.get("trigger_time_field"):
+                            payload[cfg_api["trigger_time_field"]] = exec_time
+                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(cfg_api.get("url", ""), p, timeout=int(cfg_api.get("timeout", 60))))
+                    resp_code = resp.get("code") if isinstance(resp, dict) else None
+                    resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
+                    is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
+                    round_results.append({"bugid": bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200], "触发时间": exec_time, "执行时间": batch_start})
+                except Exception as e:
+                    round_results.append({"bugid": bugid, "执行结果": "失败", "备注": str(e)[:200], "触发时间": exec_time, "执行时间": batch_start})
+                yield f"data: {_json.dumps({'type': 'progress', 'index': len(round_results), 'total': len(round_selected), 'bugid': bugid, 'status': round_results[-1]['执行结果'], 'round': round_num}, ensure_ascii=False)}\n\n"
+            round_success = sum(1 for r in round_results if r["执行结果"] == "成功")
+            round_fail = len(round_results) - round_success
+            total_success += round_success
+            total_fail += round_fail
+            all_results.extend(round_results)
+            # 轮次间隔
+            if round_num < total_rounds and interval_min > 0:
+                yield f"data: {_json.dumps({'type': 'waiting', 'interval_min': interval_min, 'round': round_num}, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(interval_min * 60)
+        # 收集所有无触发时间的 Jira 号
+        for k in keys_dedup:
+            if k not in trigger_times and k not in [r.get("bugid") for r in all_results]:
+                all_no_time.append(k)
+        all_no_time_dedup = list(dict.fromkeys(all_no_time))
+        if all_no_time_dedup:
+            yield f"data: {_json.dumps({'type': 'no_time', 'jiras': all_no_time_dedup}, ensure_ascii=False)}\n\n"
+        # 保存结果 CSV
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        time_str = datetime.now().strftime("%H%M%S")
+        mode_label = "线上" if exec_mode == "online" else "PC"
+        os.makedirs(_UNANALYZED_DIR, exist_ok=True)
+        batch_csv = os.path.join(_UNANALYZED_DIR, f"form_exec_{date_str}_{time_str}.csv")
+        cloud_url = ""
+        try:
+            with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
+                writer = _csv.writer(f)
+                writer.writerow(["jira号", "执行结果", "触发时间", "执行时间", "备注",
+                                 "分析并发数", "下载并发数", "模型", "触发来源", "执行模式"])
+                for r in all_results:
+                    writer.writerow([r["bugid"], r["执行结果"], r.get("触发时间", ""),
+                                     r.get("执行时间", ""), r.get("备注", ""),
+                                     _batch_meta["分析并发数"], _batch_meta["下载并发数"],
+                                     _batch_meta["模型"], _batch_meta["触发来源"], mode_label])
+            doc_title = f"表单执行 {mode_label} {date_str} {time_str} ({total_success}/{len(all_results)}, {total_rounds}轮)"
+            cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
+        except Exception as e:
+            logger.warning("表单执行: 保存失败: %s", e)
+        yield f"data: {_json.dumps({'type': 'done', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'rounds': total_rounds, 'no_time_count': len(all_no_time_dedup), 'cloud_url': cloud_url}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ========== 功能13：配置参数调优 ==========
