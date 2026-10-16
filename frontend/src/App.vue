@@ -141,6 +141,7 @@ export default {
             { key: 'online_followup', label: 'PC VS 线上跟进执行', glyph: '跟', page: 'testpage', panel: 'online_followup', title: 'PC VS 线上跟进执行', description: '对比 PC 与线上执行结果，处理差集与批量执行。' },
             { key: 'confidence_batch', label: '置信度批量写入', glyph: '信', page: 'testpage', panel: 'confidence_batch', title: '置信度批量写入', description: '批量维护任务置信度数据。' },
             { key: 'daily_summary', label: '每日汇总', glyph: '汇', page: 'testpage', panel: 'daily_summary', title: '每日汇总', description: '按日/周/时间段维度汇总分析执行数据。' },
+            { key: 'jira_lookup', label: 'Jira 查询', glyph: '查', page: 'testpage', panel: 'jira_lookup', title: 'Jira 查询', description: '通过 Jira 号或 JQL 查询 Bug 概要与根因。' },
           ],
         },
       ],

@@ -59,12 +59,6 @@ _timestudy_ctx: dict = {}
 _timestudy_lock = threading.Lock()
 _record_write_lock = threading.Lock()
 
-# ── 云端飞书表格批量缓存 ──
-_bitable_bulk_cache = {}  # key -> (timestamp, data)
-_BITABLE_CACHE_TTL = 300  # 5分钟
-_last_cache_load_partial = False
-_trigger_time_table_cache = {"app_token": "", "table_ids": [], "inited": False}
-
 # 单条记录缓存：bugid -> (table_id, record_id, trigger_time)
 _trigger_time_bugid_cache = {}
 

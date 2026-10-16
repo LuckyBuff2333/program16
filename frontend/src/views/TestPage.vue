@@ -65,6 +65,7 @@
         <AiLogVisualPanel v-else-if="testPanel === 'ai_log_visual'" />
         <ConfigTuningPanel v-else-if="testPanel === 'config_tuning'" />
         <DailySummaryPanel v-else-if="testPanel === 'daily_summary'" />
+        <JiraLookupPanel v-else-if="testPanel === 'jira_lookup'" />
       </div>
       </transition>
     </el-main>
@@ -83,6 +84,7 @@ import OnlineFollowupPanel from '../panels/OnlineFollowupPanel.vue';
 import AiLogVisualPanel from '../panels/AiLogVisualPanel.vue';
 import ConfigTuningPanel from '../panels/ConfigTuningPanel.vue';
 import DailySummaryPanel from '../panels/DailySummaryPanel.vue';
+import JiraLookupPanel from '../panels/JiraLookupPanel.vue';
 
 export default {
   name: 'TestPage',
@@ -90,6 +92,7 @@ export default {
     BatchAiPanel, ConfidenceBatchPanel,
     ProdBatchPanel, TroubleshootPanel, OnlineFollowupPanel,
     AiLogVisualPanel, ConfigTuningPanel, DailySummaryPanel,
+    JiraLookupPanel,
   },
   props: { testPanel: { type: String, default: 'batch_ai' } },
   data() {

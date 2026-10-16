@@ -1,0 +1,158 @@
+175 INFO: PyInstaller: 6.22.3, contrib hooks: 2026.8
+182 INFO: Python: 3.13.6
+217 INFO: Platform: Windows-11-10.0.26300-SP0
+218 INFO: Python environment: D:\program16\venv
+222 INFO: Module search paths (PYTHONPATH):
+['D:\\program16\\venv\\Scripts\\pyinstaller.exe',
+ 'C:\\Users\\20637\\AppData\\Local\\Programs\\Python\\Python313\\python313.zip',
+ 'C:\\Users\\20637\\AppData\\Local\\Programs\\Python\\Python313\\DLLs',
+ 'C:\\Users\\20637\\AppData\\Local\\Programs\\Python\\Python313\\Lib',
+ 'C:\\Users\\20637\\AppData\\Local\\Programs\\Python\\Python313',
+ 'D:\\program16\\venv',
+ 'D:\\program16\\venv\\Lib\\site-packages',
+ 'D:\\program16']
+641 INFO: Appending 'datas' from .spec
+644 INFO: checking Analysis
+644 INFO: Building Analysis because Analysis-00.toc is non existent
+644 INFO: Looking for Python shared library...
+644 INFO: Using Python shared library: C:\Users\20637\AppData\Local\Programs\Python\Python313\python313.dll
+645 INFO: Running Analysis Analysis-00.toc
+645 INFO: Target bytecode optimization level: 0
+645 INFO: Initializing module dependency graph...
+646 INFO: Initializing module graph hook caches...
+657 INFO: Analyzing modules for base_library.zip ...
+2131 INFO: Processing standard module hook 'hook-math.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+2150 INFO: Processing standard module hook 'hook-heapq.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+2252 INFO: Processing standard module hook 'hook-encodings.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+5017 INFO: Processing standard module hook 'hook-pickle.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+6333 INFO: Caching module dependency graph...
+6376 INFO: Analyzing D:\program16\src\main.py
+6614 INFO: Processing standard module hook 'hook-sqlalchemy.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7412 INFO: Processing standard module hook 'hook-platform.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7438 INFO: Processing standard module hook 'hook-_ctypes.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7459 INFO: Processing standard module hook 'hook-sysconfig.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7900 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+7901 INFO: SetuptoolsInfo: initializing cached setuptools info...
+8835 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9025 INFO: Processing standard module hook 'hook-xml.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+14012 INFO: Processing standard module hook 'hook-certifi.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+14133 INFO: Processing standard module hook 'hook-anyio.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+15682 INFO: Processing standard module hook 'hook-difflib.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+15825 INFO: Processing standard module hook 'hook-webbrowser.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+15857 INFO: Processing standard module hook 'hook-pygments.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+17618 INFO: Processing standard module hook 'hook-urllib3.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+17771 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+17772 INFO: Setuptools: 'backports' appears to be a partial setuptools-vendored copy - extending search paths to ['D:\\program16\\venv\\Lib\\site-packages\\setuptools\\_vendor\\backports', 'D:\\program16\\venv\\Lib\\site-packages\\backports']!
+17780 INFO: Processing standard module hook 'hook-backports.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+18758 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+19017 INFO: Processing standard module hook 'hook-websockets.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+19796 INFO: Processing standard module hook 'hook-Crypto.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+48204 INFO: Processing standard module hook 'hook-pandas.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+49502 INFO: Processing standard module hook 'hook-numpy.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+52066 INFO: Processing standard module hook 'hook-psutil.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+52944 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+53202 INFO: Processing standard module hook 'hook-scipy.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+54891 INFO: Processing standard module hook 'hook-scipy.linalg.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+55053 INFO: Processing standard module hook 'hook-scipy.special._ufuncs.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+56503 INFO: Processing standard module hook 'hook-scipy.spatial._ckdtree.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+57154 INFO: Processing standard module hook 'hook-scipy.spatial.transform.rotation.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+58299 INFO: Processing standard module hook 'hook-scipy.stats._stats.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+59131 INFO: Processing standard module hook 'hook-scipy.sparse.csgraph.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+60429 INFO: Processing standard module hook 'hook-scipy.special._ellip_harm_2.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+62612 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+65545 INFO: Processing standard module hook 'hook-pandas.plotting.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+66119 INFO: Processing standard module hook 'hook-dateutil.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+66295 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+67916 INFO: Processing standard module hook 'hook-sqlite3.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+68345 INFO: Processing standard module hook 'hook-pandas.io.clipboard.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+68434 INFO: Processing standard module hook 'hook-fsspec.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+69449 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+69492 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+D:\program16\venv\Lib\site-packages\jieba\__init__.py:44: SyntaxWarning: invalid escape sequence '\.'
+  re_han_default = re.compile("([\u4E00-\u9FD5a-zA-Z0-9+#&\._%\-]+)", re.U)
+D:\program16\venv\Lib\site-packages\jieba\__init__.py:46: SyntaxWarning: invalid escape sequence '\s'
+  re_skip_default = re.compile("(\r\n|\s)", re.U)
+70253 INFO: Processing standard module hook 'hook-jieba.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+D:\program16\venv\Lib\site-packages\jieba\finalseg\__init__.py:78: SyntaxWarning: invalid escape sequence '\.'
+  re_skip = re.compile("([a-zA-Z0-9]+(?:\.\d+)?%?)")
+71341 INFO: Processing standard module hook 'hook-sklearn.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+71708 INFO: Processing standard module hook 'hook-sklearn.utils.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+71908 INFO: Processing standard module hook 'hook-cloudpickle.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+72464 INFO: Processing standard module hook 'hook-narwhals.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+74671 INFO: Processing standard module hook 'hook-sklearn.externals.array_api_compat.numpy.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+74723 INFO: Processing standard module hook 'hook-sklearn.externals.array_api_compat.cupy.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+74738 INFO: Processing standard module hook 'hook-sklearn.externals.array_api_compat.torch.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+74778 INFO: Processing standard module hook 'hook-sklearn.externals.array_api_compat.dask.array.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+75145 INFO: Processing standard module hook 'hook-sklearn.metrics.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+78425 INFO: Processing standard module hook 'hook-sklearn.metrics.cluster.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+78510 INFO: Processing standard module hook 'hook-sklearn.metrics.pairwise.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+78727 INFO: Processing standard module hook 'hook-sklearn.cluster.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+78957 INFO: Processing standard module hook 'hook-sklearn.neighbors.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+79115 INFO: Processing standard module hook 'hook-sklearn.linear_model.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+83254 INFO: Processing standard module hook 'hook-pydantic.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+85685 INFO: Processing standard module hook 'hook-opentelemetry.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+86537 INFO: Processing pre-safe-import-module hook 'hook-importlib_metadata.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+86538 INFO: Setuptools: 'importlib_metadata' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.importlib_metadata'!
+86554 INFO: Processing standard module hook 'hook-setuptools.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+86568 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+86599 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+86601 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
+86613 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+86614 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+86812 INFO: Processing standard module hook 'hook-_osx_support.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+86835 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+87322 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+87324 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+87333 INFO: Processing pre-safe-import-module hook 'hook-backports.tarfile.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+87334 INFO: Setuptools: 'backports.tarfile' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.backports.tarfile'!
+87867 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+87868 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
+88396 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+88398 INFO: Setuptools: 'wheel' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.wheel'!
+88457 INFO: Processing standard module hook 'hook-setuptools._vendor.importlib_metadata.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+88485 INFO: Processing pre-safe-import-module hook 'hook-zipp.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+88485 INFO: Setuptools: 'zipp' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.zipp'!
+88582 INFO: Processing standard module hook 'hook-Cryptodome.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+89584 INFO: Processing standard module hook 'hook-cv2.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+90057 INFO: Processing standard module hook 'hook-easyocr.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+90141 INFO: Processing standard module hook 'hook-skimage.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+90199 INFO: Processing standard module hook 'hook-skimage.io.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+92782 INFO: Processing standard module hook 'hook-skimage.exposure.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+95039 INFO: Processing pre-find-module-path hook 'hook-tkinter.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+95046 INFO: TclTkInfo: initializing cached Tcl/Tk info...
+97434 INFO: Processing standard module hook 'hook-_tkinter.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+97573 INFO: Processing standard module hook 'hook-skimage.color.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+98340 INFO: Processing standard module hook 'hook-shapely.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+98678 INFO: Processing standard module hook 'hook-av.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+99851 INFO: Processing standard module hook 'hook-uvicorn.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+100871 INFO: Analyzing hidden import 'src.api'
+100872 INFO: Analyzing hidden import 'src.api.server'
+100872 ERROR: Hidden import 'src.api.server' not found
+100872 INFO: Analyzing hidden import 'src.api.app'
+102031 INFO: Analyzing hidden import 'src.api.deps'
+102039 INFO: Analyzing hidden import 'uvicorn.loops'
+102039 INFO: Analyzing hidden import 'uvicorn.loops.auto'
+102043 INFO: Analyzing hidden import 'uvicorn.protocols.http.auto'
+102044 INFO: Analyzing hidden import 'uvicorn.protocols.websockets.auto'
+102046 INFO: Analyzing hidden import 'uvicorn.lifespan'
+102046 INFO: Analyzing hidden import 'uvicorn.lifespan.on'
+102052 INFO: Analyzing hidden import 'anyio._backends'
+102053 INFO: Analyzing hidden import 'anyio._backends._asyncio'
+102187 INFO: Processing module hooks (post-graph stage)...
+102411 INFO: Processing standard module hook 'hook-easyocr.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+102745 INFO: Processing standard module hook 'hook-jinja2.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+103556 INFO: Processing standard module hook 'hook-imageio.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+104434 INFO: Processing standard module hook 'hook-sklearn.tree.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+107345 INFO: Processing standard module hook 'hook-sqlalchemy.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+109084 INFO: Processing standard module hook 'hook-_tkinter.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks'
+109872 INFO: Processing standard module hook 'hook-tzdata.py' from 'D:\\program16\\venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+110502 INFO: Performing binary vs. data reclassification (2178 entries)
+126596 INFO: Looking for ctypes DLLs
+126773 INFO: Analyzing run-time hooks ...
+126814 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+126823 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+126825 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+126828 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+126832 INFO: Including run-time hook 'pyi_rth__tkinter.py' from 'D:\\program16\\venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+127053 INFO: Creating base_library.zip...
+127089 INFO: Looking for dynamic libraries

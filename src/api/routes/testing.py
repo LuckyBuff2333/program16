@@ -212,6 +212,78 @@ async def test_batch_ai_search(request: Request):
         return _fail(str(e))
 
 
+@router.post("/api/test/jira_lookup", response_model=ApiResponse)
+async def test_jira_lookup(request: Request):
+    """Jira 概要查询：输入支持两种形态
+    - 纯 Jira 号（多个用逗号/空格/换行分隔）
+    - JQL 查询（如 summary ~ \"关键词\"、key = VCU-123 等）
+    返回 key + 概要 + 状态 + 根因
+    """
+    body = await request.json() or {}
+    raw = str(body.get("query", "") or body.get("keys", "") or body.get("bugid", "")).strip()
+    if not raw:
+        return _fail("请输入 Jira 号或 JQL 查询语句")
+    # 判断输入类型：JQL 或纯 Jira 号列表
+    jql_keywords = ("summary", "status", "project", "assignee", "reporter", "created",
+                    "updated", "resolution", "priority", "issuetype", "type", "labels",
+                    "text", "description", "comment", "key", "id", "ORDER BY")
+    is_jql = any(kw in raw.lower() for kw in [k.lower() for k in jql_keywords]) \
+             or any(op in raw for op in ("~", "!=", ">=", "<=", "~")) \
+             or raw.count("=") > 0 and not raw.replace(",", "").replace(" ", "").isalnum()
+    try:
+        from src.clients import jira_client
+        rows = []; failed = []
+        if is_jql:
+            try:
+                issues = jira_client.search_issues(raw, max_results=500)
+                # 逐个拉取详情以拿到根因字段（search_issues 只返回基础字段）
+                for i in issues:
+                    bugid = (i.get("key") or "").strip()
+                    if not bugid:
+                        continue
+                    try:
+                        detail = jira_client.fetch_issue(bugid)
+                        fields = detail.get("fields") or {}
+                        rows.append({
+                            "key": bugid,
+                            "summary": (fields.get("summary") or (i.get("fields") or {}).get("summary") or "")[:200] or "（无概要）",
+                            "status": ((fields.get("status") or {}).get("name") or "") or "-",
+                            "created": (fields.get("created") or "")[:10] or "-",
+                            "root_cause": jira_client.extract_rootcause(detail) or "（未填写）",
+                        })
+                    except Exception as e:
+                        failed.append({"key": bugid, "error": str(e)[:120]})
+            except Exception as e:
+                return _fail(f"JQL 查询失败: {e}")
+        else:
+            import re
+            keys = [k.upper().strip() for k in re.split(r"[,，;；\s]+", raw) if k.strip()]
+            seen = set(); dedup = []
+            for k in keys:
+                if k not in seen:
+                    seen.add(k); dedup.append(k)
+            for bugid in dedup:
+                try:
+                    issue = jira_client.fetch_issue(bugid)
+                    fields = issue.get("fields") or {}
+                    rows.append({
+                        "key": (issue.get("key") or bugid).strip(),
+                        "summary": (fields.get("summary") or "")[:200] or "（无概要）",
+                        "status": ((fields.get("status") or {}).get("name") or "") or "-",
+                        "created": (fields.get("created") or "")[:10] or "-",
+                        "root_cause": jira_client.extract_rootcause(issue) or "（未填写）",
+                    })
+                except Exception as e:
+                    failed.append({"key": bugid, "error": str(e)[:120]})
+        msg = f"查询成功 {len(rows)} 条" + (f"，失败 {len(failed)} 条" if failed else "")
+        return _ok({"total": len(rows) + len(failed), "success": len(rows),
+                    "failed": len(failed), "mode": "jql" if is_jql else "keys",
+                    "rows": rows, "errors": failed}, msg)
+    except Exception as e:
+        logger.error("Jira 查询失败: %s", e)
+        return _fail(str(e))
+
+
 @router.post("/api/test/batch_ai_extract_times/stop", response_model=ApiResponse)
 async def stop_batch_ai_extract_times():
     """触发批量提取停止信号（优雅停止：当前条目完成后停止后续）"""
