@@ -66,13 +66,32 @@ def _bitable_text(val) -> str:
     return str(val) if val else ""
 
 
-def _ts_parse_datetime(s: str) -> Optional[datetime]:
-    """解析多种日期格式为 datetime 对象"""
-    if not s:
+def _ts_parse_datetime(s) -> Optional[datetime]:
+    """解析多种日期格式为 datetime 对象（支持毫秒时间戳/字符串/ISO 8601）"""
+    if s is None or s == "":
         return None
+    if isinstance(s, (int, float)):
+        try:
+            return datetime.fromtimestamp(s / 1000)
+        except (ValueError, OSError, OverflowError):
+            return None
+    s_str = str(s).strip()
+    # 纯数字视为毫秒时间戳
+    if s_str.isdigit() and len(s_str) >= 10:
+        try:
+            return datetime.fromtimestamp(int(s_str) / 1000)
+        except (ValueError, OSError, OverflowError):
+            return None
+    import re
+    iso_m = re.match(r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})", s_str)
+    if iso_m:
+        try:
+            return datetime.strptime(f"{iso_m.group(1)} {iso_m.group(2)}", "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d"):
         try:
-            return datetime.strptime(s.strip(), fmt)
+            return datetime.strptime(s_str, fmt)
         except ValueError:
             continue
     return None
@@ -250,7 +269,8 @@ def batch_write_review(items: list[dict], only_empty_review: bool = False) -> di
     for rec in records:
         fields = rec.get("fields", {})
         jira_no = _bitable_text(fields.get(bugid_field, ""))
-        done_time = _bitable_text(fields.get("分析完成时间", ""))
+        done_dt = _ts_parse_datetime(fields.get("分析完成时间", ""))
+        done_time = done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else ""
         if jira_no and done_time:
             index[(jira_no, done_time)] = rec["record_id"]
 
@@ -448,12 +468,20 @@ def batch_pre_classify(records: list[dict]) -> dict:
             category = _diag_pre_classify(err_msg)
         entry = {"bugid": bugid, "category": category or "", "done_time": done_time,
                  "problem_time": problem_time, "err_msg": err_msg[:200]}
+        # 结论明确的归类（即使不在跳过列表中）也自动生成报告
+        _AUTO_REPORT_CATEGORIES = {"无gmlogger", "无gmlogger文件"}
         if category and category in _SKIP_ANALYSIS_CATEGORIES:
             report = _generate_troubleshoot_report(bugid, category, err_msg, f"预归类：{category}")
             entry["report"] = report
             entry["detail"] = f"根据失败原因/人工审核预归类：{category}"
             entry["needs_analysis"] = False
             skip_list.append(entry)
+        elif category in _AUTO_REPORT_CATEGORIES:
+            report = _generate_troubleshoot_report(bugid, category, err_msg, f"预归类：{category}",
+                                                   problem_time=problem_time)
+            entry["report"] = report
+            entry["needs_analysis"] = True
+            need_list.append(entry)
         else:
             entry["needs_analysis"] = True
             need_list.append(entry)

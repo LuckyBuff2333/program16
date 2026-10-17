@@ -3296,13 +3296,13 @@ def _jira_att_auth() -> tuple:
 def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
     """判断 Jira 是否含可用日志（gmlogger）。智能回退：
 
-    1) 附件文件名含 gmlogger/main.log → 直接判定有（快，不下载）；
-    2) 否则仅对≤ 200MB 的单卷压缩包下载探测包内是否有 main 文件；
+    1) 附件文件名含 gmlogger/main.log/.log/.txt → 直接判定有（快，不下载）；
+    2) 否则仅对≤ 200MB 的单卷压缩包下载探测包内是否有 main/.log/.txt 文件；
        分卷压缩包(.001/.002 等)或超大包一律跳过（避免 GB 级下载拖垮）。
     """
     names = [(a.get("filename", "") or "").lower() for a in attachments]
-    # 有直接的 gmlogger 文件（或 main.log）就算有，不需要解压
-    if any("gmlogger" in n or "main.log" in n for n in names):
+    # 有直接的 gmlogger 文件、main.log 或任意 .log/.txt 文件就算有，不需要解压
+    if any("gmlogger" in n or "main.log" in n or n.endswith(".log") or n.endswith(".txt") for n in names):
         return True
     headers, timeout = _jira_att_auth()
     for att in attachments:
@@ -3316,8 +3316,11 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
         if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
             continue
         res = _diag_list_archive_entries(att.get("content", ""), headers, timeout, bugid, filename=att.get("filename", ""))
-        if res.get("ok") and any("main" in os.path.basename(e).lower() for e in res.get("entries", [])):
-            logger.info("无gmlogger文件名，但压缩包 %s 内含 main 文件，判定有日志 (%s)", fn, bugid)
+        if res.get("ok") and any(
+            "main" in os.path.basename(e).lower() or e.lower().endswith(".log") or e.lower().endswith(".txt")
+            for e in res.get("entries", [])
+        ):
+            logger.info("无gmlogger文件名，但压缩包 %s 内含 main/.log/.txt 文件，判定有日志 (%s)", fn, bugid)
             return True
     return False
 
@@ -3543,15 +3546,31 @@ def _diag_archive_read_heads(path: str, names: list, size: int = 65536) -> dict:
 
 
 def _diag_gmlogger_times(attachments: list) -> list:
-    """识别 gmlogger 附件（文件名含 gmlogger 即算）并解析文件名时间，返回 [(时间字符串, datetime)]"""
-    from src.clients.jira_client import _parse_filename_time
+    """识别日志附件（gmlogger/.log/.txt）并解析文件名时间，返回 [(时间字符串, datetime)]"""
+    from src.clients.jira_client import _parse_filename_time, _COMPACT_RE
     times = []
     for att in attachments:
         fname = att.get("filename", "") or ""
-        if fname and "gmlogger" in fname.lower():
+        if not fname:
+            continue
+        fn_lower = fname.lower()
+        if "gmlogger" in fn_lower:
             t = _parse_filename_time(fname, "gmlogger")
             if t:
                 times.append(t)
+        elif fn_lower.endswith(".log") or fn_lower.endswith(".txt"):
+            # .log/.txt 文件用通用时间正则解析文件名
+            m = _COMPACT_RE.search(fname)
+            if m:
+                try:
+                    from datetime import datetime
+                    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    h, mi = int(m.group(4)), int(m.group(5))
+                    s = int(m.group(6)) if m.group(6) else 0
+                    ts = datetime(y, mo, d, h, mi, s)
+                    times.append((ts.strftime("%Y-%m-%d %H:%M:%S"), ts))
+                except (ValueError, IndexError):
+                    pass
     return times
 
 
@@ -4071,9 +4090,18 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
     """
     # 优先使用 RapidOCR（中文场景识别能力更强，置信度更高）
     results = _rapid_ocr_readtext(image, _already_enhanced=_already_enhanced)
+    # 类型安全：确保 conf 为数值型
+    for _r in results:
+        if len(_r) > 2 and not isinstance(_r[2], (int, float)):
+            try:
+                _r[2] = float(_r[2])
+            except (ValueError, TypeError):
+                _r[2] = 0.0
     _avg_conf = sum((r[2] for r in results if len(r) > 2), 0) / max(len(results), 1) if results else 0
-    # RapidOCR 失败或质量差时回退 EasyOCR
+    # RapidOCR 失败或质量差时回退 EasyOCR（延迟初始化，避免不必要的模型下载）
     if not results or _avg_conf < 0.3:
+        if reader is None:
+            reader = _get_ocr_reader()
         if reader is not None:
             logger.info("RapidOCR %s（avg_conf=%.2f），回退 EasyOCR",
                        "未识别到文本" if not results else f"质量偏低", _avg_conf)
@@ -4995,11 +5023,6 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                     if not best_partial:
                         best_partial = ts
                 continue  # 缓存无时间，也跳过处理
-        # 需要 OCR：先确保 reader 可用
-        reader = _get_ocr_reader()
-        if reader is None:
-            logger.warning("视频兜底提取(%s)：OCR 不可用，跳过", bugid)
-            return ""
         # 下载视频（流式下载，避免一次性加载到内存）
         video_path = None
         tmp_dir = None
@@ -5050,7 +5073,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                 
                 for sec, frame in frames:
                     try:
-                        results = _ocr_readtext(reader, frame)
+                        results = _ocr_readtext(None, frame)
                     except Exception as e:
                         logger.warning("视频兜底提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
                         continue
@@ -5175,7 +5198,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                     all_frames.extend(extra_frames)
                 if len(all_frames) >= 2:
                     logger.info("视频兜底提取(%s)：标准帧OCR未识别到时间，尝试帧差法", video_label)
-                    diff_text = _frame_diff_clock_ocr(reader, all_frames)
+                    diff_text = _frame_diff_clock_ocr(None, all_frames)
                     if diff_text:
                         diff_text = _fix_ocr_missing_colon(diff_text)
                         diff_text = _fix_ocr_char_confusion(diff_text)
@@ -5392,11 +5415,6 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     # 按优先级排序，逐个尝试
     ranked_videos = _rank_videos(videos, attachments)
     single_video = len(ranked_videos) == 1
-    # 初始化 OCR reader（只初始化一次）
-    reader = _get_ocr_reader()
-    if reader is None:
-        logger.warning("视频帧提取：OCR 不可用，跳过")
-        return "", ""
     from src.clients.jira_client import _parse_datetime_string
     best_full = ""      # 全局兜底：第一个完整日期时间
     best_full_detail = ""
@@ -5479,7 +5497,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                 
                 for sec, frame in frames:
                     try:
-                        results = reader.readtext(frame)
+                        results = _ocr_readtext(None, frame)
                     except Exception as e:
                         logger.warning("视频帧提取：OCR 第%d秒失败: %s", sec, e)
                         continue
@@ -5731,11 +5749,6 @@ def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bug
     # 按创建时间倒序取最新 5 张
     images = sorted(images, key=lambda a: a.get("created", "") or "", reverse=True)[:5]
     logger.info("%s图片 OCR: 开始处理 %d 张图片", f"{bugid} " if bugid else "", len(images))
-    # 获取 OCR reader
-    reader = _get_ocr_reader()
-    if reader is None:
-        logger.warning("%s图片 OCR: easyocr 不可用，跳过", f"{bugid} " if bugid else "")
-        return "", ""
     # 收集所有提取的时间
     all_times = []       # [(time_str, datetime, is_marked, image_name)]
     marked_time = None   # 标记检测命中的时间
@@ -5753,7 +5766,7 @@ def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bug
                         for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
                             f.write(chunk)
                 # OCR 识别（返回 bbox + 文字 + 置信度）
-                results = reader.readtext(img_path)
+                results = _ocr_readtext(None, img_path)
                 if not results:
                     continue
                 # 收集完整文本用于时间正则匹配
@@ -6156,7 +6169,11 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
     # 2. 视频未确认 → 图片 OCR + 智能筛选（新增步骤）
     _check_diag_cancel(bugid)
     img_time_str, img_detail = "", ""
-    # 按分卷分组统计 gmlogger 组数
+    # 筛选日志附件（gmlogger / .log / .txt）并按分卷分组
+    gm_atts = [a for a in attachments
+                if "gmlogger" in (a.get("filename", "") or "").lower()
+                or (a.get("filename", "") or "").lower().endswith(".log")
+                or (a.get("filename", "") or "").lower().endswith(".txt")]
     gm_groups = _group_gmlogger_attachments(gm_atts)
     num_groups = len(gm_groups)
     logger.info("诊断 %s: gmlogger 共 %d 组", bugid, num_groups)

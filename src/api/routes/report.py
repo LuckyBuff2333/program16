@@ -13,10 +13,187 @@ from src.schemas.report import ClassifyDocsRequest
 logger = setup_logger("web.report")
 router = APIRouter()
 
-# ── 云端看板缓存（按日期，60 秒 TTL）──
+# ── 云端看板缓存（按日期，今天 30 分钟 / 历史 24 小时）──
 _dashboard_cloud_cache = {}  # {date_str: {"ts": float, "batches": list}}
 _dashboard_cache_lock = threading.Lock()
-_DASHBOARD_CLOUD_TTL = 60
+_DASHBOARD_CLOUD_TTL = 120  # 今天: 2 分钟（手动刷新时更新）
+_DASHBOARD_HISTORY_TTL = 86400  # 历史日期: 24 小时（数据不会变）
+_DASHBOARD_CACHE_FOLDER = "JXbNfpdzJlJELNdv10Pc5ElVnAc"  # 看板缓存 JSON 文件夹（批次文件夹下的 dashboard_cache 子文件夹，user_access_token 创建）
+_dashboard_cloud_index = {}  # {date_str: file_token} 缓存云端 JSON 文件索引
+_cloud_json_enabled = True  # 云端 JSON 缓存开关，权限错误后自动关闭
+_dashboard_index_loaded = False  # 是否已尝试加载过索引
+_cloud_dates_cache = {"ts": 0, "data": None}  # 云端日期列表缓存，5 分钟 TTL
+_CLOUD_DATES_TTL = 300  # 5 分钟
+_cloud_data_hash = {}  # {key: hash} 记录上次保存的数据哈希，未变化时跳过上传
+
+# ── 批次详情缓存（内存 + 云端 JSON）──
+_batch_detail_cache = {}  # {(date, batch): {"ts": float, "data": dict}}
+_BATCH_DETAIL_TTL_TODAY = 300  # 今天: 5 分钟
+_BATCH_DETAIL_TTL_HISTORY = 86400  # 历史: 24 小时
+
+
+def _is_today(date_str: str) -> bool:
+    return date_str == datetime.now().strftime("%Y-%m-%d")
+
+
+def _cache_ttl(date_str: str) -> int:
+    """根据日期返回缓存TTL：今天用短TTL，历史日期用长TTL"""
+    return _DASHBOARD_CLOUD_TTL if _is_today(date_str) else _DASHBOARD_HISTORY_TTL
+
+
+def _load_cloud_json_cache(date_str: str) -> list | None:
+    """从云端 JSON 缓存加载看板数据，失败返回 None"""
+    global _cloud_json_enabled, _dashboard_index_loaded
+    if not _cloud_json_enabled:
+        return None
+    try:
+        from src.clients import feishu_client
+        import json as _json
+        # 如果索引未加载，先列出文件夹构建索引
+        if not _dashboard_index_loaded:
+            _dashboard_index_loaded = True
+            files = feishu_client.list_folder_files(_DASHBOARD_CACHE_FOLDER)
+            # 空文件夹是正常的（首次使用），不禁用缓存
+            for f in (files or []):
+                name = f.get("name", "")
+                if name.endswith(".json"):
+                    d = name[:-5]  # 去掉 .json
+                    _dashboard_cloud_index[d] = f.get("token", "")
+        file_token = _dashboard_cloud_index.get(date_str)
+        if not file_token:
+            return None
+        content = feishu_client.download_drive_file(file_token)
+        if not content:
+            return None
+        batches = _json.loads(content.decode("utf-8"))
+        if isinstance(batches, list):
+            logger.info("看板数据从云端 JSON 缓存加载: %s (%d 个批次)", date_str, len(batches))
+            return batches
+        return None
+    except Exception as e:
+        logger.warning("加载云端 JSON 缓存失败(%s): %s", date_str, e)
+        _cloud_json_enabled = False
+        return None
+
+
+def _data_hash(obj) -> str:
+    """计算数据的哈希值，用于检测数据是否变化"""
+    import json as _json
+    import hashlib
+    return hashlib.md5(_json.dumps(obj, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def _delete_cloud_file_by_name(file_name: str) -> None:
+    """在云端缓存文件夹中查找并删除指定名称的文件（去重用）"""
+    try:
+        from src.clients import feishu_client
+        # 优先用索引中的 token 删除
+        key = file_name.replace(".json", "")
+        old_token = _dashboard_cloud_index.get(key)
+        if old_token:
+            feishu_client.delete_drive_file(old_token, "file")
+            _dashboard_cloud_index.pop(key, None)
+            return
+        # 索引中没有，列文件夹查找同名文件
+        files = feishu_client.list_folder_files(_DASHBOARD_CACHE_FOLDER)
+        for f in (files or []):
+            if f.get("name") == file_name and f.get("token"):
+                feishu_client.delete_drive_file(f["token"], "file")
+                logger.info("删除云端重复文件: %s", file_name)
+                return
+    except Exception as e:
+        logger.debug("去重删除云端文件失败(%s): %s", file_name, e)
+
+
+def _save_cloud_json_cache(date_str: str, batches: list) -> None:
+    """将看板数据保存到云端 JSON 缓存（仅历史日期，今天数据不缓存因为一直在变）"""
+    global _cloud_json_enabled
+    if not _cloud_json_enabled or _is_today(date_str):
+        return
+    try:
+        from src.clients import feishu_client
+        # 数据未变化时跳过上传，避免无意义的删除+重新上传
+        cache_key = f"dashboard_{date_str}"
+        new_hash = _data_hash(batches)
+        if _cloud_data_hash.get(cache_key) == new_hash:
+            return
+        # 上传前先删除同名旧文件，避免云端出现重复文件
+        _delete_cloud_file_by_name(f"{cache_key}.json")
+        result = feishu_client.upload_json_to_drive(
+            batches, cache_key, _DASHBOARD_CACHE_FOLDER)
+        if result.get("file_token"):
+            _dashboard_cloud_index[date_str] = result["file_token"]
+            _cloud_data_hash[cache_key] = new_hash
+            logger.info("看板数据已保存到云端 JSON: %s", date_str)
+        else:
+            _cloud_json_enabled = False
+            logger.warning("云端 JSON 缓存上传失败，已自动禁用")
+    except Exception as e:
+        logger.warning("保存云端 JSON 缓存失败(%s): %s，已自动禁用", date_str, e)
+        _cloud_json_enabled = False
+
+
+def _load_batch_detail_cloud(date_str: str, batch: str) -> dict | None:
+    """从云端 JSON 加载批次详情缓存"""
+    if not _cloud_json_enabled:
+        return None
+    try:
+        from src.clients import feishu_client
+        import json as _json
+        # 查找 batch_detail_{date}.json 的 file_token
+        key = f"batch_detail_{date_str}"
+        token = _dashboard_cloud_index.get(key)
+        if not token:
+            return None
+        content = feishu_client.download_drive_file(token)
+        if not content:
+            return None
+        all_details = _json.loads(content.decode("utf-8"))
+        if isinstance(all_details, dict) and batch in all_details:
+            logger.info("批次详情从云端缓存加载: %s/%s", date_str, batch)
+            return all_details[batch]
+    except Exception as e:
+        logger.warning("加载批次详情云端缓存失败(%s/%s): %s", date_str, batch, e)
+    return None
+
+
+def _save_batch_detail_cloud(date_str: str, batch: str, data: dict) -> None:
+    """将批次详情缓存保存到云端 JSON"""
+    global _cloud_json_enabled
+    if not _cloud_json_enabled:
+        return
+    try:
+        from src.clients import feishu_client
+        import json as _json
+        key = f"batch_detail_{date_str}"
+        # 读取已有缓存并合并
+        all_details = {}
+        old_token = _dashboard_cloud_index.get(key)
+        if old_token:
+            try:
+                content = feishu_client.download_drive_file(old_token)
+                if content:
+                    all_details = _json.loads(content.decode("utf-8"))
+            except Exception:
+                pass
+        all_details[batch] = data
+        # 数据未变化时跳过上传
+        new_hash = _data_hash(all_details)
+        if _cloud_data_hash.get(key) == new_hash:
+            return
+        # 上传前先删除同名旧文件，避免云端出现重复文件
+        _delete_cloud_file_by_name(f"{key}.json")
+        result = feishu_client.upload_json_to_drive(
+            all_details, key, _DASHBOARD_CACHE_FOLDER)
+        if result.get("file_token"):
+            _dashboard_cloud_index[key] = result["file_token"]
+            _cloud_data_hash[key] = new_hash
+            logger.info("批次详情已缓存到云端: %s/%s", date_str, batch)
+        else:
+            logger.warning("批次详情云端缓存上传失败: %s/%s", date_str, batch)
+    except Exception as e:
+        logger.warning("保存批次详情云端缓存失败(%s/%s): %s", date_str, batch, e)
+
 
 # ── 任务总览缓存（按日期，120 秒 TTL）──
 _task_overview_cache = {}  # {date_str: {"ts": float, "data": dict}}
@@ -346,25 +523,59 @@ def report_batch(date: str = Query(default=None, description="日期 YYYY-MM-DD"
 
 @router.get("/api/dashboard/dates", response_model=ApiResponse)
 def dashboard_dates():
-    """列出所有有批次 CSV 数据的日期（按倒序）"""
+    """列出所有有批次数据的日期（本地 + 云端，按倒序）"""
+    import re as _re
     docs_dir = os.path.join(PROJECT_ROOT, "docs")
     reports_dir = os.path.join(PROJECT_ROOT, "reports")
-    dates = []
+    date_map = {}  # {date_str: {"batch_count": int, "has_daily_report": bool}}
+    # ── 1. 本地 CSV 日期 ──
     if os.path.isdir(docs_dir):
-        for d in sorted(os.listdir(docs_dir), reverse=True):
+        for d in os.listdir(docs_dir):
             date_dir = os.path.join(docs_dir, d)
             if not os.path.isdir(date_dir):
                 continue
             csvs = [f for f in os.listdir(date_dir)
                     if f.endswith(".csv") and (f.startswith("batch_") or f.startswith("prod_batch_"))]
             if csvs:
-                # 检查日报 HTML 是否存在
                 daily_html = os.path.join(reports_dir, d, f"daily_report_{d}.html")
-                dates.append({
+                date_map[d] = {
                     "date": d,
                     "batch_count": len(csvs),
                     "has_daily_report": os.path.exists(daily_html),
-                })
+                }
+    # ── 2. 云端日期文件夹（递归统计每个日期的文档数，5 分钟缓存）──
+    try:
+        from src.clients import feishu_client
+        from src.api.routes.data import _get_batch_folder_token
+        folder_token = _get_batch_folder_token()
+        if folder_token:
+            cloud_doc_count = None
+            # 使用缓存避免每次打开都做递归列出
+            if _cloud_dates_cache["data"] and time.time() - _cloud_dates_cache["ts"] < _CLOUD_DATES_TTL:
+                cloud_doc_count = _cloud_dates_cache["data"]
+            else:
+                cloud_files = feishu_client.list_folder_files(folder_token, recursive=True)
+                cloud_doc_count = {}
+                for f in cloud_files:
+                    folder_name = f.get("folder", "")
+                    if folder_name and _re.match(r"\d{4}-\d{2}-\d{2}$", folder_name) and f.get("type") in ("docx", "file"):
+                        cloud_doc_count[folder_name] = cloud_doc_count.get(folder_name, 0) + 1
+                _cloud_dates_cache["ts"] = time.time()
+                _cloud_dates_cache["data"] = cloud_doc_count
+            # 合并到日期列表
+            for d, count in cloud_doc_count.items():
+                if d not in date_map:
+                    daily_html = os.path.join(reports_dir, d, f"daily_report_{d}.html")
+                    date_map[d] = {
+                        "date": d,
+                        "batch_count": count,
+                        "has_daily_report": os.path.exists(daily_html),
+                    }
+                else:
+                    date_map[d]["batch_count"] = max(date_map[d]["batch_count"], count)
+    except Exception as e:
+        logger.warning("获取云端日期列表失败: %s", e)
+    dates = sorted(date_map.values(), key=lambda x: x["date"], reverse=True)
     from src.api.routes.shared import ok as _ok
     return _ok(dates)
 
@@ -377,14 +588,20 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
     date_str = date or datetime.now().strftime("%Y-%m-%d")
     reports_dir = os.path.join(PROJECT_ROOT, "reports", date_str)
 
-    # ── 1. 云端优先：缓存命中则直接用 ──
+    # ── 1. 云端优先：内存缓存 → 云端 JSON → 原始文档 ──
     cloud_batches = None
     with _dashboard_cache_lock:
         cached = _dashboard_cloud_cache.get(date_str)
-        if cached and time.time() - cached["ts"] < _DASHBOARD_CLOUD_TTL:
+        if cached and time.time() - cached["ts"] < _cache_ttl(date_str):
             cloud_batches = cached["batches"]
     if cloud_batches is None:
-        cloud_batches = _fetch_cloud_batches_for_date(date_str)
+        # 尝试云端 JSON 缓存（历史日期持久化）
+        cloud_batches = _load_cloud_json_cache(date_str)
+        if cloud_batches is None:
+            cloud_batches = _fetch_cloud_batches_for_date(date_str)
+            # 历史日期保存到云端 JSON 缓存
+            if cloud_batches:
+                _save_cloud_json_cache(date_str, cloud_batches)
         with _dashboard_cache_lock:
             _dashboard_cloud_cache[date_str] = {"ts": time.time(), "batches": cloud_batches}
 
@@ -438,54 +655,7 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
         # 生成稳定 key 供本地去重
         seen_names.add((exec_time, total))
 
-    # ── 3. 本地 CSV 补充（仅云端为空时启用，或本地有而云端无的批次） ──
-    docs_dir = os.path.join(PROJECT_ROOT, "docs", date_str)
-    if os.path.isdir(docs_dir) and not cloud_batches:
-        for f in sorted(os.listdir(docs_dir)):
-            if not f.endswith(".csv"):
-                continue
-            if not (f.startswith("batch_") or f.startswith("prod_batch_")):
-                continue
-            batch_name = f.replace(".csv", "")
-            source = "线上" if f.startswith("prod_batch_") else "PC"
-            csv_path = os.path.join(docs_dir, f)
-            rows = []
-            try:
-                with open(csv_path, encoding="utf-8-sig") as fh:
-                    rows = list(_csv.DictReader(fh))
-            except Exception:
-                pass
-            total = len(rows)
-            if total == 0:
-                continue
-            submit_ok = sum(1 for r in rows if r.get("执行结果", "").strip() not in ("失败", ""))
-            submit_fail = total - submit_ok
-            exec_time = rows[0].get("执行时间", "").strip() if rows else ""
-            model = rows[0].get("模型", "").strip() if rows else ""
-            trigger_src = rows[0].get("触发来源", "").strip() if rows else ""
-            if trigger_src:
-                source = trigger_src
-            if (exec_time, total) in seen_names:
-                continue  # 云端已有，跳过
-            seen_names.add((exec_time, total))
-            batch_html = os.path.join(reports_dir, f"{batch_name}_{date_str}.html")
-            batch_html_legacy = os.path.join(reports_dir, f"{batch_name}.html")
-            has_report = os.path.exists(batch_html) or os.path.exists(batch_html_legacy)
-            report_file = ""
-            if os.path.exists(batch_html):
-                report_file = f"{batch_name}_{date_str}.html"
-            elif os.path.exists(batch_html_legacy):
-                report_file = f"{batch_name}.html"
-            batches.append({
-                "name": batch_name, "source": source, "total": total,
-                "submit_ok": submit_ok, "submit_fail": submit_fail,
-                "exec_time": exec_time, "model": model,
-                "has_report": has_report, "report_file": report_file,
-                "all_failed": total > 0 and submit_ok == 0,
-                "is_cloud": False, "token": "",
-            })
-
-    # ── 4. 汇总 ──
+    # ── 3. 汇总（仅使用云端数据，不回退本地）──
     total_submit = sum(b["total"] for b in batches)
     total_ok = sum(b["submit_ok"] for b in batches)
     total_fail = sum(b["submit_fail"] for b in batches)
@@ -504,6 +674,82 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
         "has_daily_report": has_daily_report,
         "cloud_count": sum(1 for b in batches if b.get("is_cloud")),
     }
+
+    # ── 4. 预加载批次详情：一次性查多维表格，为所有批次计算 _detail ──
+    try:
+        from src.clients import feishu_client
+        from src.services.report_ops import (
+            _flatten_bitable_record_all, _classify_failure, _parse_dur_sec,
+        )
+        from src.api.routes.shared import bitable_text as _bt
+        cfg = load_config().get("feishu_bitable", {})
+        app_token = cfg.get("app_token", "")
+        table_id = cfg.get("table_id", "")
+        bugid_field = cfg.get("bugid_field", "jira号")
+        report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
+        # 收集所有批次的 jira 号
+        all_jira_set = set()
+        for b in batches:
+            for r in b.get("rows", []):
+                jid = (r.get("jira号") or "").strip()
+                if jid:
+                    all_jira_set.add(jid)
+        if app_token and table_id and all_jira_set:
+            records = feishu_client.list_bitable_records(app_token, table_id)
+            bt_all_map = {}  # {jira: [records]}
+            for rec in records:
+                fields = rec.get("fields", {})
+                jk = _bt(fields.get(bugid_field, ""))
+                if jk and jk in all_jira_set:
+                    bt_all_map.setdefault(jk, []).append(
+                        _flatten_bitable_record_all(fields, report_field))
+            # 为每个批次计算详情
+            for b in batches:
+                row_list = b.get("rows", [])
+                b_ok = b_fail = b_miss = 0
+                b_fail_cats = {}
+                b_durations = []
+                for row in row_list:
+                    jid = (row.get("jira号") or "").strip()
+                    if not jid:
+                        continue
+                    bt_recs = bt_all_map.get(jid, [])
+                    if not bt_recs:
+                        b_miss += 1
+                        continue
+                    exec_t = (row.get("执行时间") or "").strip()
+                    cands = [x for x in bt_recs if x.get("分析完成时间", "") and x["分析完成时间"] >= exec_t] if exec_t else []
+                    if not cands:
+                        cands = bt_recs
+                    cands.sort(key=lambda x: x.get("分析完成时间", ""))
+                    bf = cands[0] if exec_t and cands else cands[-1]  # 执行时间之后最接近的一条
+                    dur = _parse_dur_sec(bf.get("分析耗时", ""))
+                    if dur > 0:
+                        b_durations.append(dur)
+                    if bf.get("分析结果", "") == "成功":
+                        b_ok += 1
+                    else:
+                        b_fail += 1
+                        cat = _classify_failure(jid, bf)
+                        b_fail_cats[cat] = b_fail_cats.get(cat, 0) + 1
+                b_match = b_ok + b_fail
+                detail = {
+                    "bt_ok": b_ok, "bt_fail": b_fail, "bt_miss": b_miss,
+                    "bt_match": b_match,
+                    "rate": round(b_ok / b_match * 100, 1) if b_match else 0,
+                    "avg_dur": round(sum(b_durations) / len(b_durations)) if b_durations else 0,
+                    "max_dur": max(b_durations) if b_durations else 0,
+                    "fail_cats": b_fail_cats,
+                    "total": len(row_list),
+                }
+                b["_detail"] = detail
+                # 写入缓存
+                cache_key = (date_str, b["name"])
+                _batch_detail_cache[cache_key] = {"ts": time.time(), "data": detail}
+            logger.info("看板预加载: %s %d 个批次详情已缓存", date_str, len(batches))
+    except Exception as e:
+        logger.warning("看板批次详情预加载失败: %s", e)
+
     from src.api.routes.shared import ok as _ok
     logger.info("看板数据: %s, %d 批次(云端 %d), %d 提交",
                 date_str, len(batches), summary["cloud_count"], total_submit)
@@ -524,14 +770,18 @@ def dashboard_task_overview(
             cached = _task_overview_cache.get(date_str)
             if cached and time.time() - cached["ts"] < _TASK_OVERVIEW_TTL:
                 return _ok(cached["data"])
-    # ── 1. 收集今日所有去重 Jira 号 ──
+    # ── 1. 收集今日所有去重 Jira 号：内存缓存 → 云端 JSON → 原始文档 ──
     cloud_batches = None
     with _dashboard_cache_lock:
         cached = _dashboard_cloud_cache.get(date_str)
-        if cached and time.time() - cached["ts"] < _DASHBOARD_CLOUD_TTL:
+        if cached and time.time() - cached["ts"] < _cache_ttl(date_str):
             cloud_batches = cached["batches"]
     if cloud_batches is None:
-        cloud_batches = _fetch_cloud_batches_for_date(date_str)
+        cloud_batches = _load_cloud_json_cache(date_str)
+        if cloud_batches is None:
+            cloud_batches = _fetch_cloud_batches_for_date(date_str)
+            if cloud_batches:
+                _save_cloud_json_cache(date_str, cloud_batches)
         with _dashboard_cache_lock:
             _dashboard_cloud_cache[date_str] = {"ts": time.time(), "batches": cloud_batches}
     jira_exec = {}  # {jira_id: {"exec_ok": bool, "exec_time": str, "trigger_time": str}}
@@ -618,7 +868,7 @@ def dashboard_task_overview(
 
 
 def _fetch_cloud_batches_for_date(date_str: str) -> list:
-    """从云端拉取指定日期的所有批次（含行数据），失败返回 []"""
+    """从云端逐个拉取指定日期的所有批次（含行数据），失败返回 []"""
     try:
         from src.clients import feishu_client
         from src.api.routes.shared import parse_markdown_batch_table as _parse
@@ -638,8 +888,12 @@ def _fetch_cloud_batches_for_date(date_str: str) -> list:
                   if f.get("folder") == date_str
                   and f.get("type") == "docx"
                   and f.get("token")]
+    if not cloud_docs:
+        return []
+
+    # 逐个串行拉取，避免并发触发限流
     result = []
-    for doc in cloud_docs:
+    for i, doc in enumerate(cloud_docs):
         token = doc.get("token", "")
         name = doc.get("name", "") or token
         try:
@@ -649,9 +903,101 @@ def _fetch_cloud_batches_for_date(date_str: str) -> list:
             logger.warning("云端批次读取失败 %s/%s: %s", date_str, name, e)
             rows = []
         result.append({"name": name, "token": token, "rows": rows})
+        # 文档之间加小间隔，降低限流风险
+        if i < len(cloud_docs) - 1:
+            time.sleep(0.2)
     # 按名称（含时间）倒序：最新在前
     result.sort(key=lambda b: b["name"], reverse=True)
     return result
+
+
+@router.get("/api/dashboard/prefetch_range", response_model=ApiResponse)
+def dashboard_prefetch_range(
+    start_date: str = Query(..., description="起始日期 YYYY-MM-DD"),
+    end_date: str = Query(..., description="结束日期 YYYY-MM-DD"),
+):
+    """批量预热指定日期范围的云端看板缓存，只拉取未缓存的日期"""
+    try:
+        from src.clients import feishu_client
+        from src.api.routes.data import _get_batch_folder_token
+    except Exception as e:
+        logger.warning("预热依赖加载失败: %s", e)
+        return {"code": 500, "msg": str(e)}
+    folder_token = _get_batch_folder_token()
+    if not folder_token:
+        return {"code": 200, "data": {"fetched": 0, "cached": 0, "dates": []}}
+    # 一次性列出云端所有文件，按日期分组
+    try:
+        all_files = feishu_client.list_folder_files(folder_token, recursive=True)
+    except Exception as e:
+        logger.warning("预热列文件失败: %s", e)
+        return {"code": 500, "msg": str(e)}
+    # 筛选日期范围内的 docx 文件
+    from datetime import timedelta
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    # 按日期分组
+    date_docs = {}  # {date_str: [doc, ...]}
+    for f in all_files:
+        folder = f.get("folder", "")
+        if not folder or f.get("type") != "docx" or not f.get("token"):
+            continue
+        try:
+            d = datetime.strptime(folder, "%Y-%m-%d")
+        except ValueError:
+            continue
+        if start_dt <= d <= end_dt:
+            date_docs.setdefault(folder, []).append(f)
+    # 检查哪些日期未缓存
+    now = time.time()
+    fetched_dates = []
+    cached_dates = []
+    json_loaded_dates = []
+    with _dashboard_cache_lock:
+        for date_str in sorted(date_docs.keys()):
+            cached = _dashboard_cloud_cache.get(date_str)
+            if cached and now - cached["ts"] < _cache_ttl(date_str):
+                cached_dates.append(date_str)
+                continue
+            # 尝试云端 JSON 缓存
+            json_batches = _load_cloud_json_cache(date_str)
+            if json_batches is not None:
+                _dashboard_cloud_cache[date_str] = {"ts": now, "batches": json_batches}
+                json_loaded_dates.append(date_str)
+                continue
+            # 未缓存或已过期，逐个串行拉取原始文档
+            docs = date_docs[date_str]
+            batches = []
+            for i, doc in enumerate(docs):
+                token = doc.get("token", "")
+                name = doc.get("name", "") or token
+                try:
+                    md = feishu_client.fetch_docx_as_markdown(token)
+                    from src.api.routes.shared import parse_markdown_batch_table as _parse
+                    rows = _parse(md) or []
+                except Exception as e:
+                    logger.warning("预热读取 %s/%s: %s", date_str, name, e)
+                    rows = []
+                batches.append({"name": name, "token": token, "rows": rows})
+                # 文档之间加小间隔，降低限流风险
+                if i < len(docs) - 1:
+                    time.sleep(0.2)
+            batches.sort(key=lambda b: b["name"], reverse=True)
+            _dashboard_cloud_cache[date_str] = {"ts": now, "batches": batches}
+            # 历史日期保存到云端 JSON
+            if batches:
+                _save_cloud_json_cache(date_str, batches)
+            fetched_dates.append(date_str)
+            # 日期间加间隔，避免请求过密触发限流
+            time.sleep(0.5)
+    logger.info("看板预热完成: 范围 %s~%s, 新拉取 %d 天, JSON缓存 %d 天, 内存缓存 %d 天",
+                start_date, end_date, len(fetched_dates), len(json_loaded_dates), len(cached_dates))
+    from src.api.routes.shared import ok as _ok
+    return _ok({
+        "fetched": len(fetched_dates),
+        "cached": len(cached_dates),
+        "fetched_dates": fetched_dates,
+    })
 
 
 @router.get("/api/dashboard/batch_detail", response_model=ApiResponse)
@@ -660,14 +1006,26 @@ def dashboard_batch_detail(
     batch: str = Query(..., description="批次名"),
     jira_ids: str = Query(default="", description="jira号列表，逗号分隔（云端批次直接传）"),
 ):
-    """获取单个批次的详细信息（含多维表格交叉分析）
-
-    支持两种模式：
-    - 云端模式：前端传 jira_ids，后端用其查多维表格
-    - 本地模式：后端从 docs/{date}/{batch}.csv 读
-    """
+    """获取单个批次的详细信息（含多维表格交叉分析），支持内存+云端两级缓存"""
     import csv as _csv
-    # ── 行数据：优先用前端传的 jira_ids，回退本地 CSV ──
+    from src.api.routes.shared import ok as _ok, fail as _fail
+
+    cache_key = (date, batch)
+    ttl = _BATCH_DETAIL_TTL_TODAY if _is_today(date) else _BATCH_DETAIL_TTL_HISTORY
+
+    # ── 1. 内存缓存 ──
+    cached = _batch_detail_cache.get(cache_key)
+    if cached and time.time() - cached["ts"] < ttl:
+        logger.info("批次详情命中内存缓存: %s/%s", date, batch)
+        return _ok(cached["data"])
+
+    # ── 2. 云端 JSON 缓存 ──
+    cloud_data = _load_batch_detail_cloud(date, batch)
+    if cloud_data:
+        _batch_detail_cache[cache_key] = {"ts": time.time(), "data": cloud_data}
+        return _ok(cloud_data)
+
+    # ── 3. 未命中，查询多维表格 ──
     ids = [x.strip() for x in jira_ids.split(",") if x.strip()]
     rows = []
     if ids:
@@ -676,13 +1034,11 @@ def dashboard_batch_detail(
         docs_dir = os.path.join(PROJECT_ROOT, "docs", date)
         csv_path = os.path.join(docs_dir, f"{batch}.csv")
         if not os.path.exists(csv_path):
-            from src.api.routes.shared import fail as _fail
             return _fail(f"找不到批次 CSV: {batch}")
         with open(csv_path, encoding="utf-8-sig") as fh:
             rows = list(_csv.DictReader(fh))
         rows = [{k.replace("\ufeff", "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in r.items()} for r in rows]
 
-    # ── 多维表格交叉 ──
     jira_ids_list = [r.get("jira号", "") for r in rows if r.get("jira号")]
     jira_ids_set = set(jira_ids_list)
     bt_map = {}
@@ -717,12 +1073,11 @@ def dashboard_batch_detail(
                     bt_miss += 1
                     continue
                 exec_t = r.get("执行时间", "")
-                cands = [x for x in bt_recs if x.get("分析完成时间", "") and x["分析完成时间"] >= exec_t]
+                cands = [x for x in bt_recs if x.get("分析完成时间", "") and x["分析完成时间"] >= exec_t] if exec_t else []
                 if not cands:
                     cands = bt_recs
                 cands.sort(key=lambda x: x.get("分析完成时间", ""))
-                ok_recs = [x for x in cands if x.get("分析结果", "") == "成功"]
-                bf = ok_recs[0] if ok_recs else cands[-1]
+                bf = cands[0] if exec_t and cands else cands[-1]  # 执行时间之后最接近的一条
                 result = bf.get("分析结果", "")
                 dur = _parse_dur_sec(bf.get("分析耗时", ""))
                 if dur > 0:
@@ -731,7 +1086,6 @@ def dashboard_batch_detail(
                     bt_ok += 1
                 else:
                     bt_fail += 1
-                    err = (bf.get("错误信息", "") or "")[:80]
                     cat = _classify_failure(jid, bf)
                     fail_cats[cat] = fail_cats.get(cat, 0) + 1
     except Exception as e:
@@ -741,8 +1095,7 @@ def dashboard_batch_detail(
     avg_dur = round(sum(durations) / len(durations)) if durations else 0
     max_dur = max(durations) if durations else 0
 
-    from src.api.routes.shared import ok as _ok
-    return _ok({
+    data = {
         "name": batch, "date": date,
         "bt_ok": bt_ok, "bt_fail": bt_fail, "bt_miss": bt_miss,
         "bt_match": bt_match,
@@ -750,7 +1103,13 @@ def dashboard_batch_detail(
         "avg_dur": avg_dur, "max_dur": max_dur,
         "fail_cats": fail_cats,
         "total": len(rows),
-    })
+    }
+
+    # ── 4. 写入缓存 ──
+    _batch_detail_cache[cache_key] = {"ts": time.time(), "data": data}
+    _save_batch_detail_cloud(date, batch, data)
+
+    return _ok(data)
 
 
 @router.get("/api/report/verify", response_model=ApiResponse)
@@ -778,3 +1137,70 @@ def report_verify(date: str = Query(default=None, description="日期 YYYY-MM-DD
                 r["来源文件"] = fname
             all_rows.extend(rows)
     return _ok(all_rows)
+
+
+# ──────────────────────────────────────────────
+# 报告生成 API
+# ──────────────────────────────────────────────
+
+@router.post("/api/report/gen_batch", response_model=ApiResponse)
+def gen_batch_report(
+    date: str = Query(..., description="日期 YYYY-MM-DD"),
+    batch: str = Query(default=None, description="批次名，不传则生成该日所有批次"),
+):
+    """生成单批次 HTML 报告"""
+    from src.api.routes.shared import ok as _ok, fail as _fail
+    import subprocess as _sp
+    cmd = [sys.executable, os.path.join(PROJECT_ROOT, "scripts", "gen_batch_report.py"), date]
+    if batch:
+        cmd.append(batch)
+    try:
+        result = _sp.run(cmd, capture_output=True, text=True, timeout=120, cwd=PROJECT_ROOT)
+        if result.returncode != 0:
+            return _fail(result.stderr or result.stdout or "生成失败")
+        # 解析输出获取生成的文件列表
+        lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
+        return _ok({"message": "\n".join(lines[-3:]), "date": date, "batch": batch})
+    except _sp.TimeoutExpired:
+        return _fail("生成超时（120秒）")
+    except Exception as e:
+        logger.error("生成批次报告失败: %s", e, exc_info=True)
+        return _fail(f"生成失败: {e}")
+
+
+@router.post("/api/report/gen_daily", response_model=ApiResponse)
+def gen_daily_report(date: str = Query(..., description="日期 YYYY-MM-DD")):
+    """生成日报 HTML"""
+    from src.api.routes.shared import ok as _ok, fail as _fail
+    import subprocess as _sp
+    cmd = [sys.executable, os.path.join(PROJECT_ROOT, "scripts", "gen_daily_report.py"), date]
+    try:
+        result = _sp.run(cmd, capture_output=True, text=True, timeout=120, cwd=PROJECT_ROOT)
+        if result.returncode != 0:
+            return _fail(result.stderr or result.stdout or "生成失败")
+        lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
+        return _ok({"message": "\n".join(lines[-3:]), "date": date})
+    except _sp.TimeoutExpired:
+        return _fail("生成超时（120秒）")
+    except Exception as e:
+        logger.error("生成日报失败: %s", e, exc_info=True)
+        return _fail(f"生成失败: {e}")
+
+
+@router.post("/api/report/gen_monthly", response_model=ApiResponse)
+def gen_monthly_report(year_month: str = Query(..., description="年月，格式 YYYY-MM")):
+    """生成月报 HTML"""
+    from src.api.routes.shared import ok as _ok, fail as _fail
+    import subprocess as _sp
+    cmd = [sys.executable, os.path.join(PROJECT_ROOT, "scripts", "generate_monthly_report.py"), year_month]
+    try:
+        result = _sp.run(cmd, capture_output=True, text=True, timeout=300, cwd=PROJECT_ROOT)
+        if result.returncode != 0:
+            return _fail(result.stderr or result.stdout or "生成失败")
+        lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
+        return _ok({"message": "\n".join(lines[-3:]), "year_month": year_month})
+    except _sp.TimeoutExpired:
+        return _fail("生成超时（300秒）")
+    except Exception as e:
+        logger.error("生成月报失败: %s", e, exc_info=True)
+        return _fail(f"生成失败: {e}")

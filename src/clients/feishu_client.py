@@ -28,8 +28,12 @@ _FEISHU_API = "https://open.feishu.cn/open-apis"
 
 # Token 缓存（有效期 2 小时，缓存到过期前 5 分钟刷新）
 _token_cache = {"token": None, "expire_at": 0}
+_token_lock = __import__('threading').Lock()  # 防止并发重复获取 tenant token
 _refresh_lock = __import__('threading').Lock()
 _refresh_fail_time = 0  # 上次刷新失败的时间戳，用于冷却避免反复刷屏
+_refresh_success_time = 0  # 上次刷新成功的时间戳，防止并发线程重复刷新
+# user_access_token 过期追踪（每次刷新后记录过期时间，提前 5 分钟主动刷新）
+_user_token_expire_at = 0
 
 
 @retry(
@@ -254,31 +258,32 @@ def _is_cookie_mode() -> bool:
 
 
 def get_tenant_access_token(app_id: str = None, app_secret: str = None) -> str:
-    """获取飞书 tenant_access_token（自动缓存，过期前 5 分钟刷新）
-
-    :param app_id: 飞书应用 App ID（默认从配置读取）
-    :param app_secret: 飞书应用 App Secret（默认从配置读取）
-    :return: tenant_access_token 字符串
-    """
+    """获取飞书 tenant_access_token（自动缓存，过期前 5 分钟刷新，线程安全）"""
     global _token_cache
     now = time.time()
-    # 缓存未过期，直接复用
+    # 缓存未过期，直接复用（快速路径，不加锁）
     if _token_cache["token"] and now < _token_cache["expire_at"] - 300:
         return _token_cache["token"]
-    if not app_id or not app_secret:
-        cfg = _get_bitable_cfg()
-        app_id = app_id or cfg["app_id"]
-        app_secret = app_secret or cfg["app_secret"]
-    url = f"{_FEISHU_API}/auth/v3/tenant_access_token/internal"
-    resp = httpx.post(url, json={"app_id": app_id, "app_secret": app_secret}, timeout=15, verify=False)
-    resp.raise_for_status()
-    data = resp.json()
-    if data.get("code") != 0:
-        raise ValueError(f"获取 tenant_access_token 失败: {data.get('msg')}")
-    _token_cache["token"] = data["tenant_access_token"]
-    _token_cache["expire_at"] = now + data.get("expire", 7200)
-    logger.info("飞书 tenant_access_token 获取成功，有效期 %ds", data.get("expire", 7200))
-    return _token_cache["token"]
+    # 加锁防止多线程并发重复获取
+    with _token_lock:
+        # 双重检查：锁内再确认缓存
+        now = time.time()
+        if _token_cache["token"] and now < _token_cache["expire_at"] - 300:
+            return _token_cache["token"]
+        if not app_id or not app_secret:
+            cfg = _get_bitable_cfg()
+            app_id = app_id or cfg["app_id"]
+            app_secret = app_secret or cfg["app_secret"]
+        url = f"{_FEISHU_API}/auth/v3/tenant_access_token/internal"
+        resp = httpx.post(url, json={"app_id": app_id, "app_secret": app_secret}, timeout=15, verify=False)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            raise ValueError(f"获取 tenant_access_token 失败: {data.get('msg')}")
+        _token_cache["token"] = data["tenant_access_token"]
+        _token_cache["expire_at"] = now + data.get("expire", 7200)
+        logger.info("飞书 tenant_access_token 获取成功，有效期 %ds", data.get("expire", 7200))
+        return _token_cache["token"]
 
 
 def _bitable_headers() -> dict:
@@ -320,17 +325,29 @@ def _paginate_get(url: str, headers: dict, params: dict,
             time.sleep(server_retry_count)
             logger.info("%s: HTTP %d 服务端错误，第 %d 次重试", log_msg, resp.status_code, server_retry_count)
             continue
-        # HTTP 401/400/403 时尝试自动刷新 token 重试一次（飞书可能返回 400 而非 401）
+        # HTTP 401/400/403 时尝试自动刷新 token（仅针对认证错误，限流走单独逻辑）
         if retry_on_token_expire and resp.status_code in (401, 400, 403) and not retried:
+            # 400 需要先判断是否为限流，限流不刷新 token
+            if resp.status_code == 400:
+                try:
+                    _err_code = resp.json().get("code", 0)
+                except Exception:
+                    _err_code = 0
+                if _err_code == 99991400:
+                    # 频率限制：等待后重试，不刷新 token
+                    server_retry_count += 1
+                    wait = 2 * server_retry_count
+                    logger.info("%s: 触发频率限制，等待 %ds 后重试", log_msg, wait)
+                    time.sleep(wait)
+                    continue
+                # 其他 400 才是认证问题，继续走 token 刷新
             logger.info("收到 HTTP %d，尝试自动刷新 token...", resp.status_code)
             if resp.status_code == 403:
-                # 403 无权限：强制刷新 user token 重试
                 if _refresh_user_token(force=True):
                     retried = True
                     headers = {"Authorization": f"Bearer {_get_doc_token()}", "Content-Type": "application/json"}
                     continue
             if _is_tenant_token:
-                # tenant_access_token 失败：重新获取 tenant token 重试
                 try:
                     new_tenant = get_tenant_access_token()
                     retried = True
@@ -338,7 +355,6 @@ def _paginate_get(url: str, headers: dict, params: dict,
                     continue
                 except Exception:
                     pass
-            # user_access_token 或 tenant 刷新失败：尝试 user_access_token
             if _refresh_user_token():
                 retried = True
                 headers = {"Authorization": f"Bearer {_get_doc_token()}", "Content-Type": "application/json"}
@@ -347,11 +363,21 @@ def _paginate_get(url: str, headers: dict, params: dict,
         if resp.status_code >= 400:
             try:
                 err_body = resp.json()
-                err_detail = f"HTTP {resp.status_code}: {err_body.get('msg', resp.text[:200])} (code={err_body.get('code', 'N/A')})"
+                err_code = err_body.get('code', 0)
+                err_msg = err_body.get('msg', resp.text[:200])
+                err_detail = f"HTTP {resp.status_code}: {err_msg} (code={err_code})"
             except Exception:
+                err_code = 0
                 err_detail = f"HTTP {resp.status_code}: {resp.text[:300]}"
-            # 认证失败时提供重新授权引导
-            if resp.status_code in (400, 401, 403):
+            # 频率限制(99991400)：自动等待重试
+            if err_code == 99991400 and server_retry_count < 3:
+                server_retry_count += 1
+                wait = 2 * server_retry_count  # 2s, 4s, 6s
+                logger.info("%s: 触发频率限制，等待 %ds 后重试", log_msg, wait)
+                time.sleep(wait)
+                continue
+            # 真正的认证失败才提示重新授权
+            if resp.status_code in (401, 403) or (resp.status_code == 400 and err_code not in (99991400,)):
                 err_detail += "，请重新授权飞书应用（Web 页面点击「重新授权飞书」按钮）"
             raise ValueError(f"{log_msg}: {err_detail}")
         data = resp.json()
@@ -373,8 +399,30 @@ def _paginate_get(url: str, headers: dict, params: dict,
 
 
 def _get_doc_token() -> str:
-    """获取文档/云盘 API 的认证 token：统一使用 tenant_access_token（自动刷新，无需人工授权）"""
+    """获取文档 API 的认证 token：统一使用 tenant_access_token（稳定、自动刷新）
+
+    注意：云盘操作请使用 get_user_access_token() 以支持个人空间文件夹
+    """
     return get_tenant_access_token()
+
+
+def get_user_access_token() -> str:
+    """获取 user_access_token（云盘缓存操作用），过期自动刷新，带冷却保护"""
+    global _user_token_expire_at
+    cfg = _get_bitable_cfg()
+    ut = cfg.get("user_access_token", "").strip()
+    if not ut:
+        # 无 token 但有 refresh_token：尝试刷新获取
+        if cfg.get("user_refresh_token", "").strip():
+            return _refresh_user_token(force=True)
+        return ""
+    import time as _t
+    # 主动刷新：首次调用(expire_at=0)或过期前 5 分钟（受成功冷却保护）
+    if not _user_token_expire_at or _t.time() > _user_token_expire_at - 300:
+        new_token = _refresh_user_token(force=True)
+        if new_token:
+            return new_token
+    return ut
 
 
 def _clear_stale_user_token():
@@ -402,9 +450,15 @@ def _refresh_user_token(force: bool = False) -> str:
     :param force: 为 True 时跳过冷却机制，强制尝试刷新
     :return: 新的 user_access_token，失败返回空串
     """
-    global _refresh_fail_time
-    # 冷却机制：5 分钟内刷新失败过则跳过（force=True 时忽略冷却）
+    global _refresh_fail_time, _refresh_success_time
     import time as _t
+    # 成功冷却：60 秒内已成功刷新过，直接返回缓存 token（防止并发线程重复刷新）
+    if _refresh_success_time and (_t.time() - _refresh_success_time) < 60:
+        cfg = _get_bitable_cfg()
+        ut = cfg.get("user_access_token", "").strip()
+        if ut:
+            return ut
+    # 失败冷却：5 分钟内刷新失败过则跳过（force=True 时忽略）
     if not force and _refresh_fail_time and (_t.time() - _refresh_fail_time) < 300:
         return ""
     cfg = _get_bitable_cfg()
@@ -444,6 +498,11 @@ def _refresh_user_token(force: bool = False) -> str:
                 return ""
             new_token = d2.get("data", {}).get("access_token", "")
             new_refresh = d2.get("data", {}).get("refresh_token", "")
+            # 记录过期时间（提前 5 分钟刷新）
+            global _user_token_expire_at
+            import time as _t2
+            expires_in = d2.get("data", {}).get("expires_in", 7200)
+            _user_token_expire_at = _t2.time() + expires_in
             # 保存到配置文件
             import yaml
             from src.config import CONFIG_PATH
@@ -463,6 +522,7 @@ def _refresh_user_token(force: bool = False) -> str:
                         d2.get("data", {}).get("expires_in", 0),
                         d2.get("data", {}).get("scope", "未返回"))
             _refresh_fail_time = 0  # 刷新成功，重置失败冷却
+            _refresh_success_time = _t.time()  # 记录成功时间，防止并发线程重复刷新
             return new_token
         except Exception as e:
             logger.warning("刷新 user_access_token 异常: %s", e)
@@ -1561,13 +1621,16 @@ def delete_drive_file(file_token: str, file_type: str = "docx") -> bool:
     url = f"{_FEISHU_API}/drive/v1/files/{file_token}"
     try:
         resp = httpx.delete(url, headers=headers, params={"type": file_type}, timeout=15, verify=False)
-        # 鉴权类错误：强制刷新 token 后重试一次
-        if _is_doc_auth_error(resp):
-            logger.warning("删除云盘文件遇鉴权错误(file_token=%s, status=%s, code=%s)，强制刷新 token 重试",
-                           file_token, resp.status_code, _doc_api_code(resp))
+        # 403 权限不足：切换到 user_access_token 重试
+        if resp.status_code == 403:
+            ut = get_user_access_token()
+            if ut:
+                resp = httpx.delete(url, headers={"Authorization": f"Bearer {ut}"}, params={"type": file_type}, timeout=15, verify=False)
+        # token 过期/无效：刷新后重试
+        if resp.status_code in (401, 400) and _is_doc_auth_error(resp):
             if _refresh_user_token(force=True):
-                headers = {"Authorization": f"Bearer {_get_doc_token()}"}
-                resp = httpx.delete(url, headers=headers, params={"type": file_type}, timeout=15, verify=False)
+                retry_token = get_user_access_token() or _get_doc_token()
+                resp = httpx.delete(url, headers={"Authorization": f"Bearer {retry_token}"}, params={"type": file_type}, timeout=15, verify=False)
         resp.raise_for_status()
         data = resp.json()
         if data.get("code") != 0:
@@ -1600,23 +1663,29 @@ def list_folder_files(folder_token: str, recursive: bool = False) -> list:
     files = []
     sub_folders = []
     page_token = ""
-    retried = False
+    auth_attempts = 0  # 认证重试次数，最多 2 次（403→user_token, 401→refresh）
     while True:
         params = {"folder_token": folder_token, "page_size": 200}
         if page_token:
             params["page_token"] = page_token
         try:
             resp = httpx.get(url, headers=headers, params=params, timeout=30, verify=False)
-            # token 过期时自动刷新重试一次
-            if resp.status_code in (401, 400) and not retried:
-                retried = True
-                if _refresh_user_token():
-                    headers = {"Authorization": f"Bearer {_get_doc_token()}"}
+            # 403 权限不足：尝试切换到 user_access_token
+            if resp.status_code == 403 and auth_attempts < 2:
+                auth_attempts += 1
+                ut = get_user_access_token()
+                if ut:
+                    headers = {"Authorization": f"Bearer {ut}"}
+                    page_token = ""  # 重置分页，重新开始
                     continue
-            # 403 权限不足：通常是 user_access_token 失效后回退 tenant_access_token 无权限
-            if resp.status_code == 403:
-                logger.warning("飞书云盘文件夹无权限访问 (403)，请在接口设置中重新授权飞书账户")
                 return []
+            # token 过期/无效：刷新 user_access_token 后重试
+            if resp.status_code in (401, 400) and auth_attempts < 2:
+                auth_attempts += 1
+                if _refresh_user_token(force=True):
+                    headers = {"Authorization": f"Bearer {get_user_access_token()}"}
+                    page_token = ""  # 重置分页
+                    continue
             resp.raise_for_status()
             data = resp.json()
             if data.get("code") != 0:
@@ -1737,20 +1806,96 @@ def upload_file_to_drive(file_path: str, folder_token: str = "", content_type: s
             data = {"file_name": file_name, "size": str(file_size),
                     "parent_type": "explorer", "parent_node": parent_node}
             resp = httpx.post(upload_url, headers=headers, data=data, files=files, timeout=60, verify=False)
-            resp.raise_for_status()
-            result = resp.json()
-            if result.get("code") != 0:
-                logger.error("上传文件失败: %s (code=%s)", result.get("msg"), result.get("code"))
-                return {"file_token": "", "url": ""}
-            file_token = result.get("data", {}).get("file_token", "")
-            cfg = _get_bitable_cfg()
-            domain = cfg.get("domain", "feishu.cn")
-            file_url = f"https://{domain}/file/{file_token}"
-            logger.info("文件上传成功: %s -> %s", file_name, file_url)
-            return {"file_token": file_token, "url": file_url}
+        # 403 权限不足：切换到 user_access_token 重试
+        if resp.status_code == 403:
+            ut = get_user_access_token()
+            if ut:
+                with open(file_path, "rb") as f:
+                    files = {"file": (file_name, f, content_type)}
+                    resp = httpx.post(upload_url, headers={"Authorization": f"Bearer {ut}"}, data=data, files=files, timeout=60, verify=False)
+        # token 过期/无效：刷新后重试
+        if resp.status_code in (401, 400):
+            try:
+                err_code = resp.json().get("code", 0)
+            except Exception:
+                err_code = 0
+            if err_code in (99991677, 99991668, 1061004):
+                _refresh_user_token(force=True)
+                retry_token = get_user_access_token() or _get_doc_token()
+                with open(file_path, "rb") as f2:
+                    files2 = {"file": (file_name, f2, content_type)}
+                    resp = httpx.post(upload_url, headers={"Authorization": f"Bearer {retry_token}"}, data=data, files=files2, timeout=60, verify=False)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("code") != 0:
+            logger.error("上传文件失败: %s (code=%s)", result.get("msg"), result.get("code"))
+            return {"file_token": "", "url": ""}
+        file_token = result.get("data", {}).get("file_token", "")
+        cfg = _get_bitable_cfg()
+        domain = cfg.get("domain", "feishu.cn")
+        file_url = f"https://{domain}/file/{file_token}"
+        logger.info("文件上传成功: %s -> %s", file_name, file_url)
+        return {"file_token": file_token, "url": file_url}
     except Exception as e:
         logger.warning("上传文件到云盘失败: %s", e)
         return {"file_token": "", "url": ""}
+
+
+def upload_json_to_drive(json_data: dict, file_name: str, folder_token: str) -> dict:
+    """上传 JSON 数据到飞书云盘文件夹
+
+    :param json_data: 要序列化的字典
+    :param file_name: 文件名（不含扩展名）
+    :param folder_token: 目标文件夹 token
+    :return: {"file_token": str, "url": str}
+    """
+    import json as _json, tempfile as _tf
+    if not folder_token:
+        return {"file_token": "", "url": ""}
+    full_name = f"{file_name}.json" if not file_name.endswith(".json") else file_name
+    tmp_path = _os.path.join(_tf.gettempdir(), full_name)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            _json.dump(json_data, f, ensure_ascii=False, indent=2)
+        result = upload_file_to_drive(tmp_path, folder_token, "application/json")
+        return result
+    except Exception as e:
+        logger.warning("上传 JSON 到云盘失败: %s", e)
+        return {"file_token": "", "url": ""}
+    finally:
+        try:
+            _os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+def download_drive_file(file_token: str) -> bytes:
+    """下载飞书云盘文件内容
+
+    需要应用权限: drive:drive
+    :param file_token: 文件 token
+    :return: 文件二进制内容，失败返回 None
+    """
+    token = _get_doc_token()
+    if not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{_FEISHU_API}/drive/v1/files/{file_token}/download"
+    try:
+        resp = httpx.get(url, headers=headers, timeout=30, verify=False)
+        # 403 或认证错误：尝试 user_access_token
+        if resp.status_code in (403, 401, 400):
+            ut = get_user_access_token()
+            if ut:
+                resp = httpx.get(url, headers={"Authorization": f"Bearer {ut}"}, timeout=30, verify=False)
+                # 仍失败：刷新后重试
+                if resp.status_code in (401, 400) and _refresh_user_token(force=True):
+                    resp = httpx.get(url, headers={"Authorization": f"Bearer {get_user_access_token()}"}, timeout=30, verify=False)
+        resp.raise_for_status()
+        return resp.content
+    except Exception as e:
+        logger.warning("下载云盘文件失败 (token=%s): %s", file_token, e)
+        return None
 
 
 # ============ Cookie 模式（无需创建飞书应用）============

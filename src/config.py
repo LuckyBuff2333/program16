@@ -70,6 +70,9 @@ def setup_logger(name: str = "bug_doc_tool") -> logging.Logger:
     if logger.handlers:
         return logger
     logger.setLevel(logging.INFO)
+    # 子 logger（含 "."）不添加自己的 handler，通过传播由父 logger 统一输出，避免日志重复
+    if "." in name:
+        return logger
     formatter = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
     )

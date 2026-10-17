@@ -544,35 +544,35 @@ def _batch_save_trigger_times_to_cloud(items: dict) -> bool:
                             tt = item["fields"].get("触发时间", "")
                             _trigger_time_bugid_cache[b] = (t, rec_id, tt)
                             break
-        # 批量新建：按 500 条上限分批写入，自动创建新表
+        # 批量新建：按 500 条上限分批写入，优先填充空位最多的表
         if new_items:
             remaining = list(new_items)
             while remaining:
-                # 找一个还有空间的表
-                target_tid = None
-                for tid in table_ids:
-                    if table_counts.get(tid, 0) < _TRIGGER_TIME_TABLE_LIMIT:
-                        target_tid = tid
-                        break
-                if not target_tid:
-                    # 创建新表前查询云端所有现有表，避免误删
+                # 按剩余空间从大到小排序，优先填空位最多的表
+                available = [(tid, _TRIGGER_TIME_TABLE_LIMIT - table_counts.get(tid, 0))
+                             for tid in table_ids if table_counts.get(tid, 0) < _TRIGGER_TIME_TABLE_LIMIT]
+                available.sort(key=lambda x: x[1], reverse=True)
+                if not available:
+                    # 所有表已满，创建新表
                     from src.clients import feishu_client as _fc
                     cloud_tables = _fc.list_bitable_tables(app_token)
                     cloud_tids = {t["table_id"] for t in cloud_tables if t.get("table_id")}
-                    cloud_tids.update(table_ids)  # 合并 config 中的表
+                    cloud_tids.update(table_ids)
                     target_tid = _create_trigger_time_subtable(app_token, len(table_ids) + 1, cloud_tids)
                     table_ids.append(target_tid)
                     table_counts[target_tid] = 0
                     _trigger_time_table_cache["table_ids"] = list(table_ids)
                     _update_config_table_ids(app_token, table_ids)
-                # 计算当前表还能放多少
-                space = _TRIGGER_TIME_TABLE_LIMIT - table_counts.get(target_tid, 0)
+                    space = _TRIGGER_TIME_TABLE_LIMIT
+                else:
+                    target_tid, space = available[0]
                 batch = remaining[:space]
                 remaining = remaining[space:]
                 create_records = [{"fields": {"jira号": bid, "触发时间": tt, "提取时间": now_str}} for bid, tt in batch]
                 feishu_client.batch_create_records(app_token, target_tid, create_records)
                 table_counts[target_tid] = table_counts.get(target_tid, 0) + len(batch)
-                logger.info("云端触发时间批量新建: %d 条 (表 %s)", len(create_records), target_tid)
+                logger.info("云端触发时间批量新建: %d 条 (表 %s, 当前 %d/%d)",
+                            len(create_records), target_tid, table_counts[target_tid], _TRIGGER_TIME_TABLE_LIMIT)
             # 更新本地缓存
             for bid, tt in new_items:
                 _trigger_time_bugid_cache.pop(bid, None)
@@ -704,3 +704,74 @@ def _invalidate_bitable_cache():
     _bitable_bulk_cache.clear()
     _last_cache_load_partial = False
 
+
+def rebalance_trigger_time_tables() -> dict:
+    """再平衡触发时间表：把超过500的表中多余记录搬运到不足500的表中
+
+    :return: {"moved": int, "details": [str]}
+    """
+    from src.clients import feishu_client
+    app_token, table_ids = _get_trigger_time_table_cfg()
+    if not app_token or not table_ids:
+        return {"moved": 0, "details": ["无触发时间表配置"]}
+    # 加载所有表的数据
+    table_data = {}  # {tid: [records]}
+    for tid in table_ids:
+        try:
+            records = feishu_client.list_bitable_records(app_token, tid)
+            table_data[tid] = records
+        except Exception as e:
+            logger.warning("再平衡：加载表 %s 失败，已跳过: %s", tid, e)
+    # 分组：超限表 vs 有余量表
+    overflow_tables = []  # [(tid, excess_records)]
+    available_tables = []  # [(tid, space)]
+    for tid, records in table_data.items():
+        count = len(records)
+        if count > _TRIGGER_TIME_TABLE_LIMIT:
+            excess = records[_TRIGGER_TIME_TABLE_LIMIT:]
+            overflow_tables.append((tid, excess))
+        elif count < _TRIGGER_TIME_TABLE_LIMIT:
+            available_tables.append((tid, _TRIGGER_TIME_TABLE_LIMIT - count))
+    if not overflow_tables:
+        return {"moved": 0, "details": ["无超限表，无需再平衡"]}
+    if not available_tables:
+        return {"moved": 0, "details": ["无有余量表，无法再平衡"]}
+    # 按余量从大到小排序
+    available_tables.sort(key=lambda x: x[1], reverse=True)
+    total_moved = 0
+    details = []
+    for src_tid, excess in overflow_tables:
+        remaining = list(excess)
+        # 从源表删除多余记录
+        excess_ids = [r["record_id"] for r in excess]
+        for i in range(0, len(excess_ids), 500):
+            feishu_client.batch_delete_records(app_token, src_tid, excess_ids[i:i + 500])
+        details.append(f"从表 {src_tid} 移除 {len(excess)} 条超限记录")
+        # 分配到有空间的表
+        while remaining:
+            if not available_tables:
+                details.append(f"警告：{len(remaining)} 条记录无有余量表可存放")
+                break
+            dst_tid, space = available_tables[0]
+            batch = remaining[:space]
+            remaining = remaining[space:]
+            # 重建记录（只保留核心字段）
+            create_records = []
+            for rec in batch:
+                fields = rec.get("fields", {})
+                create_records.append({"fields": {
+                    "jira号": _bitable_text(fields.get("jira号", "")),
+                    "触发时间": _bitable_text(fields.get("触发时间", "")),
+                    "提取时间": _bitable_text(fields.get("提取时间", "")),
+                }})
+            feishu_client.batch_create_records(app_token, dst_tid, create_records)
+            moved = len(create_records)
+            total_moved += moved
+            details.append(f"写入表 {dst_tid}: {moved} 条")
+            # 更新剩余空间
+            available_tables[0] = (dst_tid, space - moved)
+            if available_tables[0][1] <= 0:
+                available_tables.pop(0)
+    # 清除缓存，下次重新加载
+    _invalidate_bitable_cache()
+    return {"moved": total_moved, "details": details}

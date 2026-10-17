@@ -102,38 +102,38 @@
               <template v-for="(val, field) in config[item.key]">
                 <template v-if="field !== 'mock'">
                   <el-form-item v-if="typeof val === 'number'">
-                    <template #label><el-tooltip :content="field" placement="top" :disabled="field.length < 8"><span>{{ fieldLabel(field) }}</span></el-tooltip></template>
+                    <template #label><el-tooltip :content="field" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
                     <div class="cfg-field-row">
                       <el-input-number v-model="config[item.key][field]" :min="0" :step="val < 1 ? 0.05 : 1"></el-input-number>
-                      <span class="field-del-btn" title="删除字段" @click="removeField(item.key, field)">&#x2715;</span>
+                      <span class="field-del-btn" title="删除字段" @click="removeField(item.key, s(field))">&#x2715;</span>
                     </div>
                   </el-form-item>
                   <el-form-item v-else-if="typeof val === 'boolean'">
-                    <template #label><el-tooltip :content="field" placement="top" :disabled="field.length < 8"><span>{{ fieldLabel(field) }}</span></el-tooltip></template>
+                    <template #label><el-tooltip :content="field" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
                     <div class="cfg-field-row">
                       <el-switch v-model="config[item.key][field]"></el-switch>
-                      <span class="field-del-btn" title="删除字段" @click="removeField(item.key, field)">&#x2715;</span>
+                      <span class="field-del-btn" title="删除字段" @click="removeField(item.key, s(field))">&#x2715;</span>
                     </div>
                   </el-form-item>
-                  <el-form-item v-else-if="field.includes('token') || field.includes('password') || field.includes('api_key') || field.includes('secret')">
-                    <template #label><el-tooltip :content="field" placement="top" :disabled="field.length < 8"><span>{{ fieldLabel(field) }}</span></el-tooltip></template>
+                  <el-form-item v-else-if="s(field).includes('token') || s(field).includes('password') || s(field).includes('api_key') || s(field).includes('secret')">
+                    <template #label><el-tooltip :content="field" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
                     <div class="cfg-field-row">
                       <el-input v-model="config[item.key][field]" type="password" show-password :placeholder="val || '可选'"></el-input>
-                      <span class="field-del-btn" title="删除字段" @click="removeField(item.key, field)">&#x2715;</span>
+                      <span class="field-del-btn" title="删除字段" @click="removeField(item.key, s(field))">&#x2715;</span>
                     </div>
                   </el-form-item>
                   <el-form-item v-else-if="Array.isArray(val)">
-                    <template #label><el-tooltip :content="field" placement="top" :disabled="field.length < 8"><span>{{ fieldLabel(field) }}</span></el-tooltip></template>
+                    <template #label><el-tooltip :content="field" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
                     <div class="cfg-field-row" style="flex-direction:column;align-items:stretch">
                       <el-input type="textarea" :rows="Math.min(val.length + 1, 6)"
                         :model-value="(val || []).join('\n')"
-                        @update:model-value="v => config[item.key][field] = v.split('\n').map(s => s.trim()).filter(Boolean)"
+                        @update:model-value="updateArrayField.bind(null, item.key, s(field))"
                         placeholder="每行一个"></el-input>
-                      <span class="field-del-btn" title="删除字段" @click="removeField(item.key, field)" style="align-self:flex-end">&#x2715;</span>
+                      <span class="field-del-btn" title="删除字段" @click="removeField(item.key, s(field))" style="align-self:flex-end">&#x2715;</span>
                     </div>
                   </el-form-item>
                   <el-form-item v-else-if="val !== null && typeof val === 'object' && !Array.isArray(val)">
-                    <template #label><el-tooltip :content="field" placement="top" :disabled="field.length < 8"><span>{{ fieldLabel(field) }}</span></el-tooltip></template>
+                    <template #label><el-tooltip :content="field" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
                     <div style="width:100%;border:1px solid #e4e7ed;border-radius:4px;padding:6px;background:#fafafa">
                       <div v-for="(subVal, subKey) in val" :key="subKey" v-show="subKey !== '_newKey'" style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
                         <span style="min-width:50px;font-size:11px;color:#606266">{{ subKey }}</span>
@@ -141,16 +141,16 @@
                         <span class="field-del-btn" title="删除子项" @click="delete config[item.key][field][subKey]">&#x2715;</span>
                       </div>
                       <div style="display:flex;gap:4px;margin-top:4px">
-                        <el-input v-model="config[item.key][field]._newKey" size="small" placeholder="新键名" style="width:100px" @keyup.enter="addSubField(item.key, field)"></el-input>
-                        <el-button size="small" link type="primary" @click="addSubField(item.key, field)">+ 添加</el-button>
+                        <el-input v-model="config[item.key][field]._newKey" size="small" placeholder="新键名" style="width:100px" @keyup.enter="addSubField(item.key, s(field))"></el-input>
+                        <el-button size="small" link type="primary" @click="addSubField(item.key, s(field))">+ 添加</el-button>
                       </div>
                     </div>
                   </el-form-item>
                   <el-form-item v-else>
-                    <template #label><el-tooltip :content="field" placement="top" :disabled="field.length < 8"><span>{{ fieldLabel(field) }}</span></el-tooltip></template>
+                    <template #label><el-tooltip :content="s(field)" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
                     <div class="cfg-field-row">
                       <el-input v-model="config[item.key][field]" :placeholder="val || '可选'"></el-input>
-                      <span class="field-del-btn" title="删除字段" @click="removeField(item.key, field)">&#x2715;</span>
+                      <span class="field-del-btn" title="删除字段" @click="removeField(item.key, s(field))">&#x2715;</span>
                     </div>
                   </el-form-item>
                 </template>
@@ -273,11 +273,11 @@ export default {
       activeFailCat: '',
       statsTab: 'error_stats',
       overview: { mock: {} as any, daily_total: 0, daily_complete: 0, daily_incomplete: 0, audited_total: 0, today: '' },
-      taskOv: { total: 0, all_rows: [], success: { count: 0, rows: [] }, analyzing: { count: 0, rows: [] }, investigate: { count: 0, rows: [] }, retry: { count: 0, rows: [] } },
+      taskOv: { total: 0, all_rows: [] as any[], success: { count: 0, rows: [] as any[] }, analyzing: { count: 0, rows: [] as any[] }, investigate: { count: 0, rows: [] as any[] }, retry: { count: 0, rows: [] as any[] } } as Record<string, any>,
       toLoading: false,
       toLoaded: false,
-      activeCat: '',
-      config: { prod_ai: {} as any, ai_log_api: {} as any, jira_api: {} as any, diana: {} as any, feishu_bitable: {} as any, feishu_bot: {} as any, knowledge_base_api: {} as any, similarity: {} as any, audit: {} as any, database: {} as any },
+      activeCat: '' as string,
+      config: {} as Record<string, any>,
       apiSections: [
         { key: 'prod_ai', title: '线上AI日志分析接口' },
         { key: 'ai_log_api', title: 'AI日志分析工具接口(PC)' },
@@ -289,7 +289,7 @@ export default {
       ],
       running: { saveConfig: false },
       errorStats: {
-        afterTime: '', querying: false, records: [], queryMsg: '', queryError: false,
+        afterTime: '', querying: false, records: [] as any[], queryMsg: '', queryError: false,
         successFilter: '', deletingDirty: false,
       },
       newForm: { section: '', fieldName: '', fieldType: 'string', fieldValue: '', fieldValueNum: 0, fieldValueBool: false },
@@ -300,7 +300,7 @@ export default {
   mounted() {
     this.loadConfig();
     this.loadFlowStats();
-    this.loadTaskOverview();
+    // 任务总览改为手动刷新，不自动加载
   },
   computed: {
     activeRows() {
@@ -309,12 +309,13 @@ export default {
       return (this.taskOv[this.activeCat] && this.taskOv[this.activeCat].rows) || [];
     },
     activeCatTitle() {
-      const map = { total: '今日执行总数', success: '成功数量', analyzing: '分析中', investigate: '待排查', retry: '待重试' };
+      const map = { total: '今日执行总数', success: '成功数量', analyzing: '分析中', investigate: '待排查', retry: '待重试' } as Record<string, string>;
       return map[this.activeCat] || '';
     },
     tableMaxHeight() {
-      if (!this.$refs.toTable) return 500;
-      const rect = this.$refs.toTable.getBoundingClientRect();
+      const el = this.$refs.toTable;
+      if (!el) return 500;
+      const rect = (el as unknown as HTMLElement).getBoundingClientRect();
       return Math.max(200, window.innerHeight - rect.top - 60);
     },
     filteredErrorStatsRecords() {
@@ -328,6 +329,12 @@ export default {
   },
   methods: {
     colWidth, verdictStyle, fieldLabel,
+    // Vue v-for 的 field 类型为 string|number，此辅助方法统一转为 string
+    s(v: any): string { return String(v); },
+    // 更新数组类型配置字段（从 textarea 换行文本解析）
+    updateArrayField(sectionKey: string, fieldName: string, text: string) {
+      this.config[sectionKey][fieldName] = text.split('\n').map((s: string) => s.trim()).filter(Boolean);
+    },
     async loadConfig() {
       const body = await api('/api/config');
       this.config = { ...this.config, ...(body.data || {}) };
@@ -385,7 +392,7 @@ export default {
       this.config[sectionKey][fieldName] = { ...obj };
     },
     async loadFlowStats() {
-      try { const body = await api('/api/overview'); this.overview = body.data; } catch (_) {}
+      try { const body = await api('/api/overview'); this.overview = body.data as any; } catch (_) {}
     },
     async loadTaskOverview(force = false) {
       this.toLoading = true;
@@ -394,21 +401,21 @@ export default {
           ? '/api/dashboard/task_overview?force=true'
           : '/api/dashboard/task_overview';
         const r = await api(url);
-        this.taskOv = r.data;
+        this.taskOv = r.data as any;
         this.toLoaded = true;
-      } catch (e) { ElMessage.error('任务总览加载失败: ' + (e.message || e)); } finally { this.toLoading = false; }
+      } catch (e: any) { ElMessage.error('任务总览加载失败: ' + (e?.message || e)); } finally { this.toLoading = false; }
     },
     refreshTaskOverview() { this.loadTaskOverview(true); },
     selectCategory(cat: string) {
       this.activeCat = this.activeCat === cat ? '' : cat;
       if (this.activeCat) {
         this.$nextTick(() => {
-          const el = this.$refs.toTable;
+          const el = this.$refs.toTable as any;
           if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         });
       }
     },
-    async queryErrorStats(useTime) {
+    async queryErrorStats(useTime: any) {
       const afterTime = useTime ? (this.errorStats.afterTime || '') : '';
       if (useTime && !afterTime) return ElMessage.warning('请选择分析完成时间起点');
       this.errorStats.querying = true;
@@ -419,10 +426,10 @@ export default {
         const resp = await api('/api/test/error_stats', {
           method: 'POST', body: JSON.stringify({ after_time: afterTime }),
         });
-        this.errorStats.records = resp.data.rows || [];
+        this.errorStats.records = (resp.data as any).rows || [];
         this.errorStats.queryMsg = `统计到 ${resp.data.count || 0} 个 Jira 号存在失败记录`;
-      } catch (e) {
-        this.errorStats.queryMsg = '查询失败: ' + e.message;
+      } catch (e: any) {
+        this.errorStats.queryMsg = '查询失败: ' + (e?.message || e);
         this.errorStats.queryError = true;
       } finally { this.errorStats.querying = false; }
     },
@@ -462,9 +469,9 @@ export default {
           method: 'POST', body: JSON.stringify({ jira_ids: jiraIds })
         });
         ElMessage.success(body.message || `已删除 ${body.data?.deleted_count || 0} 条记录`);
-        if (this.errorStats.afterTime) { await this.queryErrorStats(); }
-      } catch (e) {
-        ElMessage.error('删除失败: ' + (e.message || '未知错误'));
+        if (this.errorStats.afterTime) { await this.queryErrorStats(true); }
+      } catch (e: any) {
+        ElMessage.error('删除失败: ' + (e?.message || '未知错误'));
       } finally { this.errorStats.deletingDirty = false; }
     },
 

@@ -523,7 +523,7 @@ def _supplement_from_gmlogger(issue: dict, partial_time: str) -> str:
 
 
 def _extract_attachment_time(issue: dict) -> str:
-    """从附件文件名提取时间，优先级：gmlogger > 压缩包 > 图片/视频"""
+    """从附件文件名提取时间，优先级：gmlogger > .log/.txt > 压缩包 > 图片/视频"""
     attachments = (issue.get("fields") or {}).get("attachment") or []
     gmlogger_times = []
     archive_times = []
@@ -538,6 +538,18 @@ def _extract_attachment_time(issue: dict) -> str:
             t = _parse_filename_time(filename, "gmlogger")
             if t:
                 gmlogger_times.append(t)
+        # .log/.txt 日志文件（文件名通用时间正则）
+        elif fn_lower.endswith(".log") or fn_lower.endswith(".txt"):
+            m = _COMPACT_RE.search(filename)
+            if m:
+                try:
+                    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    h, mi = int(m.group(4)), int(m.group(5))
+                    s = int(m.group(6)) if m.group(6) else 0
+                    ts = datetime(y, mo, d, h, mi, s)
+                    gmlogger_times.append((ts.strftime("%Y-%m-%d %H:%M:%S"), ts))
+                except (ValueError, IndexError):
+                    pass
         # 压缩包
         elif any(fn_lower.endswith(s) for s in _ARCHIVE_SUFFIXES):
             t = _parse_filename_time(filename, "archive")
@@ -677,6 +689,75 @@ def _pick_best_time(text: str, times: list) -> tuple:
     logger.info("从 %d 个时间中选择最佳: %s（簇大小=%d，总出现=%d次，该时间出现=%d次）",
                 len(unique), best[0], len(best_cluster), cluster_scores[0][0], count_map[best[0]])
     return best
+
+
+# 评论区附件名中正则：main.log_YYYY_MM_DD_H_M_S 或 main.log YYYY_MM_DD_H_M_S
+_MAIN_LOG_ATT_RE = re.compile(
+    r"main\.log[_\s]+(\d{4})[_\-](\d{1,2})[_\-](\d{1,2})[_\-](\d{1,2})[_\-](\d{1,2})[_\-](\d{1,2})",
+    re.IGNORECASE,
+)
+
+
+def extract_times_from_comment_attachments(issue: dict) -> list:
+    """从评论区附件文件名中提取时间，返回 [(time_str, datetime), ...]
+
+    扫描所有评论文本，匹配 main.log_YYYY_MM_DD_H_M_S 等附件名模式，
+    返回所有解析到的时间列表，用于与文本提取时间交叉验证。
+    """
+    fields = issue.get("fields") or {}
+    comment_obj = fields.get("comment") or {}
+    raw_comments = comment_obj.get("comments") or []
+    if not raw_comments and issue.get("comments"):
+        raw_comments = [{"body": c} for c in issue["comments"]]
+    times = []
+    for c in raw_comments:
+        body = c.get("body") or ""
+        if isinstance(body, dict):
+            body = _extract_adf_text(body)
+        for m in _MAIN_LOG_ATT_RE.finditer(body):
+            try:
+                y, mo, d, h, mi, s = (int(m.group(i)) for i in range(1, 7))
+                ts = datetime(y, mo, d, h, mi, s)
+                times.append((ts.strftime("%Y-%m-%d %H:%M:%S"), ts))
+            except ValueError:
+                continue
+    return times
+
+
+def extract_median_time_from_attachments(issue: dict) -> str:
+    """从评论区附件名中提取时间，按分钟频率统计后取中位数，返回时间字符串或空字符串
+
+    策略：统计所有 main 附件的分钟值出现频率，
+    从出现最多的分钟值中取中位数，作为最均衡的触发时间。
+    """
+    att_times = extract_times_from_comment_attachments(issue)
+    if len(att_times) < 2:
+        return ""
+    # 按分钟值分组统计
+    minute_counts = {}
+    minute_dts = {}  # {minute: [datetime, ...]}
+    for ts_str, dt in att_times:
+        minute = dt.minute
+        minute_counts[minute] = minute_counts.get(minute, 0) + 1
+        minute_dts.setdefault(minute, []).append(dt)
+    if not minute_counts:
+        return ""
+    # 按出现次数降序，取出现次数最多的分钟值列表
+    max_count = max(minute_counts.values())
+    # 包含所有出现次数 >= max_count//2 的分钟值（保留较广的候选范围）
+    threshold = max(2, max_count // 2)
+    top_minutes = sorted([m for m, c in minute_counts.items() if c >= threshold])
+    if not top_minutes:
+        top_minutes = sorted(minute_counts.keys())
+    # 从候选分钟值中取中位数
+    median_minute = top_minutes[len(top_minutes) // 2]
+    # 在该分钟的所有时间中，取秒数最小的（最接近分钟开始的）
+    candidates = minute_dts[median_minute]
+    best_dt = min(candidates, key=lambda d: d.second)
+    result = best_dt.strftime("%Y-%m-%d %H:%M:%S")
+    logger.info("评论区附件名时间统计: 分钟分布 %s, 选中中位数分钟 %d, 时间 %s",
+                dict(sorted(minute_counts.items())), median_minute, result)
+    return result
 
 
 def _extract_times_from_text(text: str, year: str = "", date_str: str = "") -> list:
@@ -861,6 +942,11 @@ def extract_trigger_time_from_issue(issue: dict) -> str:
             if best:
                 logger.info("从描述中提取到时间: %s", best[0])
                 return _supplement_from_gmlogger(issue, best[0])
+    # ---- 5. 附件文件名（兑底）----
+    att_time = _extract_attachment_time(issue)
+    if att_time:
+        logger.info("从附件文件名中提取到时间: %s", att_time)
+        return _supplement_from_gmlogger(issue, att_time)
     return ""
 
 

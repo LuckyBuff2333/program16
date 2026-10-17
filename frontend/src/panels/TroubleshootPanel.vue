@@ -213,34 +213,10 @@
         <el-table-column prop="done_time" label="分析完成时间" width="160"></el-table-column>
         <el-table-column prop="problem_time" label="错误时间" width="150"></el-table-column>
         <el-table-column prop="detail" label="诊断详情" min-width="260" show-overflow-tooltip></el-table-column>
-        <el-table-column label="修正建议" min-width="240">
+        <el-table-column label="人工审核结果" min-width="200" show-overflow-tooltip>
           <template #default="{row}">
-            <div v-if="row.verify_status === 'success' && row.suggested_time && row.suggested_time !== row.problem_time" style="display:flex;align-items:center;gap:6px">
-              <span style="color:#67c23a;font-weight:700">{{ row.suggested_time }}</span>
-              <el-button size="small" type="success" link @click="applySuggestedTime(row)">应用</el-button>
-              <el-button link size="small" type="primary" style="color:#909399;font-size:12px" @click="openSuggestionEditor(row)">编辑</el-button>
-            </div>
-            <div v-else-if="row.verify_status === 'manual'" style="display:flex;align-items:center;gap:6px">
-              <span style="color:#d48806;font-weight:600">待人工审核正确的时间</span>
-              <el-button link size="small" type="primary" style="font-size:12px" @click="openSuggestionEditor(row)">编辑</el-button>
-            </div>
-            <div v-else-if="row.verify_status === 'corrected'" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-              <span v-if="row.correction_time" style="color:#409eff;font-weight:600">{{ row.correction_time }}</span>
-              <span v-if="row.report && row.report.human_reason" style="color:#e6a23c;font-weight:600;font-size:12px">{{ row.report.human_reason }}</span>
-              <span v-if="row.correction_note" style="color:#606266;font-size:12px" :title="row.correction_note">{{ row.correction_note.length > 12 ? row.correction_note.slice(0,12)+'…' : row.correction_note }}</span>
-              <el-tag type="success" size="small">已修正</el-tag>
-              <el-button link size="small" type="primary" style="color:#909399;font-size:12px" @click="openSuggestionEditor(row)">编辑</el-button>
-            </div>
-            <div v-else-if="row.correction_time || row.correction_note || (row.report && row.report.human_reason)" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-              <span v-if="row.correction_time" style="color:#409eff;font-weight:600">{{ row.correction_time }}</span>
-              <span v-if="row.report && row.report.human_reason" style="color:#e6a23c;font-weight:600;font-size:12px">{{ row.report.human_reason }}</span>
-              <span v-if="row.correction_note" style="color:#606266;font-size:12px" :title="row.correction_note">{{ row.correction_note.length > 12 ? row.correction_note.slice(0,12)+'…' : row.correction_note }}</span>
-              <el-button link size="small" type="primary" style="color:#909399;font-size:12px" @click="openSuggestionEditor(row)">编辑</el-button>
-            </div>
-            <div v-else style="display:flex;align-items:center;gap:6px">
-              <span style="color:#c0c4cc">-</span>
-              <el-button link size="small" type="primary" style="color:#909399;font-size:12px" @click="openSuggestionEditor(row)">编辑</el-button>
-            </div>
+            <span v-if="row.report && row.report.human_reason" style="color:#e6a23c;font-weight:600">{{ row.report.human_reason }}</span>
+            <span v-else style="color:#c0c4cc">-</span>
           </template>
         </el-table-column>
         <el-table-column label="解压后文件名" width="130" align="center">
@@ -255,27 +231,7 @@
             <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column label="提取根因" width="180" show-overflow-tooltip>
-          <template #default="{row}">
-            <template v-if="troubleshoot.rootCauses[row.bugid]">
-              <div style="display:flex;align-items:center;gap:4px">
-                <el-tag :type="troubleshoot.rootCauses[row.bugid].result ? 'success' : (troubleshoot.rootCauses[row.bugid].error_type ? 'danger' : 'info')" size="small">
-                  {{ troubleshoot.rootCauses[row.bugid].root_cause }}
-                </el-tag>
-                <el-popover v-if="troubleshoot.rootCauses[row.bugid].trace" placement="left" :width="380" trigger="hover">
-                  <template #reference><el-button link size="small" type="primary" style="font-size:11px">详情</el-button></template>
-                  <div style="font-size:12px;word-break:break-all;line-height:1.6">
-                    <div style="margin-bottom:4px"><b>来源:</b> {{ troubleshoot.rootCauses[row.bugid].source }}</div>
-                    <div style="margin-bottom:4px"><b>错误类型:</b> {{ troubleshoot.rootCauses[row.bugid].error_type || '-' }}</div>
-                    <div style="margin-bottom:4px"><b>提取结果:</b> {{ troubleshoot.rootCauses[row.bugid].result || '无' }}</div>
-                    <div><b>Trace:</b> {{ troubleshoot.rootCauses[row.bugid].trace }}</div>
-                  </div>
-                </el-popover>
-              </div>
-            </template>
-            <span v-else style="color:#c0c4cc">-</span>
-          </template>
-        </el-table-column>
+
       </el-table>
     </el-card>
 
@@ -466,7 +422,8 @@
       <el-form label-width="100px">
         <el-form-item label="正确时间">
           <el-date-picker v-model="troubleshoot.correctionEditor.time" type="datetime" placeholder="选择日期时间（可选）"
-            format="YYYY-MM-DD HH:mm:ss" value-format="YYYY-MM-DD HH:mm:ss" style="width:100%"></el-date-picker>
+            format="YYYY-MM-DD HH:mm:ss" value-format="YYYY-MM-DD HH:mm:ss"
+            @change="onCorrectionTimeChange" style="width:100%"></el-date-picker>
         </el-form-item>
         <el-form-item label="人工审核原因">
           <el-autocomplete v-model="troubleshoot.correctionEditor.humanReason"
@@ -706,6 +663,13 @@ export default {
       );
       cb(matched.length ? matched.map(o => ({ value: o.value, category: o.category })) : allOptions.map(o => ({ value: o.value, category: o.category })));
     },
+    onCorrectionTimeChange(val) {
+      // 时间变更时实时更新人工审核结果
+      const ed = this.troubleshoot.correctionEditor;
+      if (val) {
+        ed.humanReason = `时间添加为${val}`;
+      }
+    },
     async saveSuggestion() {
       const ed = this.troubleshoot.correctionEditor;
       if (!ed.row || ed.saving) return;
@@ -720,9 +684,10 @@ export default {
           });
           row.correction_time = timeStr;
           row.verify_status = 'corrected';
-          if (row.report && (row.category === '触发时间问题' || row.report.final_category === '触发时间问题')) {
-            row.report.human_reason = `时间添加为${timeStr}`;
-          }
+          // 输入时间后始终自动填充人工审核结果
+          if (!row.report) row.report = {};
+          row.report.human_reason = `时间添加为${timeStr}`;
+          ed.humanReason = row.report.human_reason;
         }
         row.correction_note = ed.note;
         if (ed.humanReason) {

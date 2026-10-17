@@ -19,10 +19,13 @@
         </el-select>
       </div>
       <div class="db-toolbar-right">
-        <el-button :loading="dataLoading" @click="loadDashboard" round size="small">
+        <el-button :loading="dataLoading" @click="handleManualRefresh" round size="small">
           <span v-if="!dataLoading" style="margin-right:2px">↻</span> 刷新
         </el-button>
-        <span v-if="isToday" class="auto-badge"><span class="pulse-dot"></span> 自动刷新</span>
+        <el-divider direction="vertical" />
+        <el-button :loading="genLoading.monthly" type="info" @click="genMonthlyReport" round size="small" plain>
+          月报
+        </el-button>
       </div>
     </div>
 
@@ -132,6 +135,9 @@
                 <el-button v-if="batch.has_report" type="primary" size="small" round @click="openReport(batch)">
                   查看批次报告 ↗
                 </el-button>
+                <el-button :loading="batch._genLoading" type="warning" size="small" round plain @click="genSingleBatchReport(batch)">
+                  生成批次报告
+                </el-button>
               </div>
             </template>
           </div>
@@ -147,9 +153,14 @@
         <el-tag v-if="summary.has_daily_report" type="success" size="small" round effect="plain">已生成</el-tag>
         <el-tag v-else type="info" size="small" round>未生成</el-tag>
       </div>
-      <el-button v-if="summary.has_daily_report" type="success" round size="small" @click="openDailyReport">
-        查看日报 ↗
-      </el-button>
+      <div style="display:flex;gap:8px">
+        <el-button v-if="summary.has_daily_report" type="success" round size="small" @click="openDailyReport">
+          查看日报 ↗
+        </el-button>
+        <el-button :loading="genLoading.daily" type="success" round size="small" plain @click="genDailyReport">
+          生成日报
+        </el-button>
+      </div>
     </div>
   </div>
 </template>
@@ -176,6 +187,7 @@ export default {
       dashDetail: { bt_match: 0, bt_ok: 0, bt_fail: 0 },
       expandedName: '',
       refreshTimer: null,
+      genLoading: { batch: false, daily: false, monthly: false },
     };
   },
   computed: {
@@ -188,11 +200,52 @@ export default {
       return list;
     },
   },
-  mounted() { this.loadDates(); this.loadDashboard(); this.startAutoRefresh(); },
+  mounted() { this.loadDates(); },
   beforeUnmount() { this.stopAutoRefresh(); },
   methods: {
     batchOkPct(b) { return b._detail && b._detail.total > 0 ? (b._detail.bt_ok / b._detail.total * 100).toFixed(1) : 0; },
     batchFailPct(b) { return b._detail && b._detail.total > 0 ? (b._detail.bt_fail / b._detail.total * 100).toFixed(1) : 0; },
+    async handleManualRefresh() {
+      await this.loadDashboard();
+      this.loadDates();
+      this.prefetchMonths();
+    },
+    async genBatchReport() {
+      this.genLoading.batch = true;
+      try {
+        const r = await api(`/api/report/gen_batch?date=${this.selectedDate}`, { method: 'POST' });
+        ElMessage.success(r.data.message || '批次报告已生成');
+        this.loadDashboard();
+      } catch (e) { ElMessage.error('生成批次报告失败: ' + (e.message || e)); }
+      finally { this.genLoading.batch = false; }
+    },
+    async genSingleBatchReport(batch) {
+      this.$set(batch, '_genLoading', true);
+      try {
+        const r = await api(`/api/report/gen_batch?date=${this.selectedDate}&batch=${encodeURIComponent(batch.name)}`, { method: 'POST' });
+        ElMessage.success(r.data.message || '批次报告已生成');
+        this.$set(batch, 'has_report', true);
+      } catch (e) { ElMessage.error('生成批次报告失败: ' + (e.message || e)); }
+      finally { this.$set(batch, '_genLoading', false); }
+    },
+    async genDailyReport() {
+      this.genLoading.daily = true;
+      try {
+        const r = await api(`/api/report/gen_daily?date=${this.selectedDate}`, { method: 'POST' });
+        ElMessage.success(r.data.message || '日报已生成');
+        this.loadDashboard();
+      } catch (e) { ElMessage.error('生成日报失败: ' + (e.message || e)); }
+      finally { this.genLoading.daily = false; }
+    },
+    async genMonthlyReport() {
+      const ym = this.selectedDate.slice(0, 7);
+      this.genLoading.monthly = true;
+      try {
+        const r = await api(`/api/report/gen_monthly?year_month=${ym}`, { method: 'POST' });
+        ElMessage.success(r.data.message || '月报已生成');
+      } catch (e) { ElMessage.error('生成月报失败: ' + (e.message || e)); }
+      finally { this.genLoading.monthly = false; }
+    },
     async loadDates() {
       this.datesLoading = true;
       try { const r = await api('/api/dashboard/dates'); this.dateList = r.data || []; } catch (_) {} finally { this.datesLoading = false; }
@@ -202,8 +255,10 @@ export default {
       try {
         const r = await api(`/api/dashboard/data?date=${this.selectedDate}`);
         this.summary = r.data.summary || { total_batches: 0, total_submit: 0, total_ok: 0, total_fail: 0, pc_batches: 0, online_batches: 0, submit_rate: 0, has_daily_report: false };
-        this.batches = (r.data.batches || []).map(b => ({ ...b, _detail: null, _detailLoading: false }));
+        this.batches = (r.data.batches || []).map(b => ({ ...b, _detail: b._detail || null, _detailLoading: false, _genLoading: false }));
         this.dashDetail = { bt_match: 0, bt_ok: 0, bt_fail: 0 };
+        // 用预加载的 _detail 汇总
+        this.recalcDetail();
         this.expandedName = '';
       } catch (e) { ElMessage.error('加载看板数据失败: ' + (e.message || e)); } finally { this.dataLoading = false; }
     },
@@ -238,9 +293,24 @@ export default {
     openDailyReport() { window.open(`/reports/${this.selectedDate}/daily_report_${this.selectedDate}.html`, '_blank'); },
     startAutoRefresh() {
       this.stopAutoRefresh();
-      this.refreshTimer = setInterval(() => { if (this.isToday) { this.loadDashboard(); this.loadDates(); } }, REFRESH_INTERVAL);
+      this.refreshTimer = setInterval(() => {
+        // 今天的数据每 30 分钟刷新（可能有新批次在跑）
+        if (this.isToday) { this.loadDashboard(); this.loadDates(); }
+        // 预热只在首次加载时执行，后续不再重复（历史数据不会变）
+      }, REFRESH_INTERVAL);
     },
     stopAutoRefresh() { if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = null; } },
+    async prefetchMonths() {
+      // 预热 8/9/10 月份的云端缓存，只拉取未缓存的日期
+      try {
+        const r = await api('/api/dashboard/prefetch_range?start_date=2026-08-01&end_date=2026-10-31');
+        const d = r.data;
+        if (d && d.fetched > 0) {
+          console.log(`看板预热: 新拉取 ${d.fetched} 天, 缓存命中 ${d.cached} 天`);
+          this.loadDates();
+        }
+      } catch (_) {}
+    },
   },
 };
 </script>

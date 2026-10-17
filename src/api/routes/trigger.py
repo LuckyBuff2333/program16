@@ -300,3 +300,19 @@ async def cache_batch_extract(req: CacheBatchExtractRequest, request: Request):
     )
     return StreamingResponse(gen, media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/api/trigger_time/rebalance", response_model=ApiResponse)
+async def rebalance_trigger_time_tables_endpoint():
+    """再平衡触发时间表：把超过500的表中多余记录搬运到不足500的表中"""
+    from src.services.trigger_ops import rebalance_trigger_time_tables
+    from src.api.routes.shared import ok as _ok, fail as _fail
+    try:
+        result = rebalance_trigger_time_tables()
+        if result["moved"] > 0:
+            return _ok(result, f"再平衡完成：搬运 {result['moved']} 条记录\n" + "\n".join(result["details"]))
+        else:
+            return _ok(result, result["details"][0] if result["details"] else "无需再平衡")
+    except Exception as e:
+        logger.error("触发时间表再平衡失败: %s", e, exc_info=True)
+        return _fail(f"再平衡失败: {e}")

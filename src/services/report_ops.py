@@ -1515,9 +1515,9 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         human_reason = "并发过多"
         retry_result = ""
         final_category = "并发过多"
-    elif category == "无gmlogger":
+    elif category == "无gmlogger" or category == "无gmlogger文件":
         ai_reason = msg or "处理后未找到有效的日志文件（可能所有文件都不时间范围内，或文件格式不支持）"
-        human_reason = "无gmlogger"
+        human_reason = "无gmlogger文件"
         retry_result = ""
         final_category = "无gmlogger"
     elif category == "日志过滤逻辑":

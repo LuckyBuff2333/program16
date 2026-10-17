@@ -5749,35 +5749,35 @@ def _batch_save_trigger_times_to_cloud(items: dict) -> bool:
                             tt = item["fields"].get("触发时间", "")
                             _trigger_time_bugid_cache[b] = (t, rec_id, tt)
                             break
-        # 批量新建：按 500 条上限分批写入，自动创建新表
+        # 批量新建：按 500 条上限分批写入，优先填充空位最多的表
         if new_items:
             remaining = list(new_items)
             while remaining:
-                # 找一个还有空间的表
-                target_tid = None
-                for tid in table_ids:
-                    if table_counts.get(tid, 0) < _TRIGGER_TIME_TABLE_LIMIT:
-                        target_tid = tid
-                        break
-                if not target_tid:
-                    # 创建新表前查询云端所有现有表，避免误删
+                # 按剩余空间从大到小排序，优先填空位最多的表
+                available = [(tid, _TRIGGER_TIME_TABLE_LIMIT - table_counts.get(tid, 0))
+                             for tid in table_ids if table_counts.get(tid, 0) < _TRIGGER_TIME_TABLE_LIMIT]
+                available.sort(key=lambda x: x[1], reverse=True)
+                if not available:
+                    # 所有表已满，创建新表
                     from src.clients import feishu_client as _fc
                     cloud_tables = _fc.list_bitable_tables(app_token)
                     cloud_tids = {t["table_id"] for t in cloud_tables if t.get("table_id")}
-                    cloud_tids.update(table_ids)  # 合并 config 中的表
+                    cloud_tids.update(table_ids)
                     target_tid = _create_trigger_time_subtable(app_token, len(table_ids) + 1, cloud_tids)
                     table_ids.append(target_tid)
                     table_counts[target_tid] = 0
                     _trigger_time_table_cache["table_ids"] = list(table_ids)
                     _update_config_table_ids(app_token, table_ids)
-                # 计算当前表还能放多少
-                space = _TRIGGER_TIME_TABLE_LIMIT - table_counts.get(target_tid, 0)
+                    space = _TRIGGER_TIME_TABLE_LIMIT
+                else:
+                    target_tid, space = available[0]
                 batch = remaining[:space]
                 remaining = remaining[space:]
                 create_records = [{"fields": {"jira号": bid, "触发时间": tt, "提取时间": now_str}} for bid, tt in batch]
                 feishu_client.batch_create_records(app_token, target_tid, create_records)
                 table_counts[target_tid] = table_counts.get(target_tid, 0) + len(batch)
-                logger.info("云端触发时间批量新建: %d 条 (表 %s)", len(create_records), target_tid)
+                logger.info("云端触发时间批量新建: %d 条 (表 %s, 当前 %d/%d)",
+                            len(create_records), target_tid, table_counts[target_tid], _TRIGGER_TIME_TABLE_LIMIT)
             # 更新本地缓存
             for bid, tt in new_items:
                 _trigger_time_bugid_cache.pop(bid, None)
@@ -8918,6 +8918,21 @@ async def batch_update_trigger_time(request: Request):
     return _ok({"success": success, "failed": 0, "skip_corrected": skip_corrected}, msg)
 
 
+@app.post("/api/trigger_time/rebalance")
+async def trigger_time_rebalance():
+    """再平衡触发时间表：把超过500的表中多余记录搬运到不足500的表中"""
+    from src.services.trigger_ops import rebalance_trigger_time_tables
+    try:
+        result = rebalance_trigger_time_tables()
+        if result["moved"] > 0:
+            return _ok(result, f"再平衡完成：搬运 {result['moved']} 条记录\n" + "\n".join(result["details"]))
+        else:
+            return _ok(result, result["details"][0] if result["details"] else "无需再平衡")
+    except Exception as e:
+        logger.error("触发时间表再平衡失败: %s", e, exc_info=True)
+        return _fail(f"再平衡失败: {e}")
+
+
 @app.post("/api/trigger_time/re_extract_scan")
 async def re_extract_scan(request: Request):
     """扫描云端触发时间记录，找出触发时间为空的候选项
@@ -9505,7 +9520,7 @@ async def test_bitable_failed_jiras(request: Request):
 # ==================== 无gmlogger重新排查 ====================
 
 # 需要重新排查的人工审核关键词
-_GMLOGGER_REVIEW_KEYWORDS = {"无gmlogger", "无日志附件",
+_GMLOGGER_REVIEW_KEYWORDS = {"无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "无日志附件",
                               "该jira无日志附件", "该Jira无日志附件", "该jira无日志附件，属于正常处理机制",
                               "该Jira无日志附件，属于正常处理机制"}
 
@@ -9552,7 +9567,9 @@ async def test_gmlogger_rescan(request: Request):
         attachments = (issue.get("fields") or {}).get("attachment") or []
         matched = [att.get("filename", "") for att in attachments
                    if "gmlogger" in (att.get("filename", "") or "").lower()
-                   or "main.log" in (att.get("filename", "") or "").lower()]
+                   or "main.log" in (att.get("filename", "") or "").lower()
+                   or (att.get("filename", "") or "").lower().endswith(".log")
+                   or (att.get("filename", "") or "").lower().endswith(".txt")]
         has_gmlogger = any("gmlogger" in f.lower() for f in matched)
         has_main = any("main.log" in f.lower() and "gmlogger" not in f.lower() for f in matched)
         # 新逻辑：文件名无 gmlogger/main 线索时，下载压缩包探测包内是否有 main 文件
@@ -10017,15 +10034,31 @@ def _diag_archive_read_heads(path: str, names: list, size: int = 65536, read_tai
 
 
 def _diag_gmlogger_times(attachments: list) -> list:
-    """识别 gmlogger 附件（文件名含 gmlogger 即算）并解析文件名时间，返回 [(时间字符串, datetime)]"""
-    from src.clients.jira_client import _parse_filename_time
+    """识别日志附件（gmlogger/.log/.txt）并解析文件名时间，返回 [(时间字符串, datetime)]"""
+    from src.clients.jira_client import _parse_filename_time, _COMPACT_RE
     times = []
     for att in attachments:
         fname = att.get("filename", "") or ""
-        if fname and "gmlogger" in fname.lower():
+        if not fname:
+            continue
+        fn_lower = fname.lower()
+        if "gmlogger" in fn_lower:
             t = _parse_filename_time(fname, "gmlogger")
             if t:
                 times.append(t)
+        elif fn_lower.endswith(".log") or fn_lower.endswith(".txt"):
+            # .log/.txt 文件用通用时间正则解析文件名
+            m = _COMPACT_RE.search(fname)
+            if m:
+                try:
+                    from datetime import datetime
+                    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    h, mi = int(m.group(4)), int(m.group(5))
+                    s = int(m.group(6)) if m.group(6) else 0
+                    ts = datetime(y, mo, d, h, mi, s)
+                    times.append((ts.strftime("%Y-%m-%d %H:%M:%S"), ts))
+                except (ValueError, IndexError):
+                    pass
     return times
 
 
@@ -10503,13 +10536,13 @@ def _jira_att_auth() -> tuple:
 def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
     """判断 Jira 是否含可用日志（gmlogger）。智能回退：
 
-    1) 附件文件名含 gmlogger/main.log → 直接判定有（快，不下载）；
-    2) 否则仅对≤ 200MB 的单卷压缩包下载探测包内是否有 main 文件；
+    1) 附件文件名含 gmlogger/main.log/.log/.txt → 直接判定有（快，不下载）；
+    2) 否则仅对≤ 200MB 的单卷压缩包下载探测包内是否有 main/.log/.txt 文件；
        分卷压缩包(.001/.002 等)或超大包一律跳过（避免 GB 级下载拖垮）。
     """
     names = [(a.get("filename", "") or "").lower() for a in attachments]
-    # 有直接的 gmlogger 文件（或 main.log）就算有，不需要解压
-    if any("gmlogger" in n or "main.log" in n for n in names):
+    # 有直接的 gmlogger 文件、main.log 或任意 .log/.txt 文件就算有，不需要解压
+    if any("gmlogger" in n or "main.log" in n or n.endswith(".log") or n.endswith(".txt") for n in names):
         return True
     headers, timeout = _jira_att_auth()
     for att in attachments:
@@ -10523,8 +10556,11 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
         if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
             continue
         res = _diag_list_archive_entries(att.get("content", ""), headers, timeout, bugid)
-        if res.get("ok") and any("main" in os.path.basename(e).lower() for e in res.get("entries", [])):
-            logger.info("无gmlogger文件名，但压缩包 %s 内含 main 文件，判定有日志 (%s)", fn, bugid)
+        if res.get("ok") and any(
+            "main" in os.path.basename(e).lower() or e.lower().endswith(".log") or e.lower().endswith(".txt")
+            for e in res.get("entries", [])
+        ):
+            logger.info("无gmlogger文件名，但压缩包 %s 内含 main/.log/.txt 文件，判定有日志 (%s)", fn, bugid)
             return True
     return False
 
@@ -11083,9 +11119,18 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
     """
     # 优先使用 RapidOCR（中文场景识别能力更强，置信度更高）
     results = _rapid_ocr_readtext(image, _already_enhanced=_already_enhanced)
+    # 类型安全：确保 conf 为数值型
+    for _r in results:
+        if len(_r) > 2 and not isinstance(_r[2], (int, float)):
+            try:
+                _r[2] = float(_r[2])
+            except (ValueError, TypeError):
+                _r[2] = 0.0
     _avg_conf = sum((r[2] for r in results if len(r) > 2), 0) / max(len(results), 1) if results else 0
-    # RapidOCR 失败或质量差时回退 EasyOCR
+    # RapidOCR 失败或质量差时回退 EasyOCR（延迟初始化，避免不必要的模型下载）
     if not results or _avg_conf < 0.3:
+        if reader is None:
+            reader = _get_ocr_reader()
         if reader is not None:
             logger.info("RapidOCR %s（avg_conf=%.2f），回退 EasyOCR",
                        "未识别到文本" if not results else f"质量偏低", _avg_conf)
@@ -11583,11 +11628,6 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                     if not best_partial:
                         best_partial = ts
                 continue  # 缓存无时间，也跳过处理
-        # 需要 OCR：先确保 reader 可用
-        reader = _get_ocr_reader()
-        if reader is None:
-            logger.warning("视频兜底提取(%s)：OCR 不可用，跳过", bugid)
-            return ""
         # 下载视频（流式下载，避免一次性加载到内存）
         video_path = None
         tmp_dir = None
@@ -11638,7 +11678,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                 
                 for sec, frame in frames:
                     try:
-                        results = _ocr_readtext(reader, frame)
+                        results = _ocr_readtext(None, frame)
                     except Exception as e:
                         logger.warning("视频兜底提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
                         continue
@@ -11767,7 +11807,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                     all_frames.extend(extra_frames)
                 if len(all_frames) >= 2:
                     logger.info("视频兜底提取(%s)：标准帧OCR未识别到时间，尝试帧差法", video_label)
-                    diff_text = _frame_diff_clock_ocr(reader, all_frames)
+                    diff_text = _frame_diff_clock_ocr(None, all_frames)
                     if diff_text:
                         diff_text = _fix_ocr_missing_colon(diff_text)
                         diff_text = _fix_ocr_char_confusion(diff_text)
@@ -12018,11 +12058,6 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     # 按优先级排序，逐个尝试
     ranked_videos = _rank_videos(videos, attachments)
     single_video = len(ranked_videos) == 1
-    # 初始化 OCR reader（只初始化一次）
-    reader = _get_ocr_reader()
-    if reader is None:
-        logger.warning("视频帧提取(%s)：OCR 不可用，跳过", bugid)
-        return "", ""
     from src.clients.jira_client import _parse_datetime_string
     best_full = ""      # 全局兜底：第一个完整日期时间
     best_full_detail = ""
@@ -12105,7 +12140,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                 
                 for sec, frame in frames:
                     try:
-                        results = _ocr_readtext(reader, frame)
+                        results = _ocr_readtext(None, frame)
                     except Exception as e:
                         logger.warning("视频帧提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
                         continue
@@ -12247,7 +12282,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     all_frames.extend(extra_frames)
                 if len(all_frames) >= 2:
                     logger.info("视频帧提取(%s)：标准帧OCR未识别到时间，尝试帧差法", video_label)
-                    diff_text = _frame_diff_clock_ocr(reader, all_frames)
+                    diff_text = _frame_diff_clock_ocr(None, all_frames)
                     if diff_text:
                         diff_text = _fix_ocr_missing_colon(diff_text)
                         diff_text = _fix_ocr_char_confusion(diff_text)
@@ -12448,11 +12483,6 @@ def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bug
     # 按创建时间倒序取最新 5 张
     images = sorted(images, key=lambda a: a.get("created", "") or "", reverse=True)[:5]
     logger.info("%s图片 OCR: 开始处理 %d 张图片", f"{bugid} " if bugid else "", len(images))
-    # 获取 OCR reader
-    reader = _get_ocr_reader()
-    if reader is None:
-        logger.warning("%s图片 OCR: easyocr 不可用，跳过", f"{bugid} " if bugid else "")
-        return "", ""
     # 收集所有提取的时间
     all_times = []       # [(time_str, datetime, is_marked, image_name)]
     marked_time = None   # 标记检测命中的时间
@@ -12470,7 +12500,7 @@ def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bug
                         for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
                             f.write(chunk)
                 # OCR 识别（返回 bbox + 文字 + 置信度）
-                results = _ocr_readtext(reader, img_path)
+                results = _ocr_readtext(None, img_path)
                 if not results:
                     continue
                 # 收集完整文本用于时间正则匹配
@@ -12752,6 +12782,21 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
                     f"gmlogger 包内无法解析，提取时间 {extracted}"
                     f"（来自评论区/标题/描述/字段）与 gmlogger 文件名时间"
                     f" {gm_times[0][0]} 前后60分钟内接近，可用该时间作为替换{gm_note}")
+            # 评论区附件名时间作为最后的交叉验证手段
+            att_median = jira_client.extract_median_time_from_attachments(issue)
+            if att_median:
+                att_dt = _ts_parse_datetime(att_median)
+                if att_dt and abs((gm_ref_dt - att_dt).total_seconds()) <= 900:
+                    # 附件时间与 gmlogger 文件名时间前后15分钟内一致，可信
+                    return "success", att_median, (
+                        f"gmlogger 包内无法解析，评论区附件名时间 {att_median}"
+                        f"与 gmlogger 文件名时间 {gm_times[0][0]} 前后15分钟内一致，"
+                        f"可用该时间作为替换{gm_note}")
+                if att_dt:
+                    return "manual", att_median, (
+                        f"gmlogger 包内无法解析，评论区附件名时间 {att_median}（分钟频率统计中位数），"
+                        f"gmlogger 文件名时间 {gm_times[0][0]}，"
+                        f"提取时间 {extracted or '(未提取到)'}，三者未一致，待人工审核{gm_note}")
             return "manual", "", (
                 f"gmlogger 包内无法解析（文件过大/解压失败），"
                 f"提取时间 {extracted or '(未提取到)'}（来自评论区/标题/描述/字段），"
@@ -12765,6 +12810,34 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
                     return "success", extracted, f"提取时间 {extracted} 在解压文件[{os.path.basename(n)}]前后5分钟内有对应文件，可用该时间作为替换"
         total_main_log = sum(1 for a in archive_results for n in a.get("entries", []) if "main.log" in os.path.basename(n).lower())
         if total_main_log == 0:
+            # 压缩包中无 main.log，尝试从评论区附件文件名中提取时间作为交叉验证
+            att_median = jira_client.extract_median_time_from_attachments(issue)
+            if att_median:
+                att_dt = _ts_parse_datetime(att_median)
+                if att_dt and abs((att_dt - ext_dt).total_seconds()) <= 300:
+                    # 附件时间与提取时间前后5分钟内一致，可信
+                    return "success", extracted, (
+                        f"评论区/描述提取时间 {extracted} 与评论区附件名时间 {att_median} 前后5分钟内一致，"
+                        f"可用该时间作为替换")
+                if att_dt:
+                    # 附件时间与提取时间不一致，用附件时间作为建议
+                    return "manual", att_median, (
+                        f"评论区/描述提取时间 {extracted} 与评论区附件名时间 {att_median} 不一致（差距较大），"
+                        f"附件名时间通过分钟频率统计取中位数，请人工确认是否正确{gm_note}")
+            # 实际附件文件名（.log/.mp4等）交叉验证
+            att_file_time = jira_client._extract_attachment_time(issue)
+            if att_file_time:
+                att_file_dt = _ts_parse_datetime(att_file_time)
+                if att_file_dt and abs((att_file_dt - ext_dt).total_seconds()) <= 900:
+                    # 附件文件名时间与提取时间前后15分钟内一致，可信
+                    return "success", extracted, (
+                        f"评论区/描述提取时间 {extracted} 与附件文件名时间 {att_file_time} 前后15分钟内一致，"
+                        f"可用该时间作为替换")
+                if att_file_dt:
+                    # 附件文件名时间与提取时间不一致
+                    return "manual", att_file_time, (
+                        f"评论区/描述提取时间 {extracted} 与附件文件名时间 {att_file_time} 不一致（差距较大），"
+                        f"请人工确认哪个时间正确{gm_note}")
             return "success", extracted, f"无可用 main.log 文件时间戳验证，直接采纳评论区/描述提取的时间 {extracted}（建议应用后重新分析验证）{gm_note}"
         return "manual", "", f"提取时间 {extracted} 在 main.log 文件中前后5分钟内无对应文件，待人工审核正确的时间{gm_note}"
     return "manual", "", f"未能提取到新触发时间（评论区/描述/视频均无时间），待人工审核正确的时间{gm_note}"
@@ -13252,7 +13325,7 @@ def troubleshoot_batch_pre_classify(body: dict = Body(default={})):
         category = ""
         # 1. 无报错信息或“服务有报错”
         if not err_msg or err_msg == "服务有报错":
-            category = "服务有报错，跳过排查" if err_msg else "无报错信息，跳过排查"
+            category = "服务关闭"
         # 2. 人工审核结果倒推
         if not category and human_review and human_review not in ("-", "None"):
             if "模型调用失败" in human_review:
@@ -13267,12 +13340,28 @@ def troubleshoot_batch_pre_classify(body: dict = Body(default={})):
                 category = "分析任务执行超时，跳过排查"
             elif "问题重复" in human_review:
                 category = "问题重复"
+            elif "未复现" in human_review or "不复现" in human_review:
+                category = "问题未复现"
+            elif "无gmlogger" in human_review or "无gmlogger文件" in human_review:
+                category = "无gmlogger"
+            elif "gmlogger文件已上传" in human_review:
+                category = "无gmlogger"
+            elif "损坏" in human_review or "日志文件已损坏" in human_review:
+                category = "日志过滤逻辑"
+            elif "磁盘空间不足" in human_review:
+                category = "磁盘空间不足"
+            elif "时间添加" in human_review or "时间异常" in human_review:
+                category = "触发时间问题"
+            elif "解压" in human_review or "unrar" in human_review or "RAR5" in human_review:
+                category = "解压问题"
         # 3. 错误信息预归类
         if not category:
             category = _diag_pre_classify(err_msg)
         # 构建结果条目
         entry = {"bugid": bugid, "category": category or "", "done_time": done_time,
                  "problem_time": problem_time, "err_msg": err_msg[:200]}
+        # 结论明确的归类（即使不在跳过列表中）也自动生成报告
+        _AUTO_REPORT_CATEGORIES = {"无gmlogger", "无gmlogger文件"}
         if category and category in _SKIP_ANALYSIS_CATEGORIES:
             # 生成报告供批量写入使用
             report = _generate_troubleshoot_report(bugid, category, err_msg, f"预归类：{category}")
@@ -13280,6 +13369,12 @@ def troubleshoot_batch_pre_classify(body: dict = Body(default={})):
             entry["detail"] = f"根据失败原因/人工审核预归类：{category}"
             entry["needs_analysis"] = False
             skip_list.append(entry)
+        elif category in _AUTO_REPORT_CATEGORIES:
+            report = _generate_troubleshoot_report(bugid, category, err_msg, f"预归类：{category}",
+                                                   problem_time=problem_time)
+            entry["report"] = report
+            entry["needs_analysis"] = True
+            need_list.append(entry)
         else:
             entry["needs_analysis"] = True
             need_list.append(entry)
@@ -13494,8 +13589,11 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                        "verify_status": "", "suggested_time": "", "report": report, "done_time": done_time}
             _save_diagnose_cache(bugid, result)
             return _ok(result, f"{bugid} 诊断完成：{category}")
-    # —— 识别 gmlogger 附件（文件名含 gmlogger 即算）——
-    gm_atts = [a for a in attachments if "gmlogger" in (a.get("filename", "") or "").lower()]
+    # —— 识别日志附件（gmlogger / .log / .txt）——
+    gm_atts = [a for a in attachments
+                if "gmlogger" in (a.get("filename", "") or "").lower()
+                or (a.get("filename", "") or "").lower().endswith(".log")
+                or (a.get("filename", "") or "").lower().endswith(".txt")]
     if not gm_atts:
         # 归类：无gmlogger；其他压缩包兆底下载解压比对错误时间（前后5分钟）
         _check_diag_cancel(bugid)
@@ -13698,7 +13796,8 @@ async def troubleshoot_batch_write_review(request: Request):
     for rec in records:
         fields = rec.get("fields", {})
         jira_no = _bitable_text(fields.get(bugid_field, ""))
-        done_time = _bitable_text(fields.get("分析完成时间", ""))
+        done_dt = _ts_parse_datetime(fields.get("分析完成时间", ""))
+        done_time = done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else ""
         if jira_no and done_time:
             index[(jira_no, done_time)] = rec["record_id"]
     # 匹配并构建更新列表
@@ -17100,8 +17199,7 @@ def _video_extract_no_preprocess(issue: dict) -> str:
         auth_type = cfg.get("auth_type", "bearer").lower()
         if auth_type == "bearer":
             headers["Authorization"] = f"Bearer {token}"
-    reader = _get_ocr_reader()
-    if reader is None:
+    if _get_rapid_ocr() is None and _get_ocr_reader() is None:
         logger.warning("无预处理视频提取(%s)：OCR 不可用，跳过", bugid)
         return ""
     # 按上传时间排序视频（无gmlogger参考，按时间顺序）
@@ -17134,7 +17232,7 @@ def _video_extract_no_preprocess(issue: dict) -> str:
                 frames = _extract_video_frames_gpu(video_path, positions=positions, use_gpu=True) or []
                 for sec, frame in frames:
                     try:
-                        results = _ocr_readtext(reader, frame)
+                        results = _ocr_readtext(None, frame)
                     except Exception:
                         continue
                     if not results:
