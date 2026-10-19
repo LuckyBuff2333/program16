@@ -9,6 +9,9 @@
 
 ## 流程图
 
+![置信度计算流程图](images/diagram_1.png)
+
+<!-- Mermaid 源码（编辑时改这里，然后用 mermaid.ink 重新生成 PNG）：
 ```mermaid
 flowchart TD
     Start([开始：输入 bugid / feishu_link / rootcause]) --> GetReport[获取 AI 分析报告<br/>本地 docs/ 优先 → 飞书 API 回退]
@@ -50,6 +53,7 @@ flowchart TD
     Threshold -- "是 ✓" --> Pass([达标：写入报表])
     Threshold -- "否 ✗" --> Fail([不达标：需人工修复])
 ```
+-->
 
 ---
 
@@ -112,11 +116,15 @@ step_score = max(layer1_score, layer2_score)
 
 ## 语义相似度计算（三级回退）
 
+![语义相似度三级回退](images/diagram_2.png)
+
+<!-- Mermaid 源码（编辑时改这里，然后用 mermaid.ink 重新生成 PNG）：
 ```mermaid
 flowchart LR
     A[Diana LLM<br/>prompt 语义判断] -->|不可用| B[句向量模型<br/>BAAI/bge-small-zh-v1.5<br/>余弦相似度]
     B -->|不可用| C[TF-IDF<br/>词面余弦相似度]
 ```
+-->
 
 | 优先级 | 方法 | 特点 |
 |--------|------|------|
@@ -142,6 +150,9 @@ flowchart LR
 
 ## 数据流总览
 
+![数据流总览](images/diagram_3.png)
+
+<!-- Mermaid 源码（编辑时改这里，然后用 mermaid.ink 重新生成 PNG）：
 ```mermaid
 flowchart LR
     subgraph 数据源
@@ -186,6 +197,7 @@ flowchart LR
     SS --> CONF
     CONF --> OUT[0 ~ 1 评分]
 ```
+-->
 
 ---
 

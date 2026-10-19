@@ -120,8 +120,9 @@ async def _on_startup():
     if _open_url:
         _flag = os.path.join(tempfile.gettempdir(), ".web_browser_opened")
         if not os.path.exists(_flag):
-            import webbrowser
-            threading.Timer(0.5, lambda: webbrowser.open(_open_url)).start()
+            import subprocess
+            # 用 xdg-open 在已有浏览器中打开新标签页，避免 webbrowser.open() 进程冲突
+            threading.Timer(0.5, lambda: subprocess.Popen(["xdg-open", _open_url])).start()
             try:
                 with open(_flag, "w") as f:
                     f.write("1")

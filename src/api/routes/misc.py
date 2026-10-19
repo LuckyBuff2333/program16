@@ -98,7 +98,7 @@ def favicon():
 
 @router.get("/")
 def index():
-    """Serve 前端构建产物，未构建时返回提示信息"""
+    """Serve 前端构建产物，未构建时提示构建命令"""
     dist_index = os.path.join(_FRONTEND_DIST, "index.html")
     if os.path.isfile(dist_index):
         return FileResponse(
@@ -106,7 +106,7 @@ def index():
             headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
         )
     return HTMLResponse(
-        "<h2>前端未构建</h2><p>请执行 <code>cd frontend && npm run build</code> 或使用开发模式 <code>npx vite</code></p>",
+        "<h2>前端未构建</h2><p>请执行 <code>cd frontend && npm run build</code></p>",
         status_code=200,
     )
 

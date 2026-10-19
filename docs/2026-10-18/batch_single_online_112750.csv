@@ -1,0 +1,3 @@
+﻿jira号,执行结果,报告长度,备注,触发时间,执行时间,版本号,下载并发数,模型,触发来源
+VCU-548857,失败,0,"Server error '502 Bad Gateway' for url 'https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502",2026-09-18 11:22:16,2026-10-18 11:27:28,1.0.2,4,deepseek-v-pro,PC

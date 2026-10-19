@@ -435,11 +435,91 @@ def scan_study_folders(jira_id: str = "") -> list:
 _scan_study_folders = scan_study_folders
 
 
+def parse_reasoning_content(content: str, elapsed: float = 0, conclusions: list = None) -> dict:
+    """解析 02_reasoning_rounds.md 内容字符串，提取每轮的推理、工具结果、知识库、本轮结论"""
+    if not content or not content.strip():
+        return {"rounds": [], "total_rounds": 0, "elapsed_seconds": 0, "conclusions": conclusions or []}
+    sections = re.split(r'^## ', content, flags=re.MULTILINE)
+    rounds_map = {}
+    for sec in sections:
+        m = re.match(r'第\s*(\d+)\s*轮\s*[—-]\s*(.*)', sec)
+        if not m:
+            continue
+        rn = int(m.group(1))
+        sec_type = m.group(2).strip()
+        sec_body = sec[m.end():].strip()
+        if rn not in rounds_map:
+            rounds_map[rn] = {"llm": "", "tools": [], "knowledge": [], "conclusion": ""}
+        if "LLM" in sec_type or "响应" in sec_type:
+            raw = sec_body[:500]
+            while re.search(r'\n\s*[-–—]{2,}\s*$', raw):
+                raw = re.sub(r'\n\s*[-–—]{2,}\s*$', '', raw)
+            raw = raw.rstrip()
+            rounds_map[rn]["llm"] = raw
+            # 提取本轮结论：最后一段有意义的文本（排除空行和分隔符）
+            paragraphs = [p.strip() for p in sec_body.split('\n\n') if p.strip() and not re.match(r'^[-–—]{2,}$', p.strip())]
+            if paragraphs:
+                last = paragraphs[-1][:200]
+                # 优先提取含关键词的段落
+                for p in reversed(paragraphs):
+                    if re.search(r'因此|结论|总结|所以|最终|根因|原因|问题在于|确认|判断|导致', p):
+                        last = p[:200]
+                        break
+                rounds_map[rn]["conclusion"] = last
+        elif "工具" in sec_type or "Tool" in sec_type:
+            rounds_map[rn]["tools"].append(sec_body[:300])
+            # 从工具结果中提取知识库文档（WIKI 文档）
+            wiki_matches = re.findall(r'WIKI\s*文档\s*\[([^\]]+)\]', sec_body, re.I)
+            for wiki in wiki_matches:
+                # 展开多文档条目（如 "车控娱乐/Seat.md"）
+                for line in wiki.split('\n'):
+                    line = line.strip()
+                    if line and not line.startswith('[') and '/' in line:
+                        # 提取文档名（去除路径前缀）
+                        doc_name = line.split(':')[0].strip().rstrip(',')
+                        if doc_name and doc_name not in rounds_map[rn]["knowledge"]:
+                            rounds_map[rn]["knowledge"].append(doc_name)
+            # 匹配 knowledge_list 格式：“- 分类/文档.md: 描述”
+            if 'knowledge_list' in sec_body.lower():
+                for km in re.finditer(r'^- ([\w\u4e00-\u9fff]+/[\w\u4e00-\u9fff.-]+\.md)', sec_body, re.MULTILINE):
+                    doc = km.group(1)
+                    if doc not in rounds_map[rn]["knowledge"]:
+                        rounds_map[rn]["knowledge"].append(doc)
+            # 也匹配单个文档引用如 "WIKI 文档 [车控娱乐/Seat.md]:"
+            single_wiki = re.findall(r'WIKI\s*文档\s*\[([^\]]+/[^\]]+\.md)\]', sec_body, re.I)
+            for w in single_wiki:
+                if w not in rounds_map[rn]["knowledge"]:
+                    rounds_map[rn]["knowledge"].append(w)
+        elif "知识" in sec_type:
+            rounds_map[rn]["knowledge"].append(sec_body[:300])
+    total_rounds = len(rounds_map)
+    avg_time = round(elapsed / total_rounds, 1) if total_rounds else 0
+    rounds_list = []
+    for rn in sorted(rounds_map.keys()):
+        r = rounds_map[rn]
+        rounds_list.append({
+            "round": rn,
+            "llm_summary": r["llm"],
+            "tool_count": len(r["tools"]),
+            "tools": r["tools"],
+            "knowledge": r["knowledge"],
+            "knowledge_count": len(r["knowledge"]),
+            "avg_time": avg_time,
+            "conclusion": r["conclusion"],
+        })
+    return {
+        "rounds": rounds_list,
+        "total_rounds": total_rounds,
+        "elapsed_seconds": round(elapsed, 1),
+        "conclusions": conclusions or [],
+    }
+
+
 def parse_reasoning_rounds(folder_path: str) -> dict:
     """解析 02_reasoning_rounds.md，提取每轮的推理、工具结果、知识库、耗时"""
     rounds_path = os.path.join(folder_path, "02_reasoning_rounds.md")
     if not os.path.isfile(rounds_path):
-        return {"rounds": [], "total_rounds": 0, "elapsed_seconds": 0}
+        return {"rounds": [], "total_rounds": 0, "elapsed_seconds": 0, "conclusions": []}
     with open(rounds_path, "r", encoding="utf-8") as f:
         content = f.read()
     elapsed = 0
@@ -466,32 +546,7 @@ def parse_reasoning_rounds(folder_path: str) -> dict:
                 })
         except Exception:
             pass
-    sections = re.split(r'^## ', content, flags=re.MULTILINE)
-    rounds_map = {}
-    for sec in sections:
-        m = re.match(r'第\s*(\d+)\s*轮\s*—\s*(.*)', sec)
-        if not m:
-            continue
-        rn = int(m.group(1))
-        sec_type = m.group(2).strip()
-        sec_body = sec[m.end():].strip()
-        if rn not in rounds_map:
-            rounds_map[rn] = {"llm": "", "tools": [], "knowledge": []}
-        if "LLM" in sec_type or "响应" in sec_type:
-            rounds_map[rn]["llm"] = sec_body[:500]
-        elif "工具" in sec_type or "Tool" in sec_type:
-            rounds_map[rn]["tools"].append(sec_body[:300])
-        elif "知识" in sec_type:
-            rounds_map[rn]["knowledge"].append(sec_body[:300])
-    rounds_list = []
-    for rn in sorted(rounds_map.keys()):
-        rounds_list.append({"round": rn, **rounds_map[rn]})
-    return {
-        "rounds": rounds_list,
-        "total_rounds": len(rounds_list),
-        "elapsed_seconds": elapsed,
-        "conclusions": conclusions,
-    }
+    return parse_reasoning_content(content, elapsed=elapsed, conclusions=conclusions)
 
 
 _parse_reasoning_rounds = parse_reasoning_rounds

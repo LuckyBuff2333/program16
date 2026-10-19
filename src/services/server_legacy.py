@@ -6423,13 +6423,13 @@ def _bot_run_11_1_continuous(chat_id: str, diff_records: list, batch_size: int,
 
 def _fetch_ai_logs(name: str = "all", limit: int = 5000) -> list:
     """从AI日志分析服务读取日志内容"""
-    import urllib.request
+    import json, urllib.request
     url = f"{_AI_LOG_SERVICE_URL}/api/logs?name={name}&start_line=1&limit={min(limit, 5000)}"
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode("utf-8")
-            data = _json.loads(raw)
+            data = json.loads(raw)
             # 兼容多种返回格式
             if isinstance(data, list):
                 return data

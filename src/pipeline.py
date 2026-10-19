@@ -54,7 +54,7 @@ _TRIGGER_TIME_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 def _save_trigger_time(bugid: str, trigger_time: str):
     """将提取到的触发时间保存到云端 bitable，失败时降级写本地 CSV"""
     try:
-        from src.web.server import _save_trigger_time_to_cloud
+        from src.services.server_legacy import _save_trigger_time_to_cloud
         _save_trigger_time_to_cloud(bugid, trigger_time)
         logger.info("触发时间已保存到云端: %s → %s", bugid, trigger_time)
         return

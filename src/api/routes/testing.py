@@ -3899,7 +3899,24 @@ async def smoke_test_save_record(request: Request):
     version = (body.get("version") or "-").strip() or "-"
     exec_time = (body.get("exec_time") or "").strip()
     results = body.get("results") or []  # [{case_name, jira_id, bitable_record}]
-    basic_fields = body.get("basic_fields") or {}  # {分析并发数, 下载并发数, 模型, 触发来源}
+    exec_mode = (body.get("exec_mode") or "online").strip()
+    # 从配置文件读取接口参数，根据执行模式选择对应配置段
+    cfg = load_config()
+    params = cfg.get("params", {})
+    tool_version = str(params.get("version", "-"))
+    logagent_version = str(params.get("logagent_version", "-"))
+    if exec_mode == "pc":
+        pc_cfg = cfg.get("pc", {})
+        params = {**params, **pc_cfg}  # pc 覆盖 params 中的同名字段
+        trigger_source = "PC"
+    else:
+        trigger_source = params.get("trigger_source", "线上")
+    basic_fields = {
+        "analysis_concurrency": str(params.get("analysis_concurrency", 5)),
+        "download_concurrency": str(params.get("download_concurrency", 2)),
+        "model": params.get("model", "deepseek-v-pro"),
+        "trigger_source": trigger_source,
+    }
     if not exec_time:
         return _fail("缺少执行时间")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -3909,6 +3926,8 @@ async def smoke_test_save_record(request: Request):
         f"# 冒烟测试执行记录 - {date_str}", "",
         f"## 基本信息", "",
         f"- **版本号**：{version}",
+        f"- **测试工具版本**：{tool_version}",
+        f"- **LogAgent版本**：{logagent_version}",
         f"- **执行时间**：{exec_time}",
         f"- **记录生成时间**：{now_str}", "",
         f"## 接口配置", "",
@@ -4307,6 +4326,75 @@ async def study_analysis(request: Request):
             return _ok({"folders": folders}, f"找到 {len(folders)} 个分析文件夹")
     except Exception as e:
         return _fail(f"分析失败: {e}")
+
+
+@router.get("/api/test/ai_report/{bugid}")
+async def get_ai_report(bugid: str):
+    """获取 AI 日志分析报告：优先读本地 docs/日期/bugid.md，不存在则从远程下载并保存"""
+    import httpx, os
+    from src.config import PROJECT_ROOT
+    # 本地路径：docs/{today}/{bugid}.md
+    today = datetime.now().strftime("%Y-%m-%d")
+    docs_dir = os.path.join(PROJECT_ROOT, "docs", today)
+    local_path = os.path.join(docs_dir, f"{bugid}.md")
+    # 优先读本地已有文件
+    if os.path.isfile(local_path):
+        with open(local_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return _ok({
+            "content": content, "bugid": bugid,
+            "file_path": local_path, "dir_path": docs_dir, "source": "local",
+        }, "本地已有报告")
+    # 远程下载
+    url = f"http://10.22.126.133:8001/api/logs/debug/{bugid}"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return _fail(f"接口返回 status={resp.status_code}")
+        content = resp.text
+        if not content.strip():
+            return _fail("报告内容为空")
+        # 保存到本地
+        os.makedirs(docs_dir, exist_ok=True)
+        with open(local_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return _ok({
+            "content": content, "bugid": bugid,
+            "file_path": local_path, "dir_path": docs_dir, "source": "remote",
+        }, "已下载并保存到本地")
+    except httpx.ConnectTimeout:
+        return _fail("连接超时，AI日志分析服务不可达")
+    except Exception as e:
+        return _fail(f"获取失败: {e}")
+
+
+@router.post("/api/test/ai_report_analyze", response_model=ApiResponse)
+async def ai_report_analyze(request: Request):
+    """直接分析 MD 内容（02_reasoning_rounds 格式），返回轮次解析结果"""
+    from src.api.routes.shared import parse_reasoning_content
+    body = await request.json() or {}
+    content = body.get("content", "")
+    if not content or not content.strip():
+        return _fail("报告内容为空")
+    try:
+        result = parse_reasoning_content(content)
+        return _ok(result, f"解析完成: {result['total_rounds']} 轮")
+    except Exception as e:
+        return _fail(f"解析失败: {e}")
+
+
+@router.get("/api/test/open_dir")
+async def open_dir(path: str = ""):
+    """打开本地目录（xdg-open）"""
+    import subprocess, os
+    if not path or not os.path.isdir(path):
+        return _fail(f"目录不存在: {path}")
+    try:
+        subprocess.Popen(["xdg-open", path])
+        return _ok(None, f"已打开: {path}")
+    except Exception as e:
+        return _fail(f"打开失败: {e}")
 
 
 # ========== 功能14：表单执行 ==========

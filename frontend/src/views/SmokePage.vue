@@ -48,9 +48,6 @@
         <el-button size="small" @click="smokeTest.cases.forEach(c=>c.checked=true)">全选</el-button>
         <el-button size="small" @click="smokeTest.cases.forEach(c=>c.checked=false)">反选</el-button>
         <el-button size="small" type="primary" @click="saveSmokeTestConfig">保存配置</el-button>
-        <div style="flex:1"></div>
-        <el-tag style="min-width:100px;text-align:center">版本号</el-tag>
-        <el-input v-model="smokeTest.version" placeholder="可不填，默认 -" clearable style="max-width:300px"></el-input>
       </div>
     </el-card>
 
@@ -155,7 +152,7 @@
 import { ElMessage } from 'element-plus';
 import { api } from '../composables/utils';
 
-// 远程标准用例库（20条，覆盖 5 大维度）
+// 远程标准用例库（19条20个Jira，覆盖 5 大维度）
 const SMOKE_CASES = [
   // A. 功能覆盖（5条）—— 各格式分包解压
   { tc: 'SM-01', name: 'zip分包+完整解压+分析', jira: 'VCU-202844', dim: '功能覆盖' },
@@ -169,19 +166,18 @@ const SMOKE_CASES = [
   { tc: 'SM-08', name: '磁盘rrno28空间不足触发', jira: 'VCU-218982', dim: '置信度' },
   { tc: 'SM-09', name: '504超时后重试置信度', jira: 'VCU-221439', dim: '置信度' },
   { tc: 'SM-10', name: '间歇性通信故障置信度', jira: 'VCU-544557', dim: '置信度' },
-  // C. 异常处理（4条）—— 验证异常场景的容错能力
+  // C. 异常处理（5条）—— 验证异常场景的容错能力
   { tc: 'SM-11', name: '无日志附件', jira: 'VCU-553431', dim: '异常处理' },
   { tc: 'SM-12', name: '无连接', jira: 'VCU-537403', dim: '异常处理' },
   { tc: 'SM-13', name: 'HTTPStatusError错误处理', jira: 'VCU-553442', dim: '异常处理' },
   { tc: 'SM-14', name: '分析超时(adjudication)', jira: 'VCU-523000', dim: '异常处理' },
-  // D. 批量性能（3条）—— 验证批量执行的性能和稳定性
-  { tc: 'SM-15', name: '批量5个Closed分析', jira: '', dim: '批量性能', multi: true },
-  { tc: 'SM-16', name: '多个不同维度Jira合并', jira: 'VCU-415748,VCU-544557', dim: '批量性能', multi: true },
-  { tc: 'SM-17', name: '大批量压力测试', jira: '', dim: '批量性能', multi: true },
+  { tc: 'SM-15', name: 'Diana请求超时(TimeoutError)', jira: 'VCU-549408', dim: '异常处理' },
+  // D. 批量性能（1条）—— 验证批量执行的性能和稳定性
+  { tc: 'SM-16', name: '多个不同维度Jira合并', jira: 'VCU-415748,VCU-544557', dim: '批量性能' },
   // E. 集成流程（3条）—— 端到端流程完整性验证
-  { tc: 'SM-18', name: '高置信度(>0.9)完整流程', jira: 'VCU-415748', dim: '集成流程' },
-  { tc: 'SM-19', name: '低置信度(<0.2)完整流程', jira: 'VCU-241162', dim: '集成流程' },
-  { tc: 'SM-20', name: '根因链路完整性验证', jira: 'VCU-540049', dim: '集成流程' },
+  { tc: 'SM-17', name: '高置信度(>0.9)完整流程', jira: 'VCU-415748', dim: '集成流程' },
+  { tc: 'SM-18', name: '低置信度(<0.2)完整流程', jira: 'VCU-241162', dim: '集成流程' },
+  { tc: 'SM-19', name: '根因链路完整性验证', jira: 'VCU-540049', dim: '集成流程' },
 ];
 
 const DIM_TYPE: Record<string, string> = {
@@ -316,14 +312,14 @@ export default {
     loadSmokeTestConfig() {
       try {
         const raw = localStorage.getItem('smoke_test_config');
-        if (!raw) return;
-        const cfg = JSON.parse(raw);
-        if (Array.isArray(cfg)) {
-          cfg.forEach((saved: any) => {
-            // 优先按 tc 编号匹配，兼容旧版按 name 匹配
-            const c = this.smokeTest.cases.find((x: any) => x.tc === saved.tc || x.name === saved.name);
-            if (c && saved.jiraId) c.jiraId = saved.jiraId;
-          });
+        if (raw) {
+          const cfg = JSON.parse(raw);
+          if (Array.isArray(cfg)) {
+            cfg.forEach((saved: any) => {
+              const c = this.smokeTest.cases.find((x: any) => x.tc === saved.tc || x.name === saved.name);
+              if (c && saved.jiraId) c.jiraId = saved.jiraId;
+            });
+          }
         }
       } catch (_) {}
     },
@@ -360,7 +356,7 @@ export default {
         const resp = await api<{ cloud_url: string; local_path: string }>('/api/test/smoke_test_save_record', {
           method: 'POST', body: JSON.stringify({
             version: this.smokeTest.version || '-', exec_time: this.smokeTest.execTime, results: results,
-            basic_fields: { analysis_concurrency: '5', download_concurrency: '2', model: 'deepseek-v-pro', trigger_source: '线上' },
+            exec_mode: this.smokeTest.execMode,
           }),
         });
         const data = resp.data;
