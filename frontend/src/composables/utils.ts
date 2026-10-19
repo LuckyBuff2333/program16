@@ -72,6 +72,7 @@ const FIELD_LABELS: Record<string, string> = {
   jqls: 'JQL查询列表',
   doc_dir: '文档目录', log_dir: '日志目录', report_dir: '报告目录',
   auth_type: '认证方式', root_cause_field: '根因字段',
+  host: '服务器地址', port: '端口', endpoint: '接口路径',
 };
 
 export function fieldLabel(field: string): string {

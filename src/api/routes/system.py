@@ -91,8 +91,12 @@ async def git_pull_and_restart(req: GitPullRequest):
 
 @router.get("/api/config", response_model=ApiResponse)
 def get_config():
-    """读取当前全局配置"""
-    return ok(load_config())
+    """读取当前全局配置（过滤敏感字段）"""
+    cfg = load_config()
+    # 过滤敏感配置段，前端不应看到服务器内部地址
+    _SENSITIVE_KEYS = {"app_log_server"}
+    safe_cfg = {k: v for k, v in cfg.items() if k not in _SENSITIVE_KEYS}
+    return ok(safe_cfg)
 
 
 @router.post("/api/config", response_model=ApiResponse)
@@ -141,3 +145,51 @@ def overview():
         "audited_total": len(audited),
     }
     return ok(data)
+
+
+@router.get("/api/applog/download")
+async def download_app_log():
+    """代理下载远程服务器 app.log 文件并保存到本地 logs/ 目录"""
+    import httpx
+    cfg = load_config().get("app_log_server", {})
+    host = cfg.get("host", "10.22.126.133")
+    port = cfg.get("port", 8001)
+    endpoint = cfg.get("endpoint", "/api/logs/download")
+    url = f"http://{host}:{port}{endpoint}"
+    # 保存路径：项目根目录/logs/app.log
+    logs_dir = os.path.join(PROJECT_ROOT, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    save_path = os.path.join(logs_dir, "app.log")
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+        # 写入本地文件
+        with open(save_path, "wb") as f:
+            f.write(resp.content)
+        size_mb = len(resp.content) / 1024 / 1024
+        logger.info("app.log 已下载到 %s (%.2f MB)", save_path, size_mb)
+        return ok({"path": save_path, "size_mb": round(size_mb, 2)}, "下载成功")
+    except httpx.ConnectError:
+        return fail(f"无法连接服务器 {host}:{port}，请检查网络或服务器状态")
+    except httpx.TimeoutException:
+        return fail("下载超时（120秒），文件可能过大或网络不稳定")
+    except Exception as e:
+        logger.error("app.log 下载失败: %s", e)
+        return fail(f"下载失败: {str(e)[:200]}")
+
+
+@router.post("/api/applog/open_folder")
+async def open_app_log_folder():
+    """打开 app.log 所在目录"""
+    logs_dir = os.path.join(PROJECT_ROOT, "logs")
+    if not os.path.isdir(logs_dir):
+        return fail("logs 目录不存在")
+    try:
+        if os.name == "nt":
+            os.startfile(logs_dir)
+        else:
+            subprocess.Popen(["xdg-open", logs_dir])
+        return ok(message="已打开目录")
+    except Exception as e:
+        return fail(f"打开目录失败: {e}")

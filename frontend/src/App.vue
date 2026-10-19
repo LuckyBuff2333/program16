@@ -142,6 +142,7 @@ export default {
             { key: 'confidence_batch', label: '置信度批量写入', glyph: '信', page: 'testpage', panel: 'confidence_batch', title: '置信度批量写入', description: '批量维护任务置信度数据。' },
             { key: 'daily_summary', label: '每日汇总', glyph: '汇', page: 'testpage', panel: 'daily_summary', title: '每日汇总', description: '按日/周/时间段维度汇总分析执行数据。' },
             { key: 'jira_lookup', label: 'Jira 查询', glyph: '查', page: 'testpage', panel: 'jira_lookup', title: 'Jira 查询', description: '通过 Jira 号或 JQL 查询 Bug 概要与根因。' },
+            { key: 'app_log_download', label: 'app.log 下载', glyph: '志', page: 'testpage', panel: 'app_log_download', title: 'App.log 下载', description: '从远程服务器下载 app.log 日志文件。' },
           ],
         },
       ],
