@@ -3903,8 +3903,9 @@ async def smoke_test_save_record(request: Request):
     # 从配置文件读取接口参数，根据执行模式选择对应配置段
     cfg = load_config()
     params = cfg.get("params", {})
-    tool_version = str(params.get("version", "-"))
-    logagent_version = str(params.get("logagent_version", "-"))
+    # 优先使用前端传入的版本号，否则从配置读取
+    tool_version = (body.get("tool_version") or "").strip() or str(params.get("version", "-"))
+    logagent_version = (body.get("logagent_version") or "").strip() or str(params.get("logagent_version", "-"))
     if exec_mode == "pc":
         pc_cfg = cfg.get("pc", {})
         params = {**params, **pc_cfg}  # pc 覆盖 params 中的同名字段

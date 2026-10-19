@@ -59,6 +59,10 @@
           <el-radio-button label="online">线上执行</el-radio-button>
           <el-radio-button label="pc">PC执行</el-radio-button>
         </el-radio-group>
+        <el-tag size="small" style="white-space:nowrap">测试工具版本</el-tag>
+        <el-input v-model="smokeTest.toolVersion" size="small" style="width:120px" placeholder="如 1.0.2"></el-input>
+        <el-tag size="small" style="white-space:nowrap">LogAgent版本</el-tag>
+        <el-input v-model="smokeTest.logagentVersion" size="small" style="width:120px" placeholder="如 1.0.0"></el-input>
         <el-button type="primary" :loading="smokeTest.running" @click="runSmokeTest"
           :disabled="smokeTest.cases.filter(c=>c.checked&&c.jiraId).length===0">一键执行</el-button>
         <el-tag v-if="smokeTest.execMsg" :type="smokeTest.execError?'danger':'success'">{{ smokeTest.execMsg }}</el-tag>
@@ -199,7 +203,8 @@ export default {
           jiraId: c.jira || '',
           checked: !c.multi, // 批量性能用例默认不勾选（需手动填写）
         })),
-        version: '',
+        toolVersion: '',
+        logagentVersion: '',
         execMode: 'online',
         running: false, execResults: [] as any[], execMsg: '', execError: false, execTime: '',
         querying: false, bitableRecords: [] as any[], queryMsg: '', queryError: false,
@@ -219,10 +224,19 @@ export default {
   },
   mounted() {
     this.loadSmokeTestConfig();
+    this.loadVersionFromConfig();
   },
   methods: {
     dimType(dim: string): string {
       return DIM_TYPE[dim] || 'info';
+    },
+    async loadVersionFromConfig() {
+      try {
+        const resp = await api<any>('/api/config');
+        const params = resp.data?.params || {};
+        this.smokeTest.toolVersion = String(params.version || '');
+        this.smokeTest.logagentVersion = String(params.logagent_version || '');
+      } catch (_) {}
     },
     async runSmokeTest() {
       const selected = this.smokeTest.cases.filter((c: any) => c.checked && c.jiraId.trim());
@@ -355,8 +369,10 @@ export default {
       try {
         const resp = await api<{ cloud_url: string; local_path: string }>('/api/test/smoke_test_save_record', {
           method: 'POST', body: JSON.stringify({
-            version: this.smokeTest.version || '-', exec_time: this.smokeTest.execTime, results: results,
+            version: this.smokeTest.toolVersion || '-', exec_time: this.smokeTest.execTime, results: results,
             exec_mode: this.smokeTest.execMode,
+            tool_version: this.smokeTest.toolVersion || '',
+            logagent_version: this.smokeTest.logagentVersion || '',
           }),
         });
         const data = resp.data;
