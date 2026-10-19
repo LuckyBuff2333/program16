@@ -728,7 +728,7 @@ export default {
         formData.append('file', this.formExec.rawFile);
         const resp = await fetch('/api/test/form_upload', { method: 'POST', body: formData });
         const body = await resp.json();
-        if (body.code !== 200 && body.code !== 0) throw new Error(body.message || '解析失败');
+        if (!body.ok) throw new Error(body.message || '解析失败');
         this.formExec.keys = body.data.keys || [];
         this.formExec.csvTriggerTimes = body.data.csv_trigger_times || {};
         this.formExec.csvTimeCount = Object.keys(this.formExec.csvTriggerTimes).length;
