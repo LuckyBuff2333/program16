@@ -45,6 +45,7 @@ _CLOUD_CACHE_TTL = 300  # 缓存有效期 5 分钟
 
 # 每日播报配置文件路径
 _DAILY_BROADCAST_CONFIG_PATH = os.path.join(PROJECT_ROOT, "data", "daily_broadcast_config.json")
+_DAILY_BROADCAST_FOLDER = "I8Bwf17aAl9LR1dazOic7Q70nic"  # 云端每日结论文件夹
 
 # 需要从 server.py 延迟导入的函数（在函数体内 import）
 # _bot_daily_broadcast 等 feishu bot 函数留在 server.py
@@ -768,39 +769,37 @@ def _sync_daily_stats_to_bitable(report: dict, date_str: str):
         # 失败分析标签
         failures = report.get("failures", {})
         fail_tags = [f"{cat} {cnt}条" for cat, cnt in sorted(failures.items(), key=lambda x: -x[1])]
+        # 耗时转秒数（数字类型），"-" 写 0
+        avg_total_sec = round(_parse_dur_sec(report.get("avg_total_duration", "-")), 1)
+        avg_analysis_sec = round(_parse_dur_sec(report.get("avg_analysis_duration", "-")), 1)
         fields_to_write = {
             "日期": date_ts,
-            "测试总数": total,
-            "PC端": report.get("pc_count", 0),
-            "jira线上": report.get("online_count", 0),
-            "成功": success,
-            "失败": fail,
-            "成功率": rate_val,
-            "平均总耗时": report.get("avg_total_duration", "-"),
-            "平均分析耗时": report.get("avg_analysis_duration", "-"),
-            "失败分析": fail_tags,
+            "测试总数": int(total),
+            "PC端": int(report.get("pc_count", 0)),
+            "jira线上": int(report.get("online_count", 0)),
+            "成功": int(success),
+            "失败": int(fail),
+            "成功率": float(rate_val),
+            "平均总耗时": avg_total_sec,
+            "平均分析耗时": avg_analysis_sec,
+            "失败分析": "\n".join(fail_tags) if fail_tags else "",
         }
-        # 读取已有记录，合并或替换当前日期数据
+        # 查找是否已有同日记录，有则更新，无则新建
         records = feishu_client.list_bitable_records(app_token, stats_table_id)
-        all_data = {}  # {date_ts: fields}
+        existing_id = None
         for rec in records:
             f = rec.get("fields", {})
             rd = f.get("日期", 0)
-            if isinstance(rd, (int, float)) and int(rd) > 0:
-                all_data[int(rd)] = f
-        # 写入当天数据（覆盖）
-        all_data[date_ts] = fields_to_write
-        # 按日期降序排列
-        sorted_dates = sorted(all_data.keys(), reverse=True)
-        sorted_records = [{"fields": all_data[d]} for d in sorted_dates]
-        # 先写入新记录，成功后再删除旧记录（避免写入失败时数据丢失）
-        old_ids = [rec.get("record_id") for rec in records if rec.get("record_id")]
-        # 按日期降序重新写入
-        feishu_client.batch_create_records(app_token, stats_table_id, sorted_records)
-        # 写入成功后才删除旧记录
-        if old_ids:
-            feishu_client.batch_delete_records(app_token, stats_table_id, old_ids)
-        logger.info("统计表已同步并排序: %s (total=%d, 共%d条)", date_str, total, len(sorted_records))
+            if isinstance(rd, (int, float)) and int(rd) == date_ts:
+                existing_id = rec.get("record_id")
+                break
+        if existing_id:
+            feishu_client.update_bitable_records(app_token, stats_table_id,
+                                                  [{"record_id": existing_id, "fields": fields_to_write}])
+            logger.info("统计表已更新: %s (total=%d)", date_str, total)
+        else:
+            feishu_client.batch_create_records(app_token, stats_table_id, [{"fields": fields_to_write}])
+            logger.info("统计表已新增: %s (total=%d)", date_str, total)
     except Exception as e:
         logger.warning("统计表同步失败: %s", e)
 

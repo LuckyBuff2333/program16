@@ -2225,10 +2225,38 @@ def _bot_weekly_broadcast(chat_id: str, date_str: str):
         _clear_running_task(chat_id)
 
 
+def _try_acquire_broadcast_lock(chat_id: str, date_str: str, time_str: str) -> bool:
+    """文件锁：确保多进程/多实例下同一播报只执行一次"""
+    lock_dir = os.path.join(PROJECT_ROOT, "data", "broadcast_locks")
+    os.makedirs(lock_dir, exist_ok=True)
+    lock_file = os.path.join(lock_dir, f"{chat_id}_{date_str}_{time_str}.lock")
+    try:
+        fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+
+
+def _cleanup_broadcast_locks():
+    """清理 7 天前的播报锁文件"""
+    lock_dir = os.path.join(PROJECT_ROOT, "data", "broadcast_locks")
+    if not os.path.isdir(lock_dir):
+        return
+    cutoff = datetime.now().timestamp() - 7 * 86400
+    for f in os.listdir(lock_dir):
+        fp = os.path.join(lock_dir, f)
+        try:
+            if os.path.getmtime(fp) < cutoff:
+                os.remove(fp)
+        except Exception:
+            pass
+
+
 def _daily_scheduler_loop():
     """定时调度器：每30秒检查是否有群聊需要播报（使用中国法定工作日，播报前一工作日数据）"""
     logger.info("昨日播报调度器已启动")
-    last_executed = {}  # {chat_id_date_time: True}
     while not _daily_scheduler_stop.is_set():
         try:
             cfg = _load_daily_broadcast_config()
@@ -2241,22 +2269,20 @@ def _daily_scheduler_loop():
                         continue
                     report_time = chat_cfg.get("report_time", "17:50")
                     if cur_time == report_time:
-                        # 避免同一天同一时间重复执行
-                        key = f"{chat_id}_{cur_date}_{cur_time}"
-                        if key not in last_executed:
-                            last_executed[key] = True
-                            # 播报前一工作日的数据
-                            prev_workday = _get_prev_chinese_workday(now)
-                            logger.info("触发昨日播报: chat=%s, 当前=%s, 播报日期=%s, time=%s",
-                                       chat_id[:12], cur_date, prev_workday, cur_time)
-                            try:
-                                _bot_daily_broadcast(chat_id, prev_workday, True)
-                            except Exception as e:
-                                logger.error("定时播报执行失败: %s", e)
-            # 清理过期的执行记录（只保留当天的）
-            expired = [k for k in last_executed if cur_date not in k]
-            for k in expired:
-                del last_executed[k]
+                        # 文件锁防止多实例重复播报
+                        if not _try_acquire_broadcast_lock(chat_id, cur_date, cur_time):
+                            continue
+                        # 播报前一工作日的数据
+                        prev_workday = _get_prev_chinese_workday(now)
+                        logger.info("触发昨日播报: chat=%s, 当前=%s, 播报日期=%s, time=%s",
+                                   chat_id[:12], cur_date, prev_workday, cur_time)
+                        try:
+                            _bot_daily_broadcast(chat_id, prev_workday, True)
+                        except Exception as e:
+                            logger.error("定时播报执行失败: %s", e)
+            # 定期清理旧锁文件
+            if cur_time == "00:00":
+                _cleanup_broadcast_locks()
         except Exception as e:
             logger.warning("昨日播报调度器异常: %s", e)
         _daily_scheduler_stop.wait(30)  # 每30秒检查一次，确保不错过整分钟
