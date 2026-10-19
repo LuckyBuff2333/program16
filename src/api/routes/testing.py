@@ -3527,70 +3527,171 @@ async def auto_detect_run(request: Request):
 # ==================== 回归执行 ====================
 
 
-@router.post("/api/test/regression_batches", response_model=ApiResponse)
+@router.post("/api/test/regression_batches")
 async def regression_batches(request: Request):
-    """按时间获取云端批次列表，统计每批次的失败 Jira 数量"""
+    """按时间获取云端批次列表（按日期逐天加载，避免超时），统计每批次的失败 Jira 数量"""
     import asyncio
+    import json as _json
     body = await request.json() or {}
     after_time = str(body.get("after_time", "") or "").strip()
-    from src.services.report_ops import _scan_all_batch_records
-    from src.clients import feishu_client
-    try:
-        batches = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: _scan_all_batch_records(after_date=after_time))
-    except Exception as e:
-        return _fail(f"扫描批次记录失败: {e}")
-    # 二次过滤确保日期范围正确
-    if after_time:
-        batches = [b for b in batches if b.get("date", "") >= after_time[:10]]
-    if not batches:
-        return _ok({"batches": [], "count": 0}, "无符合条件的批次")
-    # 一次性从多维表格加载所有记录，构建 bugid -> analysis_result 映射
-    bt_result_map = {}  # {bugid: [analysis_result, ...]}
-    cfg = load_config().get("feishu_bitable", {})
-    app_token = cfg.get("app_token", "")
-    table_id = cfg.get("table_id", "")
-    bugid_field = cfg.get("bugid_field", "jira号")
-    if app_token and table_id:
+    cutoff_date = after_time[:10] if after_time else ""
+
+    async def event_generator():
+        from src.services.report_ops import _scan_all_batch_records, _read_csv_rows, _parse_markdown_batch_table
+        from src.clients import feishu_client
+        loop = asyncio.get_event_loop()
+        cfg = load_config().get("feishu_bitable", {})
+        app_token = cfg.get("app_token", "")
+        table_id = cfg.get("table_id", "")
+        bugid_field = cfg.get("bugid_field", "jira号")
+        folder_token = cfg.get("batch_folder_token", "")
+        _jira_col = bugid_field
+
+        # 步骤1：加载本地批次（快速）
+        yield f"data: {_json.dumps({'type': 'progress', 'message': '正在扫描本地批次...'}, ensure_ascii=False)}\n\n"
+        local_batches = []
         try:
-            records = feishu_client.list_bitable_records(app_token, table_id)
-            for rec in records:
-                fields = rec.get("fields", {})
-                jn = _bitable_text(fields.get(bugid_field, ""))
-                if jn:
-                    result_status = _bitable_text(fields.get("分析结果", ""))
-                    bt_result_map.setdefault(jn, []).append(result_status)
+            doc_dir = get_path("doc_dir")
+            # 本地 docs/日期/batch_*.csv
+            if os.path.isdir(doc_dir):
+                for date_folder in sorted(os.listdir(doc_dir), reverse=True):
+                    if cutoff_date and date_folder < cutoff_date:
+                        continue
+                    day_dir = os.path.join(doc_dir, date_folder)
+                    if not os.path.isdir(day_dir):
+                        continue
+                    for fname in sorted(os.listdir(day_dir)):
+                        if not fname.lower().startswith("batch_") or not fname.endswith(".csv"):
+                            continue
+                        path = os.path.join(day_dir, fname)
+                        rows = _read_csv_rows(path)
+                        if not rows:
+                            continue
+                        jira_list = [r.get(_jira_col, "").strip() or r.get("jira号", "").strip() for r in rows if (r.get(_jira_col, "") or r.get("jira号", "")).strip()]
+                        success = sum(1 for r in rows if (r.get("执行结果") or "").strip() == "成功")
+                        source = next((r.get("触发来源", "").strip() for r in rows if r.get("触发来源")), "")
+                        local_batches.append({
+                            "batch_id": f"{date_folder}/{fname.replace('.csv', '')}",
+                            "date": date_folder, "name": fname.replace(".csv", ""),
+                            "source": source, "total": len(rows),
+                            "success": success, "fail": len(rows) - success,
+                            "jira_list": jira_list,
+                        })
         except Exception as e:
-            logger.warning("regression_batches: 多维表格查询失败: %s", e)
-    # 统计每个批次的失败 Jira
-    result_batches = []
-    for b in batches:
-        jira_list = b.get("jira_list", [])
-        failed_jiras = []
-        for jn in jira_list:
-            results = bt_result_map.get(jn, [])
-            # 有失败记录且无成功记录 → 视为失败
-            if "失败" in results and "成功" not in results:
-                failed_jiras.append(jn)
-            elif not results:
-                # 多维表格中无记录 → 也算失败（未分析完成）
-                failed_jiras.append(jn)
-        if not failed_jiras:
-            continue
-        # 来源标签
-        source = b.get("source", "")
-        source_label = "线上" if source == "parseFullTicket" else ("PC" if source == "jira_analyze" else source)
-        result_batches.append({
-            "batch_id": b.get("batch_id", ""),
-            "date": b.get("date", ""),
-            "name": b.get("name", ""),
-            "source": source_label,
-            "total": b.get("total", 0),
-            "fail_count": len(failed_jiras),
-            "failed_jiras": failed_jiras,
-        })
-    return _ok({"batches": result_batches, "count": len(result_batches)},
-               f"共 {len(result_batches)} 个批次含失败记录")
+            logger.warning("扫描本地批次失败: %s", e)
+
+        # 步骤2：获取云端文件列表（快速）
+        yield f"data: {_json.dumps({'type': 'progress', 'message': '正在获取云端文件列表...'}, ensure_ascii=False)}\n\n"
+        cloud_files_by_date = {}  # {date: [file_info, ...]}
+        try:
+            if folder_token:
+                all_files = await loop.run_in_executor(None, lambda: feishu_client.list_folder_files(folder_token, recursive=True))
+                seen_ids = {b["batch_id"] for b in local_batches}
+                for f in all_files:
+                    if f.get("type") != "docx":
+                        continue
+                    fname = f.get("name", "")
+                    f_folder = f.get("folder", "")
+                    if cutoff_date and f_folder and f_folder < cutoff_date:
+                        continue
+                    doc_token = f.get("token", "")
+                    if not doc_token or not fname.startswith(("批量执行", "线上批量执行")):
+                        continue
+                    bid = f"cloud/{f_folder}/{fname}"
+                    if bid in seen_ids:
+                        continue
+                    cloud_files_by_date.setdefault(f_folder, []).append({"fname": fname, "doc_token": doc_token, "batch_id": bid, "folder": f_folder})
+        except Exception as e:
+            logger.warning("获取云端文件列表失败: %s", e)
+
+        # 步骤3：加载多维表格记录（一次性）
+        yield f"data: {_json.dumps({'type': 'progress', 'message': '正在加载多维表格记录...'}, ensure_ascii=False)}\n\n"
+        bt_result_map = {}
+        if app_token and table_id:
+            try:
+                records = await loop.run_in_executor(None, lambda: feishu_client.list_bitable_records(app_token, table_id))
+                for rec in records:
+                    fields = rec.get("fields", {})
+                    jn = _bitable_text(fields.get(bugid_field, ""))
+                    if jn:
+                        result_status = _bitable_text(fields.get("分析结果", ""))
+                        bt_result_map.setdefault(jn, []).append(result_status)
+            except Exception as e:
+                logger.warning("regression_batches: 多维表格查询失败: %s", e)
+
+        # 步骤4：逐天获取云端批次文档
+        dates_sorted = sorted(cloud_files_by_date.keys(), reverse=True)
+        total_dates = len(dates_sorted)
+        cloud_batches = []
+        for idx, date_str in enumerate(dates_sorted):
+            if await request.is_disconnected():
+                return
+            files = cloud_files_by_date[date_str]
+            yield f"data: {_json.dumps({'type': 'progress', 'message': f'正在加载 {date_str} 的批次文档... ({idx+1}/{total_dates})'}, ensure_ascii=False)}\n\n"
+            for fi in files:
+                try:
+                    md = await loop.run_in_executor(None, lambda t=fi['doc_token']: feishu_client.fetch_docx_as_markdown(t))
+                    batch_rows = _parse_markdown_batch_table(md)
+                    if not batch_rows:
+                        continue
+                    jira_list = []
+                    success = 0
+                    source = ""
+                    for r in batch_rows:
+                        jira_no = (r.get(_jira_col) or r.get("jira号") or r.get("Jira号") or "").strip()
+                        if jira_no:
+                            jira_list.append(jira_no)
+                        if (r.get("执行结果") or "").strip() == "成功":
+                            success += 1
+                        src = (r.get("触发来源") or "").strip()
+                        if src:
+                            source = src
+                    if not source:
+                        if fi["fname"].startswith("线上批量执行"):
+                            source = "parseFullTicket"
+                        elif fi["fname"].startswith("批量执行") and "_bot_online_" in fi["fname"]:
+                            source = "parseFullTicket"
+                        elif fi["fname"].startswith("批量执行"):
+                            source = "jira_analyze"
+                    cloud_batches.append({
+                        "batch_id": fi["batch_id"], "date": fi["folder"],
+                        "name": fi["fname"], "source": source,
+                        "total": len(batch_rows), "success": success,
+                        "fail": len(batch_rows) - success, "jira_list": jira_list,
+                    })
+                except Exception as e:
+                    logger.warning("读取云端批次 %s 失败: %s", fi["fname"], e)
+
+        # 步骤5：合并所有批次，统计失败 Jira
+        all_batches = local_batches + cloud_batches
+        all_batches.sort(key=lambda x: x.get("date", ""), reverse=True)
+        result_batches = []
+        for b in all_batches:
+            jira_list = b.get("jira_list", [])
+            failed_jiras = []
+            for jn in jira_list:
+                results = bt_result_map.get(jn, [])
+                if "失败" in results and "成功" not in results:
+                    failed_jiras.append(jn)
+                elif not results:
+                    failed_jiras.append(jn)
+            if not failed_jiras:
+                continue
+            source = b.get("source", "")
+            source_label = "线上" if source == "parseFullTicket" else ("PC" if source == "jira_analyze" else source)
+            result_batches.append({
+                "batch_id": b.get("batch_id", ""),
+                "date": b.get("date", ""),
+                "name": b.get("name", ""),
+                "source": source_label,
+                "total": b.get("total", 0),
+                "fail_count": len(failed_jiras),
+                "failed_jiras": failed_jiras,
+            })
+        yield f"data: {_json.dumps({'type': 'done', 'batches': result_batches, 'count': len(result_batches), 'message': f'共 {len(result_batches)} 个批次含失败记录'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/api/test/regression_stop", response_model=ApiResponse)

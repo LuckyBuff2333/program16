@@ -144,16 +144,37 @@ export default {
   methods: {
     async loadBatches() {
       this.loadingBatches = true;
-      this.batchMsg = ''; this.batchError = false;
+      this.batchMsg = '正在加载...'; this.batchError = false;
       this.batches = []; this.checkedSet.clear(); this.expandedSet.clear();
       try {
-        const body = await api('/api/test/regression_batches', {
-          method: 'POST',
+        const resp = await fetch('/api/test/regression_batches', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ after_time: this.afterTime || '' }),
         });
-        this.batches = (body.data as any)?.batches || [];
-        this.batchMsg = body.message;
-        ElMessage.success(body.message);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const reader = resp.body!.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop()!;
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const msg = JSON.parse(line.slice(6));
+              if (msg.type === 'progress') {
+                this.batchMsg = msg.message;
+              } else if (msg.type === 'done') {
+                this.batches = msg.batches || [];
+                this.batchMsg = msg.message;
+                ElMessage.success(msg.message);
+              }
+            } catch { /* ignore parse error */ }
+          }
+        }
       } catch (e: any) {
         this.batchMsg = e.message || '加载失败';
         this.batchError = true;
