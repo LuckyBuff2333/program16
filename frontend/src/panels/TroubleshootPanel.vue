@@ -316,7 +316,7 @@
         <p v-if="singleTroubleshoot.diagResult.detail"><b>诊断详情：</b>{{ singleTroubleshoot.diagResult.detail }}</p>
         <p v-if="singleTroubleshoot.diagResult.report"><b>AI分析失败原因：</b>{{ singleTroubleshoot.diagResult.report.ai_reason }}</p>
         <p v-if="singleTroubleshoot.diagResult.report"><b>人工分析失败原因：</b>{{ singleTroubleshoot.diagResult.report.human_reason }}</p>
-        <p v-if="singleTroubleshoot.diagResult.verify_status">
+        <p v-if="singleTroubleshoot.diagResult.verify_status && ['success', 'manual', 'corrected'].includes(singleTroubleshoot.diagResult.verify_status)">
           <b>验证状态：</b>{{ singleTroubleshoot.diagResult.verify_status }}
           <span v-if="singleTroubleshoot.diagResult.suggested_time">（建议时间：{{ singleTroubleshoot.diagResult.suggested_time }}）</span>
         </p>

@@ -1592,6 +1592,10 @@ def _load_diagnose_cache(bugid: str) -> dict:
         with open(cache_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         logger.info("诊断结果本地缓存命中: %s", bugid)
+        # 验证 verify_status 是否为有效值
+        valid_status = {"success", "manual", "corrected", ""}
+        if data.get("verify_status") not in valid_status:
+            data["verify_status"] = ""
         return data
     except Exception as e:
         logger.warning("读取诊断缓存失败 %s: %s", bugid, e)

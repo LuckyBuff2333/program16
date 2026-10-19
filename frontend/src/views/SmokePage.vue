@@ -254,7 +254,7 @@ export default {
       try {
         const resp = await fetch('/api/test/prod_batch_run', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bugids, skip_existing: false, exec_mode: this.smokeTest.execMode }),
+          body: JSON.stringify({ bugids, skip_existing: false, skip_cloud_cache: true, exec_mode: this.smokeTest.execMode }),
         });
         const reader = resp.body!.getReader();
         const decoder = new TextDecoder();
