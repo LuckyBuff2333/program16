@@ -710,17 +710,16 @@ async def test_batch_ai_filter(request: Request):
                     continue
                 if not _is_bitable_excluded(fields, bugid_field):
                     continue
-            # 过滤AI初步分析结果：强制使用智能过滤（排除已成功+无效审核），覆盖filter_all
-            use_smart = filter_ai_preliminary or (not filter_all)
-            if use_smart:
+            # 排除逻辑：智能过滤排除已成功+无效审核
+            if not filter_all:
                 if _is_bitable_excluded(fields, bugid_field):
                     exclude_keys.add(jira_key)
             else:
                 exclude_keys.add(jira_key)
         mode_parts = []
-        if filter_all and not filter_ai_preliminary:
+        if filter_all:
             mode_parts.append("所有已存在")
-        if not filter_pc_only and not filter_online_only and not filter_all and not filter_ai_preliminary:
+        if not filter_pc_only and not filter_online_only and not filter_all:
             mode_parts.append("成功+无需重试")
         if filter_pc_only and filter_online_only:
             mode_parts.append("PC+线上正确和通用失败")
@@ -729,20 +728,49 @@ async def test_batch_ai_filter(request: Request):
                 mode_parts.append("PC正确+通用失败")
             if filter_online_only:
                 mode_parts.append("线上正确+通用失败")
-        if filter_ai_preliminary:
-            mode_parts.append("AI初步分析")
         mode_desc = "+".join(mode_parts)
         logger.info("多维表格重复过滤(%s): 排除记录 %d 条", mode_desc, len(exclude_keys))
     except Exception as e:
         logger.warning("多维表格重复过滤查询失败（跳过此检查）: %s", e)
     # 过滤候选列表
     filtered = [k for k in keys if k not in exclude_keys]
+    # 过滤AI初步分析结果：查询 Jira REST API customfield_13714
+    ai_exclude = set()
+    if filter_ai_preliminary and filtered:
+        import concurrent.futures as _cf
+        from src.clients import jira_client as _jc
+        _AI_FIELD_ID = "customfield_13714"
+
+        def _check_ai_field(bid):
+            try:
+                iss = _jc.fetch_issue(bid)
+                f = (iss.get("fields") or {}).get(_AI_FIELD_ID)
+                if f and str(f).strip() and str(f).strip().lower() not in ("none", "null"):
+                    return bid
+            except Exception:
+                pass
+            return None
+
+        with _cf.ThreadPoolExecutor(max_workers=10) as pool:
+            results = list(pool.map(_check_ai_field, filtered))
+        for r in results:
+            if r:
+                ai_exclude.add(r)
+        if ai_exclude:
+            logger.info("AI初步分析过滤(customfield_13714): 排除 %d 条", len(ai_exclude))
+            filtered = [k for k in filtered if k not in ai_exclude]
+            exclude_keys.update(ai_exclude)
     removed = len(keys) - len(filtered)
     if not filtered:
-        return _fail(f"所有候选均已存在于多维表格中（共过滤 {removed} 条）")
+        return _fail(f"所有候选均已被过滤（共过滤 {removed} 条）")
+    bitable_removed = len(exclude_keys) - len(ai_exclude)
+    filter_desc = f"候选 {len(keys)} 条，多维表格过滤 {bitable_removed} 条"
+    if ai_exclude:
+        filter_desc += f"，AI字段过滤 {len(ai_exclude)} 条"
+    filter_desc += f"，剩余 {len(filtered)} 条"
     return _ok({"filtered": filtered, "removed": removed, "total": len(keys),
                  "exclude_keys": list(exclude_keys)[:20]},
-                f"候选 {len(keys)} 条，过滤 {removed} 条，剩余 {len(filtered)} 条")
+                filter_desc)
 
 
 @router.post("/api/test/batch_ai_sample", response_model=ApiResponse)
