@@ -15,6 +15,7 @@
         </div>
       </div>
       <div class="preset-bar" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <el-button size="small" type="danger" :loading="todayBugLoading" @click="queryTodayNewBugs">今日新增 Bug</el-button>
         <el-button size="small" type="primary" @click="fillSummaryQuery">描述查 Jira 号</el-button>
       </div>
     </el-card>
@@ -79,6 +80,7 @@ export default {
       query: '',
       loading: false,
       queried: false,
+      todayBugLoading: false,
       rows: [] as any[],
       errors: [] as any[],
       mode: 'keys',
@@ -121,6 +123,26 @@ export default {
         ElMessage.error('查询失败: ' + e.message);
       } finally {
         this.loading = false;
+      }
+    },
+    async queryTodayNewBugs() {
+      const jql = 'created >= startOfDay() AND issuetype = "bug" AND status != "closed"';
+      this.query = jql;
+      this.todayBugLoading = true;
+      this.loading = true; this.queried = true; this.rows = []; this.errors = [];
+      try {
+        const result = await api('/api/test/jira_lookup', { method: 'POST', body: JSON.stringify({ query: jql }) });
+        const data = result.data || {};
+        this.rows = data.rows || [];
+        this.errors = data.errors || [];
+        this.mode = data.mode || 'jql';
+        if (!this.rows.length) ElMessage.info('今日暂无新增 Bug');
+        else ElMessage.success(`今日新增 ${this.rows.length} 个 Bug`);
+      } catch (e: any) {
+        ElMessage.error('查询失败: ' + e.message);
+      } finally {
+        this.loading = false;
+        this.todayBugLoading = false;
       }
     },
     copyAllKeys() {

@@ -219,7 +219,7 @@ _ARCHIVE_NAME_RE = re.compile(r"\.(zip|7z|rar|tar|gz|bz2|xz)(\.\d{2,3})?$", re.I
 
 _SPLIT_ARCHIVE_RE = re.compile(r"\.\d{2,3}$")
 
-_ARCHIVE_PROBE_MAX_BYTES = 200 * 1024 * 1024
+_ARCHIVE_PROBE_MAX_BYTES = 500 * 1024 * 1024
 
 # 视频文件后缀
 _VIDEO_SUFFIXES = (".mp4", ".avi", ".mov", ".mkv")
@@ -3321,14 +3321,14 @@ def _jira_att_auth() -> tuple:
 
 def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
     """判断 Jira 是否含可用日志（gmlogger）。智能回退：
-
-    1) 附件文件名含 gmlogger/main.log/.log/.txt → 直接判定有（快，不下载）；
-    2) 否则仅对≤ 200MB 的单卷压缩包下载探测包内是否有 main/.log/.txt 文件；
-       分卷压缩包(.001/.002 等)或超大包一律跳过（避免 GB 级下载拖垮）。
+    
+    1) 附件文件名含 gmlogger/gmlog/main.log/.log/.txt → 直接判定有（快，不下载）；
+    2) 否则仅对≤ 500MB 的单卷压缩包下载探测包内是否有 main/.log/.txt 文件；
+       分卷压缩包(.001/.002 等)或超大包一律跳过（避免 GB 级下载拖慢）。
     """
     names = [(a.get("filename", "") or "").lower() for a in attachments]
-    # 有直接的 gmlogger 文件、main.log 或任意 .log/.txt 文件就算有，不需要解压
-    if any("gmlogger" in n or "main.log" in n or n.endswith(".log") or n.endswith(".txt") for n in names):
+    # 有直接的 gmlogger/gmlog 文件、main.log 或任意 .log/.txt 文件就算有，不需要解压
+    if any("gmlogger" in n or "gmlog" in n or "main.log" in n or n.endswith(".log") or n.endswith(".txt") for n in names):
         return True
     headers, timeout = _jira_att_auth()
     for att in attachments:
@@ -4813,6 +4813,9 @@ def _build_gmlogger_info(attachments: list) -> list:
         parsed = _diag_parse_entry_time(fname)
         filename_time = parsed[1] if parsed else None
         upload_time = _ts_parse_datetime(att.get("created", ""))
+        # 统一去除时区信息，避免与 naive datetime 比较异常
+        if upload_time and upload_time.tzinfo is not None:
+            upload_time = upload_time.replace(tzinfo=None)
         info_list.append({
             "filename": fname,
             "filename_time": filename_time,
@@ -4831,6 +4834,8 @@ def _find_closest_gmlogger(video_att: dict, gm_info_list: list) -> list:
     3. 视频上传时间与 gmlogger 文件名时间接近
     """
     video_upload = _ts_parse_datetime(video_att.get("created", ""))
+    if video_upload and video_upload.tzinfo is not None:
+        video_upload = video_upload.replace(tzinfo=None)
     video_name = video_att.get("filename", "") or ""
     video_fn_parsed = _diag_parse_entry_time(video_name)
     video_fn_time = video_fn_parsed[1] if video_fn_parsed else None
@@ -4946,9 +4951,6 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     for att in attachments:
         fname = att.get("filename", "") or ""
         fn_lower = fname.lower()
-        # 跳过 gmlogger 压缩包（不解压）
-        if "gmlogger" in fn_lower:
-            continue
         # 跳过非压缩包
         if not _ARCHIVE_NAME_RE.search(fn_lower):
             continue
@@ -4966,6 +4968,20 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
             if "main" not in ebname:
                 continue
             parsed = _diag_parse_entry_time(entry)
+            # 兆底：下划线分隔格式 main.log_2026_10_19_6_56_11.gz（小时可为 1-2 位）
+            if not parsed:
+                import re as _re
+                _m = _re.search(r"(20\d{2})_(\d{1,2})_(\d{1,2})_(\d{1,2})_(\d{1,2})(?:_(\d{1,2}))?", entry)
+                if _m:
+                    from datetime import datetime as _dt_inner
+                    try:
+                        _y, _mo, _d = int(_m.group(1)), int(_m.group(2)), int(_m.group(3))
+                        _h, _mi = int(_m.group(4)), int(_m.group(5))
+                        _s = int(_m.group(6)) if _m.group(6) else 0
+                        _idt = _dt_inner(_y, _mo, _d, _h, _mi, _s)
+                        parsed = (_idt.strftime("%Y-%m-%d %H:%M:%S"), _idt)
+                    except (ValueError, IndexError):
+                        pass
             if parsed:
                 _inner_times.append(parsed)
                 logger.info("视频兜底提取(%s)：压缩包 %s 内 main 文件: %s -> %s",
@@ -4994,13 +5010,22 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
         if fname and "gmlogger" in fname.lower():
             gm_ref_dt = _ts_parse_datetime(att.get("created", ""))
             break
+    # 统一去除时区信息，避免与 naive datetime 比较异常
+    if gm_ref_dt and gm_ref_dt.tzinfo is not None:
+        gm_ref_dt = gm_ref_dt.replace(tzinfo=None)
+    # gmlogger 文件名无日期时，将上传时间加入 ref_pool 作为参考
+    if gm_ref_dt and gm_ref_dt not in ref_pool:
+        ref_pool.append(gm_ref_dt)
+        d = (gm_ref_dt.year, gm_ref_dt.month, gm_ref_dt.day)
+        if d not in gm_dates:
+            gm_dates.append(d)
+        logger.info("视频兜底提取(%s)：gmlogger 文件名无日期，使用上传时间 %s 作为参考", bugid, gm_ref_dt)
     # 按优先级排序视频
     ranked_videos = _rank_videos(videos, attachments)
     single_video = len(ranked_videos) == 1
     # 匹配容差：内层日期（main文件）可用时 5 分钟，仅外层文件名日期时 10 分钟
     if not ref_pool:
-        logger.info("视频兜底提取(%s)：gmlogger 和内层均无日期，跳过", bugid)
-        return ""
+        logger.info("视频兜底提取(%s)：gmlogger 和内层均无日期，仍尝试视频OCR（无参考日期校验）", bugid)
     _match_tolerance = 300 if _has_inner_dates else 600
     logger.info("视频兜底提取(%s)：ref_pool %d 个（外层 %d + 内层 %d），匹配容差 %ds",
                 bugid, len(ref_pool), len(gm_times), len(_inner_times), _match_tolerance)
@@ -5175,6 +5200,11 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                         closest_date = (closest_gm[0]["filename_time"].year,
                                         closest_gm[0]["filename_time"].month,
                                         closest_gm[0]["filename_time"].day)
+                    # 无 gmlogger 日期时，用视频附件创建日期作为兜底
+                    if not closest_date:
+                        _vid_created = _ts_parse_datetime(video_att.get("created", ""))
+                        if _vid_created:
+                            closest_date = (_vid_created.year, _vid_created.month, _vid_created.day)
                     if m and closest_date:
                         time_str = _normalize_ocr_time(m.group(1))
                         _corr_ref = (closest_gm[0]["filename_time"] if closest_gm and closest_gm[0]["filename_time"] else gm_ref_dt)
@@ -5263,6 +5293,11 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                             closest_date = (closest_gm[0]["filename_time"].year,
                                             closest_gm[0]["filename_time"].month,
                                             closest_gm[0]["filename_time"].day)
+                        # 无 gmlogger 日期时，用视频附件创建日期作为兜底
+                        if not closest_date:
+                            _vid_created = _ts_parse_datetime(video_att.get("created", ""))
+                            if _vid_created:
+                                closest_date = (_vid_created.year, _vid_created.month, _vid_created.day)
                         if m and closest_date:
                             time_str = _normalize_ocr_time(m.group(1))
                             _corr_ref = (closest_gm[0]["filename_time"] if closest_gm and closest_gm[0]["filename_time"] else gm_ref_dt)
@@ -5763,6 +5798,7 @@ def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bug
     """
     import tempfile
     import httpx as _httpx
+    import cv2
     from datetime import datetime as _dt
     fields = issue.get("fields") or {}
     attachments = fields.get("attachment") or []
@@ -5792,7 +5828,11 @@ def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bug
                         for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
                             f.write(chunk)
                 # OCR 识别（返回 bbox + 文字 + 置信度）
-                results = _ocr_readtext(None, img_path)
+                img = cv2.imread(img_path)
+                if img is None:
+                    logger.warning("%s图片 OCR: cv2.imread 失败 %s", f"{bugid} " if bugid else "", fname)
+                    continue
+                results = _ocr_readtext(None, img)
                 if not results:
                     continue
                 # 收集完整文本用于时间正则匹配

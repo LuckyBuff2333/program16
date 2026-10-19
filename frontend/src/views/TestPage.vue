@@ -67,6 +67,7 @@
         <DailySummaryPanel v-else-if="testPanel === 'daily_summary'" />
         <JiraLookupPanel v-else-if="testPanel === 'jira_lookup'" />
         <AppLogDownloadPanel v-else-if="testPanel === 'app_log_download'" />
+        <TimeExtractPanel v-else-if="testPanel === 'time_extract'" />
       </div>
       </transition>
     </el-main>
@@ -87,6 +88,7 @@ import ConfigTuningPanel from '../panels/ConfigTuningPanel.vue';
 import DailySummaryPanel from '../panels/DailySummaryPanel.vue';
 import JiraLookupPanel from '../panels/JiraLookupPanel.vue';
 import AppLogDownloadPanel from '../panels/AppLogDownloadPanel.vue';
+import TimeExtractPanel from '../panels/TimeExtractPanel.vue';
 
 export default {
   name: 'TestPage',
@@ -95,6 +97,7 @@ export default {
     ProdBatchPanel, TroubleshootPanel, OnlineFollowupPanel,
     AiLogVisualPanel, ConfigTuningPanel, DailySummaryPanel,
     JiraLookupPanel, AppLogDownloadPanel,
+    TimeExtractPanel,
   },
   props: { testPanel: { type: String, default: 'batch_ai' } },
   data() {

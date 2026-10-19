@@ -143,6 +143,7 @@ export default {
             { key: 'daily_summary', label: '每日汇总', glyph: '汇', page: 'testpage', panel: 'daily_summary', title: '每日汇总', description: '按日/周/时间段维度汇总分析执行数据。' },
             { key: 'jira_lookup', label: 'Jira 查询', glyph: '查', page: 'testpage', panel: 'jira_lookup', title: 'Jira 查询', description: '通过 Jira 号或 JQL 查询 Bug 概要与根因。' },
             { key: 'app_log_download', label: 'app.log 下载', glyph: '志', page: 'testpage', panel: 'app_log_download', title: 'App.log 下载', description: '从远程服务器下载 app.log 日志文件。' },
+            { key: 'time_extract', label: '时间批量提取', glyph: '时', page: 'testpage', panel: 'time_extract', title: '时间批量提取', description: '通过 JQL 或手动输入批量提取触发时间，并行提取并写入云端。' },
           ],
         },
       ],

@@ -316,3 +316,190 @@ async def rebalance_trigger_time_tables_endpoint():
     except Exception as e:
         logger.error("触发时间表再平衡失败: %s", e, exc_info=True)
         return _fail(f"再平衡失败: {e}")
+
+
+@router.post("/api/trigger/batch_extract_time")
+async def batch_extract_time(request: Request):
+    """批量提取触发时间（SSE 流式）：支持 JQL 查询或直接传入 bugid 列表
+
+    提取链路与批量执行一致：评论/字段 → 视频OCR → 图片OCR
+    并行数 2，缓冲 20 条批量写入云端
+    """
+    import json as _json
+    import concurrent.futures
+    from src.api.routes.shared import batch_extract_stop_event as _stop_event, fail as _fail
+    from src.clients import jira_client as _jc
+    from src.services.server_legacy import (
+        _diag_extract_time_from_video_simple,
+        _diag_extract_time_from_images,
+        _has_gmlogger_logs,
+    )
+    from src.services.trigger_ops import (
+        _load_trigger_times_from_cloud,
+        _batch_save_trigger_times_to_cloud,
+    )
+    body = await request.json() or {}
+    jql = str(body.get("jql", "")).strip()
+    bugids = body.get("bugids") or []
+    skip_cached = body.get("skip_cached", False)
+    filter_ai_preliminary = body.get("filter_ai_preliminary", False)
+    # ── 解析输入 ──
+    if jql:
+        try:
+            issues = _jc.search_issues(jql, max_results=500)
+            bugids = [(i.get("key") or "").strip() for i in issues if i.get("key")]
+            bugids = [b for b in bugids if b]
+        except Exception as e:
+            return _fail(f"JQL 查询失败: {e}")
+    if not bugids:
+        return _fail("无待提取的 Jira 号（JQL 未匹配或 bugids 为空）")
+
+    _stop_event.clear()
+
+    def event_generator():
+        # 跳过已有缓存时，预加载云端缓存
+        cloud_cache = {}
+        if skip_cached:
+            cloud_cache = _load_trigger_times_from_cloud()
+        # 分离需要提取的和可跳过的（缓存跳过）
+        to_extract = []
+        cache_skip_count = 0
+        for b in bugids:
+            if skip_cached and cloud_cache.get(b):
+                cache_skip_count += 1
+                continue
+            to_extract.append(b)
+
+        # 过滤AI初步分析结果：预先检查 Jira 自定义字段
+        ai_skip_count = 0
+        if filter_ai_preliminary and to_extract:
+            import concurrent.futures as _cf
+            _AI_INIT_FIELD_ID = "customfield_13714"
+            ai_has = set()
+
+            def _check_ai(bid):
+                try:
+                    iss = _jc.fetch_issue(bid)
+                    f = (iss.get("fields") or {}).get(_AI_INIT_FIELD_ID)
+                    if f and str(f).strip() and str(f).strip().lower() not in ("none", "null"):
+                        return bid
+                except Exception:
+                    pass
+                return None
+
+            with _cf.ThreadPoolExecutor(max_workers=10) as pool:
+                for result in pool.map(_check_ai, to_extract):
+                    if result:
+                        ai_has.add(result)
+            ai_skip_count = len(ai_has)
+            if ai_has:
+                to_extract = [b for b in to_extract if b not in ai_has]
+
+        total = len(to_extract)
+        cfg = load_config().get("jira_api", {})
+        img_tok = cfg.get("token", "")
+        img_to = max(int(cfg.get("timeout", 30)), 120)
+
+        start_evt = {'type': 'start', 'total': total}
+        skip_parts = []
+        if ai_skip_count:
+            start_evt['ai_skipped'] = ai_skip_count
+            skip_parts.append(f'{ai_skip_count} 个已有AI分析')
+        if cache_skip_count:
+            start_evt['cache_skipped'] = cache_skip_count
+            skip_parts.append(f'{cache_skip_count} 个已有缓存')
+        if skip_parts:
+            start_evt['message'] = f'跳过 {"、".join(skip_parts)}，实际提取 {total} 个'
+        yield f"data: {_json.dumps(start_evt, ensure_ascii=False)}\n\n"
+
+        done_count = 0
+        hit_count = 0
+        batch_buf = {}  # 缓冲 20 条后批量写入
+
+        def extract_one(bugid: str):
+            """单个 bugid 的提取链路（与批量执行一致）"""
+            try:
+                issue = _jc.fetch_issue(bugid)
+                attachments = (issue.get("fields") or {}).get("attachment") or []
+                if not _has_gmlogger_logs(attachments, bugid):
+                    return bugid, "", "no_gmlogger", None
+                # 评论/字段提取优先
+                _SRC_MAP = {"标题": "summary", "评论": "comment", "字段": "custom_field", "描述": "description", "附件名": "attachment_name"}
+                tt, _src_label = _jc.extract_trigger_time_from_issue(issue, return_source=True)
+                source = _SRC_MAP.get(_src_label, "jira_comment") if tt else ""
+                if not tt:
+                    # 视频 OCR 兜底
+                    tt = _diag_extract_time_from_video_simple(issue)
+                    if tt:
+                        source = "video_ocr"
+                if not tt:
+                    # 图片 OCR 兜底
+                    img_h = {}
+                    if img_tok:
+                        img_h["Authorization"] = f"Bearer {img_tok}"
+                    img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, bugid)
+                    if img_tt:
+                        tt = img_tt
+                        source = "image_ocr"
+                if tt:
+                    if not isinstance(tt, str):
+                        tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
+                    return bugid, tt, source, None
+                return bugid, "", "failed", "评论/视频/图片均未提取到时间"
+            except Exception as e:
+                return bugid, "", "error", str(e)
+
+        # 并行提取（max_workers=2）
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = {pool.submit(extract_one, b): b for b in to_extract}
+            for future in concurrent.futures.as_completed(futures):
+                if _stop_event.is_set():
+                    # 停止：把当前已完成的先批量写入，然后退出
+                    if batch_buf:
+                        _batch_save_trigger_times_to_cloud(batch_buf)
+                        yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
+                        batch_buf.clear()
+                    yield f"data: {_json.dumps({'type': 'stopped', 'current': done_count, 'total': total, 'hit': hit_count, 'message': f'已停止: {done_count}/{total} 完成, {hit_count} 命中'}, ensure_ascii=False)}\n\n"
+                    return
+                try:
+                    bugid, tt, source, error = future.result()
+                except Exception as e:
+                    bugid = futures[future]
+                    tt, source, error = "", "error", str(e)
+
+                done_count += 1
+                if tt:
+                    hit_count += 1
+                    batch_buf[bugid] = tt
+                    # 缓冲 20 条后批量写入
+                    if len(batch_buf) >= 20:
+                        _batch_save_trigger_times_to_cloud(batch_buf)
+                        yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
+                        batch_buf.clear()
+                evt = {
+                    'type': 'progress', 'current': done_count, 'total': total,
+                    'hit': hit_count, 'bugid': bugid, 'time': tt or '',
+                    'source': source, 'error': error or '',
+                }
+                yield f"data: {_json.dumps(evt, ensure_ascii=False)}\n\n"
+
+        # 余量写入
+        if batch_buf:
+            _batch_save_trigger_times_to_cloud(batch_buf)
+            yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
+        done_msg = f'提取完成: {hit_count}/{total} 命中'
+        if ai_skip_count:
+            done_msg += f'，{ai_skip_count} 个已有AI分析跳过'
+        yield f"data: {_json.dumps({'type': 'done', 'total': total, 'hit': hit_count, 'ai_skipped': ai_skip_count, 'message': done_msg}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/api/trigger/batch_extract_time/stop", response_model=ApiResponse)
+async def stop_batch_extract_time():
+    """停止批量提取触发时间"""
+    from src.api.routes.shared import batch_extract_stop_event as _stop_event, ok
+    _stop_event.set()
+    logger.info("收到批量提取触发时间停止信号")
+    return ok(None, "停止信号已发送，当前提取完成后停止")
