@@ -410,7 +410,7 @@ def _diag_pre_classify(err_msg: str) -> str:
         return "待后端开发排查"
     if "时间过滤后日志为空" in msg or "未找到有效的日志文件" in msg:
         return ""  # 需下载附件比对时间后才能判定
-    return "待后端开发排查"
+    return ""  # 未匹配已知规则，走正常深度分析流程
 
 
 def batch_pre_classify(records: list[dict]) -> dict:
