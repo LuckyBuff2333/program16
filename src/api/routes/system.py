@@ -148,18 +148,24 @@ def overview():
 
 
 @router.get("/api/applog/download")
-async def download_app_log():
-    """代理下载远程服务器 app.log 文件并保存到本地 logs/ 目录"""
+async def download_app_log(source: str = "pc"):
+    """代理下载远程服务器 app.log，source=pc|online"""
     import httpx
-    cfg = load_config().get("app_log_server", {})
+    cfg_all = load_config().get("app_log_server", {})
+    # 兼容旧配置：如果没有 pc/online 分层，直接用默认值
+    if source not in cfg_all and "host" in cfg_all:
+        cfg = cfg_all
+    else:
+        cfg = cfg_all.get(source, cfg_all.get("pc", {}))
     host = cfg.get("host", "10.22.126.133")
     port = cfg.get("port", 8001)
     endpoint = cfg.get("endpoint", "/api/logs/download")
     url = f"http://{host}:{port}{endpoint}"
-    # 保存路径：项目根目录/logs/app.log
+    # 保存路径：项目根目录/logs/app_{source}.log
     logs_dir = os.path.join(PROJECT_ROOT, "logs")
     os.makedirs(logs_dir, exist_ok=True)
-    save_path = os.path.join(logs_dir, "app.log")
+    filename = "app.log" if source == "pc" else f"app_{source}.log"
+    save_path = os.path.join(logs_dir, filename)
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.get(url)
@@ -168,10 +174,11 @@ async def download_app_log():
         with open(save_path, "wb") as f:
             f.write(resp.content)
         size_mb = len(resp.content) / 1024 / 1024
-        logger.info("app.log 已下载到 %s (%.2f MB)", save_path, size_mb)
-        return ok({"path": save_path, "size_mb": round(size_mb, 2)}, "下载成功")
+        label = "PC" if source == "pc" else "线上"
+        logger.info("[%s] app.log 已下载到 %s (%.2f MB)", label, save_path, size_mb)
+        return ok({"path": save_path, "size_mb": round(size_mb, 2)}, f"{label} 下载成功")
     except httpx.ConnectError:
-        return fail(f"无法连接服务器 {host}:{port}，请检查网络或服务器状态")
+        return fail(f"无法连接{source}服务器 {host}:{port}，请检查网络或服务器状态")
     except httpx.TimeoutException:
         return fail("下载超时（120秒），文件可能过大或网络不稳定")
     except Exception as e:

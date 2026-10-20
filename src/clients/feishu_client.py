@@ -1665,12 +1665,13 @@ def list_folder_files(folder_token: str, recursive: bool = False) -> list:
     page_token = ""
     auth_attempts = 0  # 认证重试次数，最多 2 次（403→user_token, 401→refresh）
     server_retry = 0  # 服务端 500 重试次数，最多 3 次
+    timeout_retries = 0  # 超时重试次数
     while True:
         params = {"folder_token": folder_token, "page_size": 200}
         if page_token:
             params["page_token"] = page_token
         try:
-            resp = httpx.get(url, headers=headers, params=params, timeout=30, verify=False)
+            resp = httpx.get(url, headers=headers, params=params, timeout=60, verify=False)
             # 服务端 5xx 错误：等待后重试，最多 3 次
             if resp.status_code >= 500 and server_retry < 3:
                 server_retry += 1
@@ -1719,6 +1720,14 @@ def list_folder_files(folder_token: str, recursive: bool = False) -> list:
             if not data.get("data", {}).get("has_more", False):
                 break
             page_token = data.get("data", {}).get("page_token", "")
+        except httpx.TimeoutException:
+            timeout_retries += 1
+            if timeout_retries <= 2:
+                import time
+                time.sleep(2)
+                continue
+            logger.warning("列出文件夹文件超时（重试2次仍失败）: folder=%s", folder_token[:12])
+            break
         except Exception as e:
             logger.warning("列出文件夹文件异常: %s", e)
             break

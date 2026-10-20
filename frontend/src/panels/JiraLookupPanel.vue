@@ -14,23 +14,25 @@
           <el-button @click="query=''">清空</el-button>
         </div>
       </div>
-      <div class="preset-bar" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <div class="preset-bar" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <el-button size="small" type="danger" :loading="todayBugLoading" @click="queryTodayNewBugs">今日新增 Bug</el-button>
         <el-button size="small" type="warning" @click="queryYesterdayNewBugs">昨日新增 Bug</el-button>
         <el-button size="small" type="primary" @click="fillSummaryQuery">描述查 Jira 号</el-button>
+        <el-divider direction="vertical" style="margin:0 4px"></el-divider>
+        <el-checkbox v-model="filterAiPreliminary" size="small">过滤AI初步分析结果</el-checkbox>
       </div>
     </el-card>
 
     <el-card v-if="rows.length || errors.length" shadow="never" style="margin-top:14px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
         <span class="section-title" style="margin:0">查询结果</span>
-        <el-tag type="success" size="small">成功 {{ rows.length }}</el-tag>
+        <el-tag type="success" size="small">显示 {{ displayedRows.length }}/{{ rows.length }}</el-tag>
         <el-tag v-if="errors.length" type="danger" size="small">失败 {{ errors.length }}</el-tag>
         <el-tag type="info" size="small">{{ mode === 'jql' ? 'JQL 模式' : 'Key 模式' }}</el-tag>
         <el-button size="small" link type="primary" style="margin-left:auto" @click="copyAllKeys">复制所有 Key</el-button>
       </div>
 
-      <el-table :data="rows" size="small" stripe border max-height="520"
+      <el-table :data="displayedRows" size="small" stripe border max-height="520"
         :default-sort="{ prop: 'key', order: 'ascending' }">
         <el-table-column prop="key" label="Jira 号" width="150" sortable>
           <template #default="{ row }">
@@ -46,6 +48,11 @@
           </template>
         </el-table-column>
         <el-table-column prop="created" label="创建日期" width="120" sortable></el-table-column>
+        <el-table-column prop="has_ai_preliminary" label="AI初步" width="80" align="center" sortable>
+          <template #default="{ row }">
+            <el-tag :type="row.has_ai_preliminary ? 'success' : 'info'" size="small">{{ row.has_ai_preliminary ? '有' : '无' }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="root_cause" label="根本原因" min-width="320" show-overflow-tooltip>
           <template #default="{ row }">
             <span :style="{ color: row.root_cause && row.root_cause !== '（未填写）' ? '#67c23a' : '#c0c4cc' }">
@@ -82,10 +89,17 @@ export default {
       loading: false,
       queried: false,
       todayBugLoading: false,
+      filterAiPreliminary: true,
       rows: [] as any[],
       errors: [] as any[],
       mode: 'keys',
     };
+  },
+  computed: {
+    displayedRows() {
+      if (!this.filterAiPreliminary) return this.rows;
+      return this.rows.filter((r: any) => !r.has_ai_preliminary);
+    },
   },
   methods: {
     statusType(s: string) {
@@ -158,9 +172,10 @@ export default {
       }, 30);
     },
     copyAllKeys() {
-      if (!this.rows.length) return ElMessage.warning('暂无结果');
-      const text = this.rows.map(r => r.key).join(', ');
-      navigator.clipboard.writeText(text).then(() => ElMessage.success(`已复制 ${this.rows.length} 个 Key`));
+      const list = this.filterAiPreliminary ? this.displayedRows : this.rows;
+      if (!list.length) return ElMessage.warning('暂无结果');
+      const text = list.map((r: any) => r.key).join(', ');
+      navigator.clipboard.writeText(text).then(() => ElMessage.success(`已复制 ${list.length} 个 Key`));
     },
   },
 };

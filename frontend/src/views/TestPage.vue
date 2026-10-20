@@ -1,10 +1,8 @@
 <template>
   <el-container style="background:#fff;border-radius:10px;height:100%;overflow:hidden">
     <el-main class="module-main">
-      <transition name="fade" mode="out-in">
-      <div>
-        <!-- 评论分析侧重点对比 -->
-        <div v-if="testPanel === 'comment_compare'" key="comment_compare" class="test-panel">
+        <!-- 评论分析侧重点对比（内联，非独立组件） -->
+        <div v-if="testPanel === 'comment_compare'" class="test-panel">
           <div class="section-title">评论分析侧重点对比</div>
           <el-alert type="info" :closable="false"
             title="对同一 Jira 用多种 prompt 策略各跑一次评论分析，并列展示结果，选定偏好风格后自动注入后续分析"></el-alert>
@@ -56,20 +54,10 @@
           <el-empty v-else-if="!running.commentCompare" description="输入 Jira 号并点击执行对比" style="margin-top:30px"></el-empty>
         </div>
 
-        <!-- 大型面板委托给独立组件 -->
-        <BatchAiPanel v-else-if="testPanel === 'batch_ai'" />
-        <ConfidenceBatchPanel v-else-if="testPanel === 'confidence_batch'" />
-        <ProdBatchPanel v-else-if="testPanel === 'prod_batch'" />
-        <TroubleshootPanel v-else-if="testPanel === 'troubleshoot'" />
-        <OnlineFollowupPanel v-else-if="testPanel === 'online_followup'" />
-        <AiLogVisualPanel v-else-if="testPanel === 'ai_log_visual'" />
-        <ConfigTuningPanel v-else-if="testPanel === 'config_tuning'" />
-        <DailySummaryPanel v-else-if="testPanel === 'daily_summary'" />
-        <JiraLookupPanel v-else-if="testPanel === 'jira_lookup'" />
-        <AppLogDownloadPanel v-else-if="testPanel === 'app_log_download'" />
-        <TimeExtractPanel v-else-if="testPanel === 'time_extract'" />
-      </div>
-      </transition>
+        <!-- 大型面板委托给独立组件，keep-alive 保留执行状态 -->
+        <keep-alive v-else>
+          <component :is="activePanelComponent" />
+        </keep-alive>
     </el-main>
   </el-container>
 </template>
@@ -105,6 +93,24 @@ export default {
       commentCompare: { bugid: '', results: [] as any[], selected: null as string | null, currentStyle: '' },
       running: { commentCompare: false },
     };
+  },
+  computed: {
+    activePanelComponent() {
+      const map = {
+        batch_ai: 'BatchAiPanel',
+        confidence_batch: 'ConfidenceBatchPanel',
+        prod_batch: 'ProdBatchPanel',
+        troubleshoot: 'TroubleshootPanel',
+        online_followup: 'OnlineFollowupPanel',
+        ai_log_visual: 'AiLogVisualPanel',
+        config_tuning: 'ConfigTuningPanel',
+        daily_summary: 'DailySummaryPanel',
+        jira_lookup: 'JiraLookupPanel',
+        app_log_download: 'AppLogDownloadPanel',
+        time_extract: 'TimeExtractPanel',
+      };
+      return map[this.testPanel] || 'BatchAiPanel';
+    },
   },
   methods: {
     colWidth, verdictStyle, fieldLabel,

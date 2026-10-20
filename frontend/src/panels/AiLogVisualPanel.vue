@@ -12,6 +12,12 @@
           <el-input v-model="studyAnalysis.aiReportBugid" placeholder="输入 Jira 号（如 VCU-105015）" clearable @keyup.enter="fetchAiReport" style="width:260px"></el-input>
         </el-form-item>
         <el-form-item>
+          <el-radio-group v-model="studyAnalysis.aiReportSource" size="default">
+            <el-radio-button label="pc">PC</el-radio-button>
+            <el-radio-button label="online">线上</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item>
           <el-button type="primary" :loading="studyAnalysis.aiReportLoading" @click="fetchAiReport">获取报告</el-button>
         </el-form-item>
       </el-form>
@@ -113,7 +119,7 @@ export default {
         folders: [], selectedFolder: '',
         rounds: [], conclusions: [], totalRounds: 0, elapsedSeconds: 0, folderName: '',
         aiReportBugid: '', aiReportContent: '', aiReportLoading: false, aiReportMsg: '',
-        aiReportFilePath: '', aiReportDirPath: '',
+        aiReportFilePath: '', aiReportDirPath: '', aiReportSource: 'pc',
       },
     };
   },
@@ -165,7 +171,7 @@ export default {
       this.studyAnalysis.aiReportFilePath = '';
       this.studyAnalysis.aiReportDirPath = '';
       try {
-        const body = await api(`/api/test/ai_report/${encodeURIComponent(bugid)}`);
+        const body = await api(`/api/test/ai_report/${encodeURIComponent(bugid)}?source=${this.studyAnalysis.aiReportSource}`);
         if (body.ok && body.data?.content) {
           this.studyAnalysis.aiReportContent = body.data.content;
           this.studyAnalysis.aiReportFilePath = body.data.file_path || '';

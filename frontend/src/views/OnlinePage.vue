@@ -122,6 +122,17 @@
                       <span class="field-del-btn" title="删除字段" @click="removeField(item.key, s(field))">&#x2715;</span>
                     </div>
                   </el-form-item>
+                  <el-form-item v-else-if="Array.isArray(val) && val.length && typeof val[0] === 'object'">
+                    <template #label><el-tooltip :content="field" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
+                    <div style="width:100%">
+                      <div v-for="(row, idx) in config[item.key][field]" :key="idx" style="display:flex;gap:4px;margin-bottom:4px;align-items:center">
+                        <span style="min-width:20px;font-size:11px;color:#909399">{{ idx + 1 }}</span>
+                        <el-input v-for="(subVal, subKey) in row" :key="subKey" v-model="config[item.key][field][idx][subKey]" size="small" :placeholder="s(subKey)" style="flex:1" />
+                        <el-button size="small" type="danger" link @click="config[item.key][field].splice(idx, 1)">✕</el-button>
+                      </div>
+                      <el-button size="small" link type="primary" @click="config[item.key][field].push({})">+ 添加条目</el-button>
+                    </div>
+                  </el-form-item>
                   <el-form-item v-else-if="Array.isArray(val)">
                     <template #label><el-tooltip :content="field" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
                     <div class="cfg-field-row" style="flex-direction:column;align-items:stretch">

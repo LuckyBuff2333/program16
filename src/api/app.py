@@ -121,11 +121,18 @@ async def _on_startup():
         _flag = os.path.join(tempfile.gettempdir(), ".web_browser_opened")
         if not os.path.exists(_flag):
             import subprocess, sys
-            # 跨平台打开浏览器：Windows 用 start，Linux 用 xdg-open
-            if sys.platform == "win32":
-                threading.Timer(0.5, lambda: subprocess.Popen(["cmd", "/c", "start", "", _open_url])).start()
-            else:
-                threading.Timer(0.5, lambda: subprocess.Popen(["xdg-open", _open_url])).start()
+
+            def _open_browser(url: str):
+                """跨平台打开浏览器，xdg-open 会在已有窗口中新建标签页"""
+                if sys.platform == "win32":
+                    subprocess.Popen(["cmd", "/c", "start", "", url])
+                    return
+                # xdg-open 通过桌面协议复用已有浏览器实例开新标签页
+                subprocess.Popen(["xdg-open", url],
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+
+            threading.Timer(0.5, lambda: _open_browser(_open_url)).start()
             try:
                 with open(_flag, "w") as f:
                     f.write("1")

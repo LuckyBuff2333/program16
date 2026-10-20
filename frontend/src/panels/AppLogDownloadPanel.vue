@@ -6,9 +6,13 @@
 
     <el-card shadow="never" style="margin-top:14px">
       <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <el-radio-group v-model="source" size="default">
+          <el-radio-button label="pc">PC (10.22.126.133)</el-radio-button>
+          <el-radio-button label="online">线上 (10.203.67.142)</el-radio-button>
+        </el-radio-group>
         <el-button type="primary" :loading="downloading" @click="downloadLog" :disabled="downloading">
           <span v-if="!downloading" style="margin-right:4px">⬇</span>
-          {{ downloading ? '拉取中...' : '拉取 app.log' }}
+          {{ downloading ? '拉取中...' : `拉取 ${source === 'pc' ? 'PC' : '线上'} app.log` }}
         </el-button>
         <el-button type="success" plain @click="openFolder">
           📂 打开目录
@@ -45,6 +49,7 @@ export default {
   name: 'AppLogDownloadPanel',
   data() {
     return {
+      source: 'pc',
       downloading: false,
       statusMsg: '',
       statusOk: false,
@@ -59,7 +64,7 @@ export default {
       this.savedPath = '';
       const now = new Date().toLocaleString('zh-CN');
       try {
-        const resp = await fetch('/api/applog/download', {
+        const resp = await fetch(`/api/applog/download?source=${this.source}`, {
           signal: AbortSignal.timeout(130000),
         });
         const body = await resp.json();

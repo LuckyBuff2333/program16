@@ -233,27 +233,39 @@ async def test_jira_lookup(request: Request):
              or raw.count("=") > 0 and not raw.replace(",", "").replace(" ", "").isalnum()
     try:
         from src.clients import jira_client
+        import concurrent.futures as _cf
         rows = []; failed = []
+
+        def _fetch_one(bugid):
+            """并发拉取单个 Jira 详情，返回 (row_dict, error_dict)"""
+            try:
+                detail = jira_client.fetch_issue(bugid)
+                fields = detail.get("fields") or {}
+                _ai_f = fields.get("customfield_13714")
+                _has_ai = bool(_ai_f and str(_ai_f).strip() and str(_ai_f).strip().lower() not in ("none", "null"))
+                return {
+                    "key": (detail.get("key") or bugid).strip(),
+                    "summary": (fields.get("summary") or "")[:200] or "（无概要）",
+                    "status": ((fields.get("status") or {}).get("name") or "") or "-",
+                    "created": (fields.get("created") or "")[:10] or "-",
+                    "root_cause": jira_client.extract_rootcause(detail) or "（未填写）",
+                    "has_ai_preliminary": _has_ai,
+                }, None
+            except Exception as e:
+                return None, {"key": bugid, "error": str(e)[:120]}
+
         if is_jql:
             try:
                 issues = jira_client.search_issues(raw, max_results=500)
-                # 逐个拉取详情以拿到根因字段（search_issues 只返回基础字段）
-                for i in issues:
-                    bugid = (i.get("key") or "").strip()
-                    if not bugid:
-                        continue
-                    try:
-                        detail = jira_client.fetch_issue(bugid)
-                        fields = detail.get("fields") or {}
-                        rows.append({
-                            "key": bugid,
-                            "summary": (fields.get("summary") or (i.get("fields") or {}).get("summary") or "")[:200] or "（无概要）",
-                            "status": ((fields.get("status") or {}).get("name") or "") or "-",
-                            "created": (fields.get("created") or "")[:10] or "-",
-                            "root_cause": jira_client.extract_rootcause(detail) or "（未填写）",
-                        })
-                    except Exception as e:
-                        failed.append({"key": bugid, "error": str(e)[:120]})
+                bugids = [(i.get("key") or "").strip() for i in issues if i.get("key")]
+                bugids = [b for b in bugids if b]
+                # 并行拉取详情（15路并发）
+                with _cf.ThreadPoolExecutor(max_workers=15) as pool:
+                    for row, err in pool.map(_fetch_one, bugids):
+                        if row:
+                            rows.append(row)
+                        if err:
+                            failed.append(err)
             except Exception as e:
                 return _fail(f"JQL 查询失败: {e}")
         else:
@@ -263,19 +275,13 @@ async def test_jira_lookup(request: Request):
             for k in keys:
                 if k not in seen:
                     seen.add(k); dedup.append(k)
-            for bugid in dedup:
-                try:
-                    issue = jira_client.fetch_issue(bugid)
-                    fields = issue.get("fields") or {}
-                    rows.append({
-                        "key": (issue.get("key") or bugid).strip(),
-                        "summary": (fields.get("summary") or "")[:200] or "（无概要）",
-                        "status": ((fields.get("status") or {}).get("name") or "") or "-",
-                        "created": (fields.get("created") or "")[:10] or "-",
-                        "root_cause": jira_client.extract_rootcause(issue) or "（未填写）",
-                    })
-                except Exception as e:
-                    failed.append({"key": bugid, "error": str(e)[:120]})
+            # 并行拉取详情（15路并发）
+            with _cf.ThreadPoolExecutor(max_workers=15) as pool:
+                for row, err in pool.map(_fetch_one, dedup):
+                    if row:
+                        rows.append(row)
+                    if err:
+                        failed.append(err)
         msg = f"查询成功 {len(rows)} 条" + (f"，失败 {len(failed)} 条" if failed else "")
         return _ok({"total": len(rows) + len(failed), "success": len(rows),
                     "failed": len(failed), "mode": "jql" if is_jql else "keys",
@@ -4479,7 +4485,7 @@ async def study_analysis(request: Request):
 
 
 @router.get("/api/test/ai_report/{bugid}")
-async def get_ai_report(bugid: str):
+async def get_ai_report(bugid: str, source: str = "pc"):
     """获取 AI 日志分析报告：优先读本地 docs/日期/bugid.md，不存在则从远程下载并保存"""
     import httpx, os
     from src.config import PROJECT_ROOT
@@ -4495,8 +4501,16 @@ async def get_ai_report(bugid: str):
             "content": content, "bugid": bugid,
             "file_path": local_path, "dir_path": docs_dir, "source": "local",
         }, "本地已有报告")
-    # 远程下载
-    url = f"http://10.22.126.133:8001/api/logs/debug/{bugid}"
+    # 远程下载：根据 source 选择 PC 或线上服务器
+    cfg_all = load_config().get("app_log_server", {})
+    if source not in cfg_all and "host" in cfg_all:
+        cfg = cfg_all
+    else:
+        cfg = cfg_all.get(source, cfg_all.get("pc", {}))
+    host = cfg.get("host", "10.22.126.133")
+    port = cfg.get("port", 8001)
+    debug_endpoint = cfg.get("debug_endpoint", "/api/logs/debug")
+    url = f"http://{host}:{port}{debug_endpoint}/{bugid}"
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(url)
@@ -4512,9 +4526,9 @@ async def get_ai_report(bugid: str):
         return _ok({
             "content": content, "bugid": bugid,
             "file_path": local_path, "dir_path": docs_dir, "source": "remote",
-        }, "已下载并保存到本地")
+        }, f"已从 {source} 下载并保存到本地")
     except httpx.ConnectTimeout:
-        return _fail("连接超时，AI日志分析服务不可达")
+        return _fail(f"连接超时，AI日志分析服务({source})不可达")
     except Exception as e:
         return _fail(f"获取失败: {e}")
 

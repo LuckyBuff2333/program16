@@ -78,10 +78,12 @@
         </div>
 
         <div class="workspace-content">
-          <OnlinePage v-if="page === 'online'" :tab="tab" @update:tab="tab = $event" />
-          <TestPage v-else-if="page === 'testpage'" :test-panel="testPanel" />
-          <SmokePage v-else-if="page === 'smoke'" />
-          <RegressionPage v-else-if="page === 'regression'" />
+          <keep-alive>
+            <OnlinePage v-if="page === 'online'" :tab="tab" @update:tab="tab = $event" />
+            <TestPage v-else-if="page === 'testpage'" :test-panel="testPanel" />
+            <SmokePage v-else-if="page === 'smoke'" />
+            <RegressionPage v-else-if="page === 'regression'" />
+          </keep-alive>
         </div>
       </main>
     </div>
