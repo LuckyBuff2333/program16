@@ -253,6 +253,11 @@ def _normalize_datetime_text(text: str) -> str:
     text = re.sub(r'[\u2013\u2014\u2015\uFF0D]+', ' ', text)
     # 数字间的中文分号/半角分号替换为冒号（8；44 → 8:44, 8;44 → 8:44）
     text = re.sub(r'(\d)\s*[;；]\s*(\d)', r'\1:\2', text)
+    # 全角冒号替换为半角冒号（支持中文输入法场景）
+    # 中文标签后全角冒号 + 数字：加空格避免与独立时间正则冲突（测试时间：11：30 → 测试时间: 11:30）
+    text = re.sub(r'([^\d])\s*[\uFF1A]\s*(\d)', r'\1: \2', text)
+    # 数字间全角冒号（11：30 → 11:30）
+    text = re.sub(r'(\d)\s*[\uFF1A]\s*(\d)', r'\1:\2', text)
     # 时间冒号旁空格去除（14: 57 → 14:57，不影响日期部分）
     text = re.sub(r'(\d)\s*:\s*(\d)', r'\1:\2', text)
     return text
@@ -799,13 +804,13 @@ def _extract_times_from_text(text: str, year: str = "", date_str: str = "") -> l
             continue
     # ISO 8601 格式 YYYY-MM-DDTHH:MM:SS（支持时区转换）
     for match in _TIMESTAMP_ISO_RE.finditer(text):
-        date_str, time_str, tz_offset, z_suffix = match.group(1), match.group(2), match.group(3), match.group(4)
+        _iso_date, _iso_time, tz_offset, z_suffix = match.group(1), match.group(2), match.group(3), match.group(4)
         try:
-            ts = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+            ts = datetime.strptime(f"{_iso_date} {_iso_time}", "%Y-%m-%d %H:%M:%S")
             # UTC 时间（Z 后缀）转换为 UTC+8
             if z_suffix == "Z":
                 ts = ts + _UTC8_OFFSET
-                logger.debug("ISO时间 %sT%sZ 转换为 UTC+8: %s", date_str, time_str, ts)
+                logger.debug("ISO时间 %sT%sZ 转换为 UTC+8: %s", _iso_date, _iso_time, ts)
             # 带偏移量的非 UTC+8 时区也进行转换
             elif tz_offset and tz_offset not in ("+08:00", "-08:00"):
                 sign = 1 if tz_offset[0] == '+' else -1

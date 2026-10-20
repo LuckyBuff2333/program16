@@ -200,7 +200,7 @@
           </el-button>
         </div>
       </template>
-      <el-table :data="getFilteredDiagResults().filter(r => r.needs_analysis !== false)" size="small" stripe border max-height="320" row-key="bugid">
+      <el-table :data="getFilteredDiagResults()" size="small" stripe border max-height="320" row-key="bugid">
         <el-table-column type="index" label="#" width="45"></el-table-column>
         <el-table-column prop="bugid" label="Jira号" width="120"></el-table-column>
         <el-table-column prop="category" label="问题归类" width="170">
@@ -208,7 +208,14 @@
         </el-table-column>
         <el-table-column prop="done_time" label="分析完成时间" width="160"></el-table-column>
         <el-table-column prop="problem_time" label="错误时间" width="150"></el-table-column>
-        <el-table-column prop="detail" label="诊断详情" min-width="260" show-overflow-tooltip></el-table-column>
+        <el-table-column label="诊断详情" min-width="260">
+          <template #default="{row}">
+            <div v-if="isNewDetailFormat(row.detail)" style="white-space:pre-wrap;line-height:1.4;font-size:13px">
+              <div v-for="(line, idx) in row.detail.split('\n')" :key="idx" :style="getDetailLineStyle(line)">{{ line }}</div>
+            </div>
+            <span v-else>{{ row.detail }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="人工审核结果" min-width="200" show-overflow-tooltip>
           <template #default="{row}">
             <div v-if="troubleshoot.editingSkipBugid === row.bugid" style="display:flex;align-items:center;gap:4px">
@@ -241,31 +248,6 @@
       </el-table>
     </el-card>
 
-    <!-- 步骤③：报告内容 -->
-    <el-card v-if="troubleshoot.diagResults.length" shadow="never" style="margin-top:12px">
-      <template #header>
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <span style="font-weight:700">③ 报告内容</span>
-          <el-button size="small" type="primary" link @click="copyAllReports">全部复制</el-button>
-        </div>
-      </template>
-      <div style="max-height:400px;overflow:auto;padding:4px">
-        <div v-for="row in getFilteredDiagResults()" :key="row.bugid" style="margin-bottom:16px;border:1px solid #ebeef5;border-radius:8px;padding:12px;background:#fff;position:relative">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-            <div style="font-weight:700;font-size:15px;color:#303133">{{ row.bugid }}</div>
-            <el-button size="small" type="primary" link @click="copyReport(row)">复制</el-button>
-          </div>
-          <div v-if="row.report" style="font-size:13px;color:#606266;line-height:1.8">
-            <div v-if="row.correction_time" style="margin-bottom:4px"><span style="color:#409eff;font-weight:600">修正触发时间：</span><span style="color:#e6a23c;font-weight:600">{{ row.correction_time }}</span></div>
-            <div style="margin-bottom:4px"><span style="color:#409eff;font-weight:600">AI分析失败原因：</span><span>{{ row.report.ai_reason || '无' }}</span></div>
-            <div style="margin-bottom:4px"><span style="color:#409eff;font-weight:600">人工分析失败原因：</span><span>{{ row.report.human_reason || '无' }}</span></div>
-            <div v-if="row.report.retry_result" style="margin-bottom:4px"><span style="color:#409eff;font-weight:600">重试结果：</span><span>{{ row.report.retry_result }}</span></div>
-            <div style="margin-bottom:4px"><span style="color:#409eff;font-weight:600">问题归类：</span><span>{{ row.report.final_category || row.category }}</span></div>
-          </div>
-          <div v-else style="font-size:13px;color:#909399">暂无报告内容</div>
-        </div>
-      </div>
-    </el-card>
       </el-tab-pane>
 
       <!-- ==================== 单个排查 ==================== -->
@@ -818,6 +800,20 @@ export default {
     getTroubleshootFailedCount() {
       return this.troubleshoot.records.filter(r => r['分析结果'] === '失败').length;
     },
+    // 判断诊断详情是否为新格式（4行简洁格式）
+    isNewDetailFormat(detail) {
+      if (!detail) return false;
+      return detail.includes('评论提取到') || detail.includes('视频提取到') || detail.includes('图片提取到') || detail.includes('最终结果');
+    },
+    // 获取诊断详情行的样式
+    getDetailLineStyle(line) {
+      if (!line) return '';
+      if (line.startsWith('评论提取到')) return 'color:#409eff';
+      if (line.startsWith('视频提取到')) return 'color:#67c23a';
+      if (line.startsWith('图片提取到')) return 'color:#e6a23c';
+      if (line.startsWith('最终结果')) return 'font-weight:700;color:#303133';
+      return '';
+    },
     // 跳过排查的记录（needs_analysis === false）
     getSkipDiagResults() {
       return (this.troubleshoot.diagResults || []).filter(r => r.needs_analysis === false);
@@ -1043,7 +1039,8 @@ export default {
       return cats;
     },
     getFilteredDiagResults() {
-      const rows = this.troubleshoot.diagResults || [];
+      // 只返回"需要深入分析"的记录，根据类别筛选
+      const rows = (this.troubleshoot.diagResults || []).filter(r => r.needs_analysis !== false);
       const sorted = [...rows].sort((a, b) => {
         const ta = a.done_time ? new Date(a.done_time.replace(/-/g, '/')).getTime() : 0;
         const tb = b.done_time ? new Date(b.done_time.replace(/-/g, '/')).getTime() : 0;
@@ -1064,34 +1061,6 @@ export default {
         }
       }
       return out;
-    },
-    async copyReport(row) {
-      if (!row.report) { ElMessage.warning('暂无报告内容'); return; }
-      const lines = [];
-      if (row.correction_time) lines.push(`- 修正触发时间：${row.correction_time}`);
-      lines.push(`- AI分析失败原因：${row.report.ai_reason || '无'}`, `- 人工分析失败原因：${row.report.human_reason || '无'}`);
-      if (row.report.retry_result) lines.push(`- 重试结果：${row.report.retry_result}`);
-      lines.push(`- 问题归类：${row.report.final_category || row.category}`);
-      const text = `### ${row.bugid}\n${lines.join('\n')}`;
-      try { await navigator.clipboard.writeText(text); ElMessage.success(`${row.bugid} 报告已复制`); }
-      catch (e) { ElMessage.error('复制失败：' + (e.message || e)); }
-    },
-    async copyAllReports() {
-      const rows = this.getFilteredDiagResults() || [];
-      if (!rows.length) { ElMessage.warning('无报告内容'); return; }
-      const parts = [];
-      for (const row of rows) {
-        if (!row.report) continue;
-        const lines = [];
-        if (row.correction_time) lines.push(`- 修正触发时间：${row.correction_time}`);
-        lines.push(`- AI分析失败原因：${row.report.ai_reason || '无'}`, `- 人工分析失败原因：${row.report.human_reason || '无'}`);
-        if (row.report.retry_result) lines.push(`- 重试结果：${row.report.retry_result}`);
-        lines.push(`- 问题归类：${row.report.final_category || row.category}`);
-        parts.push(`### ${row.bugid}\n${lines.join('\n')}`);
-      }
-      if (!parts.length) { ElMessage.warning('无报告内容'); return; }
-      try { await navigator.clipboard.writeText(parts.join('\n\n')); ElMessage.success(`已复制 ${parts.length} 条报告`); }
-      catch (e) { ElMessage.error('复制失败：' + (e.message || e)); }
     },
     async batchWriteReview() {
       const items = this.getFilteredDiagResults()

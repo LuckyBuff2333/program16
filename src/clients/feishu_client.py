@@ -1728,6 +1728,15 @@ def list_folder_files(folder_token: str, recursive: bool = False) -> list:
                 continue
             logger.warning("列出文件夹文件超时（重试2次仍失败）: folder=%s", folder_token[:12])
             break
+        except (httpx.ConnectError, OSError) as e:
+            # 网络/DNS 瞬时故障重试
+            timeout_retries += 1
+            if timeout_retries <= 2:
+                import time
+                time.sleep(3)
+                continue
+            logger.warning("列出文件夹文件网络异常（重试2次仍失败）: %s", e)
+            break
         except Exception as e:
             logger.warning("列出文件夹文件异常: %s", e)
             break
