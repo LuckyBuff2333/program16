@@ -241,7 +241,27 @@ flowchart TD
 - **问题描述**：VCU-557682 视频封面清晰显示 5:38，但视频 OCR 被完全跳过，返回“提取失败”
 - **相关Bug号**：VCU-557682
 - **根因**：① `_diag_extract_time_from_video_simple` step 3 用 `"gmlogger" in fn_lower` 跳过了 gmlogger 压缩包，导致 `gmlogger(1).7z` 内的 `main.log_2026_10_19_6_56_11.gz` 等带日期文件未被探测，`ref_pool` 为空；② `ref_pool` 为空时函数直接 `return ""` 跳过整个视频 OCR；③ 包内 main 文件名小时为非零填充的 `6`，`_COMPACT_RE` 的 `\d{2}` 无法匹配单数字小时，误把 `6_56` 解析为分钟 65；④ Jira 附件创建时间带时区 (`+08:00`) 与 OCR 解析的 naive datetime 比较时抛 `can't subtract offset-naive and offset-aware datetimes`
-- **解决方案**：① 移除 step 3 的 gmlogger 跳过条件，让 gmlogger 压缩包也通过 `_diag_list_archive_entries` 探测内部 main.log 日期；② 为包内 main 文件添加下划线分隔格式的兆底解析（`20\d{2}_\d{1,2}_\d{1,2}_\d{1,2}_\d{1,2}`，支持 1-2 位小时/分钟）；③ `ref_pool` 为空时不再提前返回，继续尝试视频 OCR，并将 gmlogger 上传时间加入 `ref_pool` 作为兜底参考；④ 统一在 `_build_gmlogger_info`、`gm_ref_dt` 赋值、`_find_closest_gmlogger` 的 `video_upload` 处去除时区信息
+- **解决方案**：① 移除 step 3 的 gmlogger 跳过条件，让 gmlogger 压缩包也通过 `_diag_list_archive_entries` 探测内部 main.log 日期；② 为包内 main 文件添加下划线分隔格式的兆底解析（`20\d{2}_\d{1,2}_\d{1,2}_\d{1,2}_\d{1,2}`，支持 1-2 位小时/分钟）；③ `ref_pool` 为空时不再提前返回，继续尝试视频 OCR，并将 gmlogger 上传时间加入 `ref_pool` 作为兆底参考；④ 统一在 `_build_gmlogger_info`、`gm_ref_dt` 赋值、`_find_closest_gmlogger` 的 `video_upload` 处去除时区信息
 
 </details>
 
+<details>
+<summary><b>21. 诊断端点预归类保护与错误信息规则补全（2026-10-20）</b></summary>
+
+- **问题描述**：批量诊断失败记录时，预归类逻辑未生效，所有记录都走了完整 Jira 诊断流程（下载附件、视频 OCR 等），浪费时间和 API 调用
+- **相关Bug号**：VCU-557688, VCU-557547（HTTP 504）; VCU-557666, VCU-557757（解压后未找到可识别的日志文件）
+- **根因**：① 预归类仅在前端 `batch_pre_classify` 流程中执行，前端处理响应时未正确拆分 skip/need_analysis 记录导致全部进入诊断；② `_diag_pre_classify` 中 504/502 匹配规则仅匹配 "504 Gateway Timeout" 格式，实际错误信息为 "JIRA API 调用失败（HTTP 504）" 格式不匹配
+- **解决方案**：① 在 `/api/troubleshoot/diagnose` 端点内增加预归类保护——诊断前检查 err_msg，命中跳过类别时直接返回 `needs_analysis: false` 不查 Jira；② `_diag_pre_classify` 扩展 504/502/503 匹配规则（支持 "HTTP 504"/"HTTP 502"/"HTTP 503" 格式）；③ "解压后未找到可识别的日志文件" 不跳过诊断（可能是压缩格式问题，实际有日志），走深度诊断下载附件确认
+- **实现文件**：`src/api/routes/troubleshoot.py`（diagnose 端点预归类保护）、`src/services/troubleshoot_service.py`（`_diag_pre_classify` 规则补全）
+
+</details>
+
+<details>
+<summary><b>22. 批量写入人工审核结果 Pydantic 模型字段不匹配修复（2026-10-20）</b></summary>
+
+- **问题描述**：点击"批量写入人工审核结果"按钮后报"未匹配到任何记录"，但直接调用函数可正常匹配
+- **根因**：`ReviewItem` Pydantic 模型只定义了 `bugid: str` 和 `review: str = ""` 两个字段，但前端发送的是 `bugid`、`done_time`、`human_reason` 三个字段。Pydantic 静默丢弃了未定义的 `done_time` 和 `human_reason`，导致 `batch_write_review` 函数收到空 `human_reason` 被 `if not human_reason: continue` 跳过所有记录
+- **解决方案**：更新 `ReviewItem` 模型为 `bugid: str, done_time: str = "", human_reason: str = ""`，与前端发送字段完全匹配；同时在 `batch_write_review` 增加 bugid 兆底匹配（done_time 不精确匹配时取该 bugid 最新记录），增强健壮性
+- **实现文件**：`src/schemas/troubleshoot.py`（`ReviewItem` 字段修正）、`src/services/troubleshoot_service.py`（兆底匹配）
+
+</details>

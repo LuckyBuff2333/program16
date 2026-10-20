@@ -6114,14 +6114,14 @@ def _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force=
             if done_time:
                 cached["done_time"] = done_time
             return _ok(cached, f"{bugid} 诊断结果（本地缓存）")
-    # —— 无报错信息或“服务有报错”的记录不进行排查，直接跳过 ——
+    # —— 无报错信息或"服务有报错"的记录不进行排查，直接跳过 ——
     if not err_msg or err_msg == "服务有报错":
         skip_category = "服务关闭"
         report = _generate_troubleshoot_report(bugid, skip_category, err_msg, "")
         result = {"bugid": bugid, "category": skip_category, "problem_time": problem_time,
                   "archive_files": [], "detail": "多维表格记录无错误信息字段，无排查依据，已跳过",
                   "verify_status": "", "suggested_time": "", "report": report, "done_time": done_time}
-        # 跳过的记录不缓存，因为后续状态可能变化
+        _save_diagnose_cache(bugid, result)
         return _ok(result)
     # —— 预归类：无需附件比对即可判定的场景 ——
     pre = _diag_pre_classify(err_msg)
@@ -6131,7 +6131,7 @@ def _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force=
         result = {"bugid": bugid, "category": pre, "problem_time": problem_time,
                     "archive_files": [], "detail": f"根据失败原因预归类：{pre}{conn_tip}",
                     "verify_status": "", "suggested_time": "", "report": report, "done_time": done_time}
-        # 跳过的记录不缓存，因为后续状态可能变化
+        _save_diagnose_cache(bugid, result)
         return _ok(result)
     # —— 触发时间排查模式：日志为空 / 未找到有效日志文件 / 其他未命中模式均进入附件比对 ——
     # —— 提取错误时间（优先前端传入，其次从失败原因文本提取）——

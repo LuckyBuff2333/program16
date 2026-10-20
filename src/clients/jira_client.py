@@ -69,16 +69,24 @@ def fetch_issue(bugid: str) -> dict:
     url = f"{cfg['url']}/{bugid}"
     logger.info("调用 Jira RESTAPI (GET): %s", url)
     # expand=comment,names 确保返回评论区数据 + 字段显示名映射，否则 Jira API 默认不包含
-    # 429 限流重试：最多 3 次，指数退避
+    # 429 限流重试：读取 Retry-After 响应头，无则指数退避（30s → 60s → 120s）
     import httpx
-    max_retries = 3
+    max_retries = 5
     for attempt in range(max_retries):
         try:
             return http_get(url, params={"expand": "comment,names"}, timeout=cfg.get("timeout", 30), auth=auth, headers=headers)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429 and attempt < max_retries - 1:
-                wait = 2 ** (attempt + 1)
-                logger.warning("Jira 429 限流，%ds 后重试 (%d/%d): %s", wait, attempt + 1, max_retries, bugid)
+                resp_headers = dict(e.response.headers)
+                retry_after = e.response.headers.get("retry-after", "")
+                x_ratelimit = e.response.headers.get("x-ratelimit-reset", "")
+                # 优先使用服务器返回的 Retry-After 秒数，否则指数退避
+                if retry_after.isdigit():
+                    wait = int(retry_after) + 2
+                else:
+                    wait = 30 * (2 ** attempt)
+                logger.warning("Jira 429 限流，%ds 后重试 (%d/%d): %s | headers: retry-after=%s, x-ratelimit-reset=%s",
+                               wait, attempt + 1, max_retries, bugid, retry_after or 'N/A', x_ratelimit or 'N/A')
                 import time; time.sleep(wait)
             else:
                 raise

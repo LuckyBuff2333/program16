@@ -50,7 +50,8 @@ class UpdateCacheRequest(BaseModel):
 class ReviewItem(BaseModel):
     """单条审核写入项"""
     bugid: str
-    review: str = ""
+    done_time: str = ""
+    human_reason: str = ""
 
 
 class BatchWriteReviewRequest(BaseModel):

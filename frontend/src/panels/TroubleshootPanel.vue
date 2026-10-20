@@ -79,10 +79,6 @@
         </el-button>
         <el-checkbox v-model="troubleshoot.execOnlyEmptyReview" style="margin-left:8px">仅执行人工审核为空的记录</el-checkbox>
         <el-checkbox v-model="troubleshoot.skipVideoCache" style="margin-left:8px">跳过视频缓存</el-checkbox>
-        <el-button type="info" :loading="troubleshoot.preClassifying" @click="preClassifyRecords"
-          :disabled="!troubleshoot.records.filter(r => r['分析结果'] === '失败').length">
-          批量预归类（{{ troubleshoot.records.filter(r => r['分析结果'] === '失败').length }} 条）
-        </el-button>
       </div>
       <!-- 成功记录表格 -->
       <template v-if="troubleshoot.successRecords && troubleshoot.successRecords.length">
@@ -215,8 +211,18 @@
         <el-table-column prop="detail" label="诊断详情" min-width="260" show-overflow-tooltip></el-table-column>
         <el-table-column label="人工审核结果" min-width="200" show-overflow-tooltip>
           <template #default="{row}">
-            <span v-if="row.report && row.report.human_reason" style="color:#e6a23c;font-weight:600">{{ row.report.human_reason }}</span>
-            <span v-else style="color:#c0c4cc">-</span>
+            <div v-if="troubleshoot.editingSkipBugid === row.bugid" style="display:flex;align-items:center;gap:4px">
+              <el-input v-model="troubleshoot.editingSkipReason" size="small" placeholder="输入人工审核结果" autofocus
+                @keyup.enter="saveSkipHumanReason(row)"></el-input>
+              <el-button size="small" type="success" link @click="saveSkipHumanReason(row)">保存</el-button>
+              <el-button size="small" type="info" link @click="troubleshoot.editingSkipBugid=''">取消</el-button>
+            </div>
+            <div v-else style="display:flex;align-items:center;gap:6px">
+              <span v-if="row.report && row.report.human_reason"
+                :style="isTimeDifferent(row) ? 'color:#67c23a;font-weight:600' : 'color:#e6a23c;font-weight:600'">{{ row.report.human_reason }}</span>
+              <span v-else style="color:#c0c4cc">-</span>
+              <el-button link size="small" type="primary" style="color:#909399;font-size:12px" @click="startEditSkipHuman(row)">编辑</el-button>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="解压后文件名" width="130" align="center">
@@ -748,9 +754,11 @@ export default {
             })),
           }),
         });
+        console.log('[预归类] 服务器返回:', JSON.stringify(preBody).substring(0, 500));
         const preData = preBody.data || {};
         const skipRecords = preData.skip || [];
         const needRecords = preData.need_analysis || [];
+        console.log(`[预归类] skip=${skipRecords.length}, need=${needRecords.length}`, needRecords.map(r => r.bugid));
         // 将预归类结果立即加入 diagResults（跳过表马上展示）
         for (const s of skipRecords) {
           this.troubleshoot.diagResults.push({
@@ -766,9 +774,24 @@ export default {
         // 阶段二：仅对剩余需分析的记录执行完整诊断
         if (this.troubleshoot.stopFlag) { this.troubleshoot.diagRunning = false; return; }
         const needBugids = new Set(needRecords.map(r => r.bugid));
-        const queue = uniqueTargets.filter(r => needBugids.has(r['jira号']));
+        // 已有缓存结果的直接展示，不重新诊断
+        const cachedNeed = needRecords.filter(r => r.detail || (r.report && r.report.ai_reason));
+        for (const c of cachedNeed) {
+          this.troubleshoot.diagResults.push({
+            bugid: c.bugid, category: c.category, done_time: c.done_time,
+            problem_time: c.problem_time, detail: c.detail || '',
+            err_msg: c.err_msg || '', archive_files: [], verify_status: c.verify_status || '',
+            suggested_time: c.suggested_time || '', report: c.report || {}, needs_analysis: true,
+          });
+        }
+        const cachedBugids = new Set(cachedNeed.map(r => r.bugid));
+        const queue = uniqueTargets.filter(r => needBugids.has(r['jira号']) && !cachedBugids.has(r['jira号']));
+        console.log(`[预归类] 诊断队列: cached=${cachedNeed.length}, pending=${queue.length}条`);
         const worker = async () => {
-          while (queue.length && !this.troubleshoot.stopFlag) { await this._diagnoseRow(queue.shift()); }
+          while (queue.length && !this.troubleshoot.stopFlag) {
+            await this._diagnoseRow(queue.shift());
+            if (queue.length) await new Promise(r => setTimeout(r, 3000));
+          }
         };
         await worker();
       } catch (e) {
@@ -812,10 +835,115 @@ export default {
       this.troubleshoot.editingSkipBugid = row.bugid;
       this.troubleshoot.editingSkipReason = (row.report && row.report.human_reason) || '';
     },
-    saveSkipHumanReason(row) {
-      if (!row.report) row.report = {};
-      row.report.human_reason = this.troubleshoot.editingSkipReason;
-      this.troubleshoot.editingSkipBugid = '';
+    // 需分析表格行样式：分析完成时间与错误时间不同，或已保存人工审核时标绿
+    diagRowClassName({ row }) {
+      const hasReview = row.report && row.report.human_reason;
+      const timeDiff = row.done_time && row.problem_time && row.done_time !== row.problem_time;
+      if (hasReview || timeDiff) return 'row-green';
+      return '';
+    },
+    // 跳过排查表格行样式：已保存人工审核时标绿
+    skipRowClassName({ row }) {
+      if (row.report && row.report.human_reason) return 'row-green';
+      return '';
+    },
+    // 判断人工审核结果中的时间与错误时间是否不同（比较完整日期+时间）
+    isTimeDifferent(row) {
+      if (!row.problem_time || !row.report || !row.report.human_reason) return false;
+      const extractDateTime = (s) => {
+        const m = s.match(/(\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?)/);
+        return m ? m[1].replace(/\s+/g, ' ').trim() : '';
+      };
+      // 从人工审核结果文本中提取完整日期时间
+      const humanDT = extractDateTime(row.report.human_reason);
+      // 从错误时间中提取完整日期时间
+      const problemDT = extractDateTime(row.problem_time);
+      if (!humanDT || !problemDT) return false;
+      return humanDT !== problemDT;
+    },
+    // 根据人工审核文本自动匹配分类
+    classifyHumanReason(text) {
+      if (!text) return '';
+      const t = text.toLowerCase();
+      // 触发时间问题
+      if (/时间添加|时间异常|触发时间|未找到问题时间/.test(text)) return '触发时间问题';
+      // 并发过多
+      if (/并发过多|接口拥堵|手动中断|jira\s*server|过载|网络抖动/.test(t)) return '并发过多';
+      // 分析任务执行超时
+      if (/执行超时|jira.*分析任务.*超时/.test(t)) return '分析任务执行超时，跳过排查';
+      // IT侧服务停止
+      if (/模型调用失败|it侧服务停止|服务停止/.test(t)) return 'IT侧服务停止';
+      // 服务关闭
+      if (/服务关闭|服务有报错|server\s*disconnected/.test(t)) return '服务关闭';
+      // 问题重复
+      if (/问题重复|重复/.test(text)) return '问题重复';
+      // 问题未复现
+      if (/未复现|不复现/.test(text)) return '问题未复现';
+      // 无gmlogger
+      if (/无gmlogger|gmlogger文件已上传|无可下载.*日志/.test(t)) return '无gmlogger';
+      // 解压问题
+      if (/解压|unrar|rar5/.test(t)) return '解压问题';
+      // 磁盘空间不足
+      if (/磁盘空间不足|no space left/.test(t)) return '磁盘空间不足';
+      // 分析can信号
+      if (/分析can信号|can信号/.test(t)) return '分析can信号导致超时';
+      // 待后端开发排查
+      if (/待后端开发排查|httpstatuserror/.test(t)) return '待后端开发排查';
+      // 日志过滤逻辑
+      if (/损坏|日志文件已损坏|日志过滤/.test(text)) return '日志过滤逻辑';
+      return '';
+    },
+    async saveSkipHumanReason(row) {
+      const newReason = this.troubleshoot.editingSkipReason;
+      if (!newReason || !newReason.trim()) {
+        ElMessage.warning('请输入审核内容');
+        return;
+      }
+      // 替换整个 report 对象以强制触发 Vue 响应式更新
+      const oldReport = row.report || {};
+      row.report = { ...oldReport, human_reason: newReason };
+      // 根据输入文本自动归类匹配
+      const newCategory = this.classifyHumanReason(newReason);
+      if (newCategory) {
+        row.category = newCategory;
+        // 更新 needs_analysis 标记：跳过类别设为 false
+        const skipCats = new Set(['待后端开发排查', '磁盘空间不足', '服务关闭', '并发过多', 'IT侧服务停止',
+          '接口连接问题', '接口响应问题', '分析任务执行超时，跳过排查', '问题重复', '问题未复现', '无gmlogger']);
+        row.needs_analysis = !skipCats.has(newCategory);
+      }
+      // 同步到本地诊断缓存，确保下次批量诊断能读到最新值
+      try {
+        await api('/api/troubleshoot/update_cache', {
+          method: 'POST',
+          body: JSON.stringify({
+            bugid: row.bugid,
+            human_reason: newReason,
+            category: newCategory || undefined,
+          }),
+        });
+        const catHint = newCategory ? `（归类：${newCategory}）` : '';
+        ElMessage({ type: 'success', message: `${row.bugid} 保存成功${catHint}`, duration: 2500, showClose: true });
+        // 触发时间问题：提取时间并写入云端触发时间表
+        if (newCategory === '触发时间问题') {
+          const timeMatch = newReason.match(/(\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?)/);
+          if (timeMatch) {
+            try {
+              await api('/api/trigger_time/batch_update', {
+                method: 'POST',
+                body: JSON.stringify({ items: [{ bugid: row.bugid, new_time: timeMatch[1] }] }),
+              });
+              ElMessage({ type: 'success', message: `云端触发时间已更新为 ${timeMatch[1]}`, duration: 2000, showClose: true });
+            } catch (e2) {
+              ElMessage({ type: 'warning', message: `云端写入失败: ${e2.message || e2}`, duration: 3000, showClose: true });
+            }
+          }
+        }
+      } catch (e) {
+        ElMessage({ type: 'warning', message: `${row.bugid} 本地已保存，但缓存同步失败: ${e.message || e}`, duration: 4000, showClose: true });
+      } finally {
+        // 保存完成后退出编辑状态
+        this.troubleshoot.editingSkipBugid = '';
+      }
     },
     // 需深入分析的记录（needs_analysis !== false）
     getAnalysisDiagResults() {
@@ -1075,4 +1203,5 @@ export default {
 .troubleshoot-tabs { border-radius: 8px; }
 .troubleshoot-tabs :deep(.el-tabs__content) { padding: 16px; overflow: visible; }
 .diag-action-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #dcdfe6; }
+:deep(.row-green td) { background-color: transparent !important; }
 </style>

@@ -96,22 +96,15 @@ async def batch_update_trigger_time(req: BatchUpdateRequest):
     items = req.items
     if not items:
         return _fail("待应用列表为空")
-    valid_items, skip_corrected = {}, 0
+    valid_items = {}
     for item in items:
         bugid = item.bugid.strip()
         new_time = item.new_time.strip()
         if not bugid or not new_time:
             continue
-        cached = _load_diagnose_cache(bugid)
-        if cached and cached.get("verify_status") == "corrected":
-            skip_corrected += 1
-            continue
         valid_items[bugid] = new_time
     if not valid_items:
-        msg = "无待应用记录"
-        if skip_corrected:
-            msg += f"（已修正跳过 {skip_corrected} 条）"
-        return _fail(msg)
+        return _fail("待应用列表为空")
     cloud_ok = _batch_save_trigger_times_to_cloud(valid_items)
     if not cloud_ok:
         return _fail("云端写入失败")
@@ -125,9 +118,7 @@ async def batch_update_trigger_time(req: BatchUpdateRequest):
             cache_updated += 1
     success = len(valid_items)
     msg = f"批量应用完成：成功 {success} 条"
-    if skip_corrected:
-        msg += f"，已修正跳过 {skip_corrected} 条"
-    return _ok({"success": success, "failed": 0, "skip_corrected": skip_corrected}, msg)
+    return _ok({"success": success, "failed": 0}, msg)
 
 
 @router.post("/api/trigger_time/re_extract_scan", response_model=ApiResponse)

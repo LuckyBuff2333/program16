@@ -1664,12 +1664,20 @@ def list_folder_files(folder_token: str, recursive: bool = False) -> list:
     sub_folders = []
     page_token = ""
     auth_attempts = 0  # 认证重试次数，最多 2 次（403→user_token, 401→refresh）
+    server_retry = 0  # 服务端 500 重试次数，最多 3 次
     while True:
         params = {"folder_token": folder_token, "page_size": 200}
         if page_token:
             params["page_token"] = page_token
         try:
             resp = httpx.get(url, headers=headers, params=params, timeout=30, verify=False)
+            # 服务端 5xx 错误：等待后重试，最多 3 次
+            if resp.status_code >= 500 and server_retry < 3:
+                server_retry += 1
+                import time
+                time.sleep(2 * server_retry)  # 递增等待：2s/4s/6s
+                page_token = ""  # 重置分页
+                continue
             # 403 权限不足：尝试切换到 user_access_token
             if resp.status_code == 403 and auth_attempts < 2:
                 auth_attempts += 1
@@ -1691,6 +1699,7 @@ def list_folder_files(folder_token: str, recursive: bool = False) -> list:
             if data.get("code") != 0:
                 logger.error("列出文件夹文件失败: %s (code=%s)", data.get("msg"), data.get("code"))
                 break
+            server_retry = 0  # 成功请求，重置服务端重试计数
             items = data.get("data", {}).get("files", [])
             for item in items:
                 f_token = item.get("token", "")

@@ -92,11 +92,14 @@ def troubleshoot_diagnose(req: DiagnoseRequest):
     )
     from src.services.server_legacy import (
         _load_diagnose_cache,
+        _save_diagnose_cache,
         _save_video_time_cache,
         _load_video_time_cache,
         _troubleshoot_diagnose_impl,
         _SKIP_ANALYSIS_CATEGORIES,
     )
+    from src.services.troubleshoot_service import _diag_pre_classify
+    from src.services.report_ops import _generate_troubleshoot_report
     bugid = req.bugid.strip()
     err_msg = req.err_msg.strip()
     problem_time = req.problem_time.strip()
@@ -105,6 +108,24 @@ def troubleshoot_diagnose(req: DiagnoseRequest):
     skip_video_cache = req.skip_video_cache
     if not bugid:
         return fail("bugid 不能为空")
+    # 预归类保护：错误信息命中跳过类别时直接返回，不执行诊断
+    if not force:
+        _pre_cat = ""
+        if not err_msg or err_msg == "服务有报错":
+            _pre_cat = "服务关闭"
+        else:
+            _pre_cat = _diag_pre_classify(err_msg)
+        if _pre_cat and _pre_cat in _SKIP_ANALYSIS_CATEGORIES:
+            _pre_report = _generate_troubleshoot_report(bugid, _pre_cat, err_msg, f"预归类：{_pre_cat}")
+            _pre_result = {
+                "bugid": bugid, "category": _pre_cat, "needs_analysis": False,
+                "done_time": done_time, "problem_time": problem_time,
+                "err_msg": err_msg[:200], "report": _pre_report,
+                "detail": f"根据失败原因预归类：{_pre_cat}",
+                "archive_files": [], "verify_status": "", "suggested_time": "",
+            }
+            _save_diagnose_cache(bugid, _pre_result)
+            return ok(_pre_result, f"{bugid} 预归类跳过：{_pre_cat}")
     if skip_video_cache:
         cache = _load_video_time_cache()
         prefix = f"{bugid}:"
@@ -150,13 +171,16 @@ def troubleshoot_update_cache(req: UpdateCacheRequest):
         cached["suggested_time"] = req.correction_time
     if req.correction_note is not None:
         cached["correction_note"] = req.correction_note
-    if req.human_reason is not None and isinstance(cached.get("report"), dict):
+    if req.human_reason is not None:
+        if not isinstance(cached.get("report"), dict):
+            cached["report"] = {}
         cached["report"]["human_reason"] = req.human_reason
     if req.category is not None:
         new_category = req.category
         cached["category"] = new_category
-        if isinstance(cached.get("report"), dict):
-            cached["report"]["final_category"] = new_category
+        if not isinstance(cached.get("report"), dict):
+            cached["report"] = {}
+        cached["report"]["final_category"] = new_category
     _save_diagnose_cache(bugid, cached)
     return ok(None, f"{bugid} 诊断缓存已更新")
 

@@ -266,6 +266,8 @@ def batch_write_review(items: list[dict], only_empty_review: bool = False) -> di
 
     records = feishu_client.list_bitable_records(app_token, table_id)
     index = {}
+    # 同时建立 bugid -> [record_ids] 索引用于兑底匹配
+    bugid_index = {}
     for rec in records:
         fields = rec.get("fields", {})
         jira_no = _bitable_text(fields.get(bugid_field, ""))
@@ -273,6 +275,8 @@ def batch_write_review(items: list[dict], only_empty_review: bool = False) -> di
         done_time = done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else ""
         if jira_no and done_time:
             index[(jira_no, done_time)] = rec["record_id"]
+        if jira_no:
+            bugid_index.setdefault(jira_no, []).append(rec["record_id"])
 
     updates = []
     matched, unmatched, skipped = 0, 0, 0
@@ -283,6 +287,20 @@ def batch_write_review(items: list[dict], only_empty_review: bool = False) -> di
         if not bugid or not human_reason:
             continue
         rid = index.get((bugid, done_time))
+        if not rid:
+            # 兑底：仅用 bugid 匹配（取该 bugid 最新的一条记录）
+            fallback_ids = bugid_index.get(bugid, [])
+            if fallback_ids:
+                # 尝试通过 (bugid, done_time) 精确匹配，失败则取第一条
+                for k, v in index.items():
+                    if k[0] == bugid and v in fallback_ids:
+                        rid = v
+                        break
+                if not rid:
+                    rid = fallback_ids[0]
+                logger.info("batch_write_review: (%s, '%s') 未精确匹配，兑底用 record_id=%s", bugid, done_time, rid)
+            else:
+                logger.warning("batch_write_review: bugid=%s 在多维表格中不存在", bugid)
         if rid:
             if only_empty_review:
                 cur = next((r for r in records if r["record_id"] == rid), None)
@@ -360,6 +378,7 @@ _SKIP_ANALYSIS_CATEGORIES = {
     "待后端开发排查", "磁盘空间不足", "服务关闭",
     "并发过多", "IT侧服务停止", "接口连接问题", "接口响应问题",
     "分析任务执行超时，跳过排查", "问题重复", "问题未复现",
+    "无gmlogger",
 }
 
 
@@ -392,8 +411,9 @@ def _diag_pre_classify(err_msg: str) -> str:
     if ("adjudication" in msg or "未获取有效响应" in msg or "LLM 调用失败" in msg
             or "分析报告生成失败" in msg):
         return "并发过多"
-    # 504/502 网关错误 → 并发过多
-    if "504 Gateway Timeout" in msg or "502 Bad Gateway" in msg:
+    # 504/502 网关错误 → 并发过多（支持多种格式）
+    if ("504 Gateway Timeout" in msg or "502 Bad Gateway" in msg
+            or "HTTP 504" in msg or "HTTP 502" in msg or "HTTP 503" in msg):
         return "并发过多"
     # server disconnected → 服务关闭
     if "server disconnected" in msg.lower() or "disconnected without sending" in msg.lower():
@@ -410,12 +430,16 @@ def _diag_pre_classify(err_msg: str) -> str:
         return "待后端开发排查"
     if "时间过滤后日志为空" in msg or "未找到有效的日志文件" in msg:
         return ""  # 需下载附件比对时间后才能判定
+    # 解压后未找到可识别日志 → 可能是格式问题，需深度诊断下载附件确认
+    if "解压后未找到可识别的日志文件" in msg:
+        return ""  # 不代表无日志，可能是压缩格式不支持
     return ""  # 未匹配已知规则，走正常深度分析流程
 
 
 def batch_pre_classify(records: list[dict]) -> dict:
     """批量预归类：根据错误信息和人工审核结果快速分类，跳过无需深度分析的记录"""
     from src.services.report_ops import _generate_troubleshoot_report
+    from src.services.server_legacy import _load_diagnose_cache, _save_diagnose_cache
     if not records:
         return {"skip": [], "need_analysis": [], "message": "无记录"}
     skip_list, need_list = [], []
@@ -426,10 +450,33 @@ def batch_pre_classify(records: list[dict]) -> dict:
         done_time = rec.get("done_time", "")
         problem_time = rec.get("problem_time", "")
         category = ""
-        # 1. 无报错信息或“服务有报错” → 服务关闭
+        # 0. 优先检查本地诊断缓存，有则直接复用历史结果
+        cached = _load_diagnose_cache(bugid) if bugid else None
+        if cached and cached.get("category"):
+            cached_cat = cached["category"]
+            entry = {
+                "bugid": bugid, "category": cached_cat,
+                "done_time": done_time or cached.get("done_time", ""),
+                "problem_time": problem_time or cached.get("problem_time", ""),
+                "err_msg": err_msg[:200],
+                "report": cached.get("report", {}),
+                "detail": cached.get("detail", ""),
+                "needs_analysis": cached_cat not in _SKIP_ANALYSIS_CATEGORIES,
+                "suggested_time": cached.get("suggested_time", ""),
+                "verify_status": cached.get("verify_status", ""),
+            }
+            if cached_cat in _SKIP_ANALYSIS_CATEGORIES:
+                skip_list.append(entry)
+            else:
+                need_list.append(entry)
+            continue
+        # 1. 无报错信息或"服务有报错" → 服务关闭
         if not err_msg or err_msg == "服务有报错":
             category = "服务关闭"
-        # 2. 人工审核结果倒推（从多维表格读取）
+        # 2. 错误信息预归类（优先级最高，按文档规则直接匹配）
+        if not category:
+            category = _diag_pre_classify(err_msg)
+        # 3. 人工审核结果倒推（仅在错误信息未命中时兑底）
         if not category and human_review and human_review not in ("-", "None"):
             if "并发过多" in human_review or "接口拥堵" in human_review or "手动中断" in human_review:
                 category = "并发过多"
@@ -463,25 +510,22 @@ def batch_pre_classify(records: list[dict]) -> dict:
                 category = "解压问题"
             elif "分析can信号" in human_review:
                 category = "分析can信号导致超时"
-        # 3. 错误信息预归类
-        if not category:
-            category = _diag_pre_classify(err_msg)
         entry = {"bugid": bugid, "category": category or "", "done_time": done_time,
                  "problem_time": problem_time, "err_msg": err_msg[:200]}
-        # 结论明确的归类（即使不在跳过列表中）也自动生成报告
-        _AUTO_REPORT_CATEGORIES = {"无gmlogger", "无gmlogger文件"}
+        # 结论明确的归类自动生成报告并跳过深度诊断
         if category and category in _SKIP_ANALYSIS_CATEGORIES:
             report = _generate_troubleshoot_report(bugid, category, err_msg, f"预归类：{category}")
             entry["report"] = report
             entry["detail"] = f"根据失败原因/人工审核预归类：{category}"
             entry["needs_analysis"] = False
+            # 持久化到本地诊断缓存，下次批量诊断直接复用
+            if bugid:
+                _save_diagnose_cache(bugid, {
+                    "bugid": bugid, "category": category, "problem_time": problem_time,
+                    "archive_files": [], "detail": entry["detail"],
+                    "verify_status": "", "suggested_time": "", "report": report, "done_time": done_time,
+                })
             skip_list.append(entry)
-        elif category in _AUTO_REPORT_CATEGORIES:
-            report = _generate_troubleshoot_report(bugid, category, err_msg, f"预归类：{category}",
-                                                   problem_time=problem_time)
-            entry["report"] = report
-            entry["needs_analysis"] = True
-            need_list.append(entry)
         else:
             entry["needs_analysis"] = True
             need_list.append(entry)
