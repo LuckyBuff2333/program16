@@ -115,7 +115,10 @@ def mount_frontend_assets(app):
     """挂载前端构建产物的 assets 目录（Vite 构建后的 JS/CSS）"""
     assets_dir = os.path.join(_FRONTEND_DIST, "assets")
     if os.path.isdir(assets_dir):
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+        # 禁用 ETag，避免 304 缓存导致前端更新不生效
+        _static = StaticFiles(directory=assets_dir)
+        _static.is_not_modified = lambda *a, **kw: False
+        app.mount("/assets", _static, name="frontend-assets")
     # 挂载 reports 目录，使报告 HTML 可通过浏览器访问
     reports_dir = os.path.join(PROJECT_ROOT, "reports")
     if os.path.isdir(reports_dir):

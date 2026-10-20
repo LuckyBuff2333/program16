@@ -16,6 +16,7 @@
       </div>
       <div class="preset-bar" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
         <el-button size="small" type="danger" :loading="todayBugLoading" @click="queryTodayNewBugs">今日新增 Bug</el-button>
+        <el-button size="small" type="warning" @click="queryYesterdayNewBugs">昨日新增 Bug</el-button>
         <el-button size="small" type="primary" @click="fillSummaryQuery">描述查 Jira 号</el-button>
       </div>
     </el-card>
@@ -144,6 +145,17 @@ export default {
         this.loading = false;
         this.todayBugLoading = false;
       }
+    },
+    queryYesterdayNewBugs() {
+      this.query = 'created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND issuetype = "bug" AND status != "closed"';
+      setTimeout(() => {
+        const el = document.querySelector('textarea');
+        if (el) {
+          el.focus();
+          const len = this.query.length;
+          (el as HTMLTextAreaElement).setSelectionRange(len, len);
+        }
+      }, 30);
     },
     copyAllKeys() {
       if (!this.rows.length) return ElMessage.warning('暂无结果');
