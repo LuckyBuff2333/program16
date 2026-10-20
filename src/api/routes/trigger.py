@@ -174,10 +174,11 @@ async def re_extract_scan(req: ReExtractScanRequest):
 @router.post("/api/trigger_time/re_extract", response_model=ApiResponse)
 async def re_extract(req: BugidListRequest):
     """对指定的 bugid 列表重新提取触发时间（视频优先）"""
-    from src.services.server_legacy import _diag_extract_time_from_video_simple
+    from src.services.server_legacy import _diag_extract_time_from_video_simple, _diag_extract_time_from_images
     from src.services.trigger_ops import _save_trigger_time_to_cloud
     from src.api.routes.shared import ok as _ok, fail as _fail
     from src.clients import jira_client as _jc
+    from src.config import load_config
     bugids = req.bugids
     if not bugids:
         return _fail("待重新提取列表为空")
@@ -192,7 +193,21 @@ async def re_extract(req: BugidListRequest):
                 issue = await loop.run_in_executor(None, _jc.fetch_issue, bugid)
                 tt = await loop.run_in_executor(None, _diag_extract_time_from_video_simple, issue)
                 if not tt:
-                    tt = await loop.run_in_executor(None, _jc.extract_trigger_time_from_issue, issue)
+                    tt = await loop.run_in_executor(None, lambda iss=issue: _jc.extract_trigger_time_from_issue(iss, skip_attachment=True))
+                # 图片 OCR 兑底
+                if not tt:
+                    cfg_api = load_config().get("jira_api", {})
+                    img_h, img_tok = {}, cfg_api.get("token", "")
+                    if img_tok:
+                        img_h["Authorization"] = f"Bearer {img_tok}"
+                    img_to = max(int(cfg_api.get("timeout", 30)), 120)
+                    img_result = await loop.run_in_executor(None, _diag_extract_time_from_images, issue, img_h, img_to, bugid)
+                    img_tt = img_result[0] if isinstance(img_result, tuple) else img_result
+                    if img_tt:
+                        tt = img_tt
+                # 附件文件名最终兑底
+                if not tt:
+                    tt = await loop.run_in_executor(None, _jc.extract_attachment_time, issue)
                 status = ((issue.get("fields") or {}).get("status") or {}).get("name", "")
                 if tt:
                     await loop.run_in_executor(None, _save_trigger_time_to_cloud, bugid, tt)
@@ -425,15 +440,15 @@ async def batch_extract_time(request: Request):
                     return bugid, "", "no_gmlogger", None
                 # 评论/字段提取优先
                 _SRC_MAP = {"标题": "summary", "评论": "comment", "字段": "custom_field", "描述": "description", "附件名": "attachment_name"}
-                tt, _src_label = _jc.extract_trigger_time_from_issue(issue, return_source=True)
+                tt, _src_label = _jc.extract_trigger_time_from_issue(issue, return_source=True, skip_attachment=True)
                 source = _SRC_MAP.get(_src_label, "jira_comment") if tt else ""
                 if not tt:
-                    # 视频 OCR 兜底
+                    # 视频 OCR 兑底
                     tt = _diag_extract_time_from_video_simple(issue)
                     if tt:
                         source = "video_ocr"
                 if not tt:
-                    # 图片 OCR 兜底
+                    # 图片 OCR 兑底
                     img_h = {}
                     if img_tok:
                         img_h["Authorization"] = f"Bearer {img_tok}"
@@ -441,6 +456,11 @@ async def batch_extract_time(request: Request):
                     if img_tt:
                         tt = img_tt
                         source = "image_ocr"
+                # 附件文件名最终兑底
+                if not tt:
+                    tt = _jc.extract_attachment_time(issue)
+                    if tt:
+                        source = "attachment_name"
                 if tt:
                     if not isinstance(tt, str):
                         tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)

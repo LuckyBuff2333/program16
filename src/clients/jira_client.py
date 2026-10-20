@@ -847,7 +847,7 @@ def _extract_times_from_text(text: str, year: str = "", date_str: str = "") -> l
     return times
 
 
-def extract_trigger_time_from_issue(issue: dict, return_source: bool = False):
+def extract_trigger_time_from_issue(issue: dict, return_source: bool = False, skip_attachment: bool = False):
     """从 issue 中提取触发时间，按优先级逐级回退
 
     提取顺序：
@@ -855,9 +855,10 @@ def extract_trigger_time_from_issue(issue: dict, return_source: bool = False):
     2. 自定义字段（Operation Schedule > Unit Test > Initial Setting）
     3. 评论区（按时间正序，跳过AI分析评论，优先日志相关行）
     4. 描述(description)
-    5. 附件文件名（兑底）
+    5. 附件文件名（兑底，skip_attachment=True 时跳过此步）
 
     :param return_source: True 时返回 (time_str, source_label)，默认仅返回 time_str
+    :param skip_attachment: True 时跳过附件文件名提取（有视频时先试视频再回来兑底）
     """
     def _ret(time_str, source_label):
         if return_source:
@@ -951,11 +952,17 @@ def extract_trigger_time_from_issue(issue: dict, return_source: bool = False):
                 logger.info("从描述中提取到时间: %s", best[0])
                 return _ret(_supplement_from_gmlogger(issue, best[0]), "描述")
     # ---- 5. 附件文件名（兑底）----
-    att_time = _extract_attachment_time(issue)
-    if att_time:
-        logger.info("从附件文件名中提取到时间: %s", att_time)
-        return _ret(_supplement_from_gmlogger(issue, att_time), "附件名")
+    if not skip_attachment:
+        att_time = _extract_attachment_time(issue)
+        if att_time:
+            logger.info("从附件文件名中提取到时间: %s", att_time)
+            return _ret(_supplement_from_gmlogger(issue, att_time), "附件名")
     return _ret("", "")
+
+
+def extract_attachment_time(issue: dict) -> str:
+    """从附件文件名提取触发时间（单独暴露，供视频/图片均失败后的最终兑底）"""
+    return _extract_attachment_time(issue)
 
 
 def extract_trigger_time_from_comments(comments: list) -> str:

@@ -501,12 +501,12 @@ async def test_batch_ai_extract_times(request: Request):
                                 tt = video_tt
                                 sources[key] = "视频提取"
                             if not tt:
-                                tt = _jc.extract_trigger_time_from_issue(issue)
+                                tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
                                 if tt:
                                     sources[key] = "新提取"
                         else:
                             # 默认不勾选：评论 → 视频 → 图片
-                            tt = _jc.extract_trigger_time_from_issue(issue)
+                            tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
                             if tt:
                                 sources[key] = "新提取"
                             if not tt:
@@ -532,6 +532,12 @@ async def test_batch_ai_extract_times(request: Request):
                             if img_tt:
                                 tt = img_tt
                                 sources[key] = "图片提取"
+                        # 附件文件名最终兑底
+                        if not tt:
+                            att_tt = _jc.extract_attachment_time(issue)
+                            if att_tt:
+                                tt = att_tt
+                                sources[key] = "附件名"
                         if tt:
                             trigger_times[key] = tt
                             tt_val = tt
@@ -860,12 +866,12 @@ async def test_batch_ai_sample(request: Request):
                         extract_failed += 1
                         continue
                     # 评论/字段提取优先（文本提取准确率最高且速度最快）
-                    tt = _jc.extract_trigger_time_from_issue(issue)
+                    tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
                     if not tt:
-                        # 文本未命中，视频OCR兜底
+                        # 文本未命中，视频OCR兑底
                         tt = _diag_extract_time_from_video_simple(issue)
                     if not tt:
-                        # 视频也未命中，图片OCR再兜底
+                        # 视频也未命中，图片OCR再兑底
                         cfg_api = load_config().get("jira_api", {})
                         img_h = {}
                         img_tok = cfg_api.get("token", "")
@@ -875,6 +881,9 @@ async def test_batch_ai_sample(request: Request):
                         img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, k)
                         if img_tt:
                             tt = img_tt
+                    # 所有方法均失败，附件文件名最终兑底
+                    if not tt:
+                        tt = _jc.extract_attachment_time(issue)
                     # 防御性处理：确保 tt 是字符串
                     if tt and not isinstance(tt, str):
                         if hasattr(tt, 'strftime'):
@@ -1329,15 +1338,15 @@ async def test_trigger_time(request: Request):
         if not _has_gmlogger_logs(attachments, bugid):
             return _fail("无gmlogger附件，跳过提取")
         # 评论/字段提取优先（文本提取准确率最高且速度最快）
-        trigger_time = jira_client.extract_trigger_time_from_issue(issue)
+        trigger_time = jira_client.extract_trigger_time_from_issue(issue, skip_attachment=True)
         source = "jira_comment"
         if not trigger_time:
-            # 文本未命中，视频OCR兜底
+            # 文本未命中，视频OCR兑底
             trigger_time = _diag_extract_time_from_video_simple(issue)
             if trigger_time:
                 source = "video_ocr"
         if not trigger_time:
-            # 视频也未命中，图片OCR再兜底
+            # 视频也未命中，图片OCR再兑底
             cfg_api = load_config().get("jira_api", {})
             img_h = {}
             img_tok = cfg_api.get("token", "")
@@ -1348,8 +1357,13 @@ async def test_trigger_time(request: Request):
             if img_tt:
                 trigger_time = img_tt
                 source = "image_ocr"
+        # 所有方法均失败，附件文件名最终兑底
         if not trigger_time:
-            return _fail("提取失败，评论/视频/图片均未获取到时间内容")
+            trigger_time = jira_client.extract_attachment_time(issue)
+            if trigger_time:
+                source = "attachment_name"
+        if not trigger_time:
+            return _fail("提取失败，评论/视频/图片/附件名均未获取到时间内容")
         # 防御性处理：确保 tt 是字符串
         if not isinstance(trigger_time, str):
             trigger_time = trigger_time.strftime("%Y-%m-%d %H:%M:%S") if hasattr(trigger_time, 'strftime') else str(trigger_time)
@@ -2456,18 +2470,19 @@ async def test_prod_batch_run(request: Request):
                         logger.info("触发时间: %s 无gmlogger附件，跳过", bugid)
                         return bugid, None  # None 表示无gmlogger，不写空标签
                     # 评论/字段提取优先（基于对比实验结果：文本提取准确率最高且速度最快）
-                    tt = _jc.extract_trigger_time_from_issue(issue)
+                    # skip_attachment=True：有视频时先试视频，附件名才是真正最后兑底
+                    tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
                     if tt:
                         if not isinstance(tt, str):
                             tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
                         return bugid, tt
-                    # 文本未命中，视频OCR兜底
+                    # 文本未命中，视频OCR兑底
                     tt = _diag_extract_time_from_video_simple(issue)
                     if tt:
                         if not isinstance(tt, str):
                             tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
                         return bugid, tt
-                    # 视频也未命中，图片OCR再兜底
+                    # 视频也未命中，图片OCR再兑底
                     cfg_api = load_config().get("jira_api", {})
                     img_h = {}
                     img_tok = cfg_api.get("token", "")
@@ -2479,6 +2494,10 @@ async def test_prod_batch_run(request: Request):
                         if not isinstance(img_tt, str):
                             img_tt = img_tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(img_tt, 'strftime') else str(img_tt)
                         return bugid, img_tt
+                    # 所有方法均失败，附件文件名作为最终兑底
+                    att_tt = _jc.extract_attachment_time(issue)
+                    if att_tt:
+                        return bugid, att_tt
                 except Exception:
                     pass
                 return bugid, ""
@@ -4687,7 +4706,7 @@ async def form_exec(request: Request):
                         if not _has_gmlogger_logs(attachments, k):
                             round_extract_failed += 1
                             continue
-                        tt = await loop.run_in_executor(None, _jc.extract_trigger_time_from_issue, issue)
+                        tt = await loop.run_in_executor(None, lambda iss=issue: _jc.extract_trigger_time_from_issue(iss, skip_attachment=True))
                         if not tt:
                             tt = await loop.run_in_executor(None, _diag_extract_time_from_video_simple, issue)
                         if not tt:
@@ -4700,6 +4719,9 @@ async def form_exec(request: Request):
                             img_tt = img_result[0] if isinstance(img_result, tuple) else img_result
                             if img_tt:
                                 tt = img_tt
+                        # 附件文件名最终兑底
+                        if not tt:
+                            tt = await loop.run_in_executor(None, _jc.extract_attachment_time, issue)
                         if tt and not isinstance(tt, str):
                             tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
                         if tt:

@@ -240,11 +240,16 @@ async def generate_extract_events(
                 tt = await loop.run_in_executor(None, video_extractor, issue)
                 src = "视频+gmlogger"
             if not tt:
-                tt = jira_client.extract_trigger_time_from_issue(issue)
+                tt = jira_client.extract_trigger_time_from_issue(issue, skip_attachment=True)
                 src = "标准提取"
             if not tt and not video_first and has_video:
                 tt = await loop.run_in_executor(None, video_extractor, issue)
-                src = "视频兜底"
+                src = "视频兑底"
+            # 附件文件名最终兑底
+            if not tt:
+                tt = jira_client.extract_attachment_time(issue)
+                if tt:
+                    src = "附件名"
 
             if tt:
                 old = old_times.get(bugid, "")
