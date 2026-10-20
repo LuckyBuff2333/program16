@@ -770,7 +770,7 @@ export default {
         const worker = async () => {
           while (queue.length && !this.troubleshoot.stopFlag) { await this._diagnoseRow(queue.shift()); }
         };
-        await Promise.all([worker(), worker(), worker()]);
+        await worker();
       } catch (e) {
         console.error('批量诊断异常:', e);
       }

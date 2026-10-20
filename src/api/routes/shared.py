@@ -60,7 +60,7 @@ cache_batch_stop_event = threading.Event()
 
 # 全局线程池（限制诊断等同步操作的最大并发数）
 _DIAG_EXECUTOR = None
-_DIAG_EXECUTOR_MAX_WORKERS = 20
+_DIAG_EXECUTOR_MAX_WORKERS = 1
 _DIAG_TIMEOUT_SECONDS = 300
 
 # 内存缓存：上传文件解析后的行数据

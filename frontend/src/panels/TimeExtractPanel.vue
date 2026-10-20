@@ -11,6 +11,7 @@
         @keydown.ctrl.enter="startExtract"></el-input>
       <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
         <el-button size="small" @click="setJql('today')">今日新增 Bug</el-button>
+        <el-button size="small" @click="setJql('yesterday')">昨日新增 Bug</el-button>
         <el-button size="small" @click="setJql('week')">本周新增 Bug</el-button>
         <el-button size="small" @click="setJql('no_label')">无触发时间标签</el-button>
         <el-button size="small" @click="setJql('open')">未关闭 Bug</el-button>
@@ -90,6 +91,7 @@ import { api } from '../composables/utils';
 
 const JQL_PRESETS = {
   today: 'created >= startOfDay() AND issuetype = "bug" AND status != "closed"',
+  yesterday: 'created >= startOfDay(-1d) AND created <= endOfDay(-1d) AND issuetype = "bug" AND status != "closed" ORDER BY cf[10603] ASC',
   week: 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed"',
   no_label: 'labels not in (trigger_time) AND issuetype = "bug" AND status != "closed"',
   open: 'issuetype = "bug" AND status != "closed" ORDER BY created DESC',

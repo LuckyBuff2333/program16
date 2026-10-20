@@ -51,7 +51,7 @@ def _build_mock_response(bugid: str) -> dict:
 
 
 def fetch_issue(bugid: str) -> dict:
-    """根据 bugid 调用 Jira RESTAPI，返回 issue 信息（只读操作）"""
+    """根据 bugid 调用 Jira RESTAPI，返回 issue 信息（只读操作，429 时自动重试）"""
     cfg = load_config()["jira_api"]
     if cfg.get("mock", False):
         logger.info("[mock] 获取 Jira 信息: bugid=%s", bugid)
@@ -69,7 +69,19 @@ def fetch_issue(bugid: str) -> dict:
     url = f"{cfg['url']}/{bugid}"
     logger.info("调用 Jira RESTAPI (GET): %s", url)
     # expand=comment,names 确保返回评论区数据 + 字段显示名映射，否则 Jira API 默认不包含
-    return http_get(url, params={"expand": "comment,names"}, timeout=cfg.get("timeout", 30), auth=auth, headers=headers)
+    # 429 限流重试：最多 3 次，指数退避
+    import httpx
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return http_get(url, params={"expand": "comment,names"}, timeout=cfg.get("timeout", 30), auth=auth, headers=headers)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429 and attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                logger.warning("Jira 429 限流，%ds 后重试 (%d/%d): %s", wait, attempt + 1, max_retries, bugid)
+                import time; time.sleep(wait)
+            else:
+                raise
 
 
 def search_issues(jql: str, max_results: int = 500) -> list:
