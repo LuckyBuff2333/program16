@@ -5005,11 +5005,13 @@ def _image_fallback_time(issue: dict, headers: dict, timeout: int, bugid: str, r
     return combined.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _diag_extract_time_from_video_simple(issue: dict) -> str:
+def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
     """视频帧 OCR 提取触发时间，多视频按优先级逐个尝试，命中即停。
 
     支持本地缓存：每个视频提取结果保存到 data/video_time_cache.json，
     避免重复下载和 OCR。缓存命中时直接使用已提取时间进行匹配。
+
+    :param stop_event: 可选的 threading.Event，设置后中断提取
     """
     import tempfile
     import shutil
@@ -5146,6 +5148,9 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     best_12h_cand = None  # (time_str, ext_dt)
     best_12h_diff = float("inf")
     for vi, video_att in enumerate(ranked_videos):
+        if stop_event and stop_event.is_set():
+            logger.info("视频兜底提取(%s)：收到停止信号，中断视频提取", bugid)
+            return ""
         video_url = video_att.get("content", "")
         video_name = video_att.get("filename", "")
         if not video_url:
@@ -5201,6 +5206,8 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                 with open(video_path, "wb") as f:
                     for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
                         f.write(chunk)
+                        if stop_event and stop_event.is_set():
+                            raise TimeoutError("用户停止")
                         if _time.time() - _vfb_dl_start > _VFB_DL_DEADLINE:
                             raise TimeoutError(f"视频下载超时({_VFB_DL_DEADLINE}s)")
             logger.info("视频兜底提取：下载完成 %s", video_label)
@@ -5951,7 +5958,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     return "", ""
 
 
-def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bugid: str = "") -> tuple:
+def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bugid: str = "", stop_event=None) -> tuple:
     """从图片附件 OCR 提取触发时间，返回 (time_str, detail) 或 ("", "")
 
     优先级：
@@ -5979,6 +5986,9 @@ def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bug
     marked_time = None   # 标记检测命中的时间
     with tempfile.TemporaryDirectory() as tmp:
         for att in images:
+            if stop_event and stop_event.is_set():
+                logger.info("%s图片 OCR: 收到停止信号，中断", bugid)
+                return "", ""
             fname = att.get("filename", "") or ""
             img_path = os.path.join(tmp, fname)
             logger.info("%s图片 OCR: 处理 %s", f"{bugid} " if bugid else "", fname)

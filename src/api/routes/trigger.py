@@ -439,17 +439,21 @@ async def batch_extract_time(request: Request):
                 tt, source = "", ""
                 # 1. 视频 OCR（最高优先级）
                 if has_video:
-                    tt = _diag_extract_time_from_video_simple(issue)
+                    tt = _diag_extract_time_from_video_simple(issue, stop_event=_stop_event)
                     if tt:
                         source = "视频+gmlogger"
+                    if _stop_event.is_set():
+                        return bugid, "", "stopped", "已停止"
                 # 2. 评论/描述/标题文本提取
                 if not tt:
                     tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
                     if tt:
                         source = "标准提取"
+                    if _stop_event.is_set():
+                        return bugid, "", "stopped", "已停止"
                 # 3. 图片 OCR（最终兜底）
                 if not tt and _img_headers:
-                    img_tt, _ = _diag_extract_time_from_images(issue, _img_headers, img_to, bugid)
+                    img_tt, _ = _diag_extract_time_from_images(issue, _img_headers, img_to, bugid, stop_event=_stop_event)
                     if img_tt:
                         tt = img_tt
                         source = "图片OCR"
