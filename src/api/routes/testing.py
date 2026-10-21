@@ -673,7 +673,7 @@ async def test_batch_ai_extract_times(request: Request):
 
 @router.post("/api/test/batch_ai_filter", response_model=ApiResponse)
 async def test_batch_ai_filter(request: Request):
-    """步骤3：查询多维表格，过滤掉已存在的记录。支持多种过滤模式组合"""
+    """步骤3：过滤候选记录。顺序：AI初步分析过滤 → 多维表格去重"""
     import os, re, json
     body = await request.json() or {}
     keys = body.get("keys") or []
@@ -683,8 +683,41 @@ async def test_batch_ai_filter(request: Request):
     filter_ai_preliminary = body.get("filter_ai_preliminary", False)  # 过滤AI初步分析结果
     if not keys:
         return _fail("候选列表为空，请先执行步骤1")
-    # 查询多维表格，获取应排除的 jira 号
-    exclude_keys = set()
+    filtered = list(keys)
+    ai_exclude = set()
+    bitable_exclude = set()
+    # —— 第1步：AI初步分析过滤（优先执行，减少后续多维表格查询量）——
+    if filter_ai_preliminary and filtered:
+        import concurrent.futures as _cf
+        from src.clients import jira_client as _jc
+        _AI_FIELD_ID = "customfield_13714"
+        _chunk_size = 100
+        _chunks = [filtered[_i:_i + _chunk_size] for _i in range(0, len(filtered), _chunk_size)]
+
+        def _query_chunk(_chunk):
+            """ 查询单个分片，返回有 AI 字段的 key 集合 """
+            _key_list = ", ".join(_chunk)
+            _jql = f"key in ({_key_list}) AND {_AI_FIELD_ID} IS NOT NULL"
+            _result = set()
+            try:
+                _issues = _jc.search_issues(_jql, max_results=len(_chunk), fields=f"{_AI_FIELD_ID}")
+                for _iss in _issues:
+                    _k = (_iss.get("key") or "").strip()
+                    _f = (_iss.get("fields") or {}).get(_AI_FIELD_ID)
+                    if _k and _f and str(_f).strip() and str(_f).strip().lower() not in ("none", "null"):
+                        _result.add(_k)
+            except Exception as _e:
+                logger.warning("AI初步分析JQL查询失败(跳过): %s", _e)
+            return _result
+
+        with _cf.ThreadPoolExecutor(max_workers=min(len(_chunks), 5)) as _pool:
+            for _r in _pool.map(_query_chunk, _chunks):
+                ai_exclude.update(_r)
+        if ai_exclude:
+            filtered = [k for k in filtered if k not in ai_exclude]
+            logger.info("AI初步分析过滤(customfield_13714): %d 条 → %d 条，排除 %d 条",
+                        len(keys), len(filtered), len(ai_exclude))
+    # —— 第2步：多维表格去重（基于AI过滤后的列表）——
     try:
         import asyncio
         from src.clients import feishu_client
@@ -693,6 +726,7 @@ async def test_batch_ai_filter(request: Request):
                                              load_config().get("feishu_bitable", {}).get("app_token", ""),
                                              load_config().get("feishu_bitable", {}).get("table_id", ""))
         bugid_field = load_config().get("feishu_bitable", {}).get("bugid_field", "jira号")
+        exclude_keys = set()
         for rec in records:
             fields = rec.get("fields", {})
             field_value = fields.get(bugid_field, "")
@@ -703,26 +737,23 @@ async def test_batch_ai_filter(request: Request):
             jira_key = str(field_value).strip()
             if not jira_key:
                 continue
-            # 按来源过滤：PC/线上分别判断是否排除（正确+通用失败）
+            # 按来源过滤
             trigger_source = _bitable_text(fields.get("触发来源", ""))
             is_pc = trigger_source == "jira_analyze"
             if filter_pc_only and filter_online_only:
-                # 两个都勾选：排除PC和线上中的正确+通用失败记录
                 if not _is_bitable_excluded(fields, bugid_field):
                     continue
             elif filter_pc_only:
-                # 仅PC：只处理PC来源记录，排除其中的正确+通用失败
                 if not is_pc:
                     continue
                 if not _is_bitable_excluded(fields, bugid_field):
                     continue
             elif filter_online_only:
-                # 仅线上：只处理线上来源记录，排除其中的正确+通用失败
                 if is_pc:
                     continue
                 if not _is_bitable_excluded(fields, bugid_field):
                     continue
-            # 排除逻辑：智能过滤排除已成功+无效审核
+            # 排除逻辑
             if not filter_all:
                 if _is_bitable_excluded(fields, bugid_field):
                     exclude_keys.add(jira_key)
@@ -757,54 +788,24 @@ async def test_batch_ai_filter(request: Request):
             if filter_online_only:
                 mode_parts.append("线上正确+通用失败")
         mode_desc = "+".join(mode_parts)
-        logger.info("多维表格重复过滤(%s): 排除记录 %d 条", mode_desc, len(exclude_keys))
+        before_bitable = len(filtered)
+        filtered = [k for k in filtered if k not in exclude_keys]
+        bitable_exclude = exclude_keys
+        logger.info("多维表格重复过滤(%s): 排除 %d 条（%d → %d）", mode_desc, len(exclude_keys), before_bitable, len(filtered))
     except Exception as e:
         logger.warning("多维表格重复过滤查询失败（跳过此检查）: %s", e)
-    # 过滤候选列表
-    filtered = [k for k in keys if k not in exclude_keys]
-    # 过滤AI初步分析结果：通过 JQL 批量查询 customfield_13714（并行执行避免超时）
-    ai_exclude = set()
-    if filter_ai_preliminary and filtered:
-        import concurrent.futures as _cf
-        from src.clients import jira_client as _jc
-        _AI_FIELD_ID = "customfield_13714"
-        # 分批 JQL 查询（每批最多 100 个 key，避免 JQL 过长）
-        _chunk_size = 100
-        _chunks = [filtered[_i:_i + _chunk_size] for _i in range(0, len(filtered), _chunk_size)]
-
-        def _query_chunk(_chunk):
-            """ 查询单个分片，返回有 AI 字段的 key 集合 """
-            _key_list = ", ".join(_chunk)
-            _jql = f"key in ({_key_list}) AND {_AI_FIELD_ID} IS NOT NULL"
-            _result = set()
-            try:
-                _issues = _jc.search_issues(_jql, max_results=len(_chunk), fields=f"{_AI_FIELD_ID}")
-                for _iss in _issues:
-                    _k = (_iss.get("key") or "").strip()
-                    _f = (_iss.get("fields") or {}).get(_AI_FIELD_ID)
-                    if _k and _f and str(_f).strip() and str(_f).strip().lower() not in ("none", "null"):
-                        _result.add(_k)
-            except Exception as _e:
-                logger.warning("AI初步分析JQL查询失败(跳过): %s", _e)
-            return _result
-
-        with _cf.ThreadPoolExecutor(max_workers=min(len(_chunks), 5)) as _pool:
-            for _r in _pool.map(_query_chunk, _chunks):
-                ai_exclude.update(_r)
-        if ai_exclude:
-            logger.info("AI初步分析过滤(customfield_13714): 排除 %d 条", len(ai_exclude))
-            filtered = [k for k in filtered if k not in ai_exclude]
-            exclude_keys.update(ai_exclude)
+    # —— 汇总返回 ——
     removed = len(keys) - len(filtered)
     if not filtered:
         return _fail(f"所有候选均已被过滤（共过滤 {removed} 条）")
-    bitable_removed = len(exclude_keys) - len(ai_exclude)
-    filter_desc = f"候选 {len(keys)} 条，多维表格过滤 {bitable_removed} 条"
+    filter_desc = f"候选 {len(keys)} 条"
     if ai_exclude:
         filter_desc += f"，AI字段过滤 {len(ai_exclude)} 条"
+    if bitable_exclude:
+        filter_desc += f"，多维表格过滤 {len(bitable_exclude)} 条"
     filter_desc += f"，剩余 {len(filtered)} 条"
     return _ok({"filtered": filtered, "removed": removed, "total": len(keys),
-                 "exclude_keys": list(exclude_keys)[:20]},
+                 "exclude_keys": list(ai_exclude | bitable_exclude)[:20]},
                 filter_desc)
 
 
