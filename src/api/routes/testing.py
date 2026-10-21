@@ -762,26 +762,35 @@ async def test_batch_ai_filter(request: Request):
         logger.warning("多维表格重复过滤查询失败（跳过此检查）: %s", e)
     # 过滤候选列表
     filtered = [k for k in keys if k not in exclude_keys]
-    # 过滤AI初步分析结果：通过 JQL 批量查询 customfield_13714（避免逐个 fetch）
+    # 过滤AI初步分析结果：通过 JQL 批量查询 customfield_13714（并行执行避免超时）
     ai_exclude = set()
     if filter_ai_preliminary and filtered:
+        import concurrent.futures as _cf
         from src.clients import jira_client as _jc
         _AI_FIELD_ID = "customfield_13714"
         # 分批 JQL 查询（每批最多 100 个 key，避免 JQL 过长）
         _chunk_size = 100
-        for _i in range(0, len(filtered), _chunk_size):
-            _chunk = filtered[_i:_i + _chunk_size]
+        _chunks = [filtered[_i:_i + _chunk_size] for _i in range(0, len(filtered), _chunk_size)]
+
+        def _query_chunk(_chunk):
+            """ 查询单个分片，返回有 AI 字段的 key 集合 """
             _key_list = ", ".join(_chunk)
             _jql = f"key in ({_key_list}) AND {_AI_FIELD_ID} IS NOT EMPTY"
+            _result = set()
             try:
                 _issues = _jc.search_issues(_jql, max_results=len(_chunk), fields=f"{_AI_FIELD_ID}")
                 for _iss in _issues:
                     _k = (_iss.get("key") or "").strip()
                     _f = (_iss.get("fields") or {}).get(_AI_FIELD_ID)
                     if _k and _f and str(_f).strip() and str(_f).strip().lower() not in ("none", "null"):
-                        ai_exclude.add(_k)
+                        _result.add(_k)
             except Exception as _e:
                 logger.warning("AI初步分析JQL查询失败(跳过): %s", _e)
+            return _result
+
+        with _cf.ThreadPoolExecutor(max_workers=min(len(_chunks), 5)) as _pool:
+            for _r in _pool.map(_query_chunk, _chunks):
+                ai_exclude.update(_r)
         if ai_exclude:
             logger.info("AI初步分析过滤(customfield_13714): 排除 %d 条", len(ai_exclude))
             filtered = [k for k in filtered if k not in ai_exclude]
