@@ -5309,18 +5309,18 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                                     best_12h_cand = (ts, ext_dt)
                             if not first_full:
                                 first_full = ts
-                    # 仅时间+gmlogger日期补充
+                    # 仅时间+日期补充：优先用视频自身上传日期（新开bug日志可能不全）
                     m = _OCR_TIME_ONLY_RE.search(all_text)
-                    closest_date = gm_dates[0] if gm_dates else None
-                    if closest_gm and closest_gm[0]["filename_time"]:
+                    _vid_created = _ts_parse_datetime(video_att.get("created", ""))
+                    closest_date = None
+                    if _vid_created:
+                        closest_date = (_vid_created.year, _vid_created.month, _vid_created.day)
+                    if not closest_date and closest_gm and closest_gm[0]["filename_time"]:
                         closest_date = (closest_gm[0]["filename_time"].year,
                                         closest_gm[0]["filename_time"].month,
                                         closest_gm[0]["filename_time"].day)
-                    # 无 gmlogger 日期时，用视频附件创建日期作为兜底
-                    if not closest_date:
-                        _vid_created = _ts_parse_datetime(video_att.get("created", ""))
-                        if _vid_created:
-                            closest_date = (_vid_created.year, _vid_created.month, _vid_created.day)
+                    if not closest_date and gm_dates:
+                        closest_date = gm_dates[0]
                     if m:
                         time_str = _normalize_ocr_time(m.group(1))
                         # 多级验证：检查视频自身文件名是否含完整日期时间且时间匹配
@@ -5420,16 +5420,17 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                                         best_12h_diff = d_orig
                                         best_12h_cand = (ts, ext_dt)
                         m = _OCR_TIME_ONLY_RE.search(diff_text)
-                        closest_date = gm_dates[0] if gm_dates else None
-                        if closest_gm and closest_gm[0]["filename_time"]:
+                        # 日期补充：优先用视频自身上传日期
+                        _vid_created2 = _ts_parse_datetime(video_att.get("created", ""))
+                        closest_date = None
+                        if _vid_created2:
+                            closest_date = (_vid_created2.year, _vid_created2.month, _vid_created2.day)
+                        if not closest_date and closest_gm and closest_gm[0]["filename_time"]:
                             closest_date = (closest_gm[0]["filename_time"].year,
                                             closest_gm[0]["filename_time"].month,
                                             closest_gm[0]["filename_time"].day)
-                        # 无 gmlogger 日期时，用视频附件创建日期作为兜底
-                        if not closest_date:
-                            _vid_created = _ts_parse_datetime(video_att.get("created", ""))
-                            if _vid_created:
-                                closest_date = (_vid_created.year, _vid_created.month, _vid_created.day)
+                        if not closest_date and gm_dates:
+                            closest_date = gm_dates[0]
                         if m and closest_date:
                             time_str = _normalize_ocr_time(m.group(1))
                             _corr_ref = (closest_gm[0]["filename_time"] if closest_gm and closest_gm[0]["filename_time"] else gm_ref_dt)
@@ -5477,11 +5478,17 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                 _timestudy_trace(bugid, "fn:try")
                 fn_time = _parse_video_filename_time(video_name)
                 if fn_time:
-                    closest_date = gm_dates[0] if gm_dates else None
-                    if closest_gm and closest_gm[0]["filename_time"]:
+                    # 日期补充：优先用视频自身上传日期
+                    _vid_created3 = _ts_parse_datetime(video_att.get("created", ""))
+                    closest_date = None
+                    if _vid_created3:
+                        closest_date = (_vid_created3.year, _vid_created3.month, _vid_created3.day)
+                    if not closest_date and closest_gm and closest_gm[0]["filename_time"]:
                         closest_date = (closest_gm[0]["filename_time"].year,
                                         closest_gm[0]["filename_time"].month,
                                         closest_gm[0]["filename_time"].day)
+                    if not closest_date and gm_dates:
+                        closest_date = gm_dates[0]
                     if closest_date:
                         y, mo, d = closest_date
                         full_orig = f"{y:04d}-{mo:02d}-{d:02d} {fn_time}"
