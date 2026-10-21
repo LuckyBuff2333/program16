@@ -691,7 +691,7 @@ async def test_batch_ai_filter(request: Request):
         import concurrent.futures as _cf
         from src.clients import jira_client as _jc
         _AI_FIELD_ID = "customfield_13714"
-        _chunk_size = 100
+        _chunk_size = 30  # 每批30个，避免JQL URL过长导致400
         _chunks = [filtered[_i:_i + _chunk_size] for _i in range(0, len(filtered), _chunk_size)]
 
         def _query_chunk(_chunk):
