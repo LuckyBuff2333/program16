@@ -6444,13 +6444,16 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
     def _ensure_key(key):
         if key not in _completed:
             _completed[key] = {"score": 0.0, "sources": [], "confirmations": 0}
+    # C1: 日期提供者自身作为候选（视频文件名加权 2.0，其他 1.0）
     for _dp_dt, _dp_src, _dp_str in _date_providers:
         _k = _dp_dt.strftime("%Y-%m-%d %H:%M")
         _ensure_key(_k)
-        _completed[_k]["score"] += 1.0
+        _base = 2.0 if _dp_src == "视频文件名" else 1.0
+        _completed[_k]["score"] += _base
         if _dp_src not in _completed[_k]["sources"]:
             _completed[_k]["sources"].append(_dp_src)
         _completed[_k]["confirmations"] += 1
+    # C2: 仅时间候选匹配日期提供者来补全（视频OCR+视频文件名自洽额外加分）
     for _hm, _hm_src in _time_only_candidates:
         _best_dp_score = 0.0
         _best_dp_key = ""
@@ -6473,7 +6476,13 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
                 _best_dp_key = _completed_key
             _completed[_dp_dt.strftime("%Y-%m-%d %H:%M")]["confirmations"] += 1
         if _best_dp_key:
-            _completed[_best_dp_key]["score"] += _best_dp_score
+            # 视频自洽奖励：视频OCR时间 + 视频文件名日期匹配时额外加 2.0 分
+            _is_video_self_consistent = (
+                _hm_src == "视频OCR" and
+                any(s == "视频文件名" for s in _completed[_best_dp_key]["sources"])
+            )
+            _bonus = 2.0 if _is_video_self_consistent else 0.0
+            _completed[_best_dp_key]["score"] += _best_dp_score + _bonus
             _label = f"{_hm_src}+补全"
             if _label not in _completed[_best_dp_key]["sources"]:
                 _completed[_best_dp_key]["sources"].append(_label)
@@ -6681,15 +6690,16 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
     def _ensure_key(key):
         if key not in _completed:
             _completed[key] = {"score": 0.0, "sources": [], "confirmations": 0}
-    # C1: 日期提供者自身作为候选（基础分=1分）
+    # C1: 日期提供者自身作为候选（视频文件名加权 2.0，其他 1.0）
     for _dp_dt, _dp_src, _dp_str in _date_providers:
         _k = _dp_dt.strftime("%Y-%m-%d %H:%M")
         _ensure_key(_k)
-        _completed[_k]["score"] += 1.0
+        _base = 2.0 if _dp_src == "视频文件名" else 1.0
+        _completed[_k]["score"] += _base
         if _dp_src not in _completed[_k]["sources"]:
             _completed[_k]["sources"].append(_dp_src)
         _completed[_k]["confirmations"] += 1
-    # C2: 仅时间候选匹配日期提供者来补全
+    # C2: 仅时间候选匹配日期提供者来补全（视频OCR+视频文件名自洽额外加分）
     for _hm, _hm_src in _time_only_candidates:
         _best_dp_score = 0.0
         _best_dp_key = ""
@@ -6713,7 +6723,13 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             # 匹配的日期提供者确认+1
             _completed[_dp_dt.strftime("%Y-%m-%d %H:%M")]["confirmations"] += 1
         if _best_dp_key:
-            _completed[_best_dp_key]["score"] += _best_dp_score
+            # 视频自洽奖励：视频OCR时间 + 视频文件名日期匹配时额外加 2.0 分
+            _is_video_self_consistent = (
+                _hm_src == "视频OCR" and
+                any(s == "视频文件名" for s in _completed[_best_dp_key]["sources"])
+            )
+            _bonus = 2.0 if _is_video_self_consistent else 0.0
+            _completed[_best_dp_key]["score"] += _best_dp_score + _bonus
             _label = f"{_hm_src}+补全"
             if _label not in _completed[_best_dp_key]["sources"]:
                 _completed[_best_dp_key]["sources"].append(_label)
