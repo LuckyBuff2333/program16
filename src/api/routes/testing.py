@@ -41,6 +41,29 @@ def _fail(message: str, extra: dict = None):
 logger = setup_logger("web.testing")
 router = APIRouter()
 
+# —— 内存级跨批次去重：记录最近执行的 JIRA 号，防止多维表格未及时更新导致重复 ——
+import time as _time_mod
+_recently_executed = {}  # jira_key -> timestamp
+_EXECUTED_TTL = 2 * 3600  # 2小时过期
+
+def _mark_executed(keys: list):
+    """ 标记一批 JIRA 号为已执行 """
+    now = _time_mod.time()
+    for k in keys:
+        _recently_executed[k] = now
+
+def _filter_recently_executed(keys: list) -> tuple:
+    """ 过滤掉最近已执行的 JIRA 号，返回 (过滤后列表, 排除数量) """
+    now = _time_mod.time()
+    # 清理过期记录
+    expired = [k for k, t in _recently_executed.items() if now - t > _EXECUTED_TTL]
+    for k in expired:
+        del _recently_executed[k]
+    # 过滤
+    filtered = [k for k in keys if k not in _recently_executed]
+    return filtered, len(keys) - len(filtered)
+
+
 
 @router.post("/api/test/ai_analyze", response_model=ApiResponse)
 async def test_ai_analyze(request: Request):
@@ -756,6 +779,12 @@ async def test_batch_ai_filter(request: Request):
     except Exception as e:
         logger.warning("多维表格重复过滤查询失败（跳过此检查）: %s", e)
     filtered = [k for k in keys if k not in exclude_keys]
+    # —— 内存级跨批次去重：排除最近已提交但多维表格可能尚未更新的 JIRA ——
+    mem_skipped = 0
+    if filtered:
+        filtered, mem_skipped = _filter_recently_executed(filtered)
+        if mem_skipped:
+            logger.info("内存去重: 排除最近已执行的 %d 条", mem_skipped)
     # —— 第2步：AI初步分析过滤（逐个 fetch，并行执行）——
     ai_exclude = set()
     if filter_ai_preliminary and filtered:
@@ -787,6 +816,8 @@ async def test_batch_ai_filter(request: Request):
         return _fail(f"所有候选均已被过滤（共过滤 {removed} 条）")
     bitable_removed = len(exclude_keys)
     filter_desc = f"候选 {len(keys)} 条，多维表格过滤 {bitable_removed} 条"
+    if mem_skipped:
+        filter_desc += f"，内存去重 {mem_skipped} 条"
     if ai_exclude:
         filter_desc += f"，AI字段过滤 {len(ai_exclude)} 条"
     filter_desc += f"，剩余 {len(filtered)} 条"
@@ -2657,6 +2688,8 @@ async def test_prod_batch_run(request: Request):
         no_time_count = sum(1 for r in results if r.get("备注") == "无触发时间")
         done_msg = f"执行完成：成功 {success_count}，失败 {fail_count}，去重 {dedup_count}，重复跳过 {skipped_count}，无触发时间 {no_time_count}"
         logger.info("%s批量执行完成: %s", mode_label, done_msg)
+        # 内存级去重：标记本次执行的 JIRA 号，防止下一批次多维表格未更新导致重复
+        _mark_executed(run_bugids)
         # 上传执行记录到云端
         cloud_url = ""
         try:
