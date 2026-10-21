@@ -353,11 +353,13 @@ def _paginate_get(url: str, headers: dict, params: dict,
                 if _err_code == 1254607:
                     # 数据未就绪（多维表格索引中）：等待后重试，不刷新 token
                     server_retry_count += 1
-                    if server_retry_count <= 3:
-                        wait = 3 * server_retry_count
-                        logger.info("%s: 数据未就绪(code=1254607)，等待 %ds 后重试", log_msg, wait)
+                    if server_retry_count <= 5:
+                        wait = 5 * server_retry_count
+                        logger.info("%s: 数据未就绪(code=1254607)，第 %d 次重试，等待 %ds", log_msg, server_retry_count, wait)
                         time.sleep(wait)
                         continue
+                    # 重试耗尽，抛出明确错误
+                    raise ValueError(f"{log_msg}: 多维表格数据未就绪(1254607)，已重试{server_retry_count}次仍失败，请稍后再试")
                 # 其他 400 才是认证问题，继续走 token 刷新
             logger.info("收到 HTTP %d，尝试自动刷新 token...", resp.status_code)
             if resp.status_code == 403:
