@@ -2598,6 +2598,12 @@ def _bot_run_batch_ai_continuous(chat_id: str, jql_key: str, count: int, exec_mo
                 round_num, total_rounds, executed_set)
             if round_executed:
                 executed_set.update(round_executed)
+            # 数据不足：本轮执行数少于目标数量，停止后续轮次
+            if len(round_executed) < count:
+                feishu_client.send_bot_message(chat_id,
+                    f"数据不足（本轮仅执行 {len(round_executed)}/{count} 条），停止后续执行。"
+                    f"累计已执行 {len(executed_set)} 条不重复")
+                break
             if _is_cancelled(chat_id):
                 break
             if round_num < total_rounds:
@@ -2710,6 +2716,31 @@ def _bot_run_batch_ai_single_round(chat_id: str, jql_key: str, count: int, exec_
         if not run_bugids:
             feishu_client.send_bot_message(chat_id, "抽取的记录均无触发时间，无法执行")
             return this_round_executed
+        # 检查是否凑不够数量：展示未执行的候选及原因
+        not_enough = len(run_bugids) < count
+        if not_enough:
+            no_time_list = [b for b in filtered if b not in trigger_times]
+            if no_time_list:
+                # 区分无gmlogger和提取失败
+                no_gmlogger = []
+                extract_fail = []
+                for b in no_time_list[:10]:  # 最多展示10条
+                    try:
+                        issue = _jc.fetch_issue(b)
+                        atts = (issue.get("fields") or {}).get("attachment") or []
+                        if not _has_gmlogger_logs(atts, b):
+                            no_gmlogger.append(b)
+                        else:
+                            extract_fail.append(b)
+                    except Exception:
+                        extract_fail.append(b)
+                msg_parts = [f"数据不足：仅 {len(run_bugids)}/{count} 条有触发时间"]
+                if no_gmlogger:
+                    msg_parts.append(f"无gmlogger({len([b for b in no_time_list if b not in trigger_times])}条): {', '.join(no_gmlogger[:5])}")
+                if extract_fail:
+                    msg_parts.append(f"提取失败({len(extract_fail)}条): {', '.join(extract_fail[:5])}")
+                msg_parts.append("本轮执行后将停止后续轮次")
+                feishu_client.send_bot_message(chat_id, "\n".join(msg_parts))
         feishu_client.send_bot_message(chat_id, f"[{round_num}/{total_rounds}] 步骤5/5：{mode_label}执行 {len(run_bugids)} 条...")
         success, lines, results = _bot_trigger_and_reply(chat_id, run_bugids, trigger_times,
                                                          realtime=False, exec_mode=exec_mode)
