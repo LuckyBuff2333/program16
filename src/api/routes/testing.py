@@ -775,7 +775,7 @@ async def test_batch_ai_filter(request: Request):
         def _query_chunk(_chunk):
             """ 查询单个分片，返回有 AI 字段的 key 集合 """
             _key_list = ", ".join(_chunk)
-            _jql = f"key in ({_key_list}) AND {_AI_FIELD_ID} IS NOT EMPTY"
+            _jql = f"key in ({_key_list}) AND {_AI_FIELD_ID} IS NOT NULL"
             _result = set()
             try:
                 _issues = _jc.search_issues(_jql, max_results=len(_chunk), fields=f"{_AI_FIELD_ID}")
