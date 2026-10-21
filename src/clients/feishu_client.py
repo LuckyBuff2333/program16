@@ -307,6 +307,7 @@ def _paginate_get(url: str, headers: dict, params: dict,
     page_token = None
     retried = False
     server_retry_count = 0  # 服务端错误重试计数
+    _data_not_ready_count = 0  # 1254607 专用重试计数（独立于其他错误）
     # 记录原始 token 类型，重试时保持一致
     _orig_auth = headers.get("Authorization", "")
     _is_tenant_token = False
@@ -329,6 +330,7 @@ def _paginate_get(url: str, headers: dict, params: dict,
                 continue
             raise
         _timeout_retry = 0  # 成功后重置
+        _data_not_ready_count = 0  # 成功拉取一页后重置 1254607 计数
         # HTTP 5xx 服务端错误：自动重试最多 2 次，间隔 1~2 秒
         if resp.status_code >= 500 and server_retry_count < 2:
             server_retry_count += 1
@@ -352,14 +354,14 @@ def _paginate_get(url: str, headers: dict, params: dict,
                     continue
                 if _err_code == 1254607:
                     # 数据未就绪（多维表格索引中）：等待后重试，不刷新 token
-                    server_retry_count += 1
-                    if server_retry_count <= 5:
-                        wait = 5 * server_retry_count
-                        logger.info("%s: 数据未就绪(code=1254607)，第 %d 次重试，等待 %ds", log_msg, server_retry_count, wait)
+                    _data_not_ready_count += 1
+                    if _data_not_ready_count <= 5:
+                        wait = 5 * _data_not_ready_count
+                        logger.info("%s: 数据未就绪(code=1254607)，第 %d 次重试，等待 %ds", log_msg, _data_not_ready_count, wait)
                         time.sleep(wait)
                         continue
                     # 重试耗尽，抛出明确错误
-                    raise ValueError(f"{log_msg}: 多维表格数据未就绪(1254607)，已重试{server_retry_count}次仍失败，请稍后再试")
+                    raise ValueError(f"{log_msg}: 多维表格数据未就绪(1254607)，已重试{_data_not_ready_count}次仍失败，请稍后再试")
                 # 其他 400 才是认证问题，继续走 token 刷新
             logger.info("收到 HTTP %d，尝试自动刷新 token...", resp.status_code)
             if resp.status_code == 403:
