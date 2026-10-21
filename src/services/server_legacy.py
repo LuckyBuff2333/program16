@@ -3950,6 +3950,7 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
     import re as _re
     import tempfile
     import httpx as _httpx
+    import time as _time
     # 按基础名分组收集分卷：支持 .zip.001 后缀式与 .part1.rar 嵌入式命名，后缀数字为分卷号（单卷为0）
     groups = {}
     for att in attachments:
@@ -3971,6 +3972,8 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
         return {"status": "failed", "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>500MB），已跳过内包探测",
                 "main_entries": [], "main_times": [], "all_times": []}
     logger.info("gmlogger 内包探测：开始下载（%dMB）", total_size // 1024 // 1024)
+    _DL_DEADLINE = 300  # 总下载时间上限 5 分钟，超时则跳过
+    _dl_start = _time.time()
     last_reason = "无有效 gmlogger 压缩包"
     with tempfile.TemporaryDirectory() as tmp:
         for base, parts in groups.items():
@@ -3990,6 +3993,12 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                                 r.raise_for_status()
                                 for chunk in r.iter_bytes(chunk_size=1024 * 1024):
                                     out.write(chunk)
+                                    if _time.time() - _dl_start > _DL_DEADLINE:
+                                        raise TimeoutError(f"gmlogger 下载超时({_DL_DEADLINE}s)")
+                except TimeoutError as e:
+                    logger.warning("gmlogger rar 下载超时: %s", e)
+                    return {"status": "failed", "reason": f"gmlogger 下载超时({_DL_DEADLINE}s)",
+                            "main_entries": [], "main_times": [], "all_times": []}
                 except Exception as e:
                     logger.warning("gmlogger rar 下载失败 %s: %s", base, e)
                     last_reason = f"gmlogger 下载失败: {e}"
@@ -4009,6 +4018,12 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                             r.raise_for_status()
                             for chunk in r.iter_bytes(chunk_size=1024 * 1024):
                                 out.write(chunk)
+                                if _time.time() - _dl_start > _DL_DEADLINE:
+                                    raise TimeoutError(f"gmlogger 下载超时({_DL_DEADLINE}s)")
+            except TimeoutError as e:
+                logger.warning("gmlogger 分卷下载超时: %s", e)
+                return {"status": "failed", "reason": f"gmlogger 下载超时({_DL_DEADLINE}s)",
+                        "main_entries": [], "main_times": [], "all_times": []}
             except Exception as e:
                 logger.warning("gmlogger 分卷下载失败 %s: %s", base, e)
                 return {"status": "failed", "reason": f"gmlogger 下载失败: {e}", "main_entries": [], "main_times": []}
@@ -4999,6 +5014,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
     import tempfile
     import shutil
     import httpx as _httpx
+    import time as _time
     from datetime import datetime as _dt, timedelta
     fields = issue.get("fields") or {}
     attachments = fields.get("attachment") or []
@@ -5178,11 +5194,15 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                         "（单视频）" if single_video else "")
             tmp_dir = tempfile.mkdtemp()
             video_path = os.path.join(tmp_dir, "video.bin")
+            _vfb_dl_start = _time.time()
+            _VFB_DL_DEADLINE = 180  # 单个视频下载上限 3 分钟
             with _httpx.stream("GET", video_url, headers=headers, timeout=120, verify=False, follow_redirects=True) as resp:
                 resp.raise_for_status()
                 with open(video_path, "wb") as f:
                     for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
                         f.write(chunk)
+                        if _time.time() - _vfb_dl_start > _VFB_DL_DEADLINE:
+                            raise TimeoutError(f"视频下载超时({_VFB_DL_DEADLINE}s)")
             logger.info("视频兜底提取：下载完成 %s", video_label)
             _timestudy_trace(bugid, "dl:ok")
         except Exception as e:
@@ -5564,6 +5584,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     import tempfile
     import shutil
     import httpx as _httpx
+    import time as _time
     from datetime import datetime as _dt, timedelta
     fields = issue.get("fields") or {}
     attachments = fields.get("attachment") or []
@@ -5635,12 +5656,19 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                             "（单视频）" if single_video else "")
                 tmp_dir = tempfile.mkdtemp()
                 video_path = os.path.join(tmp_dir, "video.bin")
+                _vid_dl_start = _time.time()
+                _VID_DL_DEADLINE = 180  # 单个视频下载上限 3 分钟
                 with _httpx.stream("GET", video_url, headers=headers, timeout=timeout, verify=False, follow_redirects=True) as resp:
                     resp.raise_for_status()
                     with open(video_path, "wb") as f:
                         for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
                             f.write(chunk)
+                            if _time.time() - _vid_dl_start > _VID_DL_DEADLINE:
+                                raise TimeoutError(f"视频下载超时({_VID_DL_DEADLINE}s)")
                 logger.info("视频帧提取：下载完成 %s", video_label)
+            except TimeoutError as e:
+                logger.warning("视频帧提取：下载超时 %s: %s", video_name, e)
+                continue  # 超时跳过，尝试下一个视频
             except Exception as e:
                 logger.warning("视频帧提取：下载失败 %s: %s", video_name, e)
                 continue  # 下载失败，尝试下一个视频
