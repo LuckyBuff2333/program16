@@ -5222,7 +5222,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                 _timestudy_trace(bugid, "frame:fail")
                 continue
             
-            # 步骤2：OCR封面帧，如未识别到时间再提取第1/3/6秒
+            # 步骤2：OCR封面帧，如未识别到时间再提取第2~6秒
             first_full = ""
             first_partial = ""
             for _phase in [0, 1]:
@@ -5571,7 +5571,7 @@ def _diag_extract_time_from_video_simple(issue: dict) -> str:
                               error_detail=f"多视频均未命中兜底: {best_partial}")
         _timestudy_trace(bugid, "partial:multi")
         return best_partial
-    logger.info("视频兜底提取(%s)：所有视频封面及1/3/6秒均未识别到时间", bugid)
+    logger.info("视频兜底提取(%s)：所有视频封面及前6帧均未识别到时间", bugid)
     _timestudy_update_ctx(bugid, error_type="ocr_no_time_pattern", error_detail="所有视频OCR均未识别到时间")
     _timestudy_trace(bugid, "ocr:no_pattern")
     return ""
@@ -5682,7 +5682,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
             if not video_path or not os.path.exists(video_path):
                 logger.warning("视频帧提取：视频文件不存在 %s", video_label)
                 continue
-            # 截帧 + OCR：先封面，再第1/3/6秒
+            # 截帧 + OCR：先封面，再第2~6秒
             cover_frames = _extract_video_frames_gpu(video_path, positions=[0], use_gpu=True) or []
             if not cover_frames:
                 logger.warning("视频帧提取：无法提取封面帧 %s，尝试下一个", video_label)
@@ -6408,7 +6408,10 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
                 _hm = _dt.strftime("%H:%M")
                 if _hm not in _full_hm_set:
                     _text_time_only_hm.append((_hm, _txt_label))
-    # A2: 视频文件名
+    # A2: 视频文件名（仅用于与视频OCR时间组合补全，不作为独立候选）
+    _vid_fn_date = None  # (year, month, day)
+    _vid_fn_dt_str = ""
+    _vid_fn_dt = None
     for _att in attachments:
         _fn = _att.get("filename", "") or ""
         if _fn.lower().endswith(_VIDEO_SUFFIXES):
@@ -6416,7 +6419,17 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
             if _vid_fn_dt_str:
                 _p = _jc._parse_datetime_string(_vid_fn_dt_str)
                 if _p:
-                    _date_providers.append((_p[1], "视频文件名", _vid_fn_dt_str))
+                    _vid_fn_dt = _p[1]
+                    _vid_fn_date = (_vid_fn_dt.year, _vid_fn_dt.month, _vid_fn_dt.day)
+            break
+    # A2b: 视频上传日期（仅用于与视频OCR时间组合补全，不作为独立候选）
+    _vid_upload_date = None  # (year, month, day)
+    for _att in attachments:
+        _fn = _att.get("filename", "") or ""
+        if _fn.lower().endswith(_VIDEO_SUFFIXES):
+            _vid_created = _ts_parse_datetime(_att.get("created", ""))
+            if _vid_created:
+                _vid_upload_date = (_vid_created.year, _vid_created.month, _vid_created.day)
             break
     # A3: gmlogger 文件名日期时间仅作为兑底，不直接作为日期提供者（已在步骤E处理）
     # A4: 视频 OCR（完整日期）
@@ -6442,12 +6455,11 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
     def _ensure_key(key):
         if key not in _completed:
             _completed[key] = {"score": 0.0, "sources": [], "confirmations": 0}
-    # C1: 日期提供者自身作为候选（视频文件名加权 2.0，其他 1.0）
+    # C1: 日期提供者自身作为候选（基础分 1.0）
     for _dp_dt, _dp_src, _dp_str in _date_providers:
         _k = _dp_dt.strftime("%Y-%m-%d %H:%M")
         _ensure_key(_k)
-        _base = 2.0 if _dp_src == "视频文件名" else 1.0
-        _completed[_k]["score"] += _base
+        _completed[_k]["score"] += 1.0
         if _dp_src not in _completed[_k]["sources"]:
             _completed[_k]["sources"].append(_dp_src)
         _completed[_k]["confirmations"] += 1
@@ -6474,17 +6486,32 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
                 _best_dp_key = _completed_key
             _completed[_dp_dt.strftime("%Y-%m-%d %H:%M")]["confirmations"] += 1
         if _best_dp_key:
-            # 视频自洽奖励：视频OCR时间 + 视频文件名日期匹配时额外加 2.0 分
-            _is_video_self_consistent = (
-                _hm_src == "视频OCR" and
-                any(s == "视频文件名" for s in _completed[_best_dp_key]["sources"])
-            )
-            _bonus = 2.0 if _is_video_self_consistent else 0.0
-            _completed[_best_dp_key]["score"] += _best_dp_score + _bonus
+            _completed[_best_dp_key]["score"] += _best_dp_score
             _label = f"{_hm_src}+补全"
             if _label not in _completed[_best_dp_key]["sources"]:
                 _completed[_best_dp_key]["sources"].append(_label)
             _completed[_best_dp_key]["confirmations"] += 1
+    # C3: 视频OCR仅时间 + 视频文件名/上传日期补全（仅作日期补全，不作为独立候选）
+    _vid_date_providers = []  # [(date_tuple, label)]
+    if _vid_fn_date:
+        _vid_date_providers.append((_vid_fn_date, "视频文件名"))
+    if _vid_upload_date:
+        _vid_date_providers.append((_vid_upload_date, "视频上传日期"))
+    if _vid_date_providers and _time_only_candidates:
+        for _hm, _hm_src in _time_only_candidates:
+            if _hm_src != "视频OCR":
+                continue
+            for (_vy, _vm, _vd), _vdp_label in _vid_date_providers:
+                _ck = f"{_vy:04d}-{_vm:02d}-{_vd:02d} {_hm}"
+                _ensure_key(_ck)
+                # 基础分 2.0 + 匹配分 3.0 + 自洽奖励 2.0
+                _completed[_ck]["score"] += 7.0
+                if _vdp_label not in _completed[_ck]["sources"]:
+                    _completed[_ck]["sources"].append(_vdp_label)
+                _label = f"{_hm_src}+{_vdp_label}补全"
+                if _label not in _completed[_ck]["sources"]:
+                    _completed[_ck]["sources"].append(_label)
+                _completed[_ck]["confirmations"] += 2
     # —— D. 选择最终答案 ——
     _best_time = ""
     _best_score = 0.0
@@ -6652,7 +6679,8 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                 _hm = _dt.strftime("%H:%M")
                 if _hm not in _full_hm_set:  # 过滤已包含在完整日期时间中的 time-only
                     _text_time_only_hm.append((_hm, _txt_label))
-    # A2: 视频文件名日期时间
+    # A2: 视频文件名（仅用于与视频OCR时间组合补全，不作为独立候选）
+    _vid_fn_date = None  # (year, month, day)
     _vid_fn_dt_str = ""
     _vid_fn_dt = None
     for _att in attachments:
@@ -6663,7 +6691,16 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                 _p = _jc._parse_datetime_string(_vid_fn_dt_str)
                 if _p:
                     _vid_fn_dt = _p[1]
-                    _date_providers.append((_vid_fn_dt, "视频文件名", _vid_fn_dt_str))
+                    _vid_fn_date = (_vid_fn_dt.year, _vid_fn_dt.month, _vid_fn_dt.day)
+            break
+    # A2b: 视频上传日期（仅用于与视频OCR时间组合补全，不作为独立候选）
+    _vid_upload_date = None  # (year, month, day)
+    for _att in attachments:
+        _fn = _att.get("filename", "") or ""
+        if _fn.lower().endswith(_VIDEO_SUFFIXES):
+            _vid_created = _ts_parse_datetime(_att.get("created", ""))
+            if _vid_created:
+                _vid_upload_date = (_vid_created.year, _vid_created.month, _vid_created.day)
             break
     # A3: gmlogger 文件名日期时间仅作为兑底，不直接作为日期提供者（已在步骤E处理）
     # A4: 视频 OCR 结果（如果有完整日期）
@@ -6692,12 +6729,11 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
     def _ensure_key(key):
         if key not in _completed:
             _completed[key] = {"score": 0.0, "sources": [], "confirmations": 0}
-    # C1: 日期提供者自身作为候选（视频文件名加权 2.0，其他 1.0）
+    # C1: 日期提供者自身作为候选（基础分 1.0）
     for _dp_dt, _dp_src, _dp_str in _date_providers:
         _k = _dp_dt.strftime("%Y-%m-%d %H:%M")
         _ensure_key(_k)
-        _base = 2.0 if _dp_src == "视频文件名" else 1.0
-        _completed[_k]["score"] += _base
+        _completed[_k]["score"] += 1.0
         if _dp_src not in _completed[_k]["sources"]:
             _completed[_k]["sources"].append(_dp_src)
         _completed[_k]["confirmations"] += 1
@@ -6725,17 +6761,32 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             # 匹配的日期提供者确认+1
             _completed[_dp_dt.strftime("%Y-%m-%d %H:%M")]["confirmations"] += 1
         if _best_dp_key:
-            # 视频自洽奖励：视频OCR时间 + 视频文件名日期匹配时额外加 2.0 分
-            _is_video_self_consistent = (
-                _hm_src == "视频OCR" and
-                any(s == "视频文件名" for s in _completed[_best_dp_key]["sources"])
-            )
-            _bonus = 2.0 if _is_video_self_consistent else 0.0
-            _completed[_best_dp_key]["score"] += _best_dp_score + _bonus
+            _completed[_best_dp_key]["score"] += _best_dp_score
             _label = f"{_hm_src}+补全"
             if _label not in _completed[_best_dp_key]["sources"]:
                 _completed[_best_dp_key]["sources"].append(_label)
             _completed[_best_dp_key]["confirmations"] += 1
+    # C3: 视频OCR仅时间 + 视频文件名/上传日期补全（仅作日期补全，不作为独立候选）
+    _vid_date_providers = []  # [(date_tuple, label)]
+    if _vid_fn_date:
+        _vid_date_providers.append((_vid_fn_date, "视频文件名"))
+    if _vid_upload_date:
+        _vid_date_providers.append((_vid_upload_date, "视频上传日期"))
+    if _vid_date_providers and _time_only_candidates:
+        for _hm, _hm_src in _time_only_candidates:
+            if _hm_src != "视频OCR":
+                continue
+            for (_vy, _vm, _vd), _vdp_label in _vid_date_providers:
+                _ck = f"{_vy:04d}-{_vm:02d}-{_vd:02d} {_hm}"
+                _ensure_key(_ck)
+                # 基础分 2.0 + 匹配分 3.0 + 自洽奖励 2.0
+                _completed[_ck]["score"] += 7.0
+                if _vdp_label not in _completed[_ck]["sources"]:
+                    _completed[_ck]["sources"].append(_vdp_label)
+                _label = f"{_hm_src}+{_vdp_label}补全"
+                if _label not in _completed[_ck]["sources"]:
+                    _completed[_ck]["sources"].append(_label)
+                _completed[_ck]["confirmations"] += 2
     # ── D. 选择最终答案：优先看确认次数，其次看得分 ──
     _best_time = ""
     _best_score = 0.0
@@ -6829,6 +6880,9 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
         suggested_time = _best_time
         verify_status = "success" if _best_score >= 2.0 else "manual"
         vdetail = f"多源置信度: {'+'.join(_best_sources)}={_best_score}分"
+        # 如果视频提取的是仅时间，且最终结果来自视频源，显示组合后的完整时间
+        if video_time and len(video_time) <= 8 and any("视频" in s for s in _best_sources):
+            video_time = f"{video_time}（结合视频日期 → {suggested_time}）"
     if verify_status == "success":
         category = "触发时间问题"
         # 根据置信度评分结果生成描述

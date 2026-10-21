@@ -83,6 +83,7 @@ export function fieldLabel(field: string): string {
 export function diagCategoryTagType(category: string): string {
   if (!category) return 'info';
   if (category.includes('触发时间')) return 'warning';
+  if (category.includes('日志待补充')) return 'warning';
   if (category.includes('无gmlogger') || category.includes('附件')) return 'danger';
   if (category.includes('成功') || category === '分析成功') return 'success';
   if (category.includes('超时') || category.includes('网络')) return '';

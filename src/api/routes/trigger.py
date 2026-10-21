@@ -328,7 +328,7 @@ async def rebalance_trigger_time_tables_endpoint():
 async def batch_extract_time(request: Request):
     """批量提取触发时间（SSE 流式）：支持 JQL 查询或直接传入 bugid 列表
 
-    提取链路与批量执行一致：评论/字段 → 视频OCR → 图片OCR
+    提取链路：视频OCR → 评论/描述 → 图片OCR → 附件文件名
     并行数 2，缓冲 20 条批量写入云端
     """
     import json as _json
@@ -336,7 +336,8 @@ async def batch_extract_time(request: Request):
     from src.api.routes.shared import batch_extract_stop_event as _stop_event, fail as _fail
     from src.clients import jira_client as _jc
     from src.services.server_legacy import (
-        _extract_trigger_time_with_confidence,
+        _diag_extract_time_from_video_simple, _diag_extract_time_from_images,
+        _VIDEO_SUFFIXES,
     )
     from src.services.trigger_ops import (
         _load_trigger_times_from_cloud,
@@ -425,39 +426,71 @@ async def batch_extract_time(request: Request):
         sources_buf = {}  # 缓冲触发时间来源
 
         def extract_one(bugid: str):
-            """单个 bugid 的提取链路：多源置信度评分"""
+            """单个 bugid 的提取链路：视频 → 评论/描述 → 图片优先级"""
+            if _stop_event.is_set():
+                return bugid, "", "stopped", "已停止"
             try:
                 issue = _jc.fetch_issue(bugid)
-                attachments = (issue.get("fields") or {}).get("attachment") or []
-                # 多源置信度提取（全量提取 + 交叉验证补全）
-                tt, source = _extract_trigger_time_with_confidence(
-                    issue, attachments, _img_headers, img_to, bugid)
+                if _stop_event.is_set():
+                    return bugid, "", "stopped", "已停止"
+                fields = issue.get("fields") or {}
+                attachments = fields.get("attachment") or []
+                has_video = any((a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES) for a in attachments)
+                tt, source = "", ""
+                # 1. 视频 OCR（最高优先级）
+                if has_video:
+                    tt = _diag_extract_time_from_video_simple(issue)
+                    if tt:
+                        source = "视频+gmlogger"
+                # 2. 评论/描述/标题文本提取
+                if not tt:
+                    tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
+                    if tt:
+                        source = "标准提取"
+                # 3. 图片 OCR（最终兜底）
+                if not tt and _img_headers:
+                    img_tt, _ = _diag_extract_time_from_images(issue, _img_headers, img_to, bugid)
+                    if img_tt:
+                        tt = img_tt
+                        source = "图片OCR"
+                # 4. 附件文件名兜底
+                if not tt:
+                    tt = _jc.extract_attachment_time(issue)
+                    if tt:
+                        source = "附件名"
                 if tt:
                     if not isinstance(tt, str):
                         tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
-                    return bugid, tt, source or "confidence", None
-                return bugid, "", "failed", "多源置信度提取未获取到时间"
+                    return bugid, tt, source, None
+                return bugid, "", "failed", "优先级提取未获取到时间"
             except Exception as e:
                 return bugid, "", "error", str(e)
 
         # 并行提取（max_workers=2）
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        try:
             futures = {pool.submit(extract_one, b): b for b in to_extract}
             for future in concurrent.futures.as_completed(futures):
                 if _stop_event.is_set():
-                    # 停止：把当前已完成的先批量写入，然后退出
+                    # 取消未开始的任务
+                    cancelled = sum(1 for f in futures if f.cancel())
+                    # 把当前已完成的先批量写入，然后退出
                     if batch_buf:
                         _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
                         yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
                         batch_buf.clear()
                         sources_buf.clear()
-                    yield f"data: {_json.dumps({'type': 'stopped', 'current': done_count, 'total': total, 'hit': hit_count, 'message': f'已停止: {done_count}/{total} 完成, {hit_count} 命中'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {_json.dumps({'type': 'stopped', 'current': done_count, 'total': total, 'hit': hit_count, 'message': f'已停止: {done_count}/{total} 完成, {hit_count} 命中, 取消{cancelled}个'}, ensure_ascii=False)}\n\n"
                     return
                 try:
                     bugid, tt, source, error = future.result()
                 except Exception as e:
                     bugid = futures[future]
                     tt, source, error = "", "error", str(e)
+
+                # 跳过已停止的任务结果
+                if source == "stopped":
+                    continue
 
                 done_count += 1
                 if tt:
@@ -477,6 +510,8 @@ async def batch_extract_time(request: Request):
                     'source': source, 'error': error or '',
                 }
                 yield f"data: {_json.dumps(evt, ensure_ascii=False)}\n\n"
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
         # 余量写入
         if batch_buf:
