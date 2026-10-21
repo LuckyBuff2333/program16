@@ -422,6 +422,7 @@ async def batch_extract_time(request: Request):
         done_count = 0
         hit_count = 0
         batch_buf = {}  # 缓冲 20 条后批量写入
+        sources_buf = {}  # 缓冲触发时间来源
 
         def extract_one(bugid: str):
             """单个 bugid 的提取链路：多源置信度评分"""
@@ -446,9 +447,10 @@ async def batch_extract_time(request: Request):
                 if _stop_event.is_set():
                     # 停止：把当前已完成的先批量写入，然后退出
                     if batch_buf:
-                        _batch_save_trigger_times_to_cloud(batch_buf)
+                        _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
                         yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
                         batch_buf.clear()
+                        sources_buf.clear()
                     yield f"data: {_json.dumps({'type': 'stopped', 'current': done_count, 'total': total, 'hit': hit_count, 'message': f'已停止: {done_count}/{total} 完成, {hit_count} 命中'}, ensure_ascii=False)}\n\n"
                     return
                 try:
@@ -461,11 +463,14 @@ async def batch_extract_time(request: Request):
                 if tt:
                     hit_count += 1
                     batch_buf[bugid] = tt
+                    if source:
+                        sources_buf[bugid] = source
                     # 缓冲 20 条后批量写入
                     if len(batch_buf) >= 20:
-                        _batch_save_trigger_times_to_cloud(batch_buf)
+                        _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
                         yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
                         batch_buf.clear()
+                        sources_buf.clear()
                 evt = {
                     'type': 'progress', 'current': done_count, 'total': total,
                     'hit': hit_count, 'bugid': bugid, 'time': tt or '',
@@ -475,7 +480,7 @@ async def batch_extract_time(request: Request):
 
         # 余量写入
         if batch_buf:
-            _batch_save_trigger_times_to_cloud(batch_buf)
+            _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
             yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
         done_msg = f'提取完成: {hit_count}/{total} 命中'
         if ai_skip_count:

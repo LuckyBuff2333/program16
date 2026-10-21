@@ -423,8 +423,11 @@ def _ensure_trigger_time_bugid_cache():
     logger.info("触发时间缓存已加载: %d 条记录", len(_trigger_time_bugid_cache))
 
 
-def _save_trigger_time_to_cloud(bugid: str, trigger_time: str):
-    """将单条触发时间写入云端 bitable（有则更新，无则新建），云端成功后再写本地 CSV"""
+def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = ""):
+    """将单条触发时间写入云端 bitable（有则更新，无则新建），云端成功后再写本地 CSV
+
+    :param source: 触发时间来源（可选），如 "text:评论第3条(100%:评论/附件名)"
+    """
     # 空值保护：不覆盖已有的非空触发时间
     if not trigger_time:
         _ensure_trigger_time_bugid_cache()
@@ -448,8 +451,11 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str):
         try:
             app_token, _ = _get_trigger_time_table_cfg()
             from src.clients import feishu_client
+            upd_fields = {"触发时间": trigger_time}
+            if source:
+                upd_fields["触发时间来源"] = source
             feishu_client.update_bitable_records(app_token, tid, [
-                {"record_id": rec_id, "fields": {"触发时间": trigger_time}}
+                {"record_id": rec_id, "fields": upd_fields}
             ])
             # 更新缓存时间戳
             _trigger_time_bugid_cache[bugid] = (tid, rec_id, trigger_time)
@@ -460,7 +466,8 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str):
             _trigger_time_bugid_cache.pop(bugid, None)
     if not cloud_ok:
         # 缓存未命中或更新失败：走批量模式
-        cloud_ok = _batch_save_trigger_times_to_cloud({bugid: trigger_time})
+        src_dict = {bugid: source} if source else {}
+        cloud_ok = _batch_save_trigger_times_to_cloud({bugid: trigger_time}, src_dict)
     # 云端成功后才写本地 CSV，避免云端失败时本地多余
     if cloud_ok:
         _save_trigger_time_to_csv(bugid, trigger_time)
@@ -470,11 +477,14 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str):
         logger.warning("云端写入失败，跳过本地 CSV 保存: %s", bugid)
 
 
-def _batch_save_trigger_times_to_cloud(items: dict) -> bool:
-    """批量将触发时间写入云端 bitable，只加载一次表数据。items: {bugid: trigger_time}
+def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None) -> bool:
+    """批量将触发时间写入云端 bitable，只加载一次表数据。
+    items: {bugid: trigger_time}
+    sources: {bugid: source_string} 可选，记录触发时间来源
 
     :return: 云端写入是否成功
     """
+    sources = sources or {}
     from src.clients import feishu_client
     if not items:
         return True
@@ -525,9 +535,12 @@ def _batch_save_trigger_times_to_cloud(items: dict) -> bool:
                 continue
             if bugid in jira_index:
                 tid, rec = jira_index[bugid]
+                upd_fields = {"触发时间": trigger_time}
+                if bugid in sources and sources[bugid]:
+                    upd_fields["触发时间来源"] = sources[bugid]
                 updates_by_table.setdefault(tid, []).append({
                     "record_id": rec["record_id"],
-                    "fields": {"触发时间": trigger_time}
+                    "fields": upd_fields
                 })
             else:
                 new_items.append((bugid, trigger_time))
@@ -568,7 +581,12 @@ def _batch_save_trigger_times_to_cloud(items: dict) -> bool:
                     target_tid, space = available[0]
                 batch = remaining[:space]
                 remaining = remaining[space:]
-                create_records = [{"fields": {"jira号": bid, "触发时间": tt, "提取时间": now_str}} for bid, tt in batch]
+                create_records = []
+                for bid, tt in batch:
+                    fields = {"jira号": bid, "触发时间": tt, "提取时间": now_str}
+                    if bid in sources and sources[bid]:
+                        fields["触发时间来源"] = sources[bid]
+                    create_records.append({"fields": fields})
                 feishu_client.batch_create_records(app_token, target_tid, create_records)
                 table_counts[target_tid] = table_counts.get(target_tid, 0) + len(batch)
                 logger.info("云端触发时间批量新建: %d 条 (表 %s, 当前 %d/%d)",
