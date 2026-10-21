@@ -337,7 +337,7 @@ def _paginate_get(url: str, headers: dict, params: dict,
             continue
         # HTTP 401/400/403 时尝试自动刷新 token（仅针对认证错误，限流走单独逻辑）
         if retry_on_token_expire and resp.status_code in (401, 400, 403) and not retried:
-            # 400 需要先判断是否为限流，限流不刷新 token
+            # 400 需要先判断是否为限流/数据未就绪，这些不是认证问题
             if resp.status_code == 400:
                 try:
                     _err_code = resp.json().get("code", 0)
@@ -350,6 +350,14 @@ def _paginate_get(url: str, headers: dict, params: dict,
                     logger.info("%s: 触发频率限制，等待 %ds 后重试", log_msg, wait)
                     time.sleep(wait)
                     continue
+                if _err_code == 1254607:
+                    # 数据未就绪（多维表格索引中）：等待后重试，不刷新 token
+                    server_retry_count += 1
+                    if server_retry_count <= 3:
+                        wait = 3 * server_retry_count
+                        logger.info("%s: 数据未就绪(code=1254607)，等待 %ds 后重试", log_msg, wait)
+                        time.sleep(wait)
+                        continue
                 # 其他 400 才是认证问题，继续走 token 刷新
             logger.info("收到 HTTP %d，尝试自动刷新 token...", resp.status_code)
             if resp.status_code == 403:
@@ -386,8 +394,8 @@ def _paginate_get(url: str, headers: dict, params: dict,
                 logger.info("%s: 触发频率限制，等待 %ds 后重试", log_msg, wait)
                 time.sleep(wait)
                 continue
-            # 真正的认证失败才提示重新授权
-            if resp.status_code in (401, 403) or (resp.status_code == 400 and err_code not in (99991400,)):
+            # 真正的认证失败才提示重新授权（排除限流和数据未就绪）
+            if resp.status_code in (401, 403) or (resp.status_code == 400 and err_code not in (99991400, 1254607)):
                 err_detail += "，请重新授权飞书应用（Web 页面点击「重新授权飞书」按钮）"
             raise ValueError(f"{log_msg}: {err_detail}")
         data = resp.json()
