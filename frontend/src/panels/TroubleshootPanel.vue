@@ -1039,8 +1039,12 @@ export default {
       return cats;
     },
     getFilteredDiagResults() {
-      // 只返回"需要深入分析"的记录，根据类别筛选
-      const rows = (this.troubleshoot.diagResults || []).filter(r => r.needs_analysis !== false);
+      // 只返回“需要深入分析”的记录，根据类别筛选
+      let rows = (this.troubleshoot.diagResults || []).filter(r => r.needs_analysis !== false);
+      // 仅人工审核结果为空：过滤掉已有人工审核结果的记录
+      if (this.troubleshoot.onlyEmptyReview) {
+        rows = rows.filter(r => !r.existing_review);
+      }
       const sorted = [...rows].sort((a, b) => {
         const ta = a.done_time ? new Date(a.done_time.replace(/-/g, '/')).getTime() : 0;
         const tb = b.done_time ? new Date(b.done_time.replace(/-/g, '/')).getTime() : 0;

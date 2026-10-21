@@ -464,6 +464,7 @@ def batch_pre_classify(records: list[dict]) -> dict:
                 "needs_analysis": cached_cat not in _SKIP_ANALYSIS_CATEGORIES,
                 "suggested_time": cached.get("suggested_time", ""),
                 "verify_status": cached.get("verify_status", ""),
+                "existing_review": human_review or "",
             }
             if cached_cat in _SKIP_ANALYSIS_CATEGORIES:
                 skip_list.append(entry)
@@ -511,7 +512,8 @@ def batch_pre_classify(records: list[dict]) -> dict:
             elif "分析can信号" in human_review:
                 category = "分析can信号导致超时"
         entry = {"bugid": bugid, "category": category or "", "done_time": done_time,
-                 "problem_time": problem_time, "err_msg": err_msg[:200]}
+                 "problem_time": problem_time, "err_msg": err_msg[:200],
+                 "existing_review": human_review or ""}
         # 结论明确的归类自动生成报告并跳过深度诊断
         if category and category in _SKIP_ANALYSIS_CATEGORIES:
             report = _generate_troubleshoot_report(bugid, category, err_msg, f"预归类：{category}")
