@@ -92,11 +92,12 @@ def fetch_issue(bugid: str) -> dict:
                 raise
 
 
-def search_issues(jql: str, max_results: int = 500) -> list:
+def search_issues(jql: str, max_results: int = 500, fields: str = "summary,status,created") -> list:
     """通过 JQL 搜索 Jira issue，支持自动分页（突破单次 1000 条限制）
 
     :param jql: JQL 查询语句
     :param max_results: 最大返回数量
+    :param fields: 需要返回的字段（逗号分隔）
     :return: issue 列表，每项含 key 和 fields
     """
     cfg = load_config()["jira_api"]
@@ -119,7 +120,7 @@ def search_issues(jql: str, max_results: int = 500) -> list:
     page_size = min(max_results, 1000)  # Jira 单次上限 1000
     while len(all_issues) < max_results:
         result = http_get(search_url, params={"jql": jql, "maxResults": page_size,
-                                              "startAt": start_at, "fields": "summary,status,created"},
+                                              "startAt": start_at, "fields": fields},
                           timeout=cfg.get("timeout", 30), auth=auth, headers=headers)
         issues = result.get("issues", [])
         if not issues:
