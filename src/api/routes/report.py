@@ -709,6 +709,7 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
                 b_ok = b_fail = b_miss = 0
                 b_fail_cats = {}
                 b_durations = []
+                latest_complete = ""  # 最晚分析完成时间
                 for row in row_list:
                     jid = (row.get("jira号") or "").strip()
                     if not jid:
@@ -726,6 +727,10 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
                     dur = _parse_dur_sec(bf.get("分析耗时", ""))
                     if dur > 0:
                         b_durations.append(dur)
+                    # 追踪最晚分析完成时间
+                    ct = bf.get("分析完成时间", "")
+                    if ct and ct > latest_complete:
+                        latest_complete = ct
                     if bf.get("分析结果", "") == "成功":
                         b_ok += 1
                     else:
@@ -733,12 +738,26 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
                         cat = _classify_failure(jid, bf)
                         b_fail_cats[cat] = b_fail_cats.get(cat, 0) + 1
                 b_match = b_ok + b_fail
+                # 计算批次总耗时（秒）：从执行时间到最后一条分析完成
+                total_dur_sec = 0
+                batch_exec_time = b.get("exec_time", "")
+                if batch_exec_time and latest_complete:
+                    try:
+                        from datetime import datetime as _dt
+                        t_start = _dt.strptime(batch_exec_time, "%Y-%m-%d %H:%M:%S")
+                        t_end = _dt.strptime(latest_complete, "%Y-%m-%d %H:%M:%S")
+                        diff = int((t_end - t_start).total_seconds())
+                        if diff > 0:
+                            total_dur_sec = diff
+                    except Exception:
+                        pass
                 detail = {
                     "bt_ok": b_ok, "bt_fail": b_fail, "bt_miss": b_miss,
                     "bt_match": b_match,
                     "rate": round(b_ok / b_match * 100, 1) if b_match else 0,
                     "avg_dur": round(sum(b_durations) / len(b_durations)) if b_durations else 0,
                     "max_dur": max(b_durations) if b_durations else 0,
+                    "total_dur": total_dur_sec,
                     "fail_cats": b_fail_cats,
                     "total": len(row_list),
                 }
@@ -1045,6 +1064,7 @@ def dashboard_batch_detail(
     bt_ok = bt_fail = bt_miss = 0
     fail_cats = {}
     durations = []
+    latest_complete = ""  # 最晚分析完成时间
     try:
         from src.clients import feishu_client
         from src.services.report_ops import (
@@ -1082,6 +1102,10 @@ def dashboard_batch_detail(
                 dur = _parse_dur_sec(bf.get("分析耗时", ""))
                 if dur > 0:
                     durations.append(dur)
+                # 追踪最晚分析完成时间
+                ct = bf.get("分析完成时间", "")
+                if ct and ct > latest_complete:
+                    latest_complete = ct
                 if result == "成功":
                     bt_ok += 1
                 else:
@@ -1094,13 +1118,30 @@ def dashboard_batch_detail(
     bt_match = bt_ok + bt_fail
     avg_dur = round(sum(durations) / len(durations)) if durations else 0
     max_dur = max(durations) if durations else 0
+    # 计算批次总耗时（秒）
+    total_dur_sec = 0
+    import re as _re
+    _em = _re.search(r"(\d{4}-\d{2}-\d{2})\s+(\d{6})", batch)
+    batch_exec_time = ""
+    if _em:
+        batch_exec_time = f"{_em.group(1)} {_em.group(2)[:2]}:{_em.group(2)[2:4]}:{_em.group(2)[4:]}"
+    if batch_exec_time and latest_complete:
+        try:
+            from datetime import datetime as _dt
+            t_start = _dt.strptime(batch_exec_time, "%Y-%m-%d %H:%M:%S")
+            t_end = _dt.strptime(latest_complete, "%Y-%m-%d %H:%M:%S")
+            diff = int((t_end - t_start).total_seconds())
+            if diff > 0:
+                total_dur_sec = diff
+        except Exception:
+            pass
 
     data = {
         "name": batch, "date": date,
         "bt_ok": bt_ok, "bt_fail": bt_fail, "bt_miss": bt_miss,
         "bt_match": bt_match,
         "rate": round(bt_ok / bt_match * 100, 1) if bt_match else 0,
-        "avg_dur": avg_dur, "max_dur": max_dur,
+        "avg_dur": avg_dur, "max_dur": max_dur, "total_dur": total_dur_sec,
         "fail_cats": fail_cats,
         "total": len(rows),
     }

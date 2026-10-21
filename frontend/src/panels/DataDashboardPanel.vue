@@ -118,6 +118,7 @@
                 <div class="db-detail-block">
                   <div class="db-detail-title">耗时统计</div>
                   <div class="db-kv-list">
+                    <div class="db-kv"><span class="db-kv-k">批次总耗时</span><span class="db-kv-v">{{ fmtTotalDur(batch._detail.total_dur) }}</span></div>
                     <div class="db-kv"><span class="db-kv-k">平均耗时</span><span class="db-kv-v">{{ batch._detail.avg_dur > 0 ? (batch._detail.avg_dur / 60).toFixed(1) + ' min' : '-' }}</span></div>
                     <div class="db-kv"><span class="db-kv-k">最大耗时</span><span class="db-kv-v">{{ batch._detail.max_dur > 0 ? (batch._detail.max_dur / 60).toFixed(1) + ' min' : '-' }}</span></div>
                   </div>
@@ -205,6 +206,15 @@ export default {
   methods: {
     batchOkPct(b) { return b._detail && b._detail.total > 0 ? (b._detail.bt_ok / b._detail.total * 100).toFixed(1) : 0; },
     batchFailPct(b) { return b._detail && b._detail.total > 0 ? (b._detail.bt_fail / b._detail.total * 100).toFixed(1) : 0; },
+    fmtTotalDur(sec) {
+      if (!sec || sec <= 0) return '-';
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      if (h > 0) return `${h}h ${m}m ${s}s`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    },
     async handleManualRefresh() {
       await this.loadDashboard();
       this.loadDates();
