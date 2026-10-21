@@ -243,10 +243,12 @@ _bitable_text = bitable_text
 
 
 def is_bitable_excluded(fields: dict, bugid_field: str = "jira号") -> bool:
-    """多维表格记录是否应被去重排除（成功或失败均排除，仅分析中/AI初步分析/空值不排除）"""
+    """多维表格记录是否应被去重排除"""
     result_status = bitable_text(fields.get("分析结果", ""))
-    # 有明确分析结果（成功/失败）均排除，不再重复执行
-    if result_status in ("成功", "失败"):
+    trigger_source = bitable_text(fields.get("触发来源", ""))
+    if trigger_source == "parseFullTicket" and result_status == "成功":
+        return True
+    if result_status == "成功":
         return True
     human_review = bitable_text(fields.get("人工审核结果", ""))
     if human_review:
