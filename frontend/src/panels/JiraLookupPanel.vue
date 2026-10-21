@@ -16,7 +16,8 @@
       </div>
       <div class="preset-bar" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <el-button size="small" type="danger" :loading="todayBugLoading" @click="queryTodayNewBugs">今日新增 Bug</el-button>
-        <el-button size="small" type="warning" @click="queryYesterdayNewBugs">昨日新增 Bug</el-button>
+        <el-button size="small" type="warning" :loading="yesterdayBugLoading" @click="queryYesterdayNewBugs">昨日新增 Bug</el-button>
+        <el-button size="small" type="success" :loading="weekBugLoading" @click="queryWeekNewBugs">本周新增 Bug</el-button>
         <el-button size="small" type="primary" @click="fillSummaryQuery">描述查 Jira 号</el-button>
         <el-divider direction="vertical" style="margin:0 4px"></el-divider>
         <el-checkbox v-model="filterAiPreliminary" size="small">过滤AI初步分析结果</el-checkbox>
@@ -89,6 +90,8 @@ export default {
       loading: false,
       queried: false,
       todayBugLoading: false,
+      yesterdayBugLoading: false,
+      weekBugLoading: false,
       filterAiPreliminary: true,
       rows: [] as any[],
       errors: [] as any[],
@@ -160,16 +163,45 @@ export default {
         this.todayBugLoading = false;
       }
     },
-    queryYesterdayNewBugs() {
-      this.query = 'created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND issuetype = "bug" AND status != "closed"';
-      setTimeout(() => {
-        const el = document.querySelector('textarea');
-        if (el) {
-          el.focus();
-          const len = this.query.length;
-          (el as HTMLTextAreaElement).setSelectionRange(len, len);
-        }
-      }, 30);
+    async queryYesterdayNewBugs() {
+      const jql = 'created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND issuetype = "bug" AND status != "closed"';
+      this.query = jql;
+      this.yesterdayBugLoading = true;
+      this.loading = true; this.queried = true; this.rows = []; this.errors = [];
+      try {
+        const result = await api('/api/test/jira_lookup', { method: 'POST', body: JSON.stringify({ query: jql }) });
+        const data = result.data || {};
+        this.rows = data.rows || [];
+        this.errors = data.errors || [];
+        this.mode = data.mode || 'jql';
+        if (!this.rows.length) ElMessage.info('昨日暂无新增 Bug');
+        else ElMessage.success(`昨日新增 ${this.rows.length} 个 Bug`);
+      } catch (e: any) {
+        ElMessage.error('查询失败: ' + e.message);
+      } finally {
+        this.loading = false;
+        this.yesterdayBugLoading = false;
+      }
+    },
+    async queryWeekNewBugs() {
+      const jql = 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed"';
+      this.query = jql;
+      this.weekBugLoading = true;
+      this.loading = true; this.queried = true; this.rows = []; this.errors = [];
+      try {
+        const result = await api('/api/test/jira_lookup', { method: 'POST', body: JSON.stringify({ query: jql }) });
+        const data = result.data || {};
+        this.rows = data.rows || [];
+        this.errors = data.errors || [];
+        this.mode = data.mode || 'jql';
+        if (!this.rows.length) ElMessage.info('本周暂无新增 Bug');
+        else ElMessage.success(`本周新增 ${this.rows.length} 个 Bug`);
+      } catch (e: any) {
+        ElMessage.error('查询失败: ' + e.message);
+      } finally {
+        this.loading = false;
+        this.weekBugLoading = false;
+      }
     },
     copyAllKeys() {
       const list = this.filterAiPreliminary ? this.displayedRows : this.rows;

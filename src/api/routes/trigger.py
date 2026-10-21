@@ -336,9 +336,7 @@ async def batch_extract_time(request: Request):
     from src.api.routes.shared import batch_extract_stop_event as _stop_event, fail as _fail
     from src.clients import jira_client as _jc
     from src.services.server_legacy import (
-        _diag_extract_time_from_video_simple,
-        _diag_extract_time_from_images,
-        _has_gmlogger_logs,
+        _extract_trigger_time_with_confidence,
     )
     from src.services.trigger_ops import (
         _load_trigger_times_from_cloud,
@@ -405,6 +403,9 @@ async def batch_extract_time(request: Request):
         cfg = load_config().get("jira_api", {})
         img_tok = cfg.get("token", "")
         img_to = max(int(cfg.get("timeout", 30)), 120)
+        _img_headers = {}
+        if img_tok:
+            _img_headers["Authorization"] = f"Bearer {img_tok}"
 
         start_evt = {'type': 'start', 'total': total}
         skip_parts = []
@@ -423,40 +424,18 @@ async def batch_extract_time(request: Request):
         batch_buf = {}  # 缓冲 20 条后批量写入
 
         def extract_one(bugid: str):
-            """单个 bugid 的提取链路（与批量执行一致）"""
+            """单个 bugid 的提取链路：多源置信度评分"""
             try:
                 issue = _jc.fetch_issue(bugid)
                 attachments = (issue.get("fields") or {}).get("attachment") or []
-                if not _has_gmlogger_logs(attachments, bugid):
-                    return bugid, "", "no_gmlogger", None
-                # 评论/字段提取优先
-                _SRC_MAP = {"标题": "summary", "评论": "comment", "字段": "custom_field", "描述": "description", "附件名": "attachment_name"}
-                tt, _src_label = _jc.extract_trigger_time_from_issue(issue, return_source=True, skip_attachment=True)
-                source = _SRC_MAP.get(_src_label, "jira_comment") if tt else ""
-                if not tt:
-                    # 视频 OCR 兑底
-                    tt = _diag_extract_time_from_video_simple(issue)
-                    if tt:
-                        source = "video_ocr"
-                if not tt:
-                    # 图片 OCR 兑底
-                    img_h = {}
-                    if img_tok:
-                        img_h["Authorization"] = f"Bearer {img_tok}"
-                    img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, bugid)
-                    if img_tt:
-                        tt = img_tt
-                        source = "image_ocr"
-                # 附件文件名最终兑底
-                if not tt:
-                    tt = _jc.extract_attachment_time(issue)
-                    if tt:
-                        source = "attachment_name"
+                # 多源置信度提取（全量提取 + 交叉验证补全）
+                tt, source = _extract_trigger_time_with_confidence(
+                    issue, attachments, _img_headers, img_to, bugid)
                 if tt:
                     if not isinstance(tt, str):
                         tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
-                    return bugid, tt, source, None
-                return bugid, "", "failed", "评论/视频/图片均未提取到时间"
+                    return bugid, tt, source or "confidence", None
+                return bugid, "", "failed", "多源置信度提取未获取到时间"
             except Exception as e:
                 return bugid, "", "error", str(e)
 

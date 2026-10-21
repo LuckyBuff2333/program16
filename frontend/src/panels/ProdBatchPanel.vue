@@ -149,10 +149,11 @@ export default {
       } catch (e) { ElMessage.error('加载失败: ' + e.message); }
       finally { this.running.prodLoadCsv = false; }
     },
-    async _prodBatchRunOnce(directIds, roundLabel) {
+    async _prodBatchRunOnce(directIds, roundLabel, executedSet) {
       this.prodBatch.msg = ''; this.prodBatch.error = false; this.prodBatch.stage = '';
       this.prodBatch.doneMsg = ''; this.prodBatch.cloudUrl = '';
       this.prodBatchAbort = new AbortController();
+      const roundExecuted = new Set();  // 本轮执行的 Jira 号
       try {
         const resp = await fetch('/api/test/prod_batch_run', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -186,6 +187,8 @@ export default {
               } else if (evt.type === 'progress') {
                 const row = { 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '触发时间': evt.exec_time, '执行时间': evt.analysis_time, '备注': evt.msg };
                 this.prodBatch.results.push(row);
+                // 记录本轮已执行的 Jira 号（无论成功失败都记录，避免重复提交）
+                if (evt.bugid) roundExecuted.add(evt.bugid);
                 this.prodBatch.stage = `${roundLabel}执行中：${evt.index}/${evt.total}`;
               } else if (evt.type === 'done') {
                 this.prodBatch.doneMsg = evt.message;
@@ -202,6 +205,11 @@ export default {
       } catch (e) {
         if (e.name !== 'AbortError') { this.prodBatch.msg = `${roundLabel}执行失败: ${e.message}`; this.prodBatch.error = true; }
         else { throw e; }
+      } finally {
+        // 将本轮执行的 Jira 号合并到跨轮去重集合
+        if (executedSet && roundExecuted.size > 0) {
+          for (const id of roundExecuted) executedSet.add(id);
+        }
       }
     },
     async prodBatchRun() {
@@ -221,30 +229,42 @@ export default {
         this.prodBatch.continuousRunning = true;
         const totalRounds = this.prodBatch.rounds;
         const intervalMs = this.prodBatch.interval * 60 * 1000;
+        // 跨轮去重：记录已执行的 Jira 号，后续轮次不再重复提交
+        const executedSet = new Set();
+        let remainingIds = [...directIds];
         for (let i = 1; i <= totalRounds; i++) {
           this.prodBatch.currentRound = i;
           const roundLabel = `[${i}/${totalRounds}] `;
-          try { await this._prodBatchRunOnce(directIds, roundLabel); }
+          // 过滤本轮已执行的
+          if (executedSet.size > 0) {
+            remainingIds = remainingIds.filter(id => !executedSet.has(id));
+          }
+          if (!remainingIds.length && !this.prodBatch.selectedCsvs.length) {
+            this.prodBatch.msg = `所有 ${executedSet.size} 条已在前几轮执行完毕，提前结束（完成 ${i - 1}/${totalRounds} 轮）`;
+            this.prodBatch.error = false; break;
+          }
+          const idsForRound = remainingIds.length ? remainingIds : directIds;
+          try { await this._prodBatchRunOnce(idsForRound, roundLabel, executedSet); }
           catch (e) {
-            this.prodBatch.msg = `持续执行已停止（完成 ${i - 1}/${totalRounds} 轮）`;
+            this.prodBatch.msg = `持续执行已停止（完成 ${i - 1}/${totalRounds} 轮，已执行 ${executedSet.size} 条）`;
             this.prodBatch.error = false; break;
           }
           if (i < totalRounds) {
             const waitUntil = Date.now() + intervalMs;
-            this.prodBatch.stage = `等待下一轮（${this.prodBatch.interval} 分钟后开始第 ${i + 1}/${totalRounds} 轮）`;
+            this.prodBatch.stage = `等待下一轮（${this.prodBatch.interval} 分钟后开始第 ${i + 1}/${totalRounds} 轮，已执行 ${executedSet.size} 条）`;
             while (Date.now() < waitUntil) {
               if (this.prodBatchAbort && this.prodBatchAbort.signal.aborted) break;
               const remainSec = Math.ceil((waitUntil - Date.now()) / 1000);
               const mm = Math.floor(remainSec / 60);
               const ss = remainSec % 60;
-              this.prodBatch.stage = `等待下一轮（${mm}:${String(ss).padStart(2, '0')} 后开始第 ${i + 1}/${totalRounds} 轮）`;
+              this.prodBatch.stage = `等待下一轮（${mm}:${String(ss).padStart(2, '0')} 后开始第 ${i + 1}/${totalRounds} 轮，已执行 ${executedSet.size} 条）`;
               await new Promise(r => setTimeout(r, 1000));
             }
           }
         }
         this.prodBatch.continuousRunning = false;
-        if (!this.prodBatch.error && !this.prodBatch.msg.includes('已停止')) {
-          this.prodBatch.msg = `持续执行完成：共 ${totalRounds} 轮`;
+        if (!this.prodBatch.error && !this.prodBatch.msg.includes('已停止') && !this.prodBatch.msg.includes('提前结束')) {
+          this.prodBatch.msg = `持续执行完成：共 ${this.prodBatch.currentRound} 轮，累计执行 ${executedSet.size} 条不重复`;
         }
       }
       this.running.prodBatchRun = false;

@@ -200,7 +200,7 @@ export default {
       return list;
     },
   },
-  mounted() { this.loadDates(); },
+  mounted() { this.loadDates(); this.loadDashboard(); },
   beforeUnmount() { this.stopAutoRefresh(); },
   methods: {
     batchOkPct(b) { return b._detail && b._detail.total > 0 ? (b._detail.bt_ok / b._detail.total * 100).toFixed(1) : 0; },

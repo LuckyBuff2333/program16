@@ -315,10 +315,20 @@ def _paginate_get(url: str, headers: dict, params: dict,
         _is_tenant_token = bool(_tk and _tk == _token_cache.get("token", ""))
     except Exception:
         pass
+    _timeout_retry = 0  # 超时重试计数
     while True:
         if page_token:
             params["page_token"] = page_token
-        resp = httpx.get(url, headers=headers, params=params, timeout=30, verify=False)
+        try:
+            resp = httpx.get(url, headers=headers, params=params, timeout=30, verify=False)
+        except (httpx.ReadTimeout, httpx.ConnectTimeout) as _te:
+            _timeout_retry += 1
+            if _timeout_retry <= 2:
+                logger.info("%s: 请求超时(%s)，第 %d 次重试", log_msg, type(_te).__name__, _timeout_retry)
+                time.sleep(_timeout_retry)
+                continue
+            raise
+        _timeout_retry = 0  # 成功后重置
         # HTTP 5xx 服务端错误：自动重试最多 2 次，间隔 1~2 秒
         if resp.status_code >= 500 and server_retry_count < 2:
             server_retry_count += 1

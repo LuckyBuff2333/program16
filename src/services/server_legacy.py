@@ -2715,6 +2715,7 @@ def _get_unanalyzed_jql_presets() -> dict:
         "JQL3": ("昨日coreservice", 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU" AND created >= startOfDay(\'-1d\') AND created <= endOfDay(\'-1d\')'),
         "JQL4": ("昨日远控", 'issuetype = bug AND text ~ "远控" AND text ~ "VCU" AND created >= startOfDay(\'-1d\') AND created <= endOfDay(\'-1d\')'),
         "JQL5": ("昨日导航", 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU" AND created >= startOfDay(\'-1d\') AND created <= endOfDay(\'-1d\')'),
+        "JQL6": ("本周新增Bug", 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed"'),
     }
 
 
@@ -6268,6 +6269,194 @@ def _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force=
     except InterruptedError:
         logger.info("诊断已中断: %s", bugid)
         return _fail(f"{bugid} 诊断已中断")
+
+
+def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
+                                          headers: dict = None, att_timeout: int = 120,
+                                          bugid: str = "") -> tuple:
+    """多源置信度提取触发时间（可复用，供批量提取和诊断共用）
+
+    全量提取所有来源（文本/视频OCR/图片OCR/文件名），交叉验证补全仅时间候选，
+    返回置信度最高的时间。
+
+    :return: (best_time, source_label) — best_time 为 "YYYY-MM-DD HH:MM:SS" 或 ""
+    """
+    from src.clients import jira_client as _jc
+    if not _has_gmlogger_logs(attachments, bugid):
+        return "", ""
+    gm_times = _diag_gmlogger_times(attachments)
+    # —— 源1: 视频 OCR ——
+    video_time = ""
+    gm_dates_for_video = [(dt.year, dt.month, dt.day) for _, dt in gm_times] if gm_times else []
+    gm_ref_dt_for_video = gm_times[0][1] if gm_times else None
+    if headers:
+        _vid_result, _ = _diag_extract_time_from_video(
+            issue, headers, att_timeout, gm_dates_for_video, [], gm_ref_dt_for_video, gm_times)
+        if _vid_result:
+            video_time = _vid_result
+    # —— 源2: 图片 OCR ——
+    img_time_str = ""
+    if headers:
+        img_time_str, _ = _diag_extract_time_from_images(issue, headers, att_timeout, bugid)
+    # —— A. 收集“日期提供者”——
+    _fields = issue.get("fields") or {}
+    _created_date = (_fields.get("created") or "")[:10]
+    _date_providers = []  # [(datetime, source_label, display_str)]
+    _text_time_only_hm = []  # 仅时间 HH:MM
+    for _txt_label, _txt_content in [
+        ("描述", _fields.get("description") or ""),
+        ("标题", _fields.get("summary") or ""),
+    ]:
+        if not _txt_content:
+            continue
+        _full_set = {_t for _t, _ in _jc._extract_times_from_text(_txt_content)}
+        _full_hm_set = set()
+        for _ft in _full_set:
+            if len(_ft) >= 16:
+                _full_hm_set.add(_ft[11:16])
+        for _t, _dt in _jc._extract_times_from_text(_txt_content, date_str=_created_date):
+            if _t in _full_set:
+                _date_providers.append((_dt, f"文本:{_txt_label}", _t))
+            else:
+                _hm = _dt.strftime("%H:%M")
+                if _hm not in _full_hm_set:
+                    _text_time_only_hm.append((_hm, _txt_label))
+    # A2: 视频文件名
+    for _att in attachments:
+        _fn = _att.get("filename", "") or ""
+        if _fn.lower().endswith(_VIDEO_SUFFIXES):
+            _vid_fn_dt_str = _parse_video_filename_datetime(_fn)
+            if _vid_fn_dt_str:
+                _p = _jc._parse_datetime_string(_vid_fn_dt_str)
+                if _p:
+                    _date_providers.append((_p[1], "视频文件名", _vid_fn_dt_str))
+            break
+    # A3: gmlogger 文件名
+    for _gm_s, _gm_dt in gm_times:
+        _date_providers.append((_gm_dt, "gmlogger", _gm_s))
+    # A4: 视频 OCR（完整日期）
+    if video_time and len(video_time) >= 16:
+        _vid_dt = _jc._parse_datetime_string(video_time)
+        if _vid_dt:
+            _date_providers.append((_vid_dt[1], "视频OCR", video_time))
+    # A5: 图片 OCR（完整日期）
+    if img_time_str and len(img_time_str) >= 16:
+        _img_dt = _jc._parse_datetime_string(img_time_str)
+        if _img_dt:
+            _date_providers.append((_img_dt[1], "图片OCR", img_time_str))
+    # —— B. 收集仅时间候选 ——
+    _time_only_candidates = []
+    for _hm, _src in _text_time_only_hm:
+        _time_only_candidates.append((_hm, f"文本:{_src}"))
+    if video_time and len(video_time) <= 8:
+        _time_only_candidates.append((video_time[:5], "视频OCR"))
+    if img_time_str and len(img_time_str) <= 8:
+        _time_only_candidates.append((img_time_str[:5], "图片OCR"))
+    # —— C. 补全匹配 ——
+    _completed = {}
+    def _ensure_key(key):
+        if key not in _completed:
+            _completed[key] = {"score": 0.0, "sources": [], "confirmations": 0}
+    for _dp_dt, _dp_src, _dp_str in _date_providers:
+        _k = _dp_dt.strftime("%Y-%m-%d %H:%M")
+        _ensure_key(_k)
+        _completed[_k]["score"] += 1.0
+        if _dp_src not in _completed[_k]["sources"]:
+            _completed[_k]["sources"].append(_dp_src)
+        _completed[_k]["confirmations"] += 1
+    for _hm, _hm_src in _time_only_candidates:
+        _best_dp_score = 0.0
+        _best_dp_key = ""
+        for _dp_dt, _dp_src, _dp_str in _date_providers:
+            _dp_hm = _dp_dt.strftime("%H:%M")
+            _min_diff = abs(int(_hm[:2]) * 60 + int(_hm[3:5]) - (int(_dp_hm[:2]) * 60 + int(_dp_hm[3:5])))
+            _min_diff = min(_min_diff, 1440 - _min_diff)
+            if _hm == _dp_hm:
+                _match_score = 3.0
+            elif _min_diff <= 30:
+                _match_score = 1.5
+            elif _min_diff <= 60:
+                _match_score = 0.5
+            else:
+                continue
+            _completed_key = _dp_dt.strftime("%Y-%m-%d") + " " + _hm
+            _ensure_key(_completed_key)
+            if _match_score > _best_dp_score:
+                _best_dp_score = _match_score
+                _best_dp_key = _completed_key
+            _completed[_dp_dt.strftime("%Y-%m-%d %H:%M")]["confirmations"] += 1
+        if _best_dp_key:
+            _completed[_best_dp_key]["score"] += _best_dp_score
+            _label = f"{_hm_src}+补全"
+            if _label not in _completed[_best_dp_key]["sources"]:
+                _completed[_best_dp_key]["sources"].append(_label)
+            _completed[_best_dp_key]["confirmations"] += 1
+    # —— D. 选择最终答案 ——
+    _best_time = ""
+    _best_score = 0.0
+    _best_confirm = 0
+    _best_sources = []
+    for _k, _v in _completed.items():
+        if (_v["confirmations"] > _best_confirm or
+            (_v["confirmations"] == _best_confirm and _v["score"] > _best_score)):
+            _best_confirm = _v["confirmations"]
+            _best_score = _v["score"]
+            _best_time = _k + ":00" if len(_k) == 16 else _k
+            _best_sources = _v["sources"]
+    # —— E. 兑底：包内main文件名 ——
+    if _best_confirm < 2 and headers:
+        try:
+            _probe_atts = [a for a in attachments
+                           if "gmlogger" in (a.get("filename", "") or "").lower()
+                           or (a.get("filename", "") or "").lower().endswith((".zip", ".rar", ".7z"))]
+            if _probe_atts:
+                _gm_probe = _diag_gmlogger_main_times(_probe_atts, headers, att_timeout, bugid)
+                _main_times_probe = _gm_probe.get("main_times", [])
+                _all_times_probe = _gm_probe.get("all_times", [])
+                for _mt_s, _mt_dt in (_main_times_probe + _all_times_probe):
+                    _date_providers.append((_mt_dt, "包内main", _mt_s))
+                if _date_providers and _time_only_candidates:
+                    for _hm, _hm_src in _time_only_candidates:
+                        _best_dp_score2 = 0.0
+                        _best_dp_key2 = ""
+                        for _dp_dt, _dp_src, _dp_str in _date_providers:
+                            if _dp_src != "包内main":
+                                continue
+                            _dp_hm = _dp_dt.strftime("%H:%M")
+                            _min_diff = abs(int(_hm[:2]) * 60 + int(_hm[3:5]) - (int(_dp_hm[:2]) * 60 + int(_dp_hm[3:5])))
+                            _min_diff = min(_min_diff, 1440 - _min_diff)
+                            if _hm == _dp_hm:
+                                _match_score = 3.0
+                            elif _min_diff <= 30:
+                                _match_score = 1.5
+                            elif _min_diff <= 60:
+                                _match_score = 0.5
+                            else:
+                                continue
+                            _ck = _dp_dt.strftime("%Y-%m-%d") + " " + _hm
+                            _ensure_key(_ck)
+                            if _match_score > _best_dp_score2:
+                                _best_dp_score2 = _match_score
+                                _best_dp_key2 = _ck
+                        if _best_dp_key2:
+                            _completed[_best_dp_key2]["score"] += _best_dp_score2
+                            _label = f"{_hm_src}+包内补全"
+                            if _label not in _completed[_best_dp_key2]["sources"]:
+                                _completed[_best_dp_key2]["sources"].append(_label)
+                            _completed[_best_dp_key2]["confirmations"] += 1
+                    for _k, _v in _completed.items():
+                        if (_v["confirmations"] > _best_confirm or
+                            (_v["confirmations"] == _best_confirm and _v["score"] > _best_score)):
+                            _best_confirm = _v["confirmations"]
+                            _best_score = _v["score"]
+                            _best_time = _k + ":00" if len(_k) == 16 else _k
+                            _best_sources = _v["sources"]
+        except Exception as e:
+            logger.warning("%s: 包内main兑底失败: %s", bugid, e)
+    source_label = "+".join(_best_sources) if _best_sources else ""
+    logger.info("%s: 置信度提取完成 time=%s, confirm=%d, score=%.1f, sources=%s",
+                bugid, _best_time or "(空)", _best_confirm, _best_score, _best_sources)
+    return _best_time, source_label
 
 
 def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
