@@ -673,108 +673,72 @@ async def test_batch_ai_extract_times(request: Request):
 
 @router.post("/api/test/batch_ai_filter", response_model=ApiResponse)
 async def test_batch_ai_filter(request: Request):
-    """步骤3：过滤候选记录。顺序：AI初步分析过滤 → 多维表格去重"""
+    """步骤3：过滤候选记录。顺序：多维表格去重 → AI初步分析过滤"""
     import os, re, json
     body = await request.json() or {}
     keys = body.get("keys") or []
     filter_all = body.get("filter_all", False)
-    filter_pc_only = body.get("filter_pc_only", False)  # 仅过滤触发来源为PC的记录
-    filter_online_only = body.get("filter_online_only", False)  # 仅过滤线上的记录
-    filter_ai_preliminary = body.get("filter_ai_preliminary", False)  # 过滤AI初步分析结果
+    filter_pc_only = body.get("filter_pc_only", False)
+    filter_online_only = body.get("filter_online_only", False)
+    filter_ai_preliminary = body.get("filter_ai_preliminary", False)
     if not keys:
         return _fail("候选列表为空，请先执行步骤1")
-    filtered = list(keys)
-    ai_exclude = set()
-    bitable_exclude = set()
-    # —— 第1步：AI初步分析过滤（优先执行，减少后续多维表格查询量）——
-    if filter_ai_preliminary and filtered:
-        import concurrent.futures as _cf
-        from src.clients import jira_client as _jc
-        _AI_FIELD_ID = "customfield_13714"
-        _chunk_size = 30  # 每批30个，避免JQL URL过长导致400
-        _chunks = [filtered[_i:_i + _chunk_size] for _i in range(0, len(filtered), _chunk_size)]
-
-        def _query_chunk(_chunk):
-            """ 查询单个分片，返回有 AI 字段的 key 集合 """
-            _key_list = ", ".join(_chunk)
-            _jql = f"key in ({_key_list}) AND {_AI_FIELD_ID} IS NOT NULL"
-            _result = set()
-            try:
-                _issues = _jc.search_issues(_jql, max_results=len(_chunk), fields=f"{_AI_FIELD_ID}")
-                for _iss in _issues:
-                    _k = (_iss.get("key") or "").strip()
-                    _f = (_iss.get("fields") or {}).get(_AI_FIELD_ID)
-                    if _k and _f and str(_f).strip() and str(_f).strip().lower() not in ("none", "null"):
-                        _result.add(_k)
-            except Exception as _e:
-                logger.warning("AI初步分析JQL查询失败(跳过): %s", _e)
-            return _result
-
-        with _cf.ThreadPoolExecutor(max_workers=min(len(_chunks), 5)) as _pool:
-            for _r in _pool.map(_query_chunk, _chunks):
-                ai_exclude.update(_r)
-        if ai_exclude:
-            filtered = [k for k in filtered if k not in ai_exclude]
-            logger.info("AI初步分析过滤(customfield_13714): %d 条 → %d 条，排除 %d 条",
-                        len(keys), len(filtered), len(ai_exclude))
-    # —— 第2步：多维表格去重（仅查询候选 key，并行执行）——
+    # —— 第1步：多维表格去重（全量拉取，客户端过滤）——
+    exclude_keys = set()
     try:
-        import concurrent.futures as _cf
+        import asyncio
         from src.clients import feishu_client
-        cfg_bt = load_config().get("feishu_bitable", {})
-        app_token = cfg_bt.get("app_token", "")
-        table_id = cfg_bt.get("table_id", "")
-        bugid_field = cfg_bt.get("bugid_field", "jira号")
-        _filtered_set = set(filtered)  # 用于快速查找
-
-        def _query_bt_chunk(_chunk):
-            """ 查询一批候选 key 的多维表格记录，返回应排除的 key 集合 """
-            _conditions = [f'CurrentValue.[{bugid_field}] = "{k}"' for k in _chunk]
-            _filter_expr = " OR ".join(_conditions)
-            _excluded = set()
-            try:
-                _recs = feishu_client.list_bitable_records(app_token, table_id, filter_expr=_filter_expr)
-                for rec in _recs:
-                    fields = rec.get("fields", {})
-                    fv = fields.get(bugid_field, "")
-                    if isinstance(fv, list):
-                        fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
-                    elif isinstance(fv, dict):
-                        fv = fv.get("text", str(fv))
-                    jira_key = str(fv).strip()
-                    if not jira_key or jira_key not in _filtered_set:
-                        continue
-                    # 批量去重：成功/失败都排除
-                    result_status = _bitable_text(fields.get("分析结果", ""))
-                    if result_status in ("成功", "失败"):
-                        _excluded.add(jira_key)
-                        continue
-                    # 按来源过滤
-                    trigger_source = _bitable_text(fields.get("触发来源", ""))
-                    is_pc = trigger_source == "jira_analyze"
-                    if filter_pc_only and filter_online_only:
-                        if _is_bitable_excluded(fields, bugid_field):
-                            _excluded.add(jira_key)
-                    elif filter_pc_only:
-                        if is_pc and _is_bitable_excluded(fields, bugid_field):
-                            _excluded.add(jira_key)
-                    elif filter_online_only:
-                        if not is_pc and _is_bitable_excluded(fields, bugid_field):
-                            _excluded.add(jira_key)
-                    else:
-                        if _is_bitable_excluded(fields, bugid_field):
-                            _excluded.add(jira_key)
-            except Exception as _e:
-                logger.warning("多维表格过滤查询失败(跳过本批): %s", _e)
-            return _excluded
-
-        # 分批并行查询（每批 50 key，最多 5 路并发）
-        exclude_keys = set()
-        _bt_chunk = 50
-        _chunks = [filtered[_i:_i + _bt_chunk] for _i in range(0, len(filtered), _bt_chunk)]
-        with _cf.ThreadPoolExecutor(max_workers=min(len(_chunks), 5)) as _pool:
-            for _r in _pool.map(_query_bt_chunk, _chunks):
-                exclude_keys.update(_r)
+        loop = asyncio.get_event_loop()
+        records = await loop.run_in_executor(None, feishu_client.list_bitable_records,
+                                             load_config().get("feishu_bitable", {}).get("app_token", ""),
+                                             load_config().get("feishu_bitable", {}).get("table_id", ""))
+        bugid_field = load_config().get("feishu_bitable", {}).get("bugid_field", "jira号")
+        for rec in records:
+            fields = rec.get("fields", {})
+            fv = fields.get(bugid_field, "")
+            if isinstance(fv, list):
+                fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
+            elif isinstance(fv, dict):
+                fv = fv.get("text", str(fv))
+            jira_key = str(fv).strip()
+            if not jira_key:
+                continue
+            # 按来源过滤
+            trigger_source = _bitable_text(fields.get("触发来源", ""))
+            is_pc = trigger_source == "jira_analyze"
+            if filter_pc_only and filter_online_only:
+                if not _is_bitable_excluded(fields, bugid_field):
+                    continue
+            elif filter_pc_only:
+                if not is_pc:
+                    continue
+                if not _is_bitable_excluded(fields, bugid_field):
+                    continue
+            elif filter_online_only:
+                if is_pc:
+                    continue
+                if not _is_bitable_excluded(fields, bugid_field):
+                    continue
+            # 排除逻辑
+            if not filter_all:
+                if _is_bitable_excluded(fields, bugid_field):
+                    exclude_keys.add(jira_key)
+            else:
+                exclude_keys.add(jira_key)
+        # 批量执行额外去重：成功/失败都排除
+        for rec in records:
+            fields = rec.get("fields", {})
+            fv = fields.get(bugid_field, "")
+            if isinstance(fv, list):
+                fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
+            elif isinstance(fv, dict):
+                fv = fv.get("text", str(fv))
+            jira_key = str(fv).strip()
+            if not jira_key:
+                continue
+            result_status = _bitable_text(fields.get("分析结果", ""))
+            if result_status in ("成功", "失败"):
+                exclude_keys.add(jira_key)
         mode_parts = []
         if filter_all:
             mode_parts.append("所有已存在")
@@ -788,24 +752,46 @@ async def test_batch_ai_filter(request: Request):
             if filter_online_only:
                 mode_parts.append("线上正确+通用失败")
         mode_desc = "+".join(mode_parts)
-        before_bitable = len(filtered)
-        filtered = [k for k in filtered if k not in exclude_keys]
-        bitable_exclude = exclude_keys
-        logger.info("多维表格重复过滤(%s): 排除 %d 条（%d → %d）", mode_desc, len(exclude_keys), before_bitable, len(filtered))
+        logger.info("多维表格重复过滤(%s): 排除记录 %d 条", mode_desc, len(exclude_keys))
     except Exception as e:
         logger.warning("多维表格重复过滤查询失败（跳过此检查）: %s", e)
+    filtered = [k for k in keys if k not in exclude_keys]
+    # —— 第2步：AI初步分析过滤（逐个 fetch，并行执行）——
+    ai_exclude = set()
+    if filter_ai_preliminary and filtered:
+        import concurrent.futures as _cf
+        from src.clients import jira_client as _jc
+        _AI_FIELD_ID = "customfield_13714"
+
+        def _check_ai_field(bid):
+            try:
+                iss = _jc.fetch_issue(bid)
+                f = (iss.get("fields") or {}).get(_AI_FIELD_ID)
+                if f and str(f).strip() and str(f).strip().lower() not in ("none", "null"):
+                    return bid
+            except Exception:
+                pass
+            return None
+
+        with _cf.ThreadPoolExecutor(max_workers=10) as pool:
+            results = list(pool.map(_check_ai_field, filtered))
+        for r in results:
+            if r:
+                ai_exclude.add(r)
+        if ai_exclude:
+            logger.info("AI初步分析过滤(customfield_13714): 排除 %d 条", len(ai_exclude))
+            filtered = [k for k in filtered if k not in ai_exclude]
     # —— 汇总返回 ——
     removed = len(keys) - len(filtered)
     if not filtered:
         return _fail(f"所有候选均已被过滤（共过滤 {removed} 条）")
-    filter_desc = f"候选 {len(keys)} 条"
+    bitable_removed = len(exclude_keys)
+    filter_desc = f"候选 {len(keys)} 条，多维表格过滤 {bitable_removed} 条"
     if ai_exclude:
         filter_desc += f"，AI字段过滤 {len(ai_exclude)} 条"
-    if bitable_exclude:
-        filter_desc += f"，多维表格过滤 {len(bitable_exclude)} 条"
     filter_desc += f"，剩余 {len(filtered)} 条"
     return _ok({"filtered": filtered, "removed": removed, "total": len(keys),
-                 "exclude_keys": list(ai_exclude | bitable_exclude)[:20]},
+                 "exclude_keys": list(exclude_keys)[:20]},
                 filter_desc)
 
 
