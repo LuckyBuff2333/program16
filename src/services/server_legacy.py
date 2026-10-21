@@ -1377,6 +1377,27 @@ def _bot_apply_bitable_filter(candidates: list, filters: dict = None) -> list:
                 if corrected_keys:
                     exclude_keys -= corrected_keys
                     logger.info("触发时间修正重新纳入 %d 条", len(corrected_keys))
+            # 批量执行额外去重：有明确分析结果（成功/失败）的 JIRA 不再重复执行
+            batch_executed_keys = set()
+            for rec in records:
+                fields = rec.get("fields", {})
+                fv = fields.get(bugid_field, "")
+                if isinstance(fv, list):
+                    fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
+                elif isinstance(fv, dict):
+                    fv = fv.get("text", str(fv))
+                jira_key = str(fv).strip()
+                if not jira_key:
+                    continue
+                result_status = _bitable_text(fields.get("分析结果", ""))
+                if result_status in ("成功", "失败"):
+                    batch_executed_keys.add(jira_key)
+            if batch_executed_keys:
+                before_batch = len(exclude_keys)
+                exclude_keys |= batch_executed_keys
+                added = len(exclude_keys) - before_batch
+                if added:
+                    logger.info("批量执行去重: 额外排除 %d 条已有分析结果的 JIRA", added)
             logger.info("机器人过滤(%s): 排除 %d 条", filters.get('desc', ''), len(exclude_keys))
     except Exception as e:
         logger.warning("机器人多维表格过滤失败（跳过过滤）: %s", e)
