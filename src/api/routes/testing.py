@@ -717,64 +717,58 @@ async def test_batch_ai_filter(request: Request):
             filtered = [k for k in filtered if k not in ai_exclude]
             logger.info("AI初步分析过滤(customfield_13714): %d 条 → %d 条，排除 %d 条",
                         len(keys), len(filtered), len(ai_exclude))
-    # —— 第2步：多维表格去重（基于AI过滤后的列表）——
+    # —— 第2步：多维表格去重（仅查询候选 key 匹配的记录，不拉全量）——
     try:
         import asyncio
         from src.clients import feishu_client
         loop = asyncio.get_event_loop()
-        records = await loop.run_in_executor(None, feishu_client.list_bitable_records,
-                                             load_config().get("feishu_bitable", {}).get("app_token", ""),
-                                             load_config().get("feishu_bitable", {}).get("table_id", ""))
-        bugid_field = load_config().get("feishu_bitable", {}).get("bugid_field", "jira号")
+        cfg_bt = load_config().get("feishu_bitable", {})
+        app_token = cfg_bt.get("app_token", "")
+        table_id = cfg_bt.get("table_id", "")
+        bugid_field = cfg_bt.get("bugid_field", "jira号")
+        # 构造过滤表达式：分批查询（每批 50 个 key，避免 URL 过长）
         exclude_keys = set()
-        for rec in records:
-            fields = rec.get("fields", {})
-            field_value = fields.get(bugid_field, "")
-            if isinstance(field_value, list):
-                field_value = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in field_value)
-            elif isinstance(field_value, dict):
-                field_value = field_value.get("text", str(field_value))
-            jira_key = str(field_value).strip()
-            if not jira_key:
-                continue
-            # 按来源过滤
-            trigger_source = _bitable_text(fields.get("触发来源", ""))
-            is_pc = trigger_source == "jira_analyze"
-            if filter_pc_only and filter_online_only:
-                if not _is_bitable_excluded(fields, bugid_field):
-                    continue
-            elif filter_pc_only:
-                if not is_pc:
-                    continue
-                if not _is_bitable_excluded(fields, bugid_field):
-                    continue
-            elif filter_online_only:
-                if is_pc:
-                    continue
-                if not _is_bitable_excluded(fields, bugid_field):
-                    continue
-            # 排除逻辑
-            if not filter_all:
-                if _is_bitable_excluded(fields, bugid_field):
-                    exclude_keys.add(jira_key)
-            else:
-                exclude_keys.add(jira_key)
-        # 批量执行额外去重：有明确分析结果（成功/失败）的 JIRA 不再重复执行
-        batch_executed_keys = set()
-        for rec in records:
-            fields = rec.get("fields", {})
-            fv = fields.get(bugid_field, "")
-            if isinstance(fv, list):
-                fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
-            elif isinstance(fv, dict):
-                fv = fv.get("text", str(fv))
-            jira_key = str(fv).strip()
-            if not jira_key:
-                continue
-            result_status = _bitable_text(fields.get("分析结果", ""))
-            if result_status in ("成功", "失败"):
-                batch_executed_keys.add(jira_key)
-        exclude_keys |= batch_executed_keys
+        _bt_chunk = 50
+        for _i in range(0, len(filtered), _bt_chunk):
+            _chunk = filtered[_i:_i + _bt_chunk]
+            _conditions = [f'CurrentValue.[{bugid_field}] = "{k}"' for k in _chunk]
+            _filter_expr = " OR ".join(_conditions)
+            try:
+                _recs = await loop.run_in_executor(
+                    None, lambda f=_filter_expr: feishu_client.list_bitable_records(
+                        app_token, table_id, filter_expr=f))
+                for rec in _recs:
+                    fields = rec.get("fields", {})
+                    fv = fields.get(bugid_field, "")
+                    if isinstance(fv, list):
+                        fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
+                    elif isinstance(fv, dict):
+                        fv = fv.get("text", str(fv))
+                    jira_key = str(fv).strip()
+                    if not jira_key or jira_key not in filtered:
+                        continue
+                    # 排除逻辑：批量去重（成功/失败都排除）
+                    result_status = _bitable_text(fields.get("分析结果", ""))
+                    if result_status in ("成功", "失败"):
+                        exclude_keys.add(jira_key)
+                        continue
+                    # 按来源过滤
+                    trigger_source = _bitable_text(fields.get("触发来源", ""))
+                    is_pc = trigger_source == "jira_analyze"
+                    if filter_pc_only and filter_online_only:
+                        if _is_bitable_excluded(fields, bugid_field):
+                            exclude_keys.add(jira_key)
+                    elif filter_pc_only:
+                        if is_pc and _is_bitable_excluded(fields, bugid_field):
+                            exclude_keys.add(jira_key)
+                    elif filter_online_only:
+                        if not is_pc and _is_bitable_excluded(fields, bugid_field):
+                            exclude_keys.add(jira_key)
+                    else:
+                        if _is_bitable_excluded(fields, bugid_field):
+                            exclude_keys.add(jira_key)
+            except Exception as _e:
+                logger.warning("多维表格过滤查询失败(跳过本批): %s", _e)
         mode_parts = []
         if filter_all:
             mode_parts.append("所有已存在")

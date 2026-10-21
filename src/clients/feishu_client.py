@@ -577,13 +577,15 @@ def get_wiki_node_app_token(wiki_token: str) -> str:
 
 
 def list_bitable_records(app_token: str, table_id: str,
-                         view_id: str = None, page_size: int = 500) -> list:
-    """获取多维表格所有记录（自动分页，支持 Token/Cookie 两种模式）
+                         view_id: str = None, page_size: int = 500,
+                         filter_expr: str = None) -> list:
+    """获取多维表格记录（自动分页，支持 Token/Cookie 两种模式）
 
     :param app_token: 多维表格 app_token
     :param table_id: 数据表 ID
     :param view_id: 可选的视图 ID
     :param page_size: 每页记录数（最大 500）
+    :param filter_expr: 可选的过滤表达式，如 'CurrentValue.[jira号] = "VCU-xxx"'
     :return: 记录列表，每条为 {"record_id": str, "fields": dict}
     """
     # Cookie 模式：使用内部 API
@@ -594,10 +596,14 @@ def list_bitable_records(app_token: str, table_id: str,
     params = {"page_size": min(page_size, 500)}
     if view_id:
         params["view_id"] = view_id
-    all_records = _paginate_get(url, _bitable_headers(), params, "获取 Bitable 记录失败",
+    if filter_expr:
+        params["filter"] = filter_expr
+    log_msg = "Bitable 过滤查询" if filter_expr else "获取 Bitable 记录失败"
+    all_records = _paginate_get(url, _bitable_headers(), params, log_msg,
                                 retry_on_token_expire=True)
-    logger.info("Bitable 记录获取完成: app=%s, table=%s, 共 %d 条",
-                app_token, table_id, len(all_records))
+    logger.info("Bitable 记录获取完成: app=%s, table=%s, 共 %d 条%s",
+                app_token, table_id, len(all_records),
+                f" (filter)" if filter_expr else "")
     return all_records
 
 
