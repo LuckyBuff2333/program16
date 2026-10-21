@@ -6418,9 +6418,7 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
                 if _p:
                     _date_providers.append((_p[1], "视频文件名", _vid_fn_dt_str))
             break
-    # A3: gmlogger 文件名
-    for _gm_s, _gm_dt in gm_times:
-        _date_providers.append((_gm_dt, "gmlogger", _gm_s))
+    # A3: gmlogger 文件名日期时间仅作为兑底，不直接作为日期提供者（已在步骤E处理）
     # A4: 视频 OCR（完整日期）
     if video_time and len(video_time) >= 16:
         _vid_dt = _jc._parse_datetime_string(video_time)
@@ -6499,56 +6497,62 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
             _best_score = _v["score"]
             _best_time = _k + ":00" if len(_k) == 16 else _k
             _best_sources = _v["sources"]
-    # —— E. 兑底：包内main文件名 ——
-    if _best_confirm < 2 and headers:
-        try:
-            _probe_atts = [a for a in attachments
-                           if "gmlogger" in (a.get("filename", "") or "").lower()
-                           or (a.get("filename", "") or "").lower().endswith((".zip", ".rar", ".7z"))]
-            if _probe_atts:
-                _gm_probe = _diag_gmlogger_main_times(_probe_atts, headers, att_timeout, bugid)
-                _main_times_probe = _gm_probe.get("main_times", [])
-                _all_times_probe = _gm_probe.get("all_times", [])
-                for _mt_s, _mt_dt in (_main_times_probe + _all_times_probe):
-                    _date_providers.append((_mt_dt, "包内main", _mt_s))
-                if _date_providers and _time_only_candidates:
-                    for _hm, _hm_src in _time_only_candidates:
-                        _best_dp_score2 = 0.0
-                        _best_dp_key2 = ""
-                        for _dp_dt, _dp_src, _dp_str in _date_providers:
-                            if _dp_src != "包内main":
-                                continue
-                            _dp_hm = _dp_dt.strftime("%H:%M")
-                            _min_diff = abs(int(_hm[:2]) * 60 + int(_hm[3:5]) - (int(_dp_hm[:2]) * 60 + int(_dp_hm[3:5])))
-                            _min_diff = min(_min_diff, 1440 - _min_diff)
-                            if _hm == _dp_hm:
-                                _match_score = 3.0
-                            elif _min_diff <= 30:
-                                _match_score = 1.5
-                            elif _min_diff <= 60:
-                                _match_score = 0.5
-                            else:
-                                continue
-                            _ck = _dp_dt.strftime("%Y-%m-%d") + " " + _hm
-                            _ensure_key(_ck)
-                            if _match_score > _best_dp_score2:
-                                _best_dp_score2 = _match_score
-                                _best_dp_key2 = _ck
-                        if _best_dp_key2:
-                            _completed[_best_dp_key2]["score"] += _best_dp_score2
-                            _label = f"{_hm_src}+包内补全"
-                            if _label not in _completed[_best_dp_key2]["sources"]:
-                                _completed[_best_dp_key2]["sources"].append(_label)
-                            _completed[_best_dp_key2]["confirmations"] += 1
-                    for _k, _v in _completed.items():
-                        if (_v["confirmations"] > _best_confirm or
-                            (_v["confirmations"] == _best_confirm and _v["score"] > _best_score)):
-                            _best_confirm = _v["confirmations"]
-                            _best_score = _v["score"]
-                            _best_time = _k + ":00" if len(_k) == 16 else _k
-                            _best_sources = _v["sources"]
-        except Exception as e:
-            logger.warning("%s: 包内main兑底失败: %s", bugid, e)
+    # —— E. 兑底：gmlogger文件名日期 + 包内main文件名 ——
+    if _best_confirm < 2:
+        # E1: gmlogger 文件名日期作为兑底日期提供者
+        for _gm_s, _gm_dt in gm_times:
+            _date_providers.append((_gm_dt, "gmlogger兑底", _gm_s))
+        if headers:
+            try:
+                _probe_atts = [a for a in attachments
+                               if "gmlogger" in (a.get("filename", "") or "").lower()
+                               or (a.get("filename", "") or "").lower().endswith((".zip", ".rar", ".7z"))]
+                if _probe_atts:
+                    _gm_probe = _diag_gmlogger_main_times(_probe_atts, headers, att_timeout, bugid)
+                    _main_times_probe = _gm_probe.get("main_times", [])
+                    _all_times_probe = _gm_probe.get("all_times", [])
+                    for _mt_s, _mt_dt in (_main_times_probe + _all_times_probe):
+                        _date_providers.append((_mt_dt, "包内main", _mt_s))
+            except Exception as e:
+                logger.warning("%s: 包内main兑底失败: %s", bugid, e)
+        # E2: 用兑底日期提供者重新匹配仅时间候选
+        _fallback_srcs = {"gmlogger兑底", "包内main"}
+        if _date_providers and _time_only_candidates:
+            for _hm, _hm_src in _time_only_candidates:
+                _best_dp_score2 = 0.0
+                _best_dp_key2 = ""
+                for _dp_dt, _dp_src, _dp_str in _date_providers:
+                    if _dp_src not in _fallback_srcs:
+                        continue
+                    _dp_hm = _dp_dt.strftime("%H:%M")
+                    _min_diff = abs(int(_hm[:2]) * 60 + int(_hm[3:5]) - (int(_dp_hm[:2]) * 60 + int(_dp_hm[3:5])))
+                    _min_diff = min(_min_diff, 1440 - _min_diff)
+                    if _hm == _dp_hm:
+                        _match_score = 3.0
+                    elif _min_diff <= 30:
+                        _match_score = 1.5
+                    elif _min_diff <= 60:
+                        _match_score = 0.5
+                    else:
+                        continue
+                    _ck = _dp_dt.strftime("%Y-%m-%d") + " " + _hm
+                    _ensure_key(_ck)
+                    if _match_score > _best_dp_score2:
+                        _best_dp_score2 = _match_score
+                        _best_dp_key2 = _ck
+                if _best_dp_key2:
+                    _completed[_best_dp_key2]["score"] += _best_dp_score2
+                    _label = f"{_hm_src}+兑底补全"
+                    if _label not in _completed[_best_dp_key2]["sources"]:
+                        _completed[_best_dp_key2]["sources"].append(_label)
+                    _completed[_best_dp_key2]["confirmations"] += 1
+            for _k, _v in _completed.items():
+                if (_v["confirmations"] > _best_confirm or
+                    (_v["confirmations"] == _best_confirm and _v["score"] > _best_score)):
+                    _best_confirm = _v["confirmations"]
+                    _best_score = _v["score"]
+                    _best_time = _k + ":00" if len(_k) == 16 else _k
+                    _best_sources = _v["sources"]
     source_label = "+".join(_best_sources) if _best_sources else ""
     logger.info("%s: 置信度提取完成 time=%s, confirm=%d, score=%.1f, sources=%s",
                 bugid, _best_time or "(空)", _best_confirm, _best_score, _best_sources)
@@ -6661,9 +6665,7 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                     _vid_fn_dt = _p[1]
                     _date_providers.append((_vid_fn_dt, "视频文件名", _vid_fn_dt_str))
             break
-    # A3: gmlogger 文件名日期时间
-    for _gm_s, _gm_dt in gm_times:
-        _date_providers.append((_gm_dt, "gmlogger", _gm_s))
+    # A3: gmlogger 文件名日期时间仅作为兑底，不直接作为日期提供者（已在步骤E处理）
     # A4: 视频 OCR 结果（如果有完整日期）
     if video_time and len(video_time) >= 16:
         _vid_dt = _jc._parse_datetime_string(video_time)
@@ -6749,64 +6751,68 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             _best_sources = _v["sources"]
     logger.info("诊断 %s: 置信度评分结果 best_time=%s, confirm=%d, score=%.1f, sources=%s, 候选数=%d", bugid,
                 _best_time or '(空)', _best_confirm, _best_score, _best_sources, len(_completed))
-    # ── E. 兜底：如果置信度不足，尝试从 gmlogger 压缩包内提取 main 文件名时间进行补全 ──
-    if _best_confirm < 2 and headers:
+    # ── E. 兜底：gmlogger文件名日期 + 包内main文件名 ──
+    if _best_confirm < 2:
         _check_diag_cancel(bugid)
-        logger.info("诊断 %s: 置信度不足，尝试压缩包内 main 文件名兜底", bugid)
-        try:
-            _probe_atts = [a for a in attachments
-                           if "gmlogger" in (a.get("filename", "") or "").lower()
-                           or (a.get("filename", "") or "").lower().endswith((".zip", ".rar", ".7z"))]
-            if _probe_atts:
-                _gm_probe = _diag_gmlogger_main_times(_probe_atts, headers, att_timeout, bugid)
-                _main_times_probe = _gm_probe.get("main_times", [])
-                _all_times_probe = _gm_probe.get("all_times", [])
-                # 将包内时间作为新的日期提供者加入
-                for _mt_s, _mt_dt in (_main_times_probe + _all_times_probe):
-                    _date_providers.append((_mt_dt, "包内main", _mt_s))
-                # 重新执行补全逻辑（仅对仅时间候选重新匹配新增的包内日期提供者）
-                if _date_providers and _time_only_candidates:
-                    for _hm, _hm_src in _time_only_candidates:
-                        _best_dp_score2 = 0.0
-                        _best_dp_key2 = ""
-                        for _dp_dt, _dp_src, _dp_str in _date_providers:
-                            if _dp_src != "包内main":
-                                continue  # 只用新增的包内源
-                            _dp_hm = _dp_dt.strftime("%H:%M")
-                            _min_diff = abs(int(_hm[:2]) * 60 + int(_hm[3:5]) - (int(_dp_hm[:2]) * 60 + int(_dp_hm[3:5])))
-                            _min_diff = min(_min_diff, 1440 - _min_diff)
-                            if _hm == _dp_hm:
-                                _match_score = 3.0
-                            elif _min_diff <= 30:
-                                _match_score = 1.5
-                            elif _min_diff <= 60:
-                                _match_score = 0.5
-                            else:
-                                continue
-                            _ck = _dp_dt.strftime("%Y-%m-%d") + " " + _hm
-                            _ensure_key(_ck)
-                            if _match_score > _best_dp_score2:
-                                _best_dp_score2 = _match_score
-                                _best_dp_key2 = _ck
-                        if _best_dp_key2:
-                            _completed[_best_dp_key2]["score"] += _best_dp_score2
-                            _label = f"{_hm_src}+包内补全"
-                            if _label not in _completed[_best_dp_key2]["sources"]:
-                                _completed[_best_dp_key2]["sources"].append(_label)
-                            _completed[_best_dp_key2]["confirmations"] += 1
-                            logger.info("诊断 %s: 包内main兜底匹配成功 %s -> %s", bugid, _hm, _best_dp_key2)
-                    # 重新选择最佳候选
-                    for _k, _v in _completed.items():
-                        if (_v["confirmations"] > _best_confirm or
-                            (_v["confirmations"] == _best_confirm and _v["score"] > _best_score)):
-                            _best_confirm = _v["confirmations"]
-                            _best_score = _v["score"]
-                            _best_time = _k + ":00" if len(_k) == 16 else _k
-                            _best_sources = _v["sources"]
-                    logger.info("诊断 %s: 包内兜底后 best_time=%s, confirm=%d, score=%.1f", bugid,
-                                _best_time or '(空)', _best_confirm, _best_score)
-        except Exception as e:
-            logger.warning("诊断 %s: 包内main兜底失败: %s", bugid, e)
+        logger.info("诊断 %s: 置信度不足，尝试gmlogger文件名+包内main兜底", bugid)
+        # E1: gmlogger 文件名日期作为兜底日期提供者
+        for _gm_s, _gm_dt in gm_times:
+            _date_providers.append((_gm_dt, "gmlogger兜底", _gm_s))
+        if headers:
+            try:
+                _probe_atts = [a for a in attachments
+                               if "gmlogger" in (a.get("filename", "") or "").lower()
+                               or (a.get("filename", "") or "").lower().endswith((".zip", ".rar", ".7z"))]
+                if _probe_atts:
+                    _gm_probe = _diag_gmlogger_main_times(_probe_atts, headers, att_timeout, bugid)
+                    _main_times_probe = _gm_probe.get("main_times", [])
+                    _all_times_probe = _gm_probe.get("all_times", [])
+                    for _mt_s, _mt_dt in (_main_times_probe + _all_times_probe):
+                        _date_providers.append((_mt_dt, "包内main", _mt_s))
+            except Exception as e:
+                logger.warning("诊断 %s: 包内main兜底失败: %s", bugid, e)
+        # E2: 用兜底日期提供者重新匹配仅时间候选
+        _fallback_srcs = {"gmlogger兜底", "包内main"}
+        if _date_providers and _time_only_candidates:
+            for _hm, _hm_src in _time_only_candidates:
+                _best_dp_score2 = 0.0
+                _best_dp_key2 = ""
+                for _dp_dt, _dp_src, _dp_str in _date_providers:
+                    if _dp_src not in _fallback_srcs:
+                        continue
+                    _dp_hm = _dp_dt.strftime("%H:%M")
+                    _min_diff = abs(int(_hm[:2]) * 60 + int(_hm[3:5]) - (int(_dp_hm[:2]) * 60 + int(_dp_hm[3:5])))
+                    _min_diff = min(_min_diff, 1440 - _min_diff)
+                    if _hm == _dp_hm:
+                        _match_score = 3.0
+                    elif _min_diff <= 30:
+                        _match_score = 1.5
+                    elif _min_diff <= 60:
+                        _match_score = 0.5
+                    else:
+                        continue
+                    _ck = _dp_dt.strftime("%Y-%m-%d") + " " + _hm
+                    _ensure_key(_ck)
+                    if _match_score > _best_dp_score2:
+                        _best_dp_score2 = _match_score
+                        _best_dp_key2 = _ck
+                if _best_dp_key2:
+                    _completed[_best_dp_key2]["score"] += _best_dp_score2
+                    _label = f"{_hm_src}+兜底补全"
+                    if _label not in _completed[_best_dp_key2]["sources"]:
+                        _completed[_best_dp_key2]["sources"].append(_label)
+                    _completed[_best_dp_key2]["confirmations"] += 1
+                    logger.info("诊断 %s: 兜底匹配成功 %s -> %s", bugid, _hm, _best_dp_key2)
+            # 重新选择最佳候选
+            for _k, _v in _completed.items():
+                if (_v["confirmations"] > _best_confirm or
+                    (_v["confirmations"] == _best_confirm and _v["score"] > _best_score)):
+                    _best_confirm = _v["confirmations"]
+                    _best_score = _v["score"]
+                    _best_time = _k + ":00" if len(_k) == 16 else _k
+                    _best_sources = _v["sources"]
+            logger.info("诊断 %s: 兜底后 best_time=%s, confirm=%d, score=%.1f", bugid,
+                        _best_time or '(空)', _best_confirm, _best_score)
     # comment_time 用于显示：文本中提取到的所有时间（保持原始格式）
     _display_parts = []
     for _hm, _src in _text_time_only_hm:
