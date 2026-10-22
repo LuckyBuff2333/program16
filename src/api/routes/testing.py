@@ -64,6 +64,70 @@ def _filter_recently_executed(keys: list) -> tuple:
     return filtered, len(keys) - len(filtered)
 
 
+def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
+    """读取本地+云端批量执行记录，返回指定来源的已执行Jira号集合
+
+    用于同来源去重：线上执行时只排除线上已执行的，PC执行时只排除PC已执行的。
+    PC和线上允许重复（不同来源）。
+    """
+    import os, csv
+    from src.config import load_config, get_path
+    from src.services.report_ops import _read_csv_rows
+    executed = set()
+    today = datetime.now().strftime("%Y-%m-%d")
+    # 路径1：本地 PC 批量执行记录 docs/日期/batch_*.csv
+    doc_dir = get_path("doc_dir")
+    day_dir = os.path.join(doc_dir, today)
+    if os.path.isdir(day_dir):
+        for fname in sorted(os.listdir(day_dir)):
+            if fname.lower().startswith("batch_") and fname.lower().endswith(".csv"):
+                for row in _read_csv_rows(os.path.join(day_dir, fname)):
+                    jira = (row.get("jira号") or row.get("Jira号") or "").strip()
+                    src = (row.get("触发来源") or "").strip()
+                    if jira and (not source or src == source):
+                        executed.add(jira)
+    # 路径2：本地上线批量执行记录 data/unanalyzed/prod_batch_{日期}_*.csv
+    unanalyzed_dir = os.path.join(PROJECT_ROOT, "data", "unanalyzed")
+    if os.path.isdir(unanalyzed_dir):
+        prefix = f"prod_batch_{today}_"
+        for fname in sorted(os.listdir(unanalyzed_dir)):
+            if fname.startswith(prefix) and fname.endswith(".csv"):
+                for row in _read_csv_rows(os.path.join(unanalyzed_dir, fname)):
+                    jira = (row.get("jira号") or row.get("Jira号") or "").strip()
+                    if jira:
+                        # prod_batch 默认是线上来源
+                        executed.add(jira)
+    # 路径3：云端批次执行记录
+    try:
+        from src.clients import feishu_client
+        folder_token = load_config().get("feishu_bitable", {}).get("batch_folder_token", "")
+        if folder_token:
+            all_files = feishu_client.list_folder_files(folder_token, recursive=True)
+            cloud_docs = [f for f in all_files
+                         if f.get("folder", "") == today and f.get("type") == "docx"
+                         and (f.get("name", "").startswith("批量执行")
+                              or f.get("name", "").startswith("线上批量执行"))]
+            for doc in cloud_docs:
+                doc_token = doc.get("token", "")
+                doc_name = doc.get("name", "")
+                if not doc_token:
+                    continue
+                try:
+                    md = feishu_client.fetch_docx_as_markdown(doc_token)
+                    # 解析 markdown 表格中的 Jira 号
+                    from src.services.report_ops import _parse_markdown_batch_table
+                    batch_rows = _parse_markdown_batch_table(md)
+                    inferred_source = "parseFullTicket" if doc_name.startswith("线上批量执行") else "jira_analyze"
+                    for r in batch_rows:
+                        jira = (r.get("jira号") or "").strip()
+                        if jira and (not source or inferred_source == source):
+                            executed.add(jira)
+                except Exception as e:
+                    logger.warning("云端批次记录读取失败 %s: %s", doc_name, e)
+    except Exception as e:
+        logger.warning("读取云端批量执行记录失败: %s", e)
+    return executed
+
 
 @router.post("/api/test/ai_analyze", response_model=ApiResponse)
 async def test_ai_analyze(request: Request):
@@ -748,20 +812,16 @@ async def test_batch_ai_filter(request: Request):
                     exclude_keys.add(jira_key)
             else:
                 exclude_keys.add(jira_key)
-        # 批量执行额外去重：成功/失败都排除
-        for rec in records:
-            fields = rec.get("fields", {})
-            fv = fields.get(bugid_field, "")
-            if isinstance(fv, list):
-                fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
-            elif isinstance(fv, dict):
-                fv = fv.get("text", str(fv))
-            jira_key = str(fv).strip()
-            if not jira_key:
-                continue
-            result_status = _bitable_text(fields.get("分析结果", ""))
-            if result_status in ("成功", "失败"):
-                exclude_keys.add(jira_key)
+        # 同来源云端批量记录去重：只排除同来源已执行的Jira，PC和线上允许重复
+        cloud_source = "jira_analyze" if filter_pc_only else ("parseFullTicket" if filter_online_only else "")
+        if cloud_source:
+            cloud_executed = _get_same_source_executed_keys(cloud_source)
+            if cloud_executed:
+                before_cloud = len(exclude_keys)
+                exclude_keys |= (cloud_executed & set(keys))
+                added_cloud = len(exclude_keys) - before_cloud
+                if added_cloud:
+                    logger.info("云端同来源去重(%s): 额外排除 %d 条", cloud_source, added_cloud)
         mode_parts = []
         if filter_all:
             mode_parts.append("所有已存在")
@@ -2459,28 +2519,17 @@ async def test_prod_batch_run(request: Request):
                 skipped_count = before - len(bugids)
                 logger.info("多维表格过滤: 跳过 %d 个 Jira 号 (skip=%s, pc=%s, online=%s)",
                             skipped_count, skip_existing, filter_pc_only, filter_online_only)
-            # 批量执行额外去重：有明确分析结果（成功/失败）的 JIRA 不再重复执行
-            batch_executed_keys = set()
-            for rec in bt_records:
-                fields = rec.get("fields", {})
-                fv = fields.get(bugid_field, "")
-                if isinstance(fv, list):
-                    fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
-                elif isinstance(fv, dict):
-                    fv = fv.get("text", str(fv))
-                jira_key = str(fv).strip()
-                if not jira_key:
-                    continue
-                result_status = _bitable_text(fields.get("分析结果", ""))
-                if result_status in ("成功", "失败"):
-                    batch_executed_keys.add(jira_key)
-            if batch_executed_keys:
-                before2 = len(bugids)
-                bugids = [b for b in bugids if b not in batch_executed_keys]
-                added = before2 - len(bugids)
-                if added:
-                    skipped_count += added
-                    logger.info("批量执行去重: 额外排除 %d 条已有分析结果的 JIRA", added)
+            # 同来源云端批量记录去重：只排除同来源已执行的Jira，PC和线上允许重复
+            cloud_source = "jira_analyze" if filter_pc_only else ("parseFullTicket" if filter_online_only else "")
+            if cloud_source:
+                cloud_executed = _get_same_source_executed_keys(cloud_source)
+                if cloud_executed:
+                    before_cloud = len(bugids)
+                    bugids = [b for b in bugids if b not in cloud_executed]
+                    added_cloud = before_cloud - len(bugids)
+                    if added_cloud:
+                        skipped_count += added_cloud
+                        logger.info("云端同来源去重(%s): 排除 %d 条", cloud_source, added_cloud)
         except Exception as e:
             logger.warning("多维表格重复过滤查询失败（跳过此检查）: %s", e)
 
