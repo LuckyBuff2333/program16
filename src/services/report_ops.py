@@ -1407,18 +1407,29 @@ def _spotcheck_csv_path(filename: str, date_str: str = None) -> str:
 
 
 def _load_all_doc_jira_keys() -> set:
-    """扫描 docs/ 下所有 CSV 文件，收集已测试的 jira 号集合"""
+    """扫描 docs/ 和 data/unanalyzed/ 下所有 CSV 文件，收集已测试的 jira 号集合"""
     tested = set()
+    # 扫描 docs/ 目录
     doc_dir = get_path("doc_dir")
-    if not os.path.isdir(doc_dir):
-        return tested
-    for root, _dirs, files in os.walk(doc_dir):
-        for fname in files:
+    if os.path.isdir(doc_dir):
+        for root, _dirs, files in os.walk(doc_dir):
+            for fname in files:
+                if not fname.lower().endswith(".csv"):
+                    continue
+                fpath = os.path.join(root, fname)
+                for r in _read_csv_rows(fpath):
+                    jira_no = (r.get("jira号") or "").strip()
+                    if jira_no:
+                        tested.add(jira_no)
+    # 扫描 data/unanalyzed/ 目录（批量执行产出的未分析批次文件）
+    unanalyzed_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "unanalyzed")
+    if os.path.isdir(unanalyzed_dir):
+        for fname in os.listdir(unanalyzed_dir):
             if not fname.lower().endswith(".csv"):
                 continue
-            fpath = os.path.join(root, fname)
+            fpath = os.path.join(unanalyzed_dir, fname)
             for r in _read_csv_rows(fpath):
-                jira_no = (r.get("jira号") or "").strip()
+                jira_no = (r.get("Jira号") or r.get("jira号") or "").strip()
                 if jira_no:
                     tested.add(jira_no)
     return tested
