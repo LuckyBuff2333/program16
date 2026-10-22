@@ -34,7 +34,6 @@ from src.api.routes.shared import (
     fail as _fail,
     _bitable_bulk_cache,
     _BITABLE_CACHE_TTL,
-    _EXCLUDE_REASONS,
 )
 
 logger = setup_logger("services.report_ops")
@@ -348,15 +347,28 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
                     fail_jiras[cat] = []
                 err_short = (_bitable_text(bf.get("错误信息", "")) or "")[:80]
                 fail_jiras[cat].append({"jira号": jira_no, "错误信息": err_short})
-                # 失败未重新成功 = 待办（通用原因不计入待办）
+                # 待办规则：仅以下情况进入待办跟进
                 human_review = _bitable_text(bf.get("人工审核结果", ""))
-                is_common_reason = human_review and (
-                    human_review in _EXCLUDE_REASONS or
-                    any(human_review.lower() == r.lower() for r in _EXCLUDE_REASONS))
-                # 上游jira问题也不计入待办
-                if not is_common_reason and cat != "上游jira卡住问题":
+                is_todo = False
+                if not human_review or human_review in ("-", "None"):
+                    # 未审核
+                    is_todo = True
+                elif human_review.startswith("时间添加为") or "时间异常" in human_review:
+                    # 触发时间问题
+                    is_todo = True
+                elif "服务关闭" in human_review or "服务有报错" in human_review:
+                    # 服务关闭
+                    is_todo = True
+                elif "分析任务执行超时" in human_review or "JIRA分析超时" in human_review or "JIRA 分析任务执行超时" in human_review:
+                    # 分析任务执行超时
+                    is_todo = True
+                elif "待后端开发排查" in human_review:
+                    # 待后端开发排查
+                    is_todo = True
+                if is_todo:
                     todo_items.append({"jira号": jira_no, "reason": f"分析失败: {cat}",
-                                       "触发时间": exec_info.get("触发时间", "")})
+                                       "触发时间": exec_info.get("触发时间", ""),
+                                       "人工审核": human_review or "(未审核)"})
         else:
             # 执行成功但多维表格无记录 → 计入统计，标记为"分析中"
             row["分析结果"] = "分析中"
@@ -634,10 +646,10 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
         lines.append("")
         lines.append(f"共 {len(todo_items)} 项待处理：")
         lines.append("")
-        lines.append("| Jira号 | 原因 | 触发时间 |")
-        lines.append("|--------|------|----------|")
+        lines.append("| Jira号 | 原因 | 人工审核 | 触发时间 |")
+        lines.append("|--------|------|----------|----------|")
         for item in todo_items:
-            lines.append(f"| {item['jira号']} | {item['reason']} | {item['触发时间']} |")
+            lines.append(f"| {item['jira号']} | {item['reason']} | {item.get('人工审核', '')} | {item['触发时间']} |")
         lines.append("")
     # 执行详情（分四个模块：分析失败、待开发排查、耗时过长、分析成功）
     lines.append("## 执行详情")

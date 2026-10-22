@@ -114,7 +114,7 @@ export default {
       return 'info';
     },
     fillSummaryQuery() {
-      this.query = 'summary ~ "全屏手写页面与dock栏有缝隙"';
+      this.query = 'summary ~ "全屏手写页面与dock栏有缝隙" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
       setTimeout(() => {
         const el = document.querySelector('textarea');
         if (el) {
@@ -144,7 +144,7 @@ export default {
       }
     },
     async queryTodayNewBugs() {
-      const jql = 'created >= startOfDay() AND issuetype = "bug" AND status != "closed"';
+      const jql = 'created >= startOfDay() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
       this.query = jql;
       this.todayBugLoading = true;
       this.loading = true; this.queried = true; this.rows = []; this.errors = [];
@@ -164,7 +164,7 @@ export default {
       }
     },
     async queryYesterdayNewBugs() {
-      const jql = 'created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND issuetype = "bug" AND status != "closed"';
+      const jql = 'created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
       this.query = jql;
       this.yesterdayBugLoading = true;
       this.loading = true; this.queried = true; this.rows = []; this.errors = [];
@@ -184,7 +184,7 @@ export default {
       }
     },
     async queryWeekNewBugs() {
-      const jql = 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed"';
+      const jql = 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
       this.query = jql;
       this.weekBugLoading = true;
       this.loading = true; this.queried = true; this.rows = []; this.errors = [];
