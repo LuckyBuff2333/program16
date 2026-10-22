@@ -757,6 +757,41 @@ def create_bitable_table(app_token: str, name: str, fields: list) -> str:
     return table_id
 
 
+def create_bitable_field(app_token: str, table_id: str, field_name: str, field_type: int = 1) -> bool:
+    """向多维表格数据表中添加字段
+
+    :param app_token: 多维表格 app_token
+    :param table_id: 数据表 ID
+    :param field_name: 字段名称
+    :param field_type: 字段类型（1=文本，2=数字，...）
+    :return: 是否成功
+    """
+    url = f"{_FEISHU_API}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
+    body = {"field_name": field_name, "type": field_type}
+    headers = _bitable_headers()
+    resp = httpx.post(url, headers=headers, json=body, timeout=30, verify=False)
+    if resp.status_code in (401, 400, 403):
+        err_data = resp.json()
+        _refreshed = False
+        if err_data.get("code") in (99991677, 99991672, 99991668):
+            _refreshed = _refresh_user_token(force=True)
+        if not _refreshed and resp.status_code == 403:
+            _refreshed = _refresh_user_token(force=True)
+        if not _refreshed:
+            _clear_stale_user_token()
+            _token_cache["token"] = None
+        headers = _bitable_headers()
+        resp = httpx.post(url, headers=headers, json=body, timeout=30, verify=False)
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("code") != 0:
+        logger.warning("添加字段失败: app=%s, table=%s, field=%s, msg=%s",
+                      app_token, table_id, field_name, data.get("msg"))
+        return False
+    logger.info("字段已添加: app=%s, table=%s, field=%s", app_token, table_id, field_name)
+    return True
+
+
 def list_bitable_tables(app_token: str) -> list:
     """获取多维表格中所有数据表，返回 [{"table_id": str, "name": str}]"""
     url = f"{_FEISHU_API}/bitable/v1/apps/{app_token}/tables"

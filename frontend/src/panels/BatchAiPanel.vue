@@ -536,6 +536,13 @@ export default {
           if (!this.batchAi.selected.length) throw new Error(`${roundLabel}抽样结果为空`);
           if (this.batchAi.execMode === 'online') { await this.batchAiRunOnline(); } else { await this.batchAiRun(); }
         };
+        // 执行后从候选池中移除已执行的 Jira，缩小池子
+        const shrinkPool = () => {
+          const executed = new Set(this.batchAi.runResults.map(r => r['jira号']).filter(Boolean));
+          if (executed.size) {
+            this.batchAi.filteredKeys = this.batchAi.filteredKeys.filter(k => !executed.has(k));
+          }
+        };
         if (!this.batchAi.continuous) {
           await runOneRound();
           const modeLabel = this.batchAi.execMode === 'online' ? '线上' : 'PC';
@@ -545,7 +552,7 @@ export default {
           const totalRounds = this.batchAi.rounds;
           const intervalMs = this.batchAi.interval * 60 * 1000;
           this.batchAi.currentRound = 1;
-          try { await runOneRound('[1/' + totalRounds + '] '); }
+          try { await runOneRound('[1/' + totalRounds + '] '); shrinkPool(); }
           catch (e) {
             if (e.name === 'AbortError') { this.batchAi.oneClickMsg = `持续执行已停止（完成 0/${totalRounds} 轮）`; this.batchAi.oneClickError = false; }
             else { this.batchAi.oneClickMsg = `[1/${totalRounds}] 执行中断: ${e.message}`; this.batchAi.oneClickError = true; }
@@ -554,7 +561,8 @@ export default {
           for (let i = 2; i <= totalRounds; i++) {
             if (this.batchAiAbort && this.batchAiAbort.signal.aborted) { this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 2}/${totalRounds} 轮）`; this.batchAi.oneClickError = false; break; }
             this.batchAi.preSample = { ready: false, selected: [], trigger_times: {}, sampleStats: null, error: null };
-            this.batchAi.oneClickMsg = `第 ${i - 1} 轮完成，正在预提取第 ${i}/${totalRounds} 轮触发时间...`;
+            const remaining = this.batchAi.filteredKeys.length;
+            this.batchAi.oneClickMsg = `第 ${i - 1} 轮完成 | 剩余 ${remaining} 个候选 | 正在预提取第 ${i}/${totalRounds} 轮触发时间...`;
             const preSamplePromise = this.batchAiSample(true).then(result => {
               if (result) { this.batchAi.preSample = { ready: true, selected: result.selected, trigger_times: result.trigger_times, sampleStats: result.sampleStats, error: null }; }
               else { this.batchAi.preSample = { ready: false, selected: [], trigger_times: {}, sampleStats: null, error: '预提取失败' }; }
@@ -566,7 +574,7 @@ export default {
               const remainSec = Math.ceil((waitUntil - Date.now()) / 1000);
               const mm = Math.floor(remainSec / 60); const ss = remainSec % 60;
               const preStatus = this.batchAi.preSample.ready ? '✅ 就绪' : (this.batchAi.preSample.error ? '❌ 失败' : '⏳ 提取中');
-              this.batchAi.oneClickMsg = `等待间隔（${mm}:${String(ss).padStart(2, '0')}）| 第 ${i} 轮预提取: ${preStatus}`;
+              this.batchAi.oneClickMsg = `等待间隔（${mm}:${String(ss).padStart(2, '0')}）| 剩余 ${remaining} 个候选 | 第 ${i} 轮预提取: ${preStatus}`;
               await new Promise(r => setTimeout(r, 1000));
             }
             if (aborted) { this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 1}/${totalRounds} 轮）`; this.batchAi.oneClickError = false; break; }
@@ -579,6 +587,7 @@ export default {
             this.batchAi.preSample = null;
             try {
               if (this.batchAi.execMode === 'online') { await this.batchAiRunOnline(); } else { await this.batchAiRun(); }
+              shrinkPool();
             } catch (e) {
               if (e.name === 'AbortError') { this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 1}/${totalRounds} 轮）`; this.batchAi.oneClickError = false; }
               else { this.batchAi.oneClickMsg = `[${i}/${totalRounds}] 执行中断: ${e.message}`; this.batchAi.oneClickError = true; }

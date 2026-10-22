@@ -1,7 +1,7 @@
 """Testing routes - test endpoints"""
 from fastapi import APIRouter, Request, Body, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
-from datetime import datetime
+from datetime import datetime, timedelta
 import random
 
 from src import pipeline
@@ -69,34 +69,38 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
 
     用于同来源去重：线上执行时只排除线上已执行的，PC执行时只排除PC已执行的。
     PC和线上允许重复（不同来源）。
+    同时检查今天和昨天的记录，支持跨天持续执行场景。
     """
     import os, csv
     from src.config import load_config, get_path
     from src.services.report_ops import _read_csv_rows
     executed = set()
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now()
+    yesterday = today - timedelta(days=1)
+    check_dates = [today.strftime("%Y-%m-%d"), yesterday.strftime("%Y-%m-%d")]
     # 路径1：本地 PC 批量执行记录 docs/日期/batch_*.csv
     doc_dir = get_path("doc_dir")
-    day_dir = os.path.join(doc_dir, today)
-    if os.path.isdir(day_dir):
-        for fname in sorted(os.listdir(day_dir)):
-            if fname.lower().startswith("batch_") and fname.lower().endswith(".csv"):
-                for row in _read_csv_rows(os.path.join(day_dir, fname)):
-                    jira = (row.get("jira号") or row.get("Jira号") or "").strip()
-                    src = (row.get("触发来源") or "").strip()
-                    if jira and (not source or src == source):
-                        executed.add(jira)
+    for date_str in check_dates:
+        day_dir = os.path.join(doc_dir, date_str)
+        if os.path.isdir(day_dir):
+            for fname in sorted(os.listdir(day_dir)):
+                if fname.lower().startswith("batch_") and fname.lower().endswith(".csv"):
+                    for row in _read_csv_rows(os.path.join(day_dir, fname)):
+                        jira = (row.get("jira号") or row.get("Jira号") or "").strip()
+                        src = (row.get("触发来源") or "").strip()
+                        if jira and (not source or src == source):
+                            executed.add(jira)
     # 路径2：本地上线批量执行记录 data/unanalyzed/prod_batch_{日期}_*.csv
     unanalyzed_dir = os.path.join(PROJECT_ROOT, "data", "unanalyzed")
     if os.path.isdir(unanalyzed_dir):
-        prefix = f"prod_batch_{today}_"
-        for fname in sorted(os.listdir(unanalyzed_dir)):
-            if fname.startswith(prefix) and fname.endswith(".csv"):
-                for row in _read_csv_rows(os.path.join(unanalyzed_dir, fname)):
-                    jira = (row.get("jira号") or row.get("Jira号") or "").strip()
-                    if jira:
-                        # prod_batch 默认是线上来源
-                        executed.add(jira)
+        for date_str in check_dates:
+            prefix = f"prod_batch_{date_str}_"
+            for fname in sorted(os.listdir(unanalyzed_dir)):
+                if fname.startswith(prefix) and fname.endswith(".csv"):
+                    for row in _read_csv_rows(os.path.join(unanalyzed_dir, fname)):
+                        jira = (row.get("jira号") or row.get("Jira号") or "").strip()
+                        if jira:
+                            executed.add(jira)
     # 路径3：云端批次执行记录
     try:
         from src.clients import feishu_client
@@ -104,7 +108,7 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
         if folder_token:
             all_files = feishu_client.list_folder_files(folder_token, recursive=True)
             cloud_docs = [f for f in all_files
-                         if f.get("folder", "") == today and f.get("type") == "docx"
+                         if f.get("folder", "") in check_dates and f.get("type") == "docx"
                          and (f.get("name", "").startswith("批量执行")
                               or f.get("name", "").startswith("线上批量执行"))]
             for doc in cloud_docs:
@@ -656,26 +660,37 @@ async def test_batch_ai_extract_times(request: Request):
                     # ── 并行模式：从配置读取并发数 ──
                     _trigger_parallel = load_config().get("params", {}).get("trigger_parallel", 8)
                     sem = asyncio.Semaphore(_trigger_parallel)
+                    _active_tasks = set()  # 正在执行 _process_one 的任务（不可取消）
                     async def _sem_process(key):
                         async with sem:
                             if interrupted or _batch_extract_stop_event.is_set() or stop_event.is_set():
                                 return key, "skipped", ""
-                            return await _process_one(key)
+                            # 已进入执行区，加入 active 集合（不会被 cancel）
+                            task = asyncio.current_task()
+                            _active_tasks.add(task)
+                            try:
+                                return await _process_one(key)
+                            except asyncio.CancelledError:
+                                return key, "cancelled", ""
+                            finally:
+                                _active_tasks.discard(task)
                     tasks = [asyncio.ensure_future(_sem_process(k)) for k in need_fetch]
                     for coro in asyncio.as_completed(tasks):
-                        if _batch_extract_stop_event.is_set() or stop_event.is_set():
-                            interrupted = True
-                            for t in tasks:
-                                t.cancel()
-                            break
                         if await request.is_disconnected():
                             interrupted = True
                             for t in tasks:
-                                t.cancel()
+                                if not t.done():
+                                    t.cancel()
                             break
                         key, status, tt_val = await coro
-                        if status == "skipped" or status == "stopped":
+                        if status in ("skipped", "stopped", "cancelled"):
                             continue
+                        # Ctrl+C 后：cancel 队列中的任务，让正在执行的跑完
+                        if not interrupted and (stop_event.is_set() or _batch_extract_stop_event.is_set()):
+                            interrupted = True
+                            for t in tasks:
+                                if not t.done() and t not in _active_tasks:
+                                    t.cancel()  # 只 cancel 队列中未开始的
                         if status == "no_gmlogger":
                             sources[key] = "无gmlogger"
                             skip_no_gmlogger += 1
@@ -686,14 +701,19 @@ async def test_batch_ai_extract_times(request: Request):
                         done_count += 1
                         yield f"data: {_json.dumps({'type': 'progress', 'index': done_count, 'total': total, 'key': key, 'status': status, 'time': tt_val}, ensure_ascii=False)}\n\n"
                         if len(_write_buffer) >= _WRITE_BATCH_SIZE:
+                            # 云端写入（失败不影响本地）
                             try:
                                 batch_items = dict(_write_buffer)
                                 await loop.run_in_executor(None, _batch_save_trigger_times_to_cloud, batch_items)
+                            except Exception as e:
+                                logger.warning("并行批量写入触发时间(云端)失败: %s", e)
+                            # 本地 CSV 写入（独立保护，绝不跳过）
+                            try:
                                 for bid, btt in _write_buffer:
                                     _save_trigger_time_to_csv(bid, btt)
                                 logger.info("并行批量写入触发时间: %d 条", len(_write_buffer))
                             except Exception as e:
-                                logger.warning("并行批量写入触发时间失败: %s", e)
+                                logger.warning("并行批量写入触发时间(本地CSV)失败: %s", e)
                             _write_buffer.clear()
                 else:
                     # ── 串行模式：逐条处理 ──
@@ -723,25 +743,35 @@ async def test_batch_ai_extract_times(request: Request):
                         done_count += 1
                         yield f"data: {_json.dumps({'type': 'progress', 'index': done_count, 'total': total, 'key': key, 'status': status, 'time': tt_val}, ensure_ascii=False)}\n\n"
                         if len(_write_buffer) >= _WRITE_BATCH_SIZE:
+                            # 云端写入（失败不影响本地）
                             try:
                                 batch_items = dict(_write_buffer)
                                 await loop.run_in_executor(None, _batch_save_trigger_times_to_cloud, batch_items)
+                            except Exception as e:
+                                logger.warning("批量写入触发时间(云端)失败: %s", e)
+                            # 本地 CSV 写入（独立保护，绝不跳过）
+                            try:
                                 for bid, btt in _write_buffer:
                                     _save_trigger_time_to_csv(bid, btt)
                                 logger.info("批量写入触发时间: %d 条", len(_write_buffer))
                             except Exception as e:
-                                logger.warning("批量写入触发时间失败: %s", e)
+                                logger.warning("批量写入触发时间(本地CSV)失败: %s", e)
                             _write_buffer.clear()
             # 最终批量写入缓冲区剩余数据
             if _write_buffer:
+                # 云端写入（失败不影响本地）
                 try:
                     batch_items = dict(_write_buffer)
                     await loop.run_in_executor(None, _batch_save_trigger_times_to_cloud, batch_items)
+                except Exception as e:
+                    logger.warning("最终批量写入触发时间(云端)失败: %s", e)
+                # 本地 CSV 写入（独立保护，绝不跳过）
+                try:
                     for bid, btt in _write_buffer:
                         _save_trigger_time_to_csv(bid, btt)
                     logger.info("最终批量写入触发时间: %d 条", len(_write_buffer))
                 except Exception as e:
-                    logger.warning("最终批量写入触发时间失败: %s", e)
+                    logger.warning("最终批量写入触发时间(本地CSV)失败: %s", e)
                 _write_buffer.clear()
             new_count = len(trigger_times) - cloud_hit
             if interrupted:
@@ -915,12 +945,18 @@ async def test_batch_ai_sample(request: Request):
             seen_keys.add(k)
             unique_keys.append(k)
     keys = unique_keys
-    # 扫描 docs/ 下所有 CSV 已测试的 jira 号（含历史批量文件）
+    # 跨批次去重：本地 CSV + 云端批量执行记录（只要执行过就排除，不论分析结果）
     tested = _load_all_doc_jira_keys()
-    # 排除 docs/ 已测试记录（步骤3已过滤多维表格成功记录）
+    cloud_executed = _get_same_source_executed_keys("")  # 空=不限来源，全部排除
+    before_cloud = len(tested)
+    tested |= cloud_executed
+    cloud_added = len(tested) - before_cloud
+    if cloud_added:
+        logger.info("云端批量执行记录去重: 额外排除 %d 条", cloud_added)
+    # 排除已执行记录
     available = [k for k in keys if k not in tested]
     if not available:
-        return _fail(f"所有候选 bug 均已测试过（已测试 {len(tested)} 条）")
+        return _fail(f"所有候选 bug 均已执行过（已执行 {len(tested)} 条）")
     # 从云端加载触发时间 + 空标记（支持多表，合并加载避免两次全量拉取）
     local_times, cloud_keys = _load_cloud_trigger_cache()
     # 始终信任云端缓存，无缓存的才重新提取

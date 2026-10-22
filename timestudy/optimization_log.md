@@ -339,6 +339,25 @@ flowchart TD
   4. **兜底机制**：若置信度不足，下载 gmlogger 压缩包提取包内 main 文件名时间作为额外日期提供者
   5. **最终选择**：确认次数优先，其次得分
 - **验证结果**：VCU-557464 结果 suggested_time=2026-10-14 11:30:00，确认数=2（视频文件名+视频OCR），得分=5.0（视频文件名1分+视频OCR1分+文本描述补全3分）
-- **实现文件**：`src/services/server_legacy.py`（`_diag_run_core` 评分逻辑重构，新增 E 步包内main兜底）
+- **实现文件**：`src/services/server_legacy.py`（`_diag_run_core` 评分逻辑重构，新增 E 步包内main兆底）
+
+</details>
+
+<details>
+<summary><b>29. OCR 纠正容差优化 + 有 gmlogger 文件名时跳过压缩包探测（2026-10-22）</b></summary>
+
+- **问题描述**：VCU-559847 视频 OCR 读到 "15:27"（实际正确），但 `_correct_ocr_by_reference` 将其"纠正"为 "15:29:00"（参考 gmlogger 文件名时间 15:33，仅 1 位差异），导致最终提取结果 `2026-10-22 15:29:00` 不准确
+- **相关Bug号**：VCU-559847
+- **根因**：
+  1. `_correct_ocr_by_reference` 容差仅 5 分钟，OCR 时间与 gmlogger 时间差 6 分钟时触发了不必要的纠正
+  2. 有 gmlogger 文件名时间（三个文件日期一致且可解析）时，仍会下载探测其他非 gmlogger 压缩包，浪费资源
+- **解决方案**：
+  1. **容差扩大**：`_correct_ocr_by_reference` 的"无需纠正"阈值从 5 分钟改为 10 分钟，OCR 时间与 gmlogger 参考时间差 ≤10 分钟时直接保留原值
+  2. **跳过压缩包探测**：`_diag_extract_time_from_video_simple` 中，如果 gmlogger 文件名已有可解析时间（`gm_times` 非空），跳过整个压缩包下载探测（step 3），只下载视频做 OCR
+  3. **清除错误缓存**：删除 `data/video_time_cache.json` 中 `VCU-559847:IMG_1066.MOV` 的错误条目
+- **优化效果**：
+  - VCU-559847 场景（3个 gmlogger + 1个视频）：只下载视频，OCR "15:27" 不纠正，拼接 gmlogger 日期 → `2026-10-22 15:27:00`（正确）
+  - 减少不必要的附件下载（gmlogger 分卷包 + 其他压缩包均不下载）
+- **实现文件**：`src/services/server_legacy.py`（`_correct_ocr_by_reference` 容差、`_diag_extract_time_from_video_simple` 跳过逻辑）
 
 </details>

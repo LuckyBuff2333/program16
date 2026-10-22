@@ -257,6 +257,37 @@ def _migrate_local_trigger_times_to_cloud(app_token: str, table_id: str):
         logger.warning("本地触发时间迁移失败: %s", e)
 
 
+def _sync_local_to_cloud(cloud_times: dict, cloud_keys: set):
+    """将本地 CSV 中有触发时间但云端缺失的记录同步到云端
+
+    在云端缓存加载成功后调用，确保本地数据不会因云端写入失败而丢失。
+    同步成功后就地更新 cloud_times 和 cloud_keys，使上层 need_fetch 判断
+    能跳过这些已同步的记录，避免不必要的附件下载。
+    """
+    try:
+        local_times = _load_trigger_times_from_local()
+        if not local_times:
+            return
+        # 找出本地有但云端没有的触发时间
+        missing = {k: v for k, v in local_times.items() if k not in cloud_keys and v}
+        if not missing:
+            return
+        logger.info("本地-云端差值同步: 发现 %d 条本地有但云端无的触发时间", len(missing))
+        ok = _batch_save_trigger_times_to_cloud(missing)
+        if ok:
+            # 写入成功，就地更新内存缓存，避免上层重复提取
+            cloud_times.update(missing)
+            cloud_keys.update(missing.keys())
+            logger.info("本地-云端差值同步完成: %d 条已写入并更新内存缓存", len(missing))
+        else:
+            # 写入失败，仍然更新内存缓存（本地 CSV 保底），避免重复下载附件
+            cloud_times.update(missing)
+            cloud_keys.update(missing.keys())
+            logger.warning("本地-云端差值同步: 云端写入失败但已更新内存缓存（本地CSV保底）")
+    except Exception as e:
+        logger.warning("本地-云端差值同步失败: %s", e)
+
+
 def _load_cloud_trigger_cache() -> tuple:
     """一次加载云端触发时间缓存，返回 (times_dict, keys_set)
 
@@ -300,13 +331,15 @@ def _load_cloud_trigger_cache() -> tuple:
                 partial = True
         logger.info("云端触发时间缓存加载完成: %d 条有触发时间, %d 条已记录%s",
                     len(times), len(keys), " (部分加载)" if partial else "")
-        # 部分加载时不缓存结果，避免上层误判"云端没有"而触发空值覆盖
+        # 部分加载时不缓存结果，避免上层误判“云端没有”而触发空值覆盖
         if partial:
             _last_cache_load_partial = True
             logger.warning("云端触发时间缓存为部分加载，已跳过缓存写入，禁止本轮空值写入")
         else:
             _last_cache_load_partial = False
             _bitable_bulk_cache[_ck] = (time.time(), (times, keys))
+            # 同步本地 CSV 中云端缺失的数据到云端
+            _sync_local_to_cloud(times, keys)
         return times, keys
     except Exception as e:
         logger.warning("云端触发时间缓存加载失败，降级读本地 CSV: %s", e)
@@ -452,8 +485,6 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "")
             app_token, _ = _get_trigger_time_table_cfg()
             from src.clients import feishu_client
             upd_fields = {"触发时间": trigger_time}
-            if source:
-                upd_fields["触发时间来源"] = source
             feishu_client.update_bitable_records(app_token, tid, [
                 {"record_id": rec_id, "fields": upd_fields}
             ])
@@ -509,8 +540,6 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None) -> boo
                     logger.warning("跳过空值写入，bugid=%s 云端缓存为部分加载", bugid)
                     continue
                 upd_fields = {"触发时间": trigger_time}
-                if bugid in sources and sources[bugid]:
-                    upd_fields["触发时间来源"] = sources[bugid]
                 updates_by_table.setdefault(tid, []).append({
                     "record_id": rec_id,
                     "fields": upd_fields
@@ -560,8 +589,6 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None) -> boo
                 if bugid in jira_index:
                     tid, rec = jira_index[bugid]
                     upd_fields = {"触发时间": trigger_time}
-                    if bugid in sources and sources[bugid]:
-                        upd_fields["触发时间来源"] = sources[bugid]
                     updates_by_table.setdefault(tid, []).append({
                         "record_id": rec["record_id"],
                         "fields": upd_fields
@@ -616,8 +643,6 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None) -> boo
                 create_records = []
                 for bid, tt in batch:
                     fields = {"jira号": bid, "触发时间": tt, "提取时间": now_str}
-                    if bid in sources and sources[bid]:
-                        fields["触发时间来源"] = sources[bid]
                     create_records.append({"fields": fields})
                 feishu_client.batch_create_records(app_token, target_tid, create_records)
                 table_counts[target_tid] = table_counts.get(target_tid, 0) + len(batch)

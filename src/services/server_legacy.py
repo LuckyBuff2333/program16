@@ -195,6 +195,9 @@ _OCR_TIME_FULL_RE = re.compile(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2}[\s.,\-]?\d{1,2}[.:
 
 _OCR_TIME_ONLY_RE = re.compile(r'(?<!\d)(\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?)(?!\d)')
 
+# 中文相对日期 + 时间：昨天/今天/前天/大前天 + HH:MM 或 HH:MM:SS
+_OCR_RELATIVE_DATE_TIME_RE = re.compile(r'(昨天|今天|前天|大前天)[\s\-]*?(\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?)')
+
 _OCR_BARE_TIME_RE = re.compile(r'(?<![a-zA-Z0-9\-/.])(\d{2})(\d{2})(?![a-zA-Z0-9\-/.])')
 
 _OCR_COMMA_TIME_RE = re.compile(r'(?<!\d)(\d{1,2}),(\d{2})(?![\d,.])')
@@ -4258,7 +4261,13 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
 
 def _normalize_ocr_time(text: str) -> str:
     """将 OCR 时间中的点号/逗号分隔符替换为冒号（10.26.39 → 10:26:39），并规范化日期时间分隔"""
-    # 0. 修正年份 OCR 误识别：首位 3-9 大概率是 2 被误识别（如 6024 → 2024）
+    # 0a. 两位年份扩展：26-10-20 → 2026-10-20（常见于截图/聊天记录）
+    def _expand_2digit_year(m):
+        yy = int(m.group(1))
+        # 00-99 → 2000-2099
+        return f"{2000 + yy}{m.group(2)}"
+    text = re.sub(r'(?<!\d)(\d{2})([/-]\d{1,2}[/-]\d{1,2})(?!\d)', _expand_2digit_year, text)
+    # 0b. 修正年份 OCR 误识别：首位 3-9 大概率是 2 被误识别（如 6024 → 2024）
     def _fix_year(m):
         y = int(m.group(0))
         if 3000 <= y <= 9999:
@@ -4461,6 +4470,7 @@ def _correct_ocr_by_reference(time_str: str, ref_dt) -> str:
     """参照 gmlogger 时间纠正 OCR 数字混淆（如 07:10 被识别为 19:19）
     在参考时间±5分钟范围内生成候选，选择与 OCR 结果数字差异最少的候选。
     普通场景最多允许1位差异；12h偏移场景（AM/PM混淆）允许3位差异。
+    OCR 时间与参考时间差值在 10 分钟内视为正确，不做纠正。
     """
     m = re.match(r'(\d{2}):(\d{2})(?::(\d{2}))?', time_str)
     if not m or ref_dt is None:
@@ -4470,9 +4480,9 @@ def _correct_ocr_by_reference(time_str: str, ref_dt) -> str:
     ocr_digits = [int(hh_str[0]), int(hh_str[1]), int(mm_str[0]), int(mm_str[1])]
     ocr_hh = ocr_digits[0] * 10 + ocr_digits[1]
     ref_minutes = ref_dt.hour * 60 + ref_dt.minute
-    # 如果已经足够接近，无需纠正
+    # OCR 时间与参考时间差值在 10 分钟内视为正确，无需纠正
     ocr_minutes = ocr_digits[0] * 600 + ocr_digits[1] * 60 + ocr_digits[2] * 10 + ocr_digits[3]
-    if abs(ocr_minutes - ref_minutes) <= 5:
+    if abs(ocr_minutes - ref_minutes) <= 10:
         return time_str
     best = None
     best_diff_count = 5
@@ -5047,6 +5057,10 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
             _inner_times.append(parsed)
             logger.info("视频兜底提取(%s)：直接上传的 main 文件: %s -> %s", bugid, fname, parsed[0])
     # 3. 非 gmlogger 且非 main 的压缩包：解压探测包内 main 文件（场景三）
+    #    如果已有 gmlogger 文件名时间（三个文件日期一致），无需再解压确认
+    _skip_archive_probe = bool(gm_times)
+    if _skip_archive_probe:
+        logger.info("视频兜底提取(%s)：已有 %d 个 gmlogger 文件名时间，跳过压缩包探测", bugid, len(gm_times))
     cfg = load_config().get("jira_api", {})
     _timeout = max(int(cfg.get("timeout", 30)), 120)
     headers = {}
@@ -5055,44 +5069,45 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
         auth_type = cfg.get("auth_type", "bearer").lower()
         if auth_type == "bearer":
             headers["Authorization"] = f"Bearer {token}"
-    for att in attachments:
-        fname = att.get("filename", "") or ""
-        fn_lower = fname.lower()
-        # 跳过非压缩包
-        if not _ARCHIVE_NAME_RE.search(fn_lower):
-            continue
-        # 跳过分卷
-        if _SPLIT_ARCHIVE_RE.search(fn_lower):
-            continue
-        # 跳过超大包
-        if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
-            continue
-        res = _diag_list_archive_entries(att.get("content", ""), headers, _timeout, bugid, filename=att.get("filename", ""))
-        if not res.get("ok"):
-            continue
-        for entry in res.get("entries", []):
-            ebname = os.path.basename(entry).lower()
-            if "main" not in ebname:
+    if not _skip_archive_probe:
+        for att in attachments:
+            fname = att.get("filename", "") or ""
+            fn_lower = fname.lower()
+            # 跳过非压缩包
+            if not _ARCHIVE_NAME_RE.search(fn_lower):
                 continue
-            parsed = _diag_parse_entry_time(entry)
-            # 兆底：下划线分隔格式 main.log_2026_10_19_6_56_11.gz（小时可为 1-2 位）
-            if not parsed:
-                import re as _re
-                _m = _re.search(r"(20\d{2})_(\d{1,2})_(\d{1,2})_(\d{1,2})_(\d{1,2})(?:_(\d{1,2}))?", entry)
-                if _m:
-                    from datetime import datetime as _dt_inner
-                    try:
-                        _y, _mo, _d = int(_m.group(1)), int(_m.group(2)), int(_m.group(3))
-                        _h, _mi = int(_m.group(4)), int(_m.group(5))
-                        _s = int(_m.group(6)) if _m.group(6) else 0
-                        _idt = _dt_inner(_y, _mo, _d, _h, _mi, _s)
-                        parsed = (_idt.strftime("%Y-%m-%d %H:%M:%S"), _idt)
-                    except (ValueError, IndexError):
-                        pass
-            if parsed:
-                _inner_times.append(parsed)
-                logger.info("视频兜底提取(%s)：压缩包 %s 内 main 文件: %s -> %s",
-                            bugid, fname, entry, parsed[0])
+            # 跳过分卷
+            if _SPLIT_ARCHIVE_RE.search(fn_lower):
+                continue
+            # 跳过超大包
+            if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
+                continue
+            res = _diag_list_archive_entries(att.get("content", ""), headers, _timeout, bugid, filename=att.get("filename", ""))
+            if not res.get("ok"):
+                continue
+            for entry in res.get("entries", []):
+                ebname = os.path.basename(entry).lower()
+                if "main" not in ebname:
+                    continue
+                parsed = _diag_parse_entry_time(entry)
+                # 兆底：下划线分隔格式 main.log_2026_10_19_6_56_11.gz（小时可为 1-2 位）
+                if not parsed:
+                    import re as _re
+                    _m = _re.search(r"(20\d{2})_(\d{1,2})_(\d{1,2})_(\d{1,2})_(\d{1,2})(?:_(\d{1,2}))?", entry)
+                    if _m:
+                        from datetime import datetime as _dt_inner
+                        try:
+                            _y, _mo, _d = int(_m.group(1)), int(_m.group(2)), int(_m.group(3))
+                            _h, _mi = int(_m.group(4)), int(_m.group(5))
+                            _s = int(_m.group(6)) if _m.group(6) else 0
+                            _idt = _dt_inner(_y, _mo, _d, _h, _mi, _s)
+                            parsed = (_idt.strftime("%Y-%m-%d %H:%M:%S"), _idt)
+                        except (ValueError, IndexError):
+                            pass
+                if parsed:
+                    _inner_times.append(parsed)
+                    logger.info("视频兜底提取(%s)：压缩包 %s 内 main 文件: %s -> %s",
+                                bugid, fname, entry, parsed[0])
     # 构建 ref_pool
     gm_dates = [(dt.year, dt.month, dt.day) for _, dt in gm_times]
     ref_pool = [dt for _, dt in gm_times]
@@ -6012,6 +6027,33 @@ def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bug
                     parsed = _ts_parse_datetime(ts)
                     if parsed:
                         times_found.append((ts, parsed))
+                # 提取相对日期 + 时间（昨天/今天/前天 + HH:MM）
+                # 参考日期：优先用附件上传时间，其次用 bug 创建时间
+                _ref_date = None
+                att_created = att.get("created", "") or ""
+                if att_created:
+                    try:
+                        _ref_date = _dt.strptime(att_created[:10], "%Y-%m-%d").date()
+                    except Exception:
+                        pass
+                if not _ref_date:
+                    _ref_date = _dt.now().date()
+                for m in _OCR_RELATIVE_DATE_TIME_RE.finditer(full_text):
+                    rel_word, time_str = m.group(1), m.group(2)
+                    time_str = time_str.replace(",", ":").replace(";", ":").replace(".", ":")
+                    try:
+                        parts = time_str.split(":")
+                        hh, mm = int(parts[0]), int(parts[1])
+                        ss = int(parts[2]) if len(parts) > 2 else 0
+                        offset = {"今天": 0, "昨天": -1, "前天": -2, "大前天": -3}.get(rel_word, 0)
+                        from datetime import timedelta as _td
+                        target_date = _ref_date + _td(days=offset)
+                        parsed_dt = _dt(target_date.year, target_date.month, target_date.day, hh, mm, ss)
+                        full_ts = parsed_dt.strftime("%Y-%m-%d %H:%M:%S")
+                        times_found.append((full_ts, parsed_dt))
+                        logger.info("%s图片 OCR 相对日期解析: %s %s -> %s", f"{bugid} " if bugid else "", rel_word, time_str, full_ts)
+                    except Exception:
+                        pass
                 # 提取仅时间（无日期）尝试补 gmlogger 日期
                 for m in _OCR_TIME_ONLY_RE.finditer(preprocessed):
                     ts = m.group(0)
