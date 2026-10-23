@@ -5070,13 +5070,13 @@ async def test_adp_single(request: Request):
 
 @router.post("/api/test/adp_batch")
 async def test_adp_batch(request: Request):
-    """ADP 批量分析：Excel 导入 → 分批执行(3个/批) → 写入飞书，支持连续/单次模式"""
+    """ADP 批量分析：Excel 导入 → 分批执行(2个/批) → 写入飞书，支持连续/单次模式"""
     import json as _json
     import asyncio
     import concurrent.futures
     body = await request.json() or {}
     items = body.get("items") or []  # [{bugid, description, trigger_time}]
-    batch_size = int(body.get("batch_size") or 3)
+    batch_size = int(body.get("batch_size") or 2)
     continuous = body.get("continuous", False)
     if not items:
         return _fail("无待执行项")
@@ -5197,7 +5197,7 @@ async def test_adp_enrich(request: Request):
 
 @router.post("/api/test/adp_lookup")
 async def test_adp_lookup(request: Request):
-    """ADP 按 Jira 号查找：多维表格读记录 → 补全字段 → 3个并发执行 → 失败重试一次 → 写回
+    """ADP 按 Jira 号查找：多维表格读记录 → 补全字段 → 2个并发执行 → 失败重试一次 → 写回
     mode=manual: 使用传入的 bugids
     mode=auto:   自动从多维表格中查找无报告记录，按顺序取前 limit 条执行
     """
@@ -5211,12 +5211,13 @@ async def test_adp_lookup(request: Request):
     mode = body.get("mode") or "manual"
     bugids = body.get("bugids") or []
     limit = int(body.get("limit") or 10)
-    batch_size = int(body.get("batch_size") or 3)
+    batch_size = int(body.get("batch_size") or 2)
     if mode == "manual" and not bugids:
         return _fail("bugids 不能为空")
     _stop_event.clear()
 
     async def event_generator():
+        import time as _time
         loop = asyncio.get_event_loop()
         from src.clients import feishu_client, jira_client as _jc
         from src.services.adp_ops import run_adp_single, _get_adp_cfg
@@ -5248,23 +5249,30 @@ async def test_adp_lookup(request: Request):
             if m:
                 key = m.group(1)
                 bt_map[key] = rec
-                # 判断该行是否已有报告
+                # 判断该行是否已完成分析（有报告 或 有完整状态）
                 fields = rec.get("fields", {})
                 has_report = False
                 rv = fields.get(report_field, "")
                 if rv:
-                    # 附件字段：非空列表即有报告
                     if isinstance(rv, list) and len(rv) > 0:
                         has_report = True
                     elif isinstance(rv, str) and rv.strip():
                         has_report = True
-                if not has_report:
+                # 检查完成状态：已有明确状态的跳过
+                status = ""
+                sv = fields.get("完成状态", "")
+                if isinstance(sv, list) and sv:
+                    status = sv[0].get("text", "") if isinstance(sv[0], dict) else str(sv[0])
+                elif isinstance(sv, str):
+                    status = sv.strip()
+                is_done = has_report or status in ("完成", "分析失败", "无法分析")
+                if not is_done:
                     no_report_keys.append(key)
         if mode == "auto":
             effective_bugids = no_report_keys[:limit]
             yield f"data: {_json.dumps({'type': 'step', 'step': 'read_bitable', 'status': 'done', 'total_records': len(records), 'matched': len(effective_bugids), 'no_report_total': len(no_report_keys), 'mode': 'auto', 'limit': limit}, ensure_ascii=False)}\n\n"
             if not effective_bugids:
-                yield f"data: {_json.dumps({'type': 'done', 'total': 0, 'success': 0, 'retry_ok': 0, 'fail': 0, 'msg': '无待分析记录'}, ensure_ascii=False)}\n\n"
+                yield f"data: {_json.dumps({'type': 'done', 'total': 0, 'success': 0, 'fail': 0, 'msg': '无待分析记录'}, ensure_ascii=False)}\n\n"
                 return
         else:
             effective_bugids = list(bugids)
@@ -5311,30 +5319,56 @@ async def test_adp_lookup(request: Request):
                     "bt_desc": bt_desc, "bt_time": bt_time}
 
         # ── 单条 ADP 执行（线程内调用）──
-        def _run_one_adp(bugid, desc, tt, attempt):
-            """在子线程中执行单条 ADP 分析，返回结果 dict"""
+        def _run_one_adp(bugid):
+            """在子线程中执行字段补全 + ADP 分析，返回结果 dict"""
             try:
-                result = run_adp_single(bugid, desc, tt)
+                info = _prepare_fields(bugid)
+                result = run_adp_single(bugid, info["desc"], info["tt"])
                 has_html = bool((result.get("results") or {}).get("_report_file_token", ""))
-                return {"bugid": bugid, "result": result, "has_html": has_html, "attempt": attempt}
+                return {"bugid": bugid, "result": result, "has_html": has_html, "info": info}
             except Exception as e:
                 return {"bugid": bugid, "result": {"ok": False, "jira_key": bugid, "error": str(e)[:100]},
-                        "has_html": False, "attempt": attempt}
+                        "has_html": False, "info": {"bugid": bugid, "desc": "", "tt": "", "rec": bt_map.get(bugid),
+                                                    "bt_desc": "", "bt_time": ""}}
+
+        # ── 保存失败结果到本地 MD ──
+        def _save_fail_md(bugid, result):
+            """将失败时接口返回内容保存为本地 MD 文档"""
+            import os
+            from datetime import datetime as _dt
+            save_dir = os.path.join("docs", "adp_results", bugid)
+            os.makedirs(save_dir, exist_ok=True)
+            ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+            full_text = result.get("full_text") or ""
+            error = result.get("error") or ""
+            content = f"# {bugid} 分析失败\n\n"
+            content += f"## 错误信息\n\n{error}\n\n"
+            content += f"## 返回内容\n\n{full_text[:5000]}\n"
+            path = os.path.join(save_dir, f"{bugid}_fail_{ts}.md")
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+            except Exception as e:
+                logger.warning("ADP 保存失败MD失败 %s: %s", bugid, e)
 
         # ── 写回多维表格 ──
         async def _write_back(bugid, result, rec):
             if not rec:
                 return False
             results_dict = result.get("results") or {}
-            # 无 ok 且无“无法分析”状态时跳过写回
-            if not result.get("ok") and results_dict.get("完成状态") != "无法分析":
+            # 无 ok 且状态不是"无法分析"/"分析失败"时跳过写回
+            status = results_dict.get("完成状态", "")
+            if not result.get("ok") and status not in ("无法分析", "分析失败"):
                 return False
             try:
                 write_fields = {k: v for k, v in results_dict.items()
                                 if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
                 file_token = results_dict.get("_report_file_token", "")
-                if file_token and "报告链接（分析报告、可观测报告）" in write_fields:
+                if file_token:
                     write_fields["报告链接（分析报告、可观测报告）"] = [{"file_token": file_token}]
+                else:
+                    # 无 file_token 时移除报告链接字段，避免 URL 字符串写入附件类型字段
+                    write_fields.pop("报告链接（分析报告、可观测报告）", None)
                 record_id = rec.get("record_id", "")
                 if record_id:
                     await loop.run_in_executor(
@@ -5351,118 +5385,108 @@ async def test_adp_lookup(request: Request):
         yield f"data: {_json.dumps({'type': 'start', 'total': len(effective_bugids), 'batch_size': batch_size}, ensure_ascii=False)}\n\n"
         pending = list(effective_bugids)
         all_results = []
-        retry_done = False
-        retry_buf = []
         total_success = 0
         total_fail = 0
-        total_retry_ok = 0
         total_skip = 0
         group_idx = 0
 
         while pending:
             # 检查停止信号
             if _stop_event.is_set():
-                yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'retry_ok': total_retry_ok, 'skip': total_skip, 'fail': total_fail, 'message': '已停止'}, ensure_ascii=False)}\n\n"
+                yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'fail': total_fail, 'message': '已停止'}, ensure_ascii=False)}\n\n"
                 return
             group_idx += 1
             batch_bugids = pending[:batch_size]
             pending = pending[batch_size:]
-            batch_info = []
-            for b in batch_bugids:
-                try:
-                    batch_info.append(_prepare_fields(b))
-                except Exception as e:
-                    logger.warning("ADP lookup 字段补全失败 %s: %s", b, e)
-                    batch_info.append({"bugid": b, "desc": "", "tt": "", "rec": bt_map.get(b),
-                                       "bt_desc": "", "bt_time": ""})
-            attempt = 2 if retry_done else 1
 
-            yield f"data: {_json.dumps({'type': 'batch_start', 'batch': group_idx, 'items': batch_bugids, 'attempt': attempt}, ensure_ascii=False)}\n\n"
+            yield f"data: {_json.dumps({'type': 'batch_start', 'batch': group_idx, 'items': batch_bugids}, ensure_ascii=False)}\n\n"
 
-            # 并发执行本组（最多 batch_size 个线程）
+            # 并发执行本组（最多 batch_size 个线程，字段补全+ADP分析全在线程内）
             batch_results = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as pool:
                 futures = {}
-                for info in batch_info:
-                    f = pool.submit(_run_one_adp, info["bugid"], info["desc"], info["tt"], attempt)
-                    futures[f] = info
-                # 等待全部完成，逐个处理
-                try:
-                  for future in concurrent.futures.as_completed(futures, timeout=adp_cfg["timeout"] + 120):
-                    # 检查停止信号
+                for bugid in batch_bugids:
+                    f = pool.submit(_run_one_adp, bugid)
+                    futures[f] = {"bugid": bugid}
+                # 非阻塞轮询等待，定期发心跳
+                remaining = dict(futures)
+                batch_deadline = _time.time() + adp_cfg["timeout"] + 120
+                while remaining:
                     if _stop_event.is_set():
-                        for f in futures:
+                        for f in remaining:
                             f.cancel()
                         pool.shutdown(wait=False, cancel_futures=True)
                         break
-                    info = futures[future]
-                    bugid = info["bugid"]
-                    try:
-                        r = future.result()
-                    except Exception as e:
-                        r = {"bugid": bugid, "result": {"ok": False, "jira_key": bugid, "error": str(e)[:100]},
-                             "has_html": False, "attempt": attempt}
-                    result = r.get("result", {})
-                    has_html = r.get("has_html", False)
-
-                    # 判断是否为"无法分析"（无有效日志附件）→ 不算失败，跳过不重试
-                    results_dict = result.get("results") or {}
-                    is_skipped = results_dict.get("完成状态") == "无法分析"
-
-                    # 写回多维表格
-                    feishu_ok = await _write_back(bugid, result, info["rec"])
-                    ok = result.get("ok", False) and has_html and feishu_ok
-
-                    item = {
-                        "jira_key": bugid, "ok": ok, "has_html": has_html,
-                        "skipped": is_skipped,
-                        "attempt": attempt,
-                        "results": results_dict,
-                        "error": result.get("error", ""),
-                        "bt_found": info["rec"] is not None,
-                        "desc_source": "bitable" if info["bt_desc"] else ("api" if info["desc"] else "none"),
-                        "time_source": "bitable" if info["bt_time"] else ("api" if info["tt"] else "none"),
-                        "full_text": (result.get("full_text") or "")[:2000],
-                        "file_urls": result.get("file_urls", []),
-                    }
-                    batch_results.append(item)
-                    yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
-                  # 处理超时的 future（未完成的标记为失败）
-                  for f, info in futures.items():
-                    if not f.done():
-                        bugid = info["bugid"]
-                        item = {
-                            "jira_key": bugid, "ok": False, "has_html": False,
-                            "skipped": False, "attempt": attempt,
-                            "results": {}, "error": "ADP 分析超时",
-                            "bt_found": info["rec"] is not None,
-                            "desc_source": "bitable" if info["bt_desc"] else ("api" if info["desc"] else "none"),
-                            "time_source": "bitable" if info["bt_time"] else ("api" if info["tt"] else "none"),
-                            "full_text": "", "file_urls": [],
-                        }
-                        batch_results.append(item)
-                        yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
-                except concurrent.futures.TimeoutError:
-                    # 整批超时，未完成的 future 标记失败
-                    for f, info in futures.items():
-                        if not f.done():
+                    # 检查超时的 future
+                    if _time.time() > batch_deadline:
+                        for f in list(remaining):
                             f.cancel()
-                            bugid = info["bugid"]
+                            bugid = remaining.pop(f)["bugid"]
+                            rec = bt_map.get(bugid)
                             item = {
                                 "jira_key": bugid, "ok": False, "has_html": False,
-                                "skipped": False, "attempt": attempt,
-                                "results": {}, "error": "ADP 分析超时",
-                                "bt_found": info["rec"] is not None,
-                                "desc_source": "bitable" if info["bt_desc"] else ("api" if info["desc"] else "none"),
-                                "time_source": "bitable" if info["bt_time"] else ("api" if info["tt"] else "none"),
+                                "skipped": False,
+                                "results": {"完成状态": "分析失败"}, "error": "ADP 分析超时",
+                                "bt_found": rec is not None,
+                                "desc_source": "bitable" if rec else "none",
+                                "time_source": "bitable" if rec else "none",
                                 "full_text": "", "file_urls": [],
                             }
                             batch_results.append(item)
                             yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
+                        break
+                    # 收集已完成的 future
+                    done_now = [f for f in remaining if f.done()]
+                    for future in done_now:
+                        del remaining[future]
+                        bugid = futures[future]["bugid"]
+                        try:
+                            r = future.result()
+                        except Exception as e:
+                            r = {"bugid": bugid, "result": {"ok": False, "jira_key": bugid, "error": str(e)[:100]},
+                                 "has_html": False, "info": {"bugid": bugid, "desc": "", "tt": "", "rec": bt_map.get(bugid),
+                                                             "bt_desc": "", "bt_time": ""}}
+                        info = r.get("info") or {"bugid": bugid, "desc": "", "tt": "", "rec": bt_map.get(bugid),
+                                                 "bt_desc": "", "bt_time": ""}
+                        result = r.get("result", {})
+                        has_html = r.get("has_html", False)
+
+                        # 判断是否为"无法分析"（无有效日志附件）→ 不算失败，跳过
+                        results_dict = result.get("results") or {}
+                        is_skipped = results_dict.get("完成状态") == "无法分析"
+
+                        # 失败（没拿到html且非跳过）：设"分析失败"并保存本地MD
+                        if not has_html and not is_skipped:
+                            results_dict["完成状态"] = "分析失败"
+                            _save_fail_md(bugid, result)
+
+                        # 写回多维表格
+                        feishu_ok = await _write_back(bugid, result, info["rec"])
+                        ok = result.get("ok", False) and has_html and feishu_ok
+
+                        item = {
+                            "jira_key": bugid, "ok": ok, "has_html": has_html,
+                            "skipped": is_skipped,
+                            "results": results_dict,
+                            "error": result.get("error", ""),
+                            "bt_found": info["rec"] is not None,
+                            "desc_source": "bitable" if info["bt_desc"] else ("api" if info["desc"] else "none"),
+                            "time_source": "bitable" if info["bt_time"] else ("api" if info["tt"] else "none"),
+                            "full_text": (result.get("full_text") or "")[:2000],
+                            "file_urls": result.get("file_urls", []),
+                        }
+                        batch_results.append(item)
+                        yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
+                    # 还有未完成的，发心跳并等待
+                    if remaining and not done_now:
+                        running_keys = [futures[f]["bugid"] for f in remaining]
+                        yield f"data: {_json.dumps({'type': 'keepalive', 'running': running_keys}, ensure_ascii=False)}\n\n"
+                    if remaining:
+                        await asyncio.sleep(5)
 
             # 本组完成后检查停止信号
             if _stop_event.is_set():
-                yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'retry_ok': total_retry_ok, 'skip': total_skip, 'fail': total_fail, 'message': '已停止'}, ensure_ascii=False)}\n\n"
+                yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'fail': total_fail, 'message': '已停止'}, ensure_ascii=False)}\n\n"
                 return
 
             # 本组完成统计
@@ -5470,31 +5494,13 @@ async def test_adp_lookup(request: Request):
             batch_skip = sum(1 for r in batch_results if r.get("skipped"))
             batch_fail = len(batch_results) - batch_ok - batch_skip
             all_results.extend(batch_results)
-            if attempt == 1:
-                total_success += batch_ok
-                total_fail += batch_fail
-                total_skip += batch_skip
-            else:
-                total_retry_ok += batch_ok
+            total_success += batch_ok
+            total_fail += batch_fail
+            total_skip += batch_skip
 
-            yield f"data: {_json.dumps({'type': 'batch_done', 'batch': group_idx, 'attempt': attempt, 'success': batch_ok, 'fail': batch_fail, 'skip': batch_skip}, ensure_ascii=False)}\n\n"
+            yield f"data: {_json.dumps({'type': 'batch_done', 'batch': group_idx, 'success': batch_ok, 'fail': batch_fail, 'skip': batch_skip}, ensure_ascii=False)}\n\n"
 
-            # 收集失败项（仅首次执行轮收集；没拿到html且非跳过的才重试）
-            if not retry_done:
-                failed_in_batch = [r["jira_key"] for r in batch_results if not r["has_html"] and not r.get("skipped")]
-                if failed_in_batch:
-                    retry_buf.extend(failed_in_batch)
-
-            # 当前队列为空时，检查是否有失败项需要重试
-            if not pending and not retry_done:
-                if retry_buf:
-                    retry_done = True
-                    yield f"data: {_json.dumps({'type': 'retry_start', 'bugids': retry_buf, 'count': len(retry_buf)}, ensure_ascii=False)}\n\n"
-                    pending = list(retry_buf)
-                    retry_buf = []
-                    group_idx = 0  # 重置组号
-
-        yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'retry_ok': total_retry_ok, 'skip': total_skip, 'fail': max(0, total_fail)}, ensure_ascii=False)}\n\n"
+        yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'fail': max(0, total_fail)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

@@ -271,11 +271,11 @@ def _extract_report_url(text: str, file_urls: list, closeout_data: dict) -> tupl
         url = m.group(1)
         name = re.search(r'(report_[^\s)"\'/?]*\.html)', url)
         return (name.group(1) if name else url.split("/")[-1].split("?")[0]), url
-    # 2. file_urls（content.added 事件中的文件）
+    # 2. file_urls（content.added 事件中的文件），只匹配 .html 报告文件
     for f in (file_urls or []):
         name = f.get("name", "")
         url = f.get("url", "")
-        if name.endswith(".html") or "report" in name.lower():
+        if name.endswith(".html") and "meta" not in name.lower():
             return name, url
     # 3. closeout_data 拼 sandbox 路径（兜底）
     if closeout_data:
@@ -459,10 +459,12 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause", "置信度"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
-        # 附件字段“报告链接”用 file_token 写入
+        # 附件字段"报告链接"需要 file_token 格式，无 file_token 则移除该字段（避免 URL 字符串写入附件类型字段）
         file_token = fields_dict.get("_report_file_token", "")
-        if file_token and "报告链接（分析报告、可观测报告）" in write_fields:
+        if file_token:
             write_fields["报告链接（分析报告、可观测报告）"] = [{"file_token": file_token}]
+        else:
+            write_fields.pop("报告链接（分析报告、可观测报告）", None)
         feishu_client.update_bitable_records(app_token, table_id,
                                               [{"record_id": record_id, "fields": write_fields}])
         logger.info("ADP 飞书写入成功: %s -> %s", jira_key, list(write_fields.keys()))
@@ -539,6 +541,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             results["_report_file_token"] = file_token
             results["报告链接（分析报告、可观测报告）"] = f"附件: {html_file or 'report.html'}"
             out["_report_file_token"] = file_token
+        else:
+            # 下载失败时移除报告链接字段，避免 URL 字符串写入附件类型字段
+            results.pop("报告链接（分析报告、可观测报告）", None)
         _progress("download_report", "done" if file_token else "fail")
 
     # Step 4: 保存本地

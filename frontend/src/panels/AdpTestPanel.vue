@@ -257,15 +257,11 @@
           <span style="font-size:13px;color:#606266">
             已处理 {{ lookup.results.length }}/{{ lookup.progress.total }}
             | 成功 <span style="color:#67c23a;font-weight:600">{{ lookup.progress.success }}</span>
-            <template v-if="lookup.progress.retryOk">
-              | 重试成功 <span style="color:#e6a23c;font-weight:600">{{ lookup.progress.retryOk }}</span>
-            </template>
             | 失败 <span style="color:#f56c6c;font-weight:600">{{ lookup.progress.fail }}</span>
             <template v-if="lookup.progress.skip">
               | 跳过 <span style="color:#909399;font-weight:600">{{ lookup.progress.skip }}</span>
             </template>
           </span>
-          <el-tag v-if="lookup.retryPhase" type="warning" size="small" effect="dark">重试中</el-tag>
         </div>
         <el-progress v-if="lookup.progress && lookup.progress.total"
           :percentage="Math.round((lookup.results.length / lookup.progress.total) * 100)"
@@ -273,9 +269,10 @@
           style="margin-top:8px"></el-progress>
         <!-- 当前并发组 -->
         <div v-if="lookup.currentBatch && lookup.running" style="margin-top:6px;font-size:12px;color:#909399">
-          当前组 #{{ lookup.currentBatch.batch }}
-          <span v-if="lookup.currentBatch.attempt === 2" style="color:#e6a23c">(重试)</span>
-          ：{{ (lookup.currentBatch.items || []).join(', ') }}
+          当前组 #{{ lookup.currentBatch.batch }}：{{ (lookup.currentBatch.items || []).join(', ') }}
+          <span v-if="lookup.currentBatch.running && lookup.currentBatch.running.length" style="color:#e6a23c">
+            （分析中: {{ lookup.currentBatch.running.join(', ') }}）
+          </span>
         </div>
 
         <!-- 结果表格 -->
@@ -293,11 +290,6 @@
           <el-table-column prop="jira_key" label="Jira号" width="130">
             <template #default="{ row }">
               <span style="font-weight:600;color:#409eff">{{ row.jira_key }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="轮次" width="60" align="center">
-            <template #default="{ row }">
-              <el-tag :type="row.attempt === 2 ? 'warning' : 'info'" size="small">{{ row.attempt === 2 ? '重试' : '首次' }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="状态" width="70" align="center">
@@ -360,7 +352,7 @@ export default {
         colMap: { jira: '', trigger_time: '', description: '', summary: '' },
       },
       lookup: {
-        input: '', running: false, progress: null, results: [], retryPhase: false, currentBatch: null,
+        input: '', running: false, progress: null, results: [], currentBatch: null,
         mode: 'manual', limit: 10, abortCtrl: null,
       },
     };
@@ -536,10 +528,9 @@ export default {
       }
       this.lookup.running = true;
       this.lookup.results = [];
-      this.lookup.retryPhase = false;
       this.lookup.currentBatch = null;
       this.lookup.abortCtrl = new AbortController();
-      this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, retryOk: 0, skip: 0, noReportTotal: null };
+      this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, skip: 0, noReportTotal: null };
       try {
         const body = isAuto
           ? { mode: 'auto', limit: this.lookup.limit }
@@ -570,16 +561,16 @@ export default {
                   this.lookup.progress.total = d.matched;
                 }
               } else if (d.type === 'batch_start') {
-                this.lookup.currentBatch = { batch: d.batch, items: d.items, attempt: d.attempt };
-                if (d.attempt === 2) this.lookup.retryPhase = true;
+                this.lookup.currentBatch = { batch: d.batch, items: d.items };
               } else if (d.type === 'item_done') {
                 this.lookup.results.push(d);
                 if (d.skipped) this.lookup.progress.skip++;
-                else if (d.has_html && d.attempt === 1) this.lookup.progress.success++;
-                else if (d.has_html && d.attempt === 2) this.lookup.progress.retryOk++;
+                else if (d.has_html) this.lookup.progress.success++;
                 else this.lookup.progress.fail++;
-              } else if (d.type === 'retry_start') {
-                this.lookup.retryPhase = true;
+              } else if (d.type === 'keepalive') {
+                if (this.lookup.currentBatch) {
+                  this.lookup.currentBatch.running = d.running || [];
+                }
               } else if (d.type === 'batch_done') {
                 this.lookup.currentBatch = null;
               } else if (d.type === 'done') {
