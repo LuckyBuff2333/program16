@@ -798,76 +798,87 @@ async def test_batch_ai_filter(request: Request):
     filter_pc_only = body.get("filter_pc_only", False)
     filter_online_only = body.get("filter_online_only", False)
     filter_ai_preliminary = body.get("filter_ai_preliminary", False)
+    filter_existing_success = body.get("filter_existing_success", False)
     if not keys:
         return _fail("候选列表为空，请先执行步骤1")
-    # —— 第1步：多维表格去重（全量拉取，客户端过滤）——
+    # —— 第1步：多维表格去重（filter_all / 指定来源 / 过滤已成功 时启用）——
     exclude_keys = set()
-    try:
-        import asyncio
-        from src.clients import feishu_client
-        loop = asyncio.get_event_loop()
-        records = await loop.run_in_executor(None, feishu_client.list_bitable_records,
-                                             load_config().get("feishu_bitable", {}).get("app_token", ""),
-                                             load_config().get("feishu_bitable", {}).get("table_id", ""))
-        bugid_field = load_config().get("feishu_bitable", {}).get("bugid_field", "jira号")
-        for rec in records:
-            fields = rec.get("fields", {})
-            fv = fields.get(bugid_field, "")
-            if isinstance(fv, list):
-                fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
-            elif isinstance(fv, dict):
-                fv = fv.get("text", str(fv))
-            jira_key = str(fv).strip()
-            if not jira_key:
-                continue
-            # 按来源过滤
-            trigger_source = _bitable_text(fields.get("触发来源", ""))
-            is_pc = trigger_source == "jira_analyze"
-            if filter_pc_only and filter_online_only:
-                if not _is_bitable_excluded(fields, bugid_field):
-                    continue
-            elif filter_pc_only:
-                if not is_pc:
-                    continue
-                if not _is_bitable_excluded(fields, bugid_field):
-                    continue
-            elif filter_online_only:
-                if is_pc:
-                    continue
-                if not _is_bitable_excluded(fields, bugid_field):
-                    continue
-            # 排除逻辑
-            if not filter_all:
-                if _is_bitable_excluded(fields, bugid_field):
-                    exclude_keys.add(jira_key)
-            else:
-                exclude_keys.add(jira_key)
-        # 同来源云端批量记录去重：只排除同来源已执行的Jira，PC和线上允许重复
-        cloud_source = "jira_analyze" if filter_pc_only else ("parseFullTicket" if filter_online_only else "")
-        if cloud_source:
-            cloud_executed = _get_same_source_executed_keys(cloud_source)
+    use_bitable = filter_all or filter_pc_only or filter_online_only or filter_existing_success
+    records = []
+    if use_bitable:
+        try:
+            import asyncio
+            from src.clients import feishu_client
+            loop = asyncio.get_event_loop()
+            records = await loop.run_in_executor(None, feishu_client.list_bitable_records,
+                                                 load_config().get("feishu_bitable", {}).get("app_token", ""),
+                                                 load_config().get("feishu_bitable", {}).get("table_id", ""))
+            bugid_field = load_config().get("feishu_bitable", {}).get("bugid_field", "jira号")
+            key_set = set(keys)  # 候选集合，用于快速匹配
+            for rec in records:
+                fields = rec.get("fields", {})
+                fv = fields.get(bugid_field, "")
+                if isinstance(fv, list):
+                    fv = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in fv)
+                elif isinstance(fv, dict):
+                    fv = fv.get("text", str(fv))
+                jira_key = str(fv).strip()
+                if not jira_key or jira_key not in key_set:
+                    continue  # 不在候选列表中，跳过
+                trigger_source = _bitable_text(fields.get("触发来源", ""))
+                is_pc = trigger_source == "jira_analyze"
+                is_excluded = _is_bitable_excluded(fields, bugid_field)
+                # 排除逻辑
+                if filter_all:
+                    exclude_keys.add(jira_key)  # 过滤所有已存在
+                elif filter_existing_success and is_excluded:
+                    exclude_keys.add(jira_key)  # 过滤已存在且分析成功的
+                elif filter_pc_only and filter_online_only:
+                    if is_excluded:
+                        exclude_keys.add(jira_key)
+                elif filter_pc_only:
+                    if is_pc and is_excluded:
+                        exclude_keys.add(jira_key)
+                elif filter_online_only:
+                    if not is_pc and is_excluded:
+                        exclude_keys.add(jira_key)
+                elif is_excluded:
+                    exclude_keys.add(jira_key)  # 默认：分析成功的排除
+        except Exception as e:
+            logger.warning("多维表格重复过滤查询失败（跳过此检查）: %s", e)
+    # —— 第1.5步：同来源云端批量记录去重（默认模式 + 指定来源时使用）——
+    if not filter_all:
+        if filter_pc_only:
+            cloud_sources = ["jira_analyze"]
+        elif filter_online_only:
+            cloud_sources = ["parseFullTicket"]
+        else:
+            cloud_sources = ["jira_analyze", "parseFullTicket"]
+        for cs in cloud_sources:
+            cloud_executed = _get_same_source_executed_keys(cs)
             if cloud_executed:
                 before_cloud = len(exclude_keys)
                 exclude_keys |= (cloud_executed & set(keys))
                 added_cloud = len(exclude_keys) - before_cloud
                 if added_cloud:
-                    logger.info("云端同来源去重(%s): 额外排除 %d 条", cloud_source, added_cloud)
-        mode_parts = []
-        if filter_all:
-            mode_parts.append("所有已存在")
-        if not filter_pc_only and not filter_online_only and not filter_all:
-            mode_parts.append("成功+无需重试")
-        if filter_pc_only and filter_online_only:
-            mode_parts.append("PC+线上正确和通用失败")
-        else:
-            if filter_pc_only:
-                mode_parts.append("PC正确+通用失败")
-            if filter_online_only:
-                mode_parts.append("线上正确+通用失败")
-        mode_desc = "+".join(mode_parts)
-        logger.info("多维表格重复过滤(%s): 排除记录 %d 条", mode_desc, len(exclude_keys))
-    except Exception as e:
-        logger.warning("多维表格重复过滤查询失败（跳过此检查）: %s", e)
+                    logger.info("云端同来源去重(%s): 额外排除 %d 条", cs, added_cloud)
+    # 日志记录过滤模式
+    mode_parts = []
+    if filter_all:
+        mode_parts.append("所有已存在")
+    if filter_existing_success:
+        mode_parts.append("已存在成功")
+    if not filter_pc_only and not filter_online_only and not filter_all and not filter_existing_success:
+        mode_parts.append("云端去重")
+    if filter_pc_only and filter_online_only:
+        mode_parts.append("PC+线上正确和通用失败")
+    else:
+        if filter_pc_only:
+            mode_parts.append("PC正确+通用失败")
+        if filter_online_only:
+            mode_parts.append("线上正确+通用失败")
+    mode_desc = "+".join(mode_parts) if mode_parts else "无过滤"
+    logger.info("重复过滤(%s): 排除记录 %d 条", mode_desc, len(exclude_keys))
     filtered = [k for k in keys if k not in exclude_keys]
     # —— 内存级跨批次去重：排除最近已提交但多维表格可能尚未更新的 JIRA ——
     mem_skipped = 0
