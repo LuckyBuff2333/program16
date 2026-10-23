@@ -4,6 +4,10 @@
     <el-alert type="info" :closable="false"
       title="通过 JQL 查询或手动输入 Jira 号，批量提取触发时间（评论/字段 → 视频OCR → 图片OCR），20条一批写入云端"></el-alert>
 
+    <el-tabs v-model="activeTab" style="margin-top:12px">
+      <!-- ====== Tab 1: JQL/手动提取 ====== -->
+      <el-tab-pane label="JQL/手动提取" name="jql">
+
     <!-- JQL 搜索区域 -->
     <el-card shadow="never" style="margin-top:14px">
       <div style="margin-bottom:8px;font-weight:600;color:#303133">JQL 查询</div>
@@ -80,6 +84,85 @@
     </el-card>
 
     <el-empty v-if="!running && !rows.length" description="输入 JQL 或 Jira 号后点击开始提取" style="margin-top:30px"></el-empty>
+      </el-tab-pane>
+
+      <!-- ====== Tab 2: 表格提取 ====== -->
+      <el-tab-pane label="表格提取" name="table">
+        <el-card shadow="never">
+          <el-alert type="info" :closable="false" show-icon
+            title="上传 Excel/CSV 文件，自动识别 Jira 号和问题发生时间列，提取触发时间后与表格时间对比（差值≤5分钟视为一致）。结果仅保存本地，不写入云端。"></el-alert>
+          <div style="display:flex;gap:12px;align-items:flex-start;margin-top:12px">
+            <el-upload ref="tableUploadRef" :auto-upload="false" :show-file-list="false"
+              accept=".xlsx,.xls,.csv" :on-change="onTableFileChange">
+              <el-button type="primary" plain>选择文件</el-button>
+            </el-upload>
+            <div v-if="tableExtract.fileName" style="font-size:12px;color:#909399">
+              {{ tableExtract.fileName }}
+              <template v-if="tableExtract.colInfo"> — 识别: Jira列="{{ tableExtract.colInfo.jiraCol }}"，时间列="{{ tableExtract.colInfo.timeCol || '未识别' }}"，{{ tableExtract.total }} 条</template>
+            </div>
+          </div>
+        </el-card>
+
+        <!-- 执行按钮 + 进度 -->
+        <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <el-button type="primary" :loading="tableExtract.running" :disabled="!tableExtract.file" @click="startTableExtract">开始对比提取</el-button>
+          <el-button @click="tableExtract.file = null; tableExtract.fileName = ''; tableExtract.rows = []; tableExtract.colInfo = null">清空</el-button>
+          <span v-if="tableExtract.statusMsg" style="font-size:13px;color:#606266">{{ tableExtract.statusMsg }}</span>
+        </div>
+        <div v-if="tableExtract.total > 0" style="margin-top:10px">
+          <el-progress :percentage="tablePct" :stroke-width="18" :text-inside="true" :status="tableProgressStatus"></el-progress>
+          <div style="margin-top:6px;font-size:12px;color:#909399;display:flex;gap:16px">
+            <span>完成: {{ tableExtract.doneCount }}/{{ tableExtract.total }}</span>
+            <span style="color:#67c23a">一致: {{ tableExtract.matched }}</span>
+            <span style="color:#e6a23c">不一致: {{ tableExtract.unmatched }}</span>
+            <span style="color:#f56c6c">失败: {{ tableExtract.failed }}</span>
+          </div>
+        </div>
+
+        <!-- 结果表格 -->
+        <el-card v-if="tableExtract.rows.length" shadow="never" style="margin-top:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <span style="font-weight:600">对比结果（共 {{ tableExtract.rows.length }} 条）</span>
+            <el-tag v-if="tableExtract.savedPath" type="success" size="small">已保存: {{ tableExtract.savedPath }}</el-tag>
+          </div>
+          <el-table :data="tableExtract.rows" size="small" stripe border max-height="400">
+            <el-table-column type="index" label="#" width="50" align="center"></el-table-column>
+            <el-table-column prop="bugid" label="Jira号" width="140">
+              <template #default="{ row }">
+                <span style="font-weight:600;color:#409eff">{{ row.bugid }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="table_time" label="表格时间" width="170" show-overflow-tooltip></el-table-column>
+            <el-table-column prop="extracted_time" label="提取时间" width="170">
+              <template #default="{ row }">
+                <span :style="row.extracted_time ? 'color:#67c23a' : 'color:#c0c4cc'">{{ row.extracted_time || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="对比结果" width="90" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.match === '成功'" type="success" size="small">成功</el-tag>
+                <el-tag v-else-if="row.match === '不一致'" type="warning" size="small">不一致</el-tag>
+                <el-tag v-else-if="row.match === '失败'" type="danger" size="small">失败</el-tag>
+                <el-tag v-else type="info" size="small">{{ row.match || '—' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="source" label="提取来源" width="110" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.source === '标准提取'" type="success" size="small">标准提取</el-tag>
+                <el-tag v-else-if="row.source && row.source.includes('视频')" type="warning" size="small">{{ row.source }}</el-tag>
+                <el-tag v-else-if="row.source === '图片OCR'" size="small">图片OCR</el-tag>
+                <el-tag v-else type="info" size="small">{{ row.source || '—' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="remark" label="备注" min-width="140" show-overflow-tooltip>
+              <template #default="{ row }"><span style="color:#f56c6c">{{ row.remark || '' }}</span></template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+
+        <el-empty v-if="!tableExtract.running && !tableExtract.rows.length" description="上传 Excel/CSV 文件后点击开始对比提取" style="margin-top:30px"></el-empty>
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
@@ -99,6 +182,7 @@ export default {
   name: 'TimeExtractPanel',
   data() {
     return {
+      activeTab: 'jql',
       jql: '',
       manualBugids: '',
       skipCached: true,
@@ -114,6 +198,20 @@ export default {
       batchSavedCount: 0,
       statusMsg: '',
       rows: [] as any[],
+      tableExtract: {
+        file: null as File | null,
+        fileName: '',
+        running: false,
+        total: 0,
+        doneCount: 0,
+        matched: 0,
+        unmatched: 0,
+        failed: 0,
+        statusMsg: '',
+        rows: [] as any[],
+        colInfo: null as any,
+        savedPath: '',
+      },
     };
   },
   computed: {
@@ -121,6 +219,11 @@ export default {
     progressStatus() {
       if (this.doneCount < this.total) return undefined;
       return this.hitCount > 0 ? 'success' : 'warning';
+    },
+    tablePct() { return this.tableExtract.total ? Math.round((this.tableExtract.doneCount / this.tableExtract.total) * 100) : 0; },
+    tableProgressStatus() {
+      if (this.tableExtract.doneCount < this.tableExtract.total) return undefined;
+      return this.tableExtract.failed === 0 ? 'success' : 'warning';
     },
   },
   methods: {
@@ -208,6 +311,91 @@ export default {
       // 调用后端停止接口 + 前端中止
       fetch('/api/trigger/batch_extract_time/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
       if (this.abortCtrl) this.abortCtrl.abort();
+    },
+    // ===== 表格提取相关 =====
+    onTableFileChange(uploadFile: any) {
+      if (!uploadFile || !uploadFile.raw) return;
+      this.tableExtract.file = uploadFile.raw;
+      this.tableExtract.fileName = uploadFile.name;
+      this.tableExtract.rows = [];
+      this.tableExtract.colInfo = null;
+      this.tableExtract.savedPath = '';
+      this.tableExtract.total = 0;
+      this.tableExtract.doneCount = 0;
+      this.tableExtract.matched = 0;
+      this.tableExtract.unmatched = 0;
+      this.tableExtract.failed = 0;
+      this.tableExtract.statusMsg = '';
+    },
+    async startTableExtract() {
+      if (!this.tableExtract.file) return ElMessage.warning('请先选择文件');
+      this.tableExtract.running = true;
+      this.tableExtract.rows = [];
+      this.tableExtract.doneCount = 0;
+      this.tableExtract.matched = 0;
+      this.tableExtract.unmatched = 0;
+      this.tableExtract.failed = 0;
+      this.tableExtract.savedPath = '';
+      this.tableExtract.statusMsg = '正在解析文件...';
+
+      const formData = new FormData();
+      formData.append('file', this.tableExtract.file);
+
+      try {
+        const resp = await fetch('/api/trigger/compare_extract_time', {
+          method: 'POST', body: formData,
+        });
+        if (!resp.ok) {
+          const errBody = await resp.json().catch(() => ({}));
+          throw new Error(errBody.message || `HTTP ${resp.status}`);
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const evt = JSON.parse(line.slice(6));
+              this.handleTableSSE(evt);
+            } catch { /* ignore */ }
+          }
+        }
+      } catch (e: any) {
+        this.tableExtract.statusMsg = '执行失败: ' + e.message;
+        ElMessage.error('对比提取失败: ' + e.message);
+      } finally {
+        this.tableExtract.running = false;
+      }
+    },
+    handleTableSSE(evt: any) {
+      if (evt.type === 'start') {
+        this.tableExtract.total = evt.total;
+        this.tableExtract.colInfo = { jiraCol: evt.jira_col, timeCol: evt.time_col };
+        this.tableExtract.statusMsg = `共 ${evt.total} 条待对比，并行 2 个...`;
+      } else if (evt.type === 'progress') {
+        this.tableExtract.doneCount = evt.current;
+        if (evt.match === '成功') this.tableExtract.matched++;
+        else if (evt.match === '不一致' || evt.match === '无法对比') this.tableExtract.unmatched++;
+        else this.tableExtract.failed++;
+        this.tableExtract.statusMsg = `对比中 ${evt.current}/${evt.total}`;
+        this.tableExtract.rows.push({
+          bugid: evt.bugid, table_time: evt.table_time,
+          extracted_time: evt.extracted_time, match: evt.match,
+          source: evt.source, remark: evt.remark || '',
+        });
+      } else if (evt.type === 'done') {
+        this.tableExtract.savedPath = evt.saved_path || '';
+        this.tableExtract.statusMsg = evt.message || '对比完成';
+      } else if (evt.type === 'error') {
+        this.tableExtract.statusMsg = evt.message || '解析失败';
+        ElMessage.error(evt.message || '解析失败');
+      }
     },
   },
 };

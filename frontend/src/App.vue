@@ -117,6 +117,7 @@ export default {
           label: '测试执行',
           items: [
             { key: 'pc_function', label: '功能测试', glyph: '功', page: 'testpage', panel: 'batch_ai', title: '功能测试', description: '开展 Bug 验证、问题复现与批量分析。' },
+            { key: 'adp_test', label: 'ADP测试', glyph: 'A', page: 'testpage', panel: 'adp_test', title: 'ADP测试', description: '调用 ADP v2 进行日志分析并写入飞书多维表格。' },
             { key: 'regression', label: '回归测试', glyph: '回', page: 'regression', title: '回归测试', description: '维护回归用例并验证版本变更影响。' },
             { key: 'smoke', label: '冒烟测试', glyph: '冒', page: 'smoke', title: '冒烟测试', description: '使用典型用例快速验证核心链路是否可用。' },
           ],

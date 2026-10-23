@@ -41,4 +41,7 @@ config/config.yaml
 *.tmp
 screenshot_*.png
 
+# ADP 分析结果（含签名密钥，不上传）
+docs/adp_results/
+
 # 触发时间自学习（运行时生成，已迁移到 data/timestudy + reports/timestudy）

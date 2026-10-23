@@ -77,6 +77,7 @@ import DailySummaryPanel from '../panels/DailySummaryPanel.vue';
 import JiraLookupPanel from '../panels/JiraLookupPanel.vue';
 import AppLogDownloadPanel from '../panels/AppLogDownloadPanel.vue';
 import TimeExtractPanel from '../panels/TimeExtractPanel.vue';
+import AdpTestPanel from '../panels/AdpTestPanel.vue';
 
 export default {
   name: 'TestPage',
@@ -86,6 +87,7 @@ export default {
     AiLogVisualPanel, ConfigTuningPanel, DailySummaryPanel,
     JiraLookupPanel, AppLogDownloadPanel,
     TimeExtractPanel,
+    AdpTestPanel,
   },
   props: { testPanel: { type: String, default: 'batch_ai' } },
   data() {
@@ -108,6 +110,7 @@ export default {
         jira_lookup: 'JiraLookupPanel',
         app_log_download: 'AppLogDownloadPanel',
         time_extract: 'TimeExtractPanel',
+        adp_test: 'AdpTestPanel',
       };
       return map[this.testPanel] || 'BatchAiPanel';
     },

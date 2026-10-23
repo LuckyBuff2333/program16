@@ -1931,6 +1931,50 @@ def upload_file_to_drive(file_path: str, folder_token: str = "", content_type: s
         return {"file_token": "", "url": ""}
 
 
+def upload_bitable_attachment(app_token: str, file_path: str, content_type: str = "") -> str:
+    """上传文件到多维表格附件字段，返回 file_token
+
+    :param app_token: 多维表格 app_token
+    :param file_path: 本地文件绝对路径
+    :param content_type: MIME 类型，默认根据扩展名推断
+    :return: file_token，失败返回空串
+    """
+    token = _get_doc_token()
+    if not token:
+        logger.warning("无可用 token，跳过多维表格附件上传")
+        return ""
+    if not _os.path.isfile(file_path):
+        logger.warning("附件文件不存在: %s", file_path)
+        return ""
+    file_size = _os.path.getsize(file_path)
+    file_name = _os.path.basename(file_path)
+    ext = _os.path.splitext(file_name)[1].lower()
+    if not content_type:
+        mime_map = {".html": "text/html", ".csv": "text/csv", ".txt": "text/plain",
+                    ".pdf": "application/pdf", ".zip": "application/zip"}
+        content_type = mime_map.get(ext, "application/octet-stream")
+    # 使用 Drive media upload API（parent_type=bitable_file）
+    url = f"{_FEISHU_API}/drive/v1/medias/upload_all"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        with open(file_path, "rb") as f:
+            files = {"file": (file_name, f, content_type)}
+            data = {"file_name": file_name, "parent_type": "bitable_file",
+                    "parent_node": app_token, "size": str(file_size)}
+            resp = httpx.post(url, headers=headers, data=data, files=files, timeout=60, verify=False)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("code") != 0:
+            logger.warning("多维表格附件上传失败: %s (code=%s)", result.get("msg"), result.get("code"))
+            return ""
+        file_token = result.get("data", {}).get("file_token", "")
+        logger.info("多维表格附件上传成功: %s -> %s", file_name, file_token)
+        return file_token
+    except Exception as e:
+        logger.warning("多维表格附件上传异常: %s", e)
+        return ""
+
+
 def upload_json_to_drive(json_data: dict, file_name: str, folder_token: str) -> dict:
     """上传 JSON 数据到飞书云盘文件夹
 

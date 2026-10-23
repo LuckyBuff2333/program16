@@ -57,6 +57,7 @@ def handle_sigint(signum, frame):
 # 批量提取触发时间停止标志
 batch_extract_stop_event = threading.Event()
 cache_batch_stop_event = threading.Event()
+adp_lookup_stop_event = threading.Event()
 
 # 全局线程池（限制诊断等同步操作的最大并发数）
 _DIAG_EXECUTOR = None
