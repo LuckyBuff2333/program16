@@ -5035,25 +5035,42 @@ async def test_adp_single(request: Request):
             yield f"data: {_json.dumps({'type': 'done', 'ok': False, 'error': f'Jira 查询失败: {e}'}, ensure_ascii=False)}\n\n"
             return
 
-        # Step 1-5: ADP 分析全流程（带心跳保活）
+        # Step 1-5: ADP 分析全流程（带心跳 + 实时步骤推送）
         import queue as _queue
         from src.services.adp_ops import run_adp_single
         _ka_queue = _queue.Queue()
+        _step_queue = _queue.Queue()  # 实时步骤事件队列
         _result_ref = [None]
 
         def _ka_cb(elapsed_sec):
             _ka_queue.put(elapsed_sec)
 
+        def _progress_cb(step, status, detail=""):
+            _step_queue.put({"step": step, "status": status, "detail": detail})
+
         def _run_in_thread():
-            _result_ref[0] = run_adp_single(bugid, description, trigger_time, keepalive_cb=_ka_cb)
+            _result_ref[0] = run_adp_single(bugid, description, trigger_time,
+                                            progress_cb=_progress_cb, keepalive_cb=_ka_cb)
 
         import threading
         _thread = threading.Thread(target=_run_in_thread, daemon=True)
         _thread.start()
-        # 等待线程完成，期间每 15s 发送心跳
+        # 等待线程完成，期间每 5s 发送心跳 + 实时步骤事件
         while _thread.is_alive():
-            await asyncio.sleep(15)
-            # 清空队列中的心跳事件，取最新的
+            await asyncio.sleep(5)
+            # 推送实时步骤事件
+            while not _step_queue.empty():
+                try:
+                    evt = _step_queue.get_nowait()
+                    step_data = {'type': 'step', 'step': evt['step'], 'status': evt['status']}
+                    if evt['step'] == 'attachments' and evt.get('detail'):
+                        step_data['detail'] = evt['detail']
+                    if evt['step'] == 'adp_analysis' and evt.get('detail'):
+                        step_data['detail'] = evt['detail']
+                    yield f"data: {_json.dumps(step_data, ensure_ascii=False)}\n\n"
+                except _queue.Empty:
+                    break
+            # 清空心跳队列，取最新的
             latest_ka = None
             while not _ka_queue.empty():
                 try:
@@ -5061,15 +5078,20 @@ async def test_adp_single(request: Request):
                 except _queue.Empty:
                     break
             yield f"data: {_json.dumps({'type': 'keepalive', 'elapsed': latest_ka or 0}, ensure_ascii=False)}\n\n"
+        # 排空剩余步骤事件
+        while not _step_queue.empty():
+            try:
+                evt = _step_queue.get_nowait()
+                step_data = {'type': 'step', 'step': evt['step'], 'status': evt['status']}
+                yield f"data: {_json.dumps(step_data, ensure_ascii=False)}\n\n"
+            except _queue.Empty:
+                break
         result = _result_ref[0] or {"ok": False, "error": "线程异常"}
-        # 推送各步骤状态
+        # 推送附件数 + 飞书状态等补充信息
         yield f"data: {_json.dumps({'type': 'step', 'step': 'attachments', 'status': 'done' if result.get('attachment_count', 0) > 0 else 'fail', 'count': result.get('attachment_count', 0)}, ensure_ascii=False)}\n\n"
         if not result.get('attachment_count'):
             yield f"data: {_json.dumps({'type': 'done', 'ok': False, 'error': '无附件'}, ensure_ascii=False)}\n\n"
             return
-        yield f"data: {_json.dumps({'type': 'step', 'step': 'adp_analysis', 'status': 'done', 'elapsed': result.get('elapsed_sec', 0)}, ensure_ascii=False)}\n\n"
-        yield f"data: {_json.dumps({'type': 'step', 'step': 'extract', 'status': 'done'}, ensure_ascii=False)}\n\n"
-        yield f"data: {_json.dumps({'type': 'step', 'step': 'save_local', 'status': 'done'}, ensure_ascii=False)}\n\n"
         fs = result.get('feishu') or {}
         yield f"data: {_json.dumps({'type': 'step', 'step': 'write_feishu', 'status': 'done' if fs.get('ok') else 'fail', 'message': fs.get('message', '')}, ensure_ascii=False)}\n\n"
         # 推送最终结果
@@ -5150,15 +5172,40 @@ async def test_adp_batch(request: Request):
                     return {"ok": False, "jira_key": bugid, "error": str(e)[:100]}
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as pool:
-                futures = {pool.submit(_run_one, it): it for it in batch}
-                for future in concurrent.futures.as_completed(futures):
-                    try:
-                        r = future.result()
-                    except Exception as e:
+                futures = {}
+                for it in batch:
+                    f = pool.submit(_run_one, it)
+                    futures[f] = it
+                # 非阻塞轮询等待，每 5 秒发心跳防止前端连接超时
+                import time as _time
+                remaining = dict(futures)
+                batch_deadline = _time.time() + 600  # 单批超时 10 分钟
+                while remaining:
+                    if _time.time() > batch_deadline:
+                        for f in list(remaining):
+                            f.cancel()
+                            it = remaining.pop(f)
+                            r = {"ok": False, "jira_key": it.get("bugid", ""), "error": "ADP 分析超时"}
+                            batch_results.append(r)
+                            yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': r['jira_key'], 'ok': False, 'results': {}, 'error': r['error'], 'full_text': '', 'file_urls': []}, ensure_ascii=False)}\n\n"
+                        break
+                    # 收集已完成的 future
+                    done_now = [f for f in remaining if f.done()]
+                    for future in done_now:
+                        del remaining[future]
                         it = futures[future]
-                        r = {"ok": False, "jira_key": it.get("bugid", ""), "error": str(e)[:100]}
-                    batch_results.append(r)
-                    yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': r.get('jira_key', ''), 'ok': r.get('ok', False), 'results': r.get('results', {}), 'error': r.get('error', ''), 'full_text': (r.get('full_text') or '')[:2000], 'file_urls': r.get('file_urls', [])}, ensure_ascii=False)}\n\n"
+                        try:
+                            r = future.result()
+                        except Exception as e:
+                            r = {"ok": False, "jira_key": it.get("bugid", ""), "error": str(e)[:100]}
+                        batch_results.append(r)
+                        yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': r.get('jira_key', ''), 'ok': r.get('ok', False), 'results': r.get('results', {}), 'error': r.get('error', ''), 'full_text': (r.get('full_text') or ''), 'file_urls': r.get('file_urls', [])}, ensure_ascii=False)}\n\n"
+                    # 还有未完成的，发心跳并等待
+                    if remaining and not done_now:
+                        running_keys = [futures[f].get('bugid', '') for f in remaining]
+                        yield f"data: {_json.dumps({'type': 'keepalive', 'running': running_keys}, ensure_ascii=False)}\n\n"
+                    if remaining:
+                        await asyncio.sleep(5)
 
             all_results.extend(batch_results)
             batch_ok = sum(1 for r in batch_results if r.get('ok'))
@@ -5331,10 +5378,12 @@ async def test_adp_lookup(request: Request):
 
         # ── 单条 ADP 执行（线程内调用）──
         def _run_one_adp(bugid):
-            """在子线程中执行字段补全 + ADP 分析，返回结果 dict"""
+            """在子线程中执行字段补全 + ADP 分析，返回结果 dict
+            跳过内部飞书写回，由 _write_back 统一使用已知 record_id 写回，避免重复查询全部记录
+            """
             try:
                 info = _prepare_fields(bugid)
-                result = run_adp_single(bugid, info["desc"], info["tt"])
+                result = run_adp_single(bugid, info["desc"], info["tt"], skip_feishu=True)
                 has_html = bool((result.get("results") or {}).get("_report_file_token", ""))
                 return {"bugid": bugid, "result": result, "has_html": has_html, "info": info}
             except Exception as e:
@@ -5483,7 +5532,7 @@ async def test_adp_lookup(request: Request):
                             "bt_found": info["rec"] is not None,
                             "desc_source": "bitable" if info["bt_desc"] else ("api" if info["desc"] else "none"),
                             "time_source": "bitable" if info["bt_time"] else ("api" if info["tt"] else "none"),
-                            "full_text": (result.get("full_text") or "")[:2000],
+                            "full_text": (result.get("full_text") or ""),
                             "file_urls": result.get("file_urls", []),
                         }
                         batch_results.append(item)

@@ -4,7 +4,7 @@
     <el-alert type="info" :closable="false"
       title="调用 ADP v2 进行日志分析：dpportal 查附件 → ADP SSE 分析 → 提取结果 → 写入飞书多维表格。"></el-alert>
 
-    <el-tabs v-model="activeTab" style="margin-top:12px">
+    <el-tabs v-model="activeTab" type="border-card" class="adp-tabs" style="margin-top:12px">
       <!-- ====== Tab 1: 批量执行 ====== -->
       <el-tab-pane label="批量执行" name="batch">
         <!-- 上传 + 配置 -->
@@ -90,6 +90,9 @@
           :percentage="Math.round((batch.progress.current / batch.progress.total) * 100)"
           :status="batch.running ? '' : (batch.progress.fail === 0 ? 'success' : 'warning')"
           style="margin-top:8px"></el-progress>
+        <div v-if="batch.running && batch.runningItems && batch.runningItems.length" style="margin-top:6px;font-size:12px;color:#909399">
+          分析中: <span style="color:#e6a23c">{{ batch.runningItems.join(', ') }}</span>
+        </div>
 
         <!-- 批量结果 -->
         <el-table v-if="batch.results.length" :data="batch.results" size="small" stripe border
@@ -247,6 +250,9 @@
           </div>
         </el-card>
 
+        <!-- 错误提示 -->
+        <el-alert v-if="lookup.error" type="error" :title="lookup.error" show-icon
+          closable style="margin-top:12px" @close="lookup.error = ''"></el-alert>
         <!-- 进度 -->
         <div v-if="lookup.progress" style="margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
           <el-tag type="info" size="small">多维表格: {{ lookup.progress.totalRecords }}</el-tag>
@@ -348,12 +354,12 @@ export default {
       },
       batch: {
         items: [], fileName: '', batchSize: 3, continuous: false,
-        running: false, enriching: false, progress: null, results: [],
+        running: false, enriching: false, progress: null, results: [], runningItems: [],
         colMap: { jira: '', trigger_time: '', description: '', summary: '' },
       },
       lookup: {
         input: '', running: false, progress: null, results: [], currentBatch: null,
-        mode: 'manual', limit: 10, abortCtrl: null,
+        mode: 'manual', limit: 10, abortCtrl: null, error: '',
       },
     };
   },
@@ -529,6 +535,7 @@ export default {
       this.lookup.running = true;
       this.lookup.results = [];
       this.lookup.currentBatch = null;
+      this.lookup.error = '';
       this.lookup.abortCtrl = new AbortController();
       this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, skip: 0, noReportTotal: null };
       try {
@@ -553,12 +560,16 @@ export default {
             if (!line.startsWith('data: ')) continue;
             try {
               const d = JSON.parse(line.slice(6));
-              if (d.type === 'step' && d.step === 'read_bitable' && d.status === 'done') {
-                this.lookup.progress.totalRecords = d.total_records;
-                this.lookup.progress.matched = d.matched;
-                if (d.mode === 'auto') {
-                  this.lookup.progress.noReportTotal = d.no_report_total;
-                  this.lookup.progress.total = d.matched;
+              if (d.type === 'step' && d.step === 'read_bitable') {
+                if (d.status === 'done') {
+                  this.lookup.progress.totalRecords = d.total_records;
+                  this.lookup.progress.matched = d.matched;
+                  if (d.mode === 'auto') {
+                    this.lookup.progress.noReportTotal = d.no_report_total;
+                    this.lookup.progress.total = d.matched;
+                  }
+                } else if (d.status === 'fail') {
+                  this.lookup.error = `多维表格读取失败: ${d.error || '未知错误'}（请检查 adp 配置段）`;
                 }
               } else if (d.type === 'batch_start') {
                 this.lookup.currentBatch = { batch: d.batch, items: d.items };
@@ -585,6 +596,10 @@ export default {
         } else {
           this.$message.error(`查找执行失败: ${e.message}`);
         }
+      }
+      // SSE 连接关闭但无结果时提示
+      if (this.lookup.results.length === 0 && !this.lookup.error && this.lookup.progress && this.lookup.progress.totalRecords === 0) {
+        this.lookup.error = 'SSE 连接已关闭但未收到数据，请检查后端日志和 adp 配置段是否完整';
       }
       this.lookup.running = false;
       this.lookup.currentBatch = null;
@@ -634,6 +649,8 @@ export default {
                 else this.batch.progress.fail++;
               } else if (d.type === 'done') {
                 this.batch.progress.current = this.batch.progress.total;
+              } else if (d.type === 'keepalive') {
+                this.batch.runningItems = d.running || [];
               }
             } catch { /* skip */ }
           }
@@ -642,6 +659,7 @@ export default {
         this.$message.error(`批量请求失败: ${e.message}`);
       }
       this.batch.running = false;
+      this.batch.runningItems = [];
     },
   },
 };
@@ -650,4 +668,6 @@ export default {
 <style scoped>
 .test-panel { padding: 0; }
 .section-title { font-size: 16px; font-weight: 600; margin-bottom: 10px; color: #303133; }
+.adp-tabs { border-radius: 8px; }
+.adp-tabs :deep(.el-tabs__content) { padding: 16px; overflow: visible; }
 </style>

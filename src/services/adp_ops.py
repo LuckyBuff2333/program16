@@ -6,14 +6,13 @@ import os
 import re
 import json
 import uuid
-import logging
 from datetime import datetime
 
 import httpx
 
-from src.config import load_config, get_path
+from src.config import load_config, get_path, setup_logger
 
-logger = logging.getLogger(__name__)
+logger = setup_logger("adp_ops")
 
 
 # ===== 配置读取 =====
@@ -103,10 +102,11 @@ def build_adp_message(jira_key: str, description: str, trigger_time: str, attach
     return msg
 
 
-def call_adp_sse_stream(message: str, keepalive_cb=None) -> tuple:
+def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3) -> tuple:
     """
-    调用 ADP v2 SSE 接口（流式读取，支持心跳回调）
+    调用 ADP v2 SSE 接口（流式读取，支持心跳回调和自动重试）
     :param keepalive_cb: 可选回调 fn(elapsed_sec)，每 30 秒调用一次用于 SSE 心跳
+    :param max_retries: 连接失败时最大重试次数（默认 3 次）
     返回: (full_text, file_urls, closeout_data, start_ts, end_ts)
     """
     import time
@@ -121,62 +121,80 @@ def call_adp_sse_stream(message: str, keepalive_cb=None) -> tuple:
         "Stream": "enable",
         "StreamingThrottle": 5,
     }
-    logger.info("ADP 调用 SSE 接口（流式，超时 %ds）...", adp_cfg["timeout"])
-    full_text = ""
-    file_urls = []
-    closeout_data = None
-    start_ts = 0
-    end_ts = 0
-    t0 = time.time()
-    last_keepalive = t0
-    try:
-        with httpx.stream(
-            "POST", adp_cfg["url"],
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=httpx.Timeout(adp_cfg["timeout"], connect=15),
-        ) as resp:
-            if resp.status_code != 200:
-                logger.error("ADP SSE HTTP %d", resp.status_code)
-                return "", [], None, 0, 0
-            for line in resp.iter_lines():
-                # 心跳回调
-                now = time.time()
-                if keepalive_cb and now - last_keepalive >= 30:
-                    keepalive_cb(round(now - t0, 1))
-                    last_keepalive = now
-                if not line or not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    continue
-                try:
-                    data = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-                et = data.get("Type", "")
-                ts = int(data.get("Timestamp", 0))
-                if et == "response.created" and ts > 0:
-                    start_ts = ts
-                if ts > 0:
-                    end_ts = ts
-                if et == "text.delta":
-                    full_text += _fix_encoding(data.get("Text", ""))
-                elif et == "text.replace":
-                    raw = _fix_encoding(data.get("Text", ""))
-                    if '"ok"' in raw and '"html"' in raw:
-                        try:
-                            closeout_data = json.loads(raw)
-                        except json.JSONDecodeError:
-                            pass
-                elif et == "content.added":
-                    content = data.get("Content", {})
-                    if content.get("Type") == "file":
-                        finfo = content.get("File", {})
-                        file_urls.append({"name": finfo.get("FileName", ""), "url": finfo.get("FileUrl", "")})
-    except Exception as e:
-        logger.error("ADP SSE 流式读取异常: %s", e)
-        return full_text, file_urls, closeout_data, start_ts, end_ts
+    logger.info("ADP 调用 SSE 接口（流式，超时 %ds，最多重试 %d 次）...", adp_cfg["timeout"], max_retries)
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        full_text = ""
+        file_urls = []
+        closeout_data = None
+        start_ts = 0
+        end_ts = 0
+        t0 = time.time()
+        last_keepalive = t0
+        try:
+            with httpx.stream(
+                "POST", adp_cfg["url"],
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=httpx.Timeout(adp_cfg["timeout"], connect=30),
+            ) as resp:
+                if resp.status_code != 200:
+                    logger.error("ADP SSE HTTP %d", resp.status_code)
+                    return "", [], None, 0, 0
+                for line in resp.iter_lines():
+                    # 心跳回调
+                    now = time.time()
+                    if keepalive_cb and now - last_keepalive >= 30:
+                        keepalive_cb(round(now - t0, 1))
+                        last_keepalive = now
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        continue
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    et = data.get("Type", "")
+                    ts = int(data.get("Timestamp", 0))
+                    if et == "response.created" and ts > 0:
+                        start_ts = ts
+                    if ts > 0:
+                        end_ts = ts
+                    if et == "text.delta":
+                        full_text += _fix_encoding(data.get("Text", ""))
+                    elif et == "text.replace":
+                        raw = _fix_encoding(data.get("Text", ""))
+                        if '"ok"' in raw and '"html"' in raw:
+                            try:
+                                closeout_data = json.loads(raw)
+                            except json.JSONDecodeError:
+                                pass
+                    elif et == "content.added":
+                        content = data.get("Content", {})
+                        if content.get("Type") == "file":
+                            finfo = content.get("File", {})
+                            file_urls.append({"name": finfo.get("FileName", ""), "url": finfo.get("FileUrl", "")})
+        except Exception as e:
+            last_err = e
+            # 连接级错误（DNS/超时/断连）可重试，已收到数据则不重试
+            is_conn_err = any(kw in str(e).lower() for kw in ["getaddrinfo", "connect", "timed out", "timeout", "connection"])
+            if is_conn_err and not full_text and attempt < max_retries:
+                wait = 10 * attempt
+                logger.warning("ADP SSE 连接失败（第 %d/%d 次）: %s，%ds 后重试...", attempt, max_retries, e, wait)
+                if keepalive_cb:
+                    keepalive_cb(round(time.time() - t0, 1))
+                time.sleep(wait)
+                continue
+            logger.error("ADP SSE 流式读取异常: %s", e)
+            return full_text, file_urls, closeout_data, start_ts, end_ts
+        # 成功完成，跳出重试循环
+        break
+    else:
+        # 所有重试均失败
+        logger.error("ADP SSE 连接失败，已重试 %d 次: %s", max_retries, last_err)
+        return "", [], None, 0, 0
     # closeout 兜底
     if closeout_data is None:
         for pattern in [r'\{[^{}]*"ok"\s*:\s*true[^{}]*"html"[^{}]*\}', r'\{[^{}]*"case_id"[^{}]*\}']:
@@ -201,20 +219,26 @@ def call_adp_sse(message: str) -> tuple:
 
 def _extract_problem_module(text: str) -> str:
     """从分析文本中提取问题模块（归位/问题所在域）"""
-    patterns = [
+    # ADP 专有模式：全文搜索取最后匹配（高度特异，不会误匹配中间文本）
+    adp_patterns = [
+        r"断点模块[：:：]\s*(.+?)(?:（pid|\(pid|\n|$)",       # ADP 标准格式
+    ]
+    for p in adp_patterns:
+        matches = re.findall(p, text, re.IGNORECASE)
+        if matches:
+            return matches[-1].strip("*").strip()
+    # 通用模式：仅搜索末尾 5000 字符（避免误匹配中间分析文本）
+    tail = text[-5000:] if len(text) > 5000 else text
+    generic_patterns = [
         r"问题在\s*\*?\*?(上游[^\uff0c\u3002\n]+|车端[^\uff0c\u3002\n]+|云端[^\uff0c\u3002\n]+)",
         r"归位[：:]\s*(\S+)",
         r"归位.*?(external|internal|上游|车端|云端)",
         r"问题所在模块[：:：]*\s*[\*]*(.+?)[\*]*(?:\n|$)",
-        r"模块[：:]\s*(.+?)(?:\n|$)",
         r"问题(?:归属|所在|模块)[^\n]*[：:：]\s*(.+?)(?:\n|$)",
         r"(?:归因|归属|定位|问题域|责任方)[：:：]\s*(.+?)(?:\n|$)",
         r"(?:属于|定位到|定位在|归因于|归到)\s*(.{4,40}?)(?:[\uff0c\u3002\n。]|$)",
-        r"(上游[^\s\uff0c]{2,20}|车端[^\s\uff0c]{2,20}|云端[^\s\uff0c]{2,20}|HMI[^\s\uff0c]{2,20}|Android[^\s\uff0c]{2,20}|QNX[^\s\uff0c]{2,20})",
     ]
-    # 优先从文本末尾 3000 字符提取（收案报告通常在末尾）
-    tail = text[-3000:] if len(text) > 3000 else text
-    for p in patterns:
+    for p in generic_patterns:
         m = re.search(p, tail, re.IGNORECASE)
         if m:
             return m.group(1).strip("*").strip()
@@ -222,8 +246,19 @@ def _extract_problem_module(text: str) -> str:
 
 
 def _extract_root_cause(text: str) -> str:
-    """从分析文本中提取 root cause"""
-    patterns = [
+    """从分析文本中提取 root cause（支持 ADP 根因归属、现象级归因等格式）"""
+    # ADP 专有模式：全文搜索取最后匹配（高度特异）
+    adp_patterns = [
+        r"根因归属[：:：]\s*(.+?)(?:\n|$)",                 # ADP 标准格式
+        r"现象级归因[：:：]\s*(.+?)(?:\n|$)",                # ADP 现象级归因
+    ]
+    for p in adp_patterns:
+        matches = re.findall(p, text, re.IGNORECASE)
+        if matches:
+            return matches[-1].strip()
+    # 通用模式：仅搜索末尾 5000 字符
+    tail = text[-5000:] if len(text) > 5000 else text
+    generic_patterns = [
         r"结论[：:：]\s*(.+?)(?:\n|$)",
         r"根因[：:：]\s*(.+?)(?:\n|$)",
         r"根本原因[：:：]\s*(.+?)(?:\n|$)",
@@ -236,9 +271,7 @@ def _extract_root_cause(text: str) -> str:
         r"(?:rootcause|根因分析|故障原因|问题原因)[：:：]\s*(.{5,200}?)(?:\n|$)",
         r"判定[：:：]\s*(.{10,200}?)(?:\n|$)",
     ]
-    # 优先从文本末尾 3000 字符提取
-    tail = text[-3000:] if len(text) > 3000 else text
-    for p in patterns:
+    for p in generic_patterns:
         m = re.search(p, tail, re.IGNORECASE)
         if m:
             return m.group(1).strip()
@@ -246,18 +279,19 @@ def _extract_root_cause(text: str) -> str:
 
 
 def _extract_confidence(text: str) -> str:
-    """从分析文本中提取置信度"""
-    # 优先从末尾 3000 字符提取
-    tail = text[-3000:] if len(text) > 3000 else text
+    """从分析文本中提取置信度（支持多种格式：自评置信度 0.85、置信度：自评 0.85、confidence: 0.85 等）"""
     patterns = [
+        r"自评置信度\s*([0-9]+\.?[0-9]*)",           # 自评置信度 0.85
+        r"置信度\s*[:：：]\s*自评\s*([0-9]+\.?[0-9]*)",   # 置信度：自评 0.85
         r"confidence\s*[:：]?\s*([0-9]+\.?[0-9]*)",
         r"置信度\s*[:：：]?\s*([0-9]+\.?[0-9]*)",
         r"置信度\s*[:：：]?\s*([0-9]+%)",
     ]
+    # 全文搜索，取最后一个匹配（ADP 长文本中置信度可能不在末尾 3000 字符内）
     for p in patterns:
-        m = re.search(p, tail, re.IGNORECASE)
-        if m:
-            return m.group(1)
+        matches = re.findall(p, text, re.IGNORECASE)
+        if matches:
+            return matches[-1]
     return ""
 
 
@@ -476,7 +510,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
 
 # ===== 完整单条执行流程 =====
 
-def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_cb=None, keepalive_cb=None) -> dict:
+def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_cb=None, keepalive_cb=None, skip_feishu: bool = False) -> dict:
     """
     完整 ADP 分析流程（单条）
     :param progress_cb: 可选回调 fn(step_name, status, detail) 用于 SSE 推送
@@ -526,7 +560,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     _progress("extract", "running")
     results = extract_adp_results(full_text, closeout_data, start_ts, end_ts, file_urls)
     out["results"] = results
-    out["full_text"] = full_text[:10000]  # 返回前 10000 字符供前端展示
+    out["full_text"] = full_text  # 返回完整分析文本供前端展示
     out["file_urls"] = file_urls
     _progress("extract", "done", f"完成状态={results.get('完成状态', '')}")
 
@@ -554,12 +588,16 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                    elapsed_sec=out.get("elapsed_sec", 0))
     _progress("save_local", "done")
 
-    # Step 5: 写入飞书
-    _progress("write_feishu", "running")
-    fs_result = write_adp_to_feishu(jira_key, results)
-    out["feishu"] = fs_result
-    _progress("write_feishu", "done" if fs_result["ok"] else "fail", fs_result["message"])
-
-    out["ok"] = fs_result["ok"]
+    # Step 5: 写入飞书（可跳过，由调用方自行写回）
+    if skip_feishu:
+        _progress("write_feishu", "done", "跳过（由调用方写回）")
+        out["feishu"] = {"ok": True, "record_id": "", "message": "跳过"}
+        out["ok"] = bool(out.get("results", {}).get("_report_file_token", ""))
+    else:
+        _progress("write_feishu", "running")
+        fs_result = write_adp_to_feishu(jira_key, results)
+        out["feishu"] = fs_result
+        _progress("write_feishu", "done" if fs_result["ok"] else "fail", fs_result["message"])
+        out["ok"] = fs_result["ok"]
     out["total_elapsed"] = round(time.time() - t0, 1)
     return out
