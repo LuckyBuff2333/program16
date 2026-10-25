@@ -279,20 +279,65 @@ def _extract_root_cause(text: str) -> str:
 
 
 def _extract_confidence(text: str) -> str:
-    """从分析文本中提取置信度（支持多种格式：自评置信度 0.85、置信度：自评 0.85、confidence: 0.85 等）"""
-    patterns = [
-        r"自评置信度\s*([0-9]+\.?[0-9]*)",           # 自评置信度 0.85
-        r"置信度\s*[:：：]\s*自评\s*([0-9]+\.?[0-9]*)",   # 置信度：自评 0.85
-        r"confidence\s*[:：]?\s*([0-9]+\.?[0-9]*)",
-        r"置信度\s*[:：：]?\s*([0-9]+\.?[0-9]*)",
-        r"置信度\s*[:：：]?\s*([0-9]+%)",
+    """从分析文本中提取置信度（支持多种格式，返回值范围 0~1 的小数或百分比）
+
+    修复：旧版 ``[0-9]+\\.?[0-9]*`` 在 'confidence 我给 0.7' 等中文间隔场景下
+    findall 最后一条可能为空匹配，导致返回空字符串。
+    新版策略：只取有效数值匹配，并做 0~1 范围校验。
+    """
+    # 精确模式（高优先级，有明确分隔符）
+    precise_patterns = [
+        r"自评置信度\s*([0-9]+\.?[0-9]*)",                # 自评置信度 0.85
+        r"置信度\s*[:：：]\s*自评\s*([0-9]+\.?[0-9]*)",     # 置信度：自评 0.85
+        r"confidence\s*[=：:]\s*([0-9]+\.?[0-9]*)",       # confidence=0.7 / confidence: 0.7
+        r"置信度\s*[:：：]?\s*([0-9]+\.?[0-9]*)",          # 置信度 0.85
+        r"置信度\s*[:：：]?\s*([0-9]+%)",                  # 置信度 85%
     ]
-    # 全文搜索，取最后一个匹配（ADP 长文本中置信度可能不在末尾 3000 字符内）
-    for p in patterns:
+    # 宽松模式（ADP 特有格式：中文间隔、上下文提及）
+    loose_patterns = [
+        r"confidence\s*[给为定填评]\s*([0-9]+\.?[0-9]*)",  # confidence 我给 0.7 / confidence 定为 0.8
+        r"confidence\s+(?:should\s+be\s+)?([0-9]\.[0-9]+)",  # confidence 0.7 / confidence should be 0.8
+        r"conf(?:idence)?\s*[=：:]\s*([0-9]\.[0-9]+)",     # conf=0.7 / conf: 0.8
+        r"置信\s*[:：：]?\s*([0-9]+\.?[0-9]*)",            # 置信 0.85 / 置信：0.85（无"度"字）
+    ]
+    # 第一步：精确模式全文搜索，取最后匹配
+    for p in precise_patterns:
         matches = re.findall(p, text, re.IGNORECASE)
-        if matches:
-            return matches[-1]
+        # 过滤空匹配和无效值
+        valid = [m for m in matches if m and m not in ("0", "0.0")]
+        if valid:
+            return _validate_confidence(valid[-1])
+    # 第二步：宽松模式全文搜索，取最后匹配
+    for p in loose_patterns:
+        matches = re.findall(p, text, re.IGNORECASE)
+        valid = [m for m in matches if m]
+        if valid:
+            return _validate_confidence(valid[-1])
     return ""
+
+
+def _validate_confidence(raw: str) -> str:
+    """校验置信度值有效性，返回规范化字符串或空串"""
+    if not raw:
+        return ""
+    # 百分比格式
+    if raw.endswith("%"):
+        try:
+            v = float(raw[:-1])
+            return raw if 0 < v <= 100 else ""
+        except ValueError:
+            return ""
+    # 小数格式
+    try:
+        v = float(raw)
+        if 0 < v <= 1:
+            return raw
+        if 1 < v <= 100:
+            # 可能是百分数漏了%，转换
+            return f"{v / 100:.2f}"
+        return ""
+    except ValueError:
+        return ""
 
 
 def _extract_report_url(text: str, file_urls: list, closeout_data: dict) -> tuple:
@@ -336,10 +381,12 @@ def extract_adp_results(full_text: str, closeout_data: dict, start_ts: int, end_
         result["报告链接（分析报告、可观测报告）"] = report_url
     elif html_file:
         result["报告链接（分析报告、可观测报告）"] = html_file
-    # 置信度：优先 closeout_data，其次从文本提取
+    # 置信度：优先 closeout_data，其次从文本提取，最后校验
     confidence = ""
     if closeout_data:
-        confidence = str(closeout_data.get("confidence", ""))
+        raw_conf = closeout_data.get("confidence")
+        if raw_conf is not None:
+            confidence = _validate_confidence(str(raw_conf))
     if not confidence:
         confidence = _extract_confidence(full_text)
     result["置信度"] = confidence
