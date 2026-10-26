@@ -4689,7 +4689,9 @@ async def get_ai_report(bugid: str, source: str = "pc"):
             "file_path": local_path, "dir_path": docs_dir, "source": "remote",
         }, f"已从 {source} 下载并保存到本地")
     except httpx.ConnectTimeout:
-        return _fail(f"连接超时，AI日志分析服务({source})不可达")
+        return _fail(f"连接超时，AI日志分析服务({source}: {host}:{port})不可达，请检查网络连接或VPN")
+    except httpx.ConnectError:
+        return _fail(f"连接失败，AI日志分析服务({source}: {host}:{port})无法连通，请检查网络连接或VPN")
     except Exception as e:
         return _fail(f"获取失败: {e}")
 

@@ -232,7 +232,7 @@ def start_feishu_ws_client(event_handler):
                 cli.start()  # 阻塞，断开后返回进入重连循环
                 logger.warning("飞书长连接断开，5秒后重连...")
             except Exception as e:
-                logger.error("飞书长连接客户端异常: %s", e)
+                logger.error("飞书长连接客户端异常: %s，5秒后重连", e)
             time.sleep(5)
 
     threading.Thread(target=_run, name="feishu-ws", daemon=True).start()
