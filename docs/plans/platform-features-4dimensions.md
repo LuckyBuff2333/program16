@@ -235,8 +235,8 @@
 | 项目 | 说明 |
 |------|------|
 | **功能** | 对已有分析报告的 Bug 执行三字段验证（AI 评论总结、rootcause、置信度），写入 CSV 和多维表格 |
-| **接口** | `POST /api/verify_and_fill`（验证并填入）<br>`POST /api/verify_write`（写入 CSV）<br>`POST /api/verify_write_bitable`（写入多维表格）<br>`GET /api/verify_bitable_eligible`（可写入列表） |
-| **代码** | [verify.py](file:///d:/工作/工作/AI/testplatform/program16/src/api/routes/verify.py)，[pipeline.py#L732-L843](file:///d:/工作/工作/AI/testplatform/program16/src/pipeline.py#L732-L843) |
+| **接口** | ~~`POST /api/verify_and_fill`~~、~~`POST /api/verify_write`~~、~~`POST /api/verify_write_bitable`~~、~~`GET /api/verify_bitable_eligible`~~（**均已下线**：verify.py 已删除，改由问题排查面板「校正编辑」+ `/api/troubleshoot/*` 承接） |
+| **代码** | 现役实现见 [troubleshoot.py](file:///d:/工作/工作/AI/testplatform/program16/src/api/routes/troubleshoot.py) 与 [pipeline.py](file:///d:/工作/工作/AI/testplatform/program16/src/pipeline.py) |
 | **备用相似度** | 验证时额外计算 AI 日志分析结论 vs AI 评论排查结论的语义相似度，供置信度不达标时兜底判定 |
 
 ### 4.8 批量人工审核回写
@@ -412,8 +412,8 @@
 
 | 项目 | 说明 |
 |------|------|
-| **功能** | 列出和预览 `docs/` 目录下的所有 CSV 报表文件 |
-| **接口** | `GET /api/docs/files`（文件列表）<br>`GET /api/docs/preview`（文件预览，前 50 行） |
+| **功能** | 列出 `docs/` 目录下的所有 CSV 报表文件（文件预览接口已下线） |
+| **接口** | `GET /api/docs/files`（文件列表）<br>~~`GET /api/docs/preview`~~（**已下线**） |
 | **代码** | [docs.py](file:///d:/工作/工作/AI/testplatform/program16/src/api/routes/docs.py) |
 
 ### 5.12 评论文档分类
@@ -442,7 +442,7 @@
 |------|------|------|
 | **配置读写** | `GET/POST /api/config` | 在线读写 `config.yaml`，支持按段合并 |
 | **服务控制** | `POST /api/shutdown`、`POST /api/restart` | 优雅关闭/重启服务 |
-| **远程更新** | `POST /api/system/git_pull` | 远程拉取最新代码并可自动重启 |
+| **远程更新** | ~~`POST /api/system/git_pull`~~（**已下线**：令牌校验写死、从未生效） | 原设计为远程拉取最新代码并自动重启 |
 | **OAuth 授权** | `GET /api/auth/authorize`、`GET /api/callback` | 飞书 Open API 用户授权 |
 | **每日播报** | 启动时自动初始化调度器 | 定时推送昨日分析汇总到飞书群 |
 | **多维表格写入** | `POST /api/test/bitable_write` | 支持 dry-run 预览的飞书多维表格写入 |

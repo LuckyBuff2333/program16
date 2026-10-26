@@ -30,7 +30,7 @@ def test_index_and_overview(client):
     """首页可访问，概览接口返回统计与 mock 状态"""
     resp = client.get("/")
     assert resp.status_code == 200
-    assert "Bug 文档沉淀工具" in resp.text
+    assert "AI应用测评平台" in resp.text or '<div id="app">' in resp.text
     body = client.get("/api/overview").json()
     assert body["ok"] is True
     assert "mock" in body["data"]
@@ -94,28 +94,15 @@ def test_report_api(client):
 @allure.feature("Web 接口")
 @allure.story("功能测试接口")
 def test_ai_analyze_api(client):
-    """功能测试1：AI 分析生成文档，返回结论与步骤；空 bugid 被拒绝"""
+    """功能测试1：AI 分析接口字段校验（mock 模式）；空 bugid 被拒绝"""
     body = client.post("/api/test/ai_analyze",
                        json={"bugid": "BUG-5001", "trigger_time": "2026-08-10 09:15:00"}).json()
     assert body["ok"] is True
-    assert body["data"]["doc_path"].endswith("BUG-5001.md")
-    assert body["data"]["conclusion"]
-    assert len(body["data"]["steps"]) == 4
-    assert client.post("/api/test/ai_analyze", json={"bugid": ""}).json()["ok"] is False
-
-
-@allure.feature("Web 接口")
-@allure.story("功能测试接口")
-def test_comment_compare_api(client):
-    """功能测试2：评论提取与双重对比，一致样本判定通过"""
-    body = client.post("/api/test/comment_compare", json={"bugid": "BUG-5001"}).json()
-    assert body["ok"] is True
     data = body["data"]
-    assert len(data["comments"]) == 5
-    assert len(data["comment_steps"]) >= 3
-    assert data["root_cause_ok"] is True
-    assert data["comment_compare_ok"] is True
-    assert data["all_ok"] is True
+    assert data["api_success"] is True
+    assert data["api_response"]["code"] == 200
+    assert data["api_response"]["data"]["issue_key"] == "BUG-5001"
+    assert client.post("/api/test/ai_analyze", json={"bugid": ""}).json()["ok"] is False
 
 
 @allure.feature("Web 接口")

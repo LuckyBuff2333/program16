@@ -47,7 +47,8 @@ def _parse_status_line(line: str):
 # ──── 配置 ────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 GIT_AUTHOR = "2063795530 <2063795530@qq.com>"
-DEFAULT_WATCH_DIRS = ["src", "config", "data", "timestudy", "reports", "scripts"]
+# 监控目录：reports/ 是运行期生成的客户报告（含业务数据），不纳入自动提交
+DEFAULT_WATCH_DIRS = ["src", "config", "data", "timestudy", "scripts"]
 DEFAULT_DEBOUNCE_SEC = 15  # 防抖间隔（秒），合并该窗口内的所有变更为一次提交
 
 # 忽略的文件/目录模式（正则）

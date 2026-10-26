@@ -279,7 +279,7 @@
 | **流程** | ① 获取 Jira issue + 本地/飞书 AI 报告<br>② 提取 rootcause（通用根因追加 AI 精炼结论）<br>③ 生成评论分析文档<br>④ 计算置信度 + 备用语义相似度<br>⑤ 按置信度分类评论文档到 `True/` 或 `False/` |
 | **输入** | Jira 号 + CSV 行数据 |
 | **输出** | 三字段验证结果（rootcause、AI评论总结、置信度）+ 备用相似度分数 + 分类存储的评论文档 |
-| **代码映射** | `POST /api/verify_and_fill` → [verify.py#L51-L54](file:///d:/工作/工作/AI/testplatform/program16/src/api/routes/verify.py#L51-L54)，核心逻辑 [pipeline.py#L732-L843](file:///d:/工作/工作/AI/testplatform/program16/src/pipeline.py#L732-L843) |
+| **代码映射** | ~~`POST /api/verify_and_fill`~~（**已下线**：verify.py 已删除，功能由问题排查面板的「校正编辑」+ `/api/troubleshoot/*` 承接） |
 
 ---
 
@@ -291,7 +291,7 @@
 | **流程** | **CSV 回写：**<br>① 选择待写入记录（bugid + 三字段值）<br>② 读取目标 CSV 文件<br>③ 按 bugid 匹配并更新 rootcause、AI评论总结、结果置信度<br>④ 写回 CSV 文件<br><br>**多维表格回写：**<br>① 查询可写入记录（分析成功 + 置信度为空）<br>② 支持 dry-run 预览<br>③ 批量写入飞书 Bitable<br><br>**人工审核回写：**<br>① 将人工审核结论批量写回多维表格<br>② 支持仅写入空审核字段（避免覆盖已有审核） |
 | **输入** | 校正后的三字段值 + 目标文件路径 / 多维表格配置 |
 | **输出** | 更新后的 CSV 文件 / 飞书多维表格记录 + 写入统计 |
-| **代码映射** | `POST /api/verify_write`（CSV 回写）→ [verify.py#L57-L108](file:///d:/工作/工作/AI/testplatform/program16/src/api/routes/verify.py#L57-L108)<br>`POST /api/verify_write_bitable`（多维表格回写）→ [verify.py#L143-L147](file:///d:/工作/工作/AI/testplatform/program16/src/api/routes/verify.py#L143-L147)<br>`POST /api/troubleshoot/batch_write_review`（审核回写）→ [troubleshoot.py#L159-L174](file:///d:/工作/工作/AI/testplatform/program16/src/api/routes/troubleshoot.py#L159-L174) |
+| **代码映射** | ~~`POST /api/verify_write`~~（CSV 回写，**已下线**）<br>~~`POST /api/verify_write_bitable`~~（多维表格回写，**已下线**）<br>`POST /api/troubleshoot/batch_write_review`（审核回写，现役）→ [troubleshoot.py#L159-L174](file:///d:/工作/工作/AI/testplatform/program16/src/api/routes/troubleshoot.py#L159-L174) |
 
 **补充能力：触发时间问题导出 + 诊断取消 + 飞书机器人集成**
 
@@ -400,7 +400,7 @@
 | 功能 | 说明 |
 |------|------|
 | **配置参数调优** | 列出所有历史批次，对选中批次计算成功率/平均耗时/中位数/P95 等指标，支撑参数优化决策 → `GET /api/tuning/batch_list` + `POST /api/tuning/analyze` → [tuning.py](file:///d:/工作/工作/AI/testplatform/program16/src/api/routes/tuning.py) |
-| **文档管理** | 列出和预览 `docs/` 下所有 CSV 报表文件 → `GET /api/docs/files` + `GET /api/docs/preview` → [docs.py](file:///d:/工作/工作/AI/testplatform/program16/src/api/routes/docs.py) |
+| **文档管理** | 列出 `docs/` 下所有 CSV 报表文件 → `GET /api/docs/files`（`/api/docs/preview` 已下线）→ [docs.py](file:///d:/工作/工作/AI/testplatform/program16/src/api/routes/docs.py) |
 | **首页概览** | 今日核心指标（总数/完整数/不完整数/已抽查数）+ 各接口 Mock 状态 → `GET /api/overview` → [system.py#L117-L143](file:///d:/工作/工作/AI/testplatform/program16/src/api/routes/system.py#L117-L143) |
 
 ### 质量分析与决策 · 输入输出总结

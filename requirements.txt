@@ -1,4 +1,5 @@
-Python >= 3.12
+﻿# 杩愯鐜锛歅ython >= 3.12
+# 瀹夎锛歱ip install -r requirements.txt
 httpx>=0.27.0
 tenacity>=8.2.0
 fastapi>=0.115.0
@@ -17,4 +18,9 @@ opencv-python-headless>=4.8.0
 av>=14.0.0
 easyocr>=1.7.0
 rapidocr_onnxruntime>=1.4.0
+openpyxl>=3.1.0
+chinesecalendar>=1.10
 python-multipart>=0.0.5
+
+# 鈹€鈹€ 鍙€変緷璧栵紙涓嶈涔熻兘璺戯紝鐩稿叧鑳藉姏鑷姩闄嶇骇锛夆攢鈹€
+# sentence-transformers>=2.7.0   # 鍙ュ悜閲忚涔夊姣旓紱涓嶈鍒欏洖閫€ TF-IDF銆備細杩炲甫瀹夎 torch锛堟暟 GB锛?# watchdog>=4.0.0                # tools/auto_commit.py 鐨勬枃浠跺彉鏇寸洃鍚?
