@@ -31,7 +31,7 @@ _TRACE_STAGE_DESC = {
 
 
 @router.post("/api/timestudy/analyze", response_model=ApiResponse)
-async def timestudy_analyze(req: TimestudyAnalyzeRequest):
+def timestudy_analyze(req: TimestudyAnalyzeRequest):
     """触发分析：统计错误模式，支持按时间范围过滤"""
     from src.services.server_legacy import _timestudy_analyze
     try:
@@ -50,7 +50,7 @@ async def timestudy_analyze(req: TimestudyAnalyzeRequest):
 
 
 @router.get("/api/timestudy/summary", response_model=ApiResponse)
-async def timestudy_summary():
+def timestudy_summary():
     """获取自学习摘要（轻量级，不重新分析）"""
     import json as _json2
     patterns_path = os.path.join(_TIMESTUDY_DIR, "error_patterns.json")
@@ -65,7 +65,7 @@ async def timestudy_summary():
 
 
 @router.get("/api/timestudy/records", response_model=ApiResponse)
-async def timestudy_records(limit: int = Query(default=50, ge=1, le=500, description="返回条数上限")):
+def timestudy_records(limit: int = Query(default=50, ge=1, le=500, description="返回条数上限")):
     """获取最近的自学习记录"""
     import csv as _csv
     if not os.path.exists(_TIMESTUDY_RECORDS):
@@ -83,7 +83,7 @@ async def timestudy_records(limit: int = Query(default=50, ge=1, le=500, descrip
 
 
 @router.post("/api/timestudy/root-causes", response_model=ApiResponse)
-async def timestudy_root_causes(req: RootCauseRequest):
+def timestudy_root_causes(req: RootCauseRequest):
     """批量查询 Jira 的上次提取根因（从 records.csv 读取最新一条记录）"""
     import csv as _csv
     bugids = req.bugids

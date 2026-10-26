@@ -36,10 +36,23 @@ data/*
 
 # 配置文件（含密钥，不提交）
 config/config.yaml
+# 配置写盘产生的备份/临时文件（同样含密钥，必须一起忽略）
+config/config.yaml.bak
+config/config.yaml.tmp
 
 # 临时文件
 *.tmp
 screenshot_*.png
+
+# 运行时缓存/标记（jieba 分词缓存、pytest 临时目录、浏览器已打开标记）
+jieba.cache
+pytest-of-*/
+.web_browser_opened
+# 测试脚本输出
+tests/dedup_verify_result.txt
+# 报表写坏时的自动备份 / 半成品（含业务数据，不入库）
+*.corrupt-*.csv
+*.csv.tmp
 
 # ADP 分析结果（含签名密钥，不上传）
 docs/adp_results/

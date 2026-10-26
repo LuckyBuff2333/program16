@@ -107,6 +107,34 @@ def _filter_rows(rows: list) -> list:
     return result
 
 
+def _time_check_before_analysis(issue: dict, trigger_time: str, bugid: str = "") -> dict:
+    """分析前自检（P0-2）：触发时间 vs 日志包参考时间
+
+    返回 {"ref_time", "diff_sec", "window_hit", "status"}；无法判断时返回 {}。
+    阈值可通过 config.ai_log_api.time_warn_offset_sec / time_reject_offset_sec 调整。
+    """
+    cfg = load_config().get("ai_log_api", {})
+    if not cfg.get("time_check_enabled", True):
+        return {}
+    warn = int(cfg.get("time_warn_offset_sec", 30))
+    reject = int(cfg.get("time_reject_offset_sec", 300))
+    try:
+        from src.services.server_legacy import _diag_gmlogger_times
+        from src.services.trigger_ops import self_check_trigger_time
+        atts = ((issue or {}).get("fields") or {}).get("attachment") or []
+        gm = _diag_gmlogger_times(atts) or []
+        ref = ""
+        if gm:
+            g0 = gm[0][0] if isinstance(gm[0], tuple) else gm[0]
+            ref = g0.strftime("%Y-%m-%d %H:%M:%S") if hasattr(g0, "strftime") else str(g0)[:19]
+        check = self_check_trigger_time(trigger_time, ref, warn, reject)
+        check["ref_time"] = ref
+        return check
+    except Exception as e:
+        logger.debug("bugid=%s 分析前时间自检失败: %s", bugid, e)
+        return {}
+
+
 def supplement_row(row: dict) -> dict:
     """对单行缺失字段执行补充，按依赖顺序填充：状态检查→AI分析→飞书→rootcause→置信度"""
     bugid = (row.get("jira号") or "").strip()
@@ -142,6 +170,22 @@ def supplement_row(row: dict) -> dict:
         except Exception as e:
             logger.warning("bugid=%s 触发时间提取异常（不阻断流程）: %s", bugid, e)
 
+    # 分析前时间自检（P0-2）：与日志包参考时间偏差过大则不发起分析
+    _skip_analysis = False
+    _check = _time_check_before_analysis(issue, trigger_time, bugid)
+    if _check:
+        if _check.get("status") == "不可用":
+            logger.warning("bugid=%s 触发时间与日志包相差 %s 秒（>%s），跳过 AI 分析",
+                           bugid, _check.get("diff_sec"), _check.get("diff_sec"))
+            result["时间自检"] = f"不可用(差{_check.get('diff_sec')}s)"
+            result["AI分析结果(飞书链接)"] = (
+                f"失败: 触发时间与日志包不匹配（差 {_check.get('diff_sec')} 秒）")
+            _skip_analysis = True
+        elif _check.get("status") == "待确认":
+            result["时间自检"] = f"待确认(差{_check.get('diff_sec')}s)"
+            logger.warning("bugid=%s 触发时间与日志包相差 %s 秒，分析结果需人工确认",
+                           bugid, _check.get("diff_sec"))
+
     # 检查本地是否已有分析报告，无本地文档且无飞书链接时调用 AI 日志分析接口生成
     has_local_doc = False
     try:
@@ -149,7 +193,9 @@ def supplement_row(row: dict) -> dict:
         has_local_doc = True
     except FileNotFoundError:
         pass
-    if not has_local_doc and not feishu_link:
+    if _skip_analysis:
+        pass
+    elif not has_local_doc and not feishu_link:
         # 尝试从AI分析缓存获取
         analysis_key = f"analysis_{bugid}_{trigger_time}"
         cached_analysis = ai_analysis_cache.get(analysis_key)
@@ -755,118 +801,6 @@ def execute_single_flow(bugid: str, trigger_time: str = "", cancel_check=None, s
             "failed": failed, "cancelled": cancelled, "complete": _is_row_complete(row)}
 
 
-def verify_and_fill_row(bugid: str, row: dict) -> dict:
-    """验证并填入三个字段（AI评论总结、rootcause、结果置信度）
-
-    从 docs/ 找已有分析报告 + Jira 接口获取 issue，计算三个字段写回 row。
-    :param bugid: Jira bug ID
-    :param row: CSV 行字典（会被原地修改）
-    :return: {"bugid": str, "success": bool, "error": str}
-    """
-    from src.clients import jira_client
-    feishu_link = row.get("AI分析结果(飞书链接)", "") or ""
-    trigger_time = row.get("分析问题时间", "") or ""
-    # 获取 Jira issue
-    issue = None
-    try:
-        issue = jira_client.fetch_issue(bugid)
-    except Exception as e:
-        return {"bugid": bugid, "success": False, "error": f"Jira获取失败: {e}"}
-    # 1. rootcause
-    try:
-        rootcause = _fill_rootcause(bugid, issue)
-        # Jira 根因分析内容为空时跳过
-        if not rootcause:
-            row["rootcause"] = ""
-            return {"bugid": bugid, "success": False, "error": "Jira根因分析内容为空"}
-        # 符合需求/符合预期类根因 → 追加 AI 精炼结论到括号中（仅影响展示）
-        display_rootcause = rootcause
-        if _is_generic_rootcause(rootcause):
-            try:
-                ai_content = _get_ai_report_content(bugid, feishu_link)
-                ai_conclusion = doc_generator.parse_conclusion(ai_content)
-                # 过滤无意义的 AI 结论（如“根因未明”“无法确定”等笼统表述）
-                _VAGUE_KEYWORDS = ("根因未明", "无法确定", "无法定位", "无法判断", "暂无结论", "未明确")
-                if ai_conclusion and not any(kw in ai_conclusion for kw in _VAGUE_KEYWORDS):
-                    # 取首条分析的精炼主句，避免多行文本进入表格
-                    ai_summary = comment_filter._extract_core_summary(ai_conclusion, max_len=60)
-                    display_rootcause = f"{rootcause}（{ai_summary}）"
-            except (ValueError, FileNotFoundError):
-                pass  # 无 AI 报告，保持原 rootcause
-        row["rootcause"] = comment_filter._clean_table_text(display_rootcause)
-    except Exception as e:
-        row["rootcause"] = ""
-        return {"bugid": bugid, "success": False, "error": f"rootcause提取失败: {e}"}
-    # 2. AI评论总结
-    try:
-        cs_result = _fill_comment_summary(bugid, trigger_time, feishu_link, issue, rootcause)
-        conclusion = comment_filter._clean_table_text(cs_result["conclusion"])
-        doc_path = cs_result["doc_path"]
-        doc_url = cs_result.get("doc_url", "")
-        link = doc_url or doc_path
-        row["AI评论总结"] = f"{conclusion} [详情: {link}]" if conclusion else link
-        row["doc_url"] = doc_url
-        row["doc_path"] = doc_path
-    except Exception as e:
-        row["AI评论总结"] = ""
-        return {"bugid": bugid, "success": False, "error": f"评论总结生成失败: {e}"}
-    # 3. 结果置信度
-    try:
-        confidence = _fill_confidence(bugid, feishu_link, rootcause, issue)
-        row["结果置信度"] = confidence
-    except Exception as e:
-        row["结果置信度"] = "0"
-        return {"bugid": bugid, "success": False, "error": f"置信度计算失败: {e}"}
-
-    # 3.1 根据置信度结果将评论文档分类存储到 True/False 子文件夹
-    if doc_path and os.path.isfile(doc_path):
-        try:
-            from src.config import load_config
-            threshold = float(load_config().get("similarity", {}).get("threshold", 0.7))
-            conf_val = float(confidence or 0)
-            passed = conf_val >= threshold
-            # 目标目录：日期文件夹/True 或 日期文件夹/False
-            date_dir = os.path.dirname(doc_path)
-            target_dir = os.path.join(date_dir, "True" if passed else "False")
-            os.makedirs(target_dir, exist_ok=True)
-            target_path = os.path.join(target_dir, os.path.basename(doc_path))
-            import shutil
-            shutil.move(doc_path, target_path)
-            # 更新 doc_path 为新路径
-            doc_path = target_path
-            row["doc_path"] = doc_path
-            logger.info("bugid=%s 评论文档分类存储: %s", bugid, target_path)
-        except Exception as e:
-            logger.warning("bugid=%s 评论文档分类存储失败: %s", bugid, e)
-
-    # 4. 备用语义相似度（AI日志分析结论核心语义 vs AI评论排查结论核心语义），用于置信度不达标时兆底判定
-    extra_similarity = 0.0
-    try:
-        # 获取 AI 日志分析完整结论段落
-        ai_content = _get_ai_report_content(bugid, feishu_link)
-        ai_log_conclusion = doc_generator.parse_conclusion(ai_content)
-        # 获取 AI 评论分析文档的排查结论段落
-        comment_conclusion = ""
-        if doc_path and os.path.isfile(doc_path):
-            with open(doc_path, "r", encoding="utf-8") as f:
-                in_section = False
-                for line in f:
-                    stripped = line.strip()
-                    if stripped.startswith("## 排查结论"):
-                        in_section = True
-                        continue
-                    if in_section and stripped.startswith("##"):
-                        break
-                    if in_section and stripped:
-                        comment_conclusion += stripped + "\n"
-                comment_conclusion = comment_conclusion.strip()
-        if ai_log_conclusion and comment_conclusion:
-            extra_similarity = semantic_module.semantic_similarity(ai_log_conclusion, comment_conclusion)
-            extra_similarity = round(extra_similarity, 3)
-    except Exception:
-        pass
-
-    return {"bugid": bugid, "success": True, "error": "", "extra_similarity": extra_similarity}
 
 
 def compare_bug_analysis(bugid: str, trigger_time: str = None, uploaded_rows: list = None) -> dict:
@@ -875,6 +809,30 @@ def compare_bug_analysis(bugid: str, trigger_time: str = None, uploaded_rows: li
     统一 pipeline 和 server 的对比逻辑。
     :return: 对比结果字典，含根因/步骤匹配度与结论
     """
+    # 0. 分析前时间自检（P0-2）：与日志包偏差过大则不发起分析
+    if trigger_time:
+        try:
+            _issue_for_check = jira_client.fetch_issue(bugid)
+            _chk = _time_check_before_analysis(_issue_for_check, trigger_time, bugid)
+        except Exception as _e:
+            logger.debug("bugid=%s 对比前时间自检失败: %s", bugid, _e)
+            _chk = {}
+        if _chk.get("status") == "不可用":
+            reason = f"触发时间与日志包不匹配（差 {_chk.get('diff_sec')} 秒），已跳过分析"
+            logger.warning("bugid=%s %s", bugid, reason)
+            return {
+                "bugid": bugid, "doc_path": "", "doc_steps": [],
+                "ai_conclusion": "", "bug_root_cause": "",
+                "root_cause_score": 0.0, "root_cause_ok": False,
+                "layer1_score": 0.0, "layer1_ok": False,
+                "layer2_score": 0.0, "layer2_ok": False,
+                "comment_compare_ok": False, "all_ok": False,
+                "comments": [], "comment_steps": [], "valid_comments": [],
+                "threshold": load_config()["similarity"].get("threshold", 0.7),
+                "compare_mode": semantic_module.compare_mode(),
+                "error": reason, "时间自检": f"不可用(差{_chk.get('diff_sec')}s)",
+            }
+
     # 1. AI 分析并生成文档
     response = ai_log_client.analyze_logs(bugid, trigger_time)
     report_text = ai_log_client.extract_report(response)

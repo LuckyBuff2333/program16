@@ -183,9 +183,29 @@ def _get_bot_token() -> str:
     return _bot_token_cache["token"]
 
 
+# 机器人消息静默标记（线程内生效）：链式命令的中间步骤只执行、不发消息
+_BOT_SILENT = threading.local()
+
+
+def set_bot_silent(on: bool) -> None:
+    """设置当前线程的机器人静默状态
+
+    用线程本地变量而非替换模块函数，避免多个群并发链式命令时互相串音。
+    """
+    _BOT_SILENT.on = bool(on)
+
+
+def is_bot_silent() -> bool:
+    """当前线程是否处于机器人静默状态"""
+    return bool(getattr(_BOT_SILENT, "on", False))
+
+
 def send_bot_message(chat_id: str, text: str) -> bool:
     """以机器人身份向指定会话发送文本消息（Open API: POST /im/v1/messages）"""
     import json as _json
+    if is_bot_silent():
+        logger.info("机器人静默模式，跳过发送: chat=%s, len=%d", chat_id[:12], len(text))
+        return True
     try:
         token = _get_bot_token()
         url = f"{_FEISHU_API}/im/v1/messages?receive_id_type=chat_id"

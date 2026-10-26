@@ -100,7 +100,7 @@ def data_history_batch_preview(batch_token: str = Query(default="", description=
 
 
 @router.post("/api/data/sync_cloud_batches", response_model=ApiResponse)
-async def sync_cloud_batches(req: SyncCloudBatchesRequest):
+def sync_cloud_batches(req: SyncCloudBatchesRequest):
     """从云端同步批量执行记录到本地CSV"""
     import csv as _csv
     from src.clients import feishu_client

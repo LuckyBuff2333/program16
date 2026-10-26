@@ -28,7 +28,7 @@ def tuning_batch_list(source: str = Query(default="", description="来源过滤(
 @router.post("/api/tuning/analyze", response_model=ApiResponse)
 async def tuning_analyze(request: Request):
     """配置参数调优：对选中的批次查多维表格，计算成功率/分析耗时等指标"""
-    from src.api.routes.shared import fail as _fail, ok as _ok, bitable_text as _bitable_text
+    from src.api.routes.shared import fail as _fail, ok as _ok, bitable_text as _bitable_text, run_blocking
     from src.services.report_ops import (
         _scan_all_batch_records,
         _flatten_bitable_record_all,
@@ -59,7 +59,7 @@ async def tuning_analyze(request: Request):
     bt_map = {}
     if app_token and table_id:
         try:
-            records = feishu_client.list_bitable_records(app_token, table_id)
+            records = await run_blocking(feishu_client.list_bitable_records, app_token, table_id)
             for rec in records:
                 fields = rec.get("fields", {})
                 jira_key = _bitable_text(fields.get(bugid_field, ""))

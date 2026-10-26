@@ -26,7 +26,7 @@ async def feishu_event(request: Request):
 
 
 @router.get("/api/feishu/events", response_model=ApiResponse)
-async def get_feishu_events():
+def get_feishu_events():
     """查看已存储的飞书事件推送 + 卡片事件 + 最近消息（调试用）"""
     from src.clients import feishu_client as _fc
     from src.api.routes.shared import ok as _ok

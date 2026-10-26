@@ -17,7 +17,7 @@ router = APIRouter()
 
 
 @router.post("/api/troubleshoot/records", response_model=ApiResponse)
-async def troubleshoot_records(req: RecordsQueryRequest):
+def troubleshoot_records(req: RecordsQueryRequest):
     from src.services import troubleshoot_service as svc
     try:
         result = svc.query_records(
@@ -35,7 +35,7 @@ async def troubleshoot_records(req: RecordsQueryRequest):
 
 
 @router.post("/api/troubleshoot/direct", response_model=ApiResponse)
-async def troubleshoot_direct(req: DirectQueryRequest):
+def troubleshoot_direct(req: DirectQueryRequest):
     from src.services import troubleshoot_service as svc
     bugids = [b.strip().upper() for b in req.bugids if b.strip()]
     if not bugids:
@@ -53,7 +53,7 @@ async def troubleshoot_direct(req: DirectQueryRequest):
 
 
 @router.post("/api/troubleshoot/search_jira", response_model=ApiResponse)
-async def troubleshoot_search_jira(req: SearchJiraRequest):
+def troubleshoot_search_jira(req: SearchJiraRequest):
     from src.services import troubleshoot_service as svc
     keyword = req.keyword.strip().upper()
     if not keyword:
@@ -68,7 +68,7 @@ async def troubleshoot_search_jira(req: SearchJiraRequest):
 
 
 @router.post("/api/troubleshoot/cancel_diag", response_model=ApiResponse)
-async def troubleshoot_cancel_diag(req: CancelDiagRequest):
+def troubleshoot_cancel_diag(req: CancelDiagRequest):
     from src.api.routes.shared import diag_cancel
     bugids = req.bugids
     if bugids:
@@ -186,7 +186,7 @@ def troubleshoot_update_cache(req: UpdateCacheRequest):
 
 
 @router.post("/api/troubleshoot/batch_write_review", response_model=ApiResponse)
-async def troubleshoot_batch_write_review(req: BatchWriteReviewRequest):
+def troubleshoot_batch_write_review(req: BatchWriteReviewRequest):
     from src.services import troubleshoot_service as svc
     items = [item.model_dump() for item in req.items]
     only_empty_review = req.only_empty_review
@@ -204,7 +204,7 @@ async def troubleshoot_batch_write_review(req: BatchWriteReviewRequest):
 
 
 @router.post("/api/troubleshoot/export_trigger_time_issues", response_model=ApiResponse)
-async def troubleshoot_export_trigger_time_issues(req: ExportIssuesRequest):
+def troubleshoot_export_trigger_time_issues(req: ExportIssuesRequest):
     from src.services import troubleshoot_service as svc
     from src.services.server_legacy import _TRIGGER_ISSUE_FOLDER_TOKEN
     items = req.items if isinstance(req.items, list) else [item if isinstance(item, dict) else item.model_dump() for item in req.items]

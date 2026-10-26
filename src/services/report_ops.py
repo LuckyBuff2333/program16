@@ -1245,13 +1245,20 @@ def _upload_weekly_report_to_cloud(report: dict, date_str: str) -> str:
         return ""
 
 
+_WORKDAY_FALLBACK_WARNED = False
+
+
 def _is_chinese_workday(dt) -> bool:
     """判断是否为中国法定工作日（含调休补班），无法判断时回退到周一~周五"""
+    global _WORKDAY_FALLBACK_WARNED
     try:
         from chinese_calendar import is_workday
         return is_workday(dt.date() if hasattr(dt, 'date') else dt)
-    except Exception:
-        # 回退到普通工作日判断
+    except Exception as e:
+        # 回退到普通工作日判断；只提示一次，避免刷日志
+        if not _WORKDAY_FALLBACK_WARNED:
+            _WORKDAY_FALLBACK_WARNED = True
+            logger.warning("chinese_calendar 不可用或该年份数据缺失，工作日判断退化为周一~周五（节假日/调休将不准确）: %s", e)
         return dt.weekday() < 5
 
 
@@ -1702,151 +1709,6 @@ def _delete_default_bitable_table(app_token: str, keep_table_id: str, keep_table
         logger.warning("删除默认数据表失败: %s", e)
 
 
-async def _verify_write_bitable_impl(request: Request):
-    """将验证通过的记录写入多维表格的三个字段（AI评论总结、rootcause、结果置信度）"""
-    from src.clients import feishu_client
-    body = await request.json() or {}
-    items = body.get("items") or []  # [{"bugid": str, "rootcause": str, "comment_summary": str, "confidence": str}]
-    if not items:
-        return _fail("无待写入的记录")
-    cfg = load_config().get("feishu_bitable", {})
-    app_token = cfg.get("app_token", "")
-    table_id = cfg.get("table_id", "")
-    bugid_field = cfg.get("bugid_field", "jira号")
-    if not app_token or not table_id:
-        return _fail("多维表格 app_token/table_id 未配置")
-    # Wiki 模式：通过 wiki_token 获取实际 app_token
-    if not app_token and cfg.get("wiki_token"):
-        try:
-            if feishu_client._is_cookie_mode():
-                app_token = feishu_client.cookie_get_app_token_from_wiki(cfg["wiki_token"])
-            else:
-                app_token = feishu_client.get_wiki_node_app_token(cfg["wiki_token"])
-        except Exception as e:
-            return _fail(f"Wiki token 转换失败: {e}")
-    try:
-        # 获取多维表格字段定义，构建中文名 → 字段名映射和字段类型映射
-        field_defs = feishu_client.list_bitable_fields(app_token, table_id)
-        field_name_map = {fd.get("field_name", ""): fd.get("field_name", "") for fd in field_defs}
-        field_type_map = {fd.get("field_name", ""): fd.get("type", 0) for fd in field_defs}
-        logger.info("多维表格字段列表: %s", [(fd.get("field_name"), fd.get("type")) for fd in field_defs])
-        # 构建待写入字段名（优先精确匹配，回退常见别名，字段不存在则跳过）
-        rc_field = field_name_map.get("rootcause") or field_name_map.get("Rootcause") or field_name_map.get("RootCause") or ""
-        cs_field = field_name_map.get("AI评论总结") or field_name_map.get("评论总结") or ""
-        cf_field = field_name_map.get("结果置信度") or field_name_map.get("置信度") or ""
-        hr_field = field_name_map.get("人工审核结果") or field_name_map.get("人工审核") or ""
-        if not rc_field and not cs_field and not cf_field and not hr_field:
-            logger.error("多维表格未找到任何目标字段，实际字段: %s", list(field_name_map.keys()))
-            return _fail("多维表格中未找到 rootcause/AI评论总结/结果置信度/人工审核结果 字段")
-        # 获取多维表格所有记录，构建 bugid → record_id 映射
-        records = feishu_client.list_bitable_records(app_token, table_id)
-        bugid_to_record = {}
-        for rec in records:
-            fields = rec.get("fields", {})
-            field_value = fields.get(bugid_field, "")
-            if isinstance(field_value, list):
-                field_value = "".join(str(v) for v in field_value)
-            field_value = str(field_value).strip()
-            if field_value:
-                bugid_to_record[field_value] = rec.get("record_id", "")
-        # 构建待更新记录
-        update_records = []
-        not_found = []
-        for item in items:
-            bugid = str(item.get("bugid", "")).strip()
-            record_id = bugid_to_record.get(bugid)
-            if not record_id:
-                not_found.append(bugid)
-                continue
-            # 清理 markdown 格式符号后再写入表格
-            from src.core import filter as comment_filter
-            cleaned_comment = comment_filter._clean_table_text(item.get("comment_summary", ""))
-            # 去掉文本中已嵌入的 [详情: xxx] 链接（避免与 doc_url 重复）
-            cleaned_comment = re.sub(r'\s*\[详情:\s*[^\]]+\]', '', cleaned_comment).strip()
-            doc_url = item.get("doc_url", "")
-            doc_path = item.get("doc_path", "")
-            # AI评论总结：检查字段类型，URL字段(type=15)必须用dict格式
-            cs_field_type = field_type_map.get(cs_field, 0)
-            if cs_field_type == 15:
-                # URL字段：无doc_url时优先上传本地md文件到云盘，回退创建飞书在线文档
-                if not doc_url:
-                    # 优先上传本地评论分析文档到云盘
-                    if doc_path and os.path.isfile(doc_path):
-                        try:
-                            upload_result = feishu_client.upload_md_to_drive(doc_path, title=f"{bugid} 评论分析总结")
-                            doc_url = upload_result.get("url", "")
-                            if doc_url:
-                                logger.info("%s 写入时上传本地文档到云盘: %s", bugid, doc_url)
-                        except Exception as e:
-                            logger.warning("%s 上传本地文档到云盘失败: %s", bugid, e)
-                    # 回退：创建飞书在线文档
-                    if not doc_url and cleaned_comment:
-                        try:
-                            doc_title = f"{bugid} AI评论总结"
-                            doc_content = _find_comment_doc(bugid) or cleaned_comment
-                            doc_result = feishu_client.create_docx_document(doc_title, doc_content)
-                            doc_url = doc_result.get("url", "")
-                            if doc_url:
-                                logger.info("%s 自动创建在线文档: %s", bugid, doc_url)
-                        except Exception as e:
-                            logger.warning("%s 创建在线文档失败: %s", bugid, e)
-                if doc_url:
-                    cs_value = {"link": doc_url, "text": cleaned_comment}
-                elif cleaned_comment:
-                    # URL字段必须用dict格式，无链接时跳过该字段写入
-                    cs_value = None
-                else:
-                    cs_value = None
-            elif doc_url:
-                cs_value = f"{cleaned_comment} {doc_url}" if cleaned_comment else doc_url
-            else:
-                # 非URL字段：无doc_url时也尝试上传本地文件获取链接
-                if not doc_url and doc_path and os.path.isfile(doc_path):
-                    try:
-                        upload_result = feishu_client.upload_md_to_drive(doc_path, title=f"{bugid} 评论分析总结")
-                        doc_url = upload_result.get("url", "")
-                    except Exception:
-                        pass
-                cs_value = f"{cleaned_comment} {doc_url}" if (cleaned_comment and doc_url) else (doc_url or cleaned_comment)
-            # 只写入多维表格中实际存在的字段
-            fields_to_write = {}
-            if rc_field:
-                fields_to_write[rc_field] = comment_filter._clean_table_text(item.get("rootcause", ""))
-            if cs_field:
-                if cs_value is not None:
-                    fields_to_write[cs_field] = cs_value
-            if cf_field:
-                # 结果置信度：数字字段(type=2)转为 float，文本字段保持字符串
-                conf_raw = item.get("confidence", "")
-                cf_field_type = field_type_map.get(cf_field, 0)
-                if cf_field_type == 2:  # 数字类型
-                    try:
-                        fields_to_write[cf_field] = float(conf_raw) if conf_raw else 0
-                    except (ValueError, TypeError):
-                        fields_to_write[cf_field] = 0
-                else:
-                    fields_to_write[cf_field] = str(conf_raw)
-            # 人工审核结果：仅当传入 human_reason 且非空时写入
-            if hr_field:
-                hr_value = item.get("human_reason", "")
-                if hr_value:
-                    fields_to_write[hr_field] = str(hr_value)
-            update_records.append({
-                "record_id": record_id,
-                "fields": fields_to_write
-            })
-        if update_records:
-            logger.info("待写入 bitable 首条记录: %s", update_records[0] if update_records else "")
-            feishu_client.update_bitable_records(app_token, table_id, update_records)
-        result = {"written": [r["record_id"] for r in update_records],
-                  "count": len(update_records), "not_found": not_found}
-        msg = f"已写入 {len(update_records)} 条记录"
-        if not_found:
-            msg += f"，{len(not_found)} 条未找到"
-        return _ok(result, msg)
-    except Exception as e:
-        logger.error("写入多维表格失败: %s", e, exc_info=True)
-        return _fail(f"写入多维表格失败: {e}")
 
 
 def _scan_all_batch_records(after_date: str = "") -> list:

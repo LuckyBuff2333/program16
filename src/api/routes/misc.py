@@ -17,7 +17,7 @@ _FRONTEND_DIST = os.path.join(
 
 
 @router.get("/api/doc-images/{bugid}/{filename}")
-async def serve_doc_image(bugid: str, filename: str):
+def serve_doc_image(bugid: str, filename: str):
     from src.services.server_legacy import _DOC_IMAGES_DIR
     filepath = os.path.join(_DOC_IMAGES_DIR, bugid, filename)
     if not os.path.isfile(filepath):
@@ -26,7 +26,7 @@ async def serve_doc_image(bugid: str, filename: str):
 
 
 @router.get("/api/auth/authorize", response_model=ApiResponse)
-async def get_authorize_url(request: Request):
+def get_authorize_url(request: Request):
     from src.api.routes.shared import ok as _ok
     from src.config import load_config
     cfg = load_config().get("feishu_bitable", {})
@@ -40,7 +40,7 @@ async def get_authorize_url(request: Request):
 
 
 @router.get("/api/callback", name="oauth_callback")
-async def oauth_callback(code: str = "", error: str = ""):
+def oauth_callback(code: str = "", error: str = ""):
     from src.config import setup_logger
     from src.api.routes.shared import oauth_cache as _oauth_cache
     from src.config import load_config
@@ -75,7 +75,8 @@ async def oauth_callback(code: str = "", error: str = ""):
         refresh_token = data.get("data", {}).get("refresh_token", "")
         expire = data.get("data", {}).get("expires_in", 7200)
         scope = data.get("data", {}).get("scope", "")
-        logger.info("OAuth 授权成功: scope=%s, expires_in=%ds, token_prefix=%s", scope, expire, user_token[:20])
+        logger.info("OAuth 授权成功: scope=%s, expires_in=%ds（token 长度 %d，不记录内容）",
+                    scope, expire, len(user_token))
         _oauth_cache["token"] = user_token
         _oauth_cache["code"] = code
         _save_user_token_to_config(user_token, refresh_token)

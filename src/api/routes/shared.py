@@ -54,6 +54,8 @@ def handle_sigint(signum, frame):
     batch_extract_stop_event.set()
     cache_batch_stop_event.set()
     adp_lookup_stop_event.set()
+    regression_stop_event.set()
+    form_exec_stop_event.set()
     logger.warning("收到 Ctrl+C，正在停止当前操作（再次按 Ctrl+C 强制退出）")
     if prev_sigint and callable(prev_sigint) and prev_sigint not in (signal.SIG_IGN, signal.SIG_DFL):
         prev_sigint(signum, frame)
@@ -62,10 +64,17 @@ def handle_sigint(signum, frame):
 batch_extract_stop_event = threading.Event()
 cache_batch_stop_event = threading.Event()
 adp_lookup_stop_event = threading.Event()
+# 各跑批流程独立的停止标志：避免“停回归把时间提取一起停掉”这类串台
+regression_stop_event = threading.Event()
+form_exec_stop_event = threading.Event()
 
-# 全局线程池（限制诊断等同步操作的最大并发数）
 _DIAG_EXECUTOR = None
-_DIAG_EXECUTOR_MAX_WORKERS = 1
+# 全局线程池（限制诊断等同步操作的最大并发数）
+# 诊断主要是附件下载（网络 IO），适度并发能显著提速；OCR 另有信号量(2)限制 GPU 抢占
+try:
+    _DIAG_EXECUTOR_MAX_WORKERS = max(1, int(load_config().get("params", {}).get("diag_concurrency", 3)))
+except Exception:
+    _DIAG_EXECUTOR_MAX_WORKERS = 1
 _DIAG_TIMEOUT_SECONDS = 300
 
 # 内存缓存：上传文件解析后的行数据
@@ -101,6 +110,19 @@ def check_diag_cancel(bugid: str):
         raise InterruptedError(f"诊断已取消: {bugid}")
     if interrupted:
         raise InterruptedError("用户已按 Ctrl+C 中断操作")
+
+
+async def run_blocking(fn, *args, **kwargs):
+    """在线程池里执行同步阻塞调用（httpx / pandas / 多维表格 API 等）
+
+    异步端点里直接调用这些函数会把整个事件循环卡住（其他请求、SSE 心跳都会停），
+    统一走这里丢到线程池执行。
+    """
+    from functools import partial
+    from fastapi.concurrency import run_in_threadpool
+    if kwargs:
+        return await run_in_threadpool(partial(fn, **kwargs), *args)
+    return await run_in_threadpool(fn, *args)
 
 
 def get_diag_executor():
@@ -180,6 +202,44 @@ def parse_conf(val) -> float:
         return v if not (v != v) else 0  # NaN 检查
     except (ValueError, TypeError):
         return 0.0
+
+
+# ── 上传/解压保护 ──
+# 所有上传入口共用：防止超大文件或压缩炸弹把进程内存打爆
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024      # 原始上传文件上限 20MB
+MAX_EXPAND_BYTES = 200 * 1024 * 1024     # 解压后总量上限 200MB
+MAX_ARCHIVE_ENTRIES = 2000               # 压缩包条目数上限
+
+
+async def read_upload_limited(file, label: str = "文件") -> bytes:
+    """读取上传文件并校验大小，超限直接抛 ValueError（避免整文件进内存后才发现）"""
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise ValueError(
+            f"{label}超过 {MAX_UPLOAD_BYTES // 1024 // 1024}MB 限制"
+            f"（实际 {len(content) / 1024 / 1024:.1f}MB）")
+    return content
+
+
+def check_archive_entries(names: list, label: str = "压缩包") -> None:
+    """校验压缩包条目数，防止 zip bomb 式海量小文件"""
+    if len(names) > MAX_ARCHIVE_ENTRIES:
+        raise ValueError(f"{label}条目过多（{len(names)} > {MAX_ARCHIVE_ENTRIES}），已拒绝解析")
+
+
+class ExpandBudget:
+    """解压预算：累计已解压字节数，超过上限立即抛错"""
+
+    def __init__(self, limit: int = MAX_EXPAND_BYTES, label: str = "压缩包"):
+        self.limit = limit
+        self.used = 0
+        self.label = label
+
+    def take(self, size: int) -> None:
+        self.used += max(0, int(size or 0))
+        if self.used > self.limit:
+            raise ValueError(
+                f"{self.label}解压后超过 {self.limit // 1024 // 1024}MB 限制，已中止")
 
 
 # ── 通用数据读取 ──

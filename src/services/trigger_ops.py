@@ -456,11 +456,133 @@ def _ensure_trigger_time_bugid_cache():
     logger.info("触发时间缓存已加载: %d 条记录", len(_trigger_time_bugid_cache))
 
 
-def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = ""):
+# ── 触发时间扩展字段（P0-1）：时间来源 / 参考时间 / 时间差秒 / 窗口命中 / 时间状态 ──
+_TRIGGER_TIME_EXTRA_FIELDS = ["时间来源", "参考时间", "时间差秒", "窗口命中", "时间状态"]
+_TRIGGER_TIME_FIELDS_ENSURED = {"done": False}
+_TRIGGER_TIME_REF_CACHE = {}
+
+
+def remember_ref_time(bugid: str, ref_time) -> None:
+    """提取阶段把日志包参考时间登记下来，写表时自动用于自检列"""
+    if not bugid or not ref_time:
+        return
+    _TRIGGER_TIME_REF_CACHE[str(bugid)] = str(ref_time)[:19]
+    if len(_TRIGGER_TIME_REF_CACHE) > 5000:   # 简单限长，避免长跑进程无限增长
+        for k in list(_TRIGGER_TIME_REF_CACHE)[:1000]:
+            _TRIGGER_TIME_REF_CACHE.pop(k, None)
+
+
+def _lookup_ref(bugid: str, ref_times: dict = None) -> str:
+    if ref_times and ref_times.get(bugid):
+        return ref_times[bugid]
+    return _TRIGGER_TIME_REF_CACHE.get(bugid, "")
+# AI 侧实际日志过滤窗口中位约 6 秒、P90 约 30 秒，因此以 30 秒作为“窗口命中”阈值
+_TIME_WINDOW_SEC = 30
+_TIME_WARN_SEC = 30      # 超过即标记「待确认」
+_TIME_REJECT_SEC = 300   # 超过即标记「不可用」（建议不发起分析）
+
+
+def _parse_time_text(text) -> "datetime | None":
+    """宽松解析时间文本（支持 YYYY-MM-DD HH:MM:SS / HH:MM / 日期）"""
+    if not text:
+        return None
+    if isinstance(text, datetime):
+        return text
+    s = str(text).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def self_check_trigger_time(trigger_time, ref_time="", warn_sec: int = None,
+                            reject_sec: int = None) -> dict:
+    """触发时间自检（P0-2）：与日志包参考时间比对
+
+    :return: {"diff_sec": int|None, "window_hit": "是/否/无参考", "status": "正常/待确认/不可用/无参考"}
+    """
+    warn_sec = _TIME_WARN_SEC if warn_sec is None else int(warn_sec)
+    reject_sec = _TIME_REJECT_SEC if reject_sec is None else int(reject_sec)
+    tt = _parse_time_text(trigger_time)
+    ref = _parse_time_text(ref_time)
+    if tt is None:
+        return {"diff_sec": None, "window_hit": "无参考", "status": "无参考"}
+    if ref is None:
+        return {"diff_sec": None, "window_hit": "无参考", "status": "无参考"}
+    diff = int(abs((tt - ref).total_seconds()))
+    if diff <= min(_TIME_WINDOW_SEC, warn_sec):
+        return {"diff_sec": diff, "window_hit": "是", "status": "正常"}
+    if diff <= reject_sec:
+        return {"diff_sec": diff, "window_hit": "否", "status": "待确认"}
+    return {"diff_sec": diff, "window_hit": "否", "status": "不可用"}
+
+
+def _trigger_time_meta(trigger_time, source: str = "", ref_time: str = "") -> dict:
+    """构造扩展列字段值（写表用）"""
+    check = self_check_trigger_time(trigger_time, ref_time)
+    return {
+        "时间来源": (source or "")[:200],
+        "参考时间": (str(ref_time) if ref_time else ""),
+        "时间差秒": ("" if check.get("diff_sec") is None else str(check["diff_sec"])),
+        "窗口命中": check.get("window_hit", "无参考"),
+        "时间状态": check.get("status", "无参考"),
+    }
+
+
+def ensure_trigger_time_fields(app_token: str = "", table_ids: list = None) -> dict:
+    """给所有触发时间分表补齐扩展列（幂等，只补缺失列）"""
+    from src.clients import feishu_client
+    if app_token and not table_ids:
+        try:
+            app_token, table_ids = _get_trigger_time_table_cfg()
+        except Exception:
+            return {"created": [], "error": "读取触发时间表配置失败"}
+    if not table_ids:
+        app_token, table_ids = _get_trigger_time_table_cfg()
+    created = []
+    for tid in table_ids:
+        try:
+            existing = {f.get("field_name", "") for f in feishu_client.list_bitable_fields(app_token, tid)}
+        except Exception as e:
+            logger.warning("读取触发时间表字段失败 %s: %s", tid, e)
+            continue
+        for name in _TRIGGER_TIME_EXTRA_FIELDS:
+            if name in existing:
+                continue
+            try:
+                ok = feishu_client.create_bitable_field(app_token, tid, name, 1)
+                if ok:
+                    created.append(f"{tid}/{name}")
+                    logger.info("触发时间表已补充字段: %s/%s", tid, name)
+            except Exception as e:
+                logger.warning("补充字段失败 %s/%s: %s", tid, name, e)
+    _TRIGGER_TIME_FIELDS_ENSURED["done"] = True
+    if created:
+        logger.info("触发时间扩展字段补齐完成: %d 个", len(created))
+    return {"created": created}
+
+
+def _ensure_fields_once():
+    """进程内只执行一次字段补齐（失败不阻断写入）"""
+    if _TRIGGER_TIME_FIELDS_ENSURED["done"]:
+        return
+    try:
+        ensure_trigger_time_fields()
+    except Exception as e:
+        logger.warning("触发时间字段补齐失败（继续写入）: %s", e)
+        _TRIGGER_TIME_FIELDS_ENSURED["done"] = True
+
+
+def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "", ref_time: str = ""):
     """将单条触发时间写入云端 bitable（有则更新，无则新建），云端成功后再写本地 CSV
 
     :param source: 触发时间来源（可选），如 "text:评论第3条(100%:评论/附件名)"
+    :param ref_time: 日志包参考时间（可选），用于写入自检结果（时间差秒/窗口命中/时间状态）
     """
+    _ensure_fields_once()
+    _meta = _trigger_time_meta(trigger_time, source, _lookup_ref(bugid, {bugid: ref_time} if ref_time else None))
     # 空值保护：不覆盖已有的非空触发时间
     if not trigger_time:
         _ensure_trigger_time_bugid_cache()
@@ -484,8 +606,8 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "")
         try:
             app_token, _ = _get_trigger_time_table_cfg()
             from src.clients import feishu_client
-            upd_fields = {"触发时间": trigger_time}
-            feishu_client.update_bitable_records(app_token, tid, [
+            upd_fields = {"触发时间": trigger_time, **_meta}
+            _safe_update_records(app_token, tid, [
                 {"record_id": rec_id, "fields": upd_fields}
             ])
             # 更新缓存时间戳
@@ -498,7 +620,8 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "")
     if not cloud_ok:
         # 缓存未命中或更新失败：走批量模式
         src_dict = {bugid: source} if source else {}
-        cloud_ok = _batch_save_trigger_times_to_cloud({bugid: trigger_time}, src_dict)
+        ref_dict = {bugid: ref_time} if ref_time else {}
+        cloud_ok = _batch_save_trigger_times_to_cloud({bugid: trigger_time}, src_dict, ref_dict)
     # 云端成功后才写本地 CSV，避免云端失败时本地多余
     if cloud_ok:
         _save_trigger_time_to_csv(bugid, trigger_time)
@@ -508,14 +631,52 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "")
         logger.warning("云端写入失败，跳过本地 CSV 保存: %s", bugid)
 
 
-def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None) -> bool:
+def _safe_update_records(app_token, table_id, recs, core_fields_only=lambda r: {"record_id": r["record_id"],
+                                                                              "fields": {"触发时间": r["fields"].get("触发时间", "")}}):
+    """带扩展列的写入：失败时退回核心字段重试，避免字段未迁移导致整条写失败"""
+    from src.clients import feishu_client
+    try:
+        feishu_client.update_bitable_records(app_token, table_id, recs)
+        return True
+    except Exception as e:
+        logger.warning("触发时间扩展列写入失败，退回核心字段重试: %s", e)
+        try:
+            feishu_client.update_bitable_records(app_token, table_id, [core_fields_only(r) for r in recs])
+            return True
+        except Exception as e2:
+            logger.warning("触发时间写入仍然失败: %s", e2)
+            return False
+
+
+def _safe_create_records(app_token, table_id, recs):
+    """带扩展列的批量新建：失败时退回核心字段（jira号/触发时间/提取时间）重试"""
+    from src.clients import feishu_client
+    try:
+        feishu_client.batch_create_records(app_token, table_id, recs)
+        return True
+    except Exception as e:
+        logger.warning("触发时间扩展列新建失败，退回核心字段重试: %s", e)
+        core = [{"fields": {k: v for k, v in r.get("fields", {}).items()
+                            if k in ("jira号", "触发时间", "提取时间")}} for r in recs]
+        try:
+            feishu_client.batch_create_records(app_token, table_id, core)
+            return True
+        except Exception as e2:
+            logger.warning("触发时间新建仍然失败: %s", e2)
+            return False
+
+
+def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_times: dict = None) -> bool:
     """批量将触发时间写入云端 bitable，优先使用缓存，仅对未命中项加载表数据。
     items: {bugid: trigger_time}
     sources: {bugid: source_string} 可选，记录触发时间来源
+    ref_times: {bugid: ref_time_string} 可选，日志包参考时间（用于自检列）
 
     :return: 云端写入是否成功
     """
     sources = sources or {}
+    ref_times = ref_times or {}
+    _ensure_fields_once()
     from src.clients import feishu_client
     if not items:
         return True
@@ -539,7 +700,8 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None) -> boo
                 if not trigger_time and _last_cache_load_partial:
                     logger.warning("跳过空值写入，bugid=%s 云端缓存为部分加载", bugid)
                     continue
-                upd_fields = {"触发时间": trigger_time}
+                upd_fields = {"触发时间": trigger_time, **_trigger_time_meta(
+                    trigger_time, sources.get(bugid, ""), _lookup_ref(bugid, ref_times))}
                 updates_by_table.setdefault(tid, []).append({
                     "record_id": rec_id,
                     "fields": upd_fields
@@ -588,7 +750,8 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None) -> boo
                     continue
                 if bugid in jira_index:
                     tid, rec = jira_index[bugid]
-                    upd_fields = {"触发时间": trigger_time}
+                    upd_fields = {"触发时间": trigger_time, **_trigger_time_meta(
+                        trigger_time, sources.get(bugid, ""), _lookup_ref(bugid, ref_times))}
                     updates_by_table.setdefault(tid, []).append({
                         "record_id": rec["record_id"],
                         "fields": upd_fields
@@ -605,7 +768,7 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None) -> boo
                 table_counts[tid] = 0  # 不需要精确计数，仅需键存在
         # 批量更新
         for tid, recs in updates_by_table.items():
-            feishu_client.update_bitable_records(app_token, tid, recs)
+            _safe_update_records(app_token, tid, recs)
             logger.info("云端触发时间批量更新: %d 条 (表 %s)", len(recs), tid)
             # 更新本地缓存
             for item in recs:
@@ -642,9 +805,10 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None) -> boo
                 remaining = remaining[space:]
                 create_records = []
                 for bid, tt in batch:
-                    fields = {"jira号": bid, "触发时间": tt, "提取时间": now_str}
+                    fields = {"jira号": bid, "触发时间": tt, "提取时间": now_str,
+                              **_trigger_time_meta(tt, sources.get(bid, ""), _lookup_ref(bid, ref_times))}
                     create_records.append({"fields": fields})
-                feishu_client.batch_create_records(app_token, target_tid, create_records)
+                _safe_create_records(app_token, target_tid, create_records)
                 table_counts[target_tid] = table_counts.get(target_tid, 0) + len(batch)
                 logger.info("云端触发时间批量新建: %d 条 (表 %s, 当前 %d/%d)",
                             len(create_records), target_tid, table_counts[target_tid], _TRIGGER_TIME_TABLE_LIMIT)
@@ -834,11 +998,17 @@ def rebalance_trigger_time_tables() -> dict:
             create_records = []
             for rec in batch:
                 fields = rec.get("fields", {})
-                create_records.append({"fields": {
+                new_fields = {
                     "jira号": _bitable_text(fields.get("jira号", "")),
                     "触发时间": _bitable_text(fields.get("触发时间", "")),
                     "提取时间": _bitable_text(fields.get("提取时间", "")),
-                }})
+                }
+                # 再平衡时保留扩展列，避免搬表丢数据
+                for _fn in _TRIGGER_TIME_EXTRA_FIELDS:
+                    _v = _bitable_text(fields.get(_fn, ""))
+                    if _v:
+                        new_fields[_fn] = _v
+                create_records.append({"fields": new_fields})
             feishu_client.batch_create_records(app_token, dst_tid, create_records)
             moved = len(create_records)
             total_moved += moved

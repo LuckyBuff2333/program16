@@ -32,6 +32,16 @@ from src.clients import diana_client as _diana_client
 from src.config import get_path, load_config, setup_logger, PROJECT_ROOT
 from src.core import audit as audit_module
 from src.core import doc_generator
+from src.core.attachment_guard import (
+    BUDGET as _ATTACH_BUDGET,
+    AttachmentLimitError as _AttachmentLimitError,
+    MAX_ATTACHMENT_BYTES as _MAX_ATTACHMENT_BYTES,
+    MAX_MEDIA_BYTES as _MAX_MEDIA_BYTES,
+    MAX_RAR_VOLUME_BYTES as _MAX_RAR_VOLUME_BYTES,
+    MAX_SINGLE_ENTRY_BYTES as _MAX_SINGLE_ENTRY_BYTES,
+    filter_large_entries as _filter_large_entries,
+    stream_download as _stream_download,
+)
 
 # 从共享模块导入公共工具和状态
 from src.api.routes.shared import (
@@ -101,7 +111,6 @@ from src.services.report_ops import (
     _generate_troubleshoot_report,
     _troubleshoot_cache_dir, _load_diagnose_cache, _save_diagnose_cache,
     _delete_default_bitable_table,
-    _verify_write_bitable_impl,
     _scan_all_batch_records,
 )
 from src.services.troubleshoot_service import (
@@ -119,8 +128,6 @@ _feishu_recent_messages: list = []
 
 _TRIGGER_ISSUE_FOLDER_TOKEN = "VmEcfznPUlV72VdUoPYc8rF0nBd"
 
-
-_bot_silent_mode = False
 
 _BOT_SESSION_TIMEOUT = 120
 
@@ -407,7 +414,6 @@ def _read_csv_rows(path: str) -> list:
 
 def _feishu_ws_event_handler(data):
     """长连接统一事件回调：文本消息→机器人命令；卡片消息→复用现有报告链接解析"""
-    global _bot_silent_mode
     try:
         msg = data.event.message
         msg_type = msg.message_type
@@ -431,21 +437,16 @@ def _feishu_ws_event_handler(data):
                 logger.info("\u56de\u590d\u6d88\u606f\u89e3\u6790: raw=%s, parsed=%s", content.get("text", "")[:100], text[:60])
             if text:
                 # 支持分号分隔的链式命令（如 0;1;2026-09-20），中间命令静默，仅展示最后一级反馈
+                # 静默用线程本地标记实现，多个群并发时互不影响
                 parts = [p.strip() for p in re.split(r'[;；]', text) if p.strip()]
                 if len(parts) > 1:
                     from src.clients import feishu_client as _fc
-                    _orig_send = _fc.send_bot_message
                     try:
                         for i, part in enumerate(parts):
-                            _bot_silent_mode = (i < len(parts) - 1)
-                            if _bot_silent_mode:
-                                _fc.send_bot_message = lambda *a, **kw: True
-                            else:
-                                _fc.send_bot_message = _orig_send
+                            _fc.set_bot_silent(i < len(parts) - 1)
                             _process_bot_command(msg.chat_id, part)
                     finally:
-                        _fc.send_bot_message = _orig_send
-                        _bot_silent_mode = False
+                        _fc.set_bot_silent(False)
                 else:
                     _process_bot_command(msg.chat_id, text)
         elif msg_type == "interactive":
@@ -456,7 +457,8 @@ def _feishu_ws_event_handler(data):
                 "sender": {},
             })
     except Exception as e:
-        _bot_silent_mode = False
+        from src.clients import feishu_client as _fc_reset
+        _fc_reset.set_bot_silent(False)
         logger.warning("处理飞书长连接事件失败: %s", e)
 
 
@@ -494,13 +496,27 @@ def _clear_bot_session(chat_id: str):
         old["timer"].cancel()
 
 
+# ── 机器人功能范围（2026-10 收敛）────────────────────────────────
+# 只保留「工作日结论播报」：0（含 1 单次 / 2 定时 / 3 状态 / 4 每周汇总）、0.4、
+# 快捷日期、退出/取消、分号链式命令。历史命令（4.x/5.x/6.x/9.x/10.x/11.x）已下线。
+_RETIRED_BOT_COMMAND_RE = re.compile(r"^(?:4|5|6|9|10|11)(?:\.\d(?:\.\d)?)?$")
+_RETIRED_BOT_HINT = (
+    "该功能已下线。当前仅支持：\n"
+    "0 工作日结论播报（单次 / 定时 / 状态 / 每周汇总）\n"
+    "直接发送日期查看当天结论（如 2026-09-21）\n"
+    "发送「退出」取消当前操作"
+)
+
+
+def _is_retired_bot_command(text: str) -> bool:
+    """是否为已下线的历史命令（4.x / 5.x / 6.x / 9.x / 10.x / 11.x）"""
+    return bool(_RETIRED_BOT_COMMAND_RE.match((text or "").strip()))
+
+
 def _process_bot_command(chat_id: str, text: str):
-    """机器人命令状态机：支持子功能菜单（1.1/1.2/6.1/7.1等）"""
+    """机器人命令状态机：当前只保留「工作日结论播报」相关命令"""
     import threading
     from src.clients import feishu_client
-    # 链式命令中间步骤：静默执行，不发送任何消息（由事件处理器负责恢复）
-    if _bot_silent_mode:
-        feishu_client.send_bot_message = lambda *a, **kw: True
     session = _bot_sessions.get(chat_id)
     logger.info("机器人收到命令: chat=%s, text=%s", chat_id[:12], text[:60])
 
@@ -588,17 +604,11 @@ def _process_bot_command(chat_id: str, text: str):
         _set_bot_session(chat_id, "wait_menu")
         feishu_client.send_bot_message(chat_id,
             "当前可用功能：\n"
-            "0. 工作日结论播报（单次/定时/状态）\n"
-            "4.1 置信度批量写入（根因语义对比）\n"
-            "5.1 失败批量排查（按时间）\n"
-            "5.2 单个Jira诊断归类\n"
-            "6.1.1 JQL批量执行（JQL编号,数量,PC/线上）\n"
-            "6.2 单个执行（Jira号,PC/线上）\n"
-            "9.1 Bug未分析提取（JQL）\n"
-            "10.1 线上批量执行（输入Jira号）\n"
-            "11.1 PC成功复制到线上\n\n"
-            "发送「退出」可取消当前任务\n"
-            "请输入子功能编号（如 0/6.1.1）唤醒对应功能（2分钟内有效）")
+            "0. 工作日结论播报（单次 / 定时 / 状态 / 每周汇总）\n\n"
+            "直接发送日期可查看当天结论（如 2026-09-21）\n"
+            "支持分号链式：0;1;2026-09-21\n"
+            "发送「退出」可取消当前任务\n\n"
+            "请输入子功能编号（如 0）唤醒对应功能（2分钟内有效）")
         return
 
     if session and session.get("state") == "wait_menu":
@@ -736,6 +746,13 @@ def _process_bot_command(chat_id: str, text: str):
             _save_daily_broadcast_config(cfg)
             _restart_daily_scheduler()
             feishu_client.send_bot_message(chat_id, "已关闭当前群聊的工作日结论播报")
+        return
+
+    # ==================== 已下线功能拦截 ====================
+    # 机器人只保留「工作日结论播报」，历史命令一律回提示，避免被误触发写表/跑批
+    if _is_retired_bot_command(text):
+        _clear_bot_session(chat_id)
+        feishu_client.send_bot_message(chat_id, _RETIRED_BOT_HINT)
         return
 
     # ==================== 功能4：置信度批量写入 ====================
@@ -1239,15 +1256,10 @@ def _process_bot_command(chat_id: str, text: str):
 
     # 未识别命令：返回功能菜单
     feishu_client.send_bot_message(chat_id,
-        "可用子功能：\n"
-        "4.1 置信度批量写入（发送 4.1）\n"
-        "5.1 失败批量排查（发送 5.1）\n"
-        "5.2 单个Jira诊断（发送 5.2）\n"
-        "6.1.1 JQL批量执行（发送 6.1.1）\n"
-        "6.2 单个执行（发送 6.2）\n"
-        "9.1 Bug未分析提取（发送 9.1）\n"
-        "10.1 线上批量执行（发送 10.1）\n\n"
-        "发送「菜单」查看完整功能列表")
+        "未识别的指令。当前只支持：\n"
+        "0 工作日结论播报（单次 / 定时 / 状态 / 每周汇总）\n"
+        "直接发送日期查看当天结论（如 2026-09-21）\n"
+        "发送「退出」取消当前操作")
 
 
 def _parse_bugids(text: str) -> list:
@@ -2271,8 +2283,23 @@ def _cleanup_broadcast_locks():
             pass
 
 
+def _hhmm_to_minutes(value: str) -> int:
+    """把 'H:MM'/'HH:MM' 转成一天中的分钟数，非法返回 -1（用于避免字符串比较的坑）"""
+    try:
+        hh, mm = str(value).strip().replace("：", ":").split(":")
+        minutes = int(hh) * 60 + int(mm)
+        return minutes if 0 <= minutes < 24 * 60 else -1
+    except (ValueError, AttributeError):
+        return -1
+
+
 def _daily_scheduler_loop():
-    """定时调度器：每30秒检查是否有群聊需要播报（使用中国法定工作日，播报前一工作日数据）"""
+    """定时调度器：每30秒检查是否有群聊需要播报（使用中国法定工作日，播报前一工作日数据）
+
+    触发条件改为「当前时间 ≥ 设定时间 且 今天还没播过」：
+    - 进程被长任务卡住几十秒、或某次 30 秒轮询恰好错过整分钟，都能在下一个周期补上
+    - 服务重启后如果当天还没播过，会立即补播（不会重复播）
+    """
     logger.info("昨日播报调度器已启动")
     while not _daily_scheduler_stop.is_set():
         try:
@@ -2281,22 +2308,33 @@ def _daily_scheduler_loop():
             cur_time = now.strftime("%H:%M")
             cur_date = now.strftime("%Y-%m-%d")
             if _is_chinese_workday(now):
+                now_min = now.hour * 60 + now.minute
                 for chat_id, chat_cfg in cfg.items():
                     if not chat_cfg.get("enabled"):
                         continue
                     report_time = chat_cfg.get("report_time", "17:50")
-                    if cur_time == report_time:
-                        # 文件锁防止多实例重复播报
-                        if not _try_acquire_broadcast_lock(chat_id, cur_date, cur_time):
-                            continue
-                        # 播报前一工作日的数据
-                        prev_workday = _get_prev_chinese_workday(now)
-                        logger.info("触发昨日播报: chat=%s, 当前=%s, 播报日期=%s, time=%s",
-                                   chat_id[:12], cur_date, prev_workday, cur_time)
-                        try:
-                            _bot_daily_broadcast(chat_id, prev_workday, True)
-                        except Exception as e:
-                            logger.error("定时播报执行失败: %s", e)
+                    target_min = _hhmm_to_minutes(report_time)
+                    if target_min < 0 or now_min < target_min:
+                        continue
+                    if chat_cfg.get("last_run_date") == cur_date:
+                        continue  # 今天已播过
+                    # 文件锁防止多实例重复播报
+                    if not _try_acquire_broadcast_lock(chat_id, cur_date, cur_time):
+                        continue
+                    # 播报前一工作日的数据
+                    prev_workday = _get_prev_chinese_workday(now)
+                    logger.info("触发昨日播报(%s): chat=%s, 当前=%s, 播报日期=%s, 设定=%s",
+                                "准点" if now_min == target_min else "补播",
+                                chat_id[:12], cur_date, prev_workday, report_time)
+                    chat_cfg["last_run_date"] = cur_date  # 先记账，避免失败后每 30 秒重试造成刷屏
+                    try:
+                        _bot_daily_broadcast(chat_id, prev_workday, True)
+                    except Exception as e:
+                        logger.error("定时播报执行失败: %s", e)
+                    try:
+                        _save_daily_broadcast_config(cfg)
+                    except Exception as e:
+                        logger.warning("记录播报日期失败: %s", e)
             # 定期清理旧锁文件
             if cur_time == "00:00":
                 _cleanup_broadcast_locks()
@@ -3028,289 +3066,6 @@ def _clear_audited_impl():
         return _fail(str(e))
 
 
-async def _verify_and_fill_impl(request: Request):
-    """结果验证与填入：支持多文件，读取 CSV 提取 bugid，计算并填入三个字段"""
-    import asyncio
-    import json as _json
-    import csv as _csv
-    body = await request.json() or {}
-    # 兼容单路径和多路径
-    csv_paths = body.get("csv_paths") or []
-    if not csv_paths and body.get("csv_path"):
-        csv_paths = [body["csv_path"]]
-    csv_paths = [p.strip() for p in csv_paths if p.strip() and os.path.isfile(p.strip())]
-    # 支持直接传入 jira 号列表
-    bugids = body.get("bugids") or []
-    bugids = [b.strip() for b in bugids if b.strip()]
-    if not csv_paths and not bugids:
-        return _fail("无有效文件路径或 jira 号")
-
-    async def event_generator():
-        from src import pipeline
-        from src.clients import feishu_client
-        loop = asyncio.get_event_loop()
-        # 预加载多维表格记录，构建成功集合 + 飞书链接映射（只处理成功的记录）
-        bitable_success = set()
-        bitable_links = {}  # bugid → 飞书报告链接
-        bitable_available = False
-        report_field_name = load_config().get("feishu_bitable", {}).get("report_field", "AI分析结果(飞书链接)")
-        try:
-            records = await loop.run_in_executor(
-                None, feishu_client.list_bitable_records,
-                load_config().get("feishu_bitable", {}).get("app_token", ""),
-                load_config().get("feishu_bitable", {}).get("table_id", ""))
-            bitable_available = True
-            bugid_field = load_config().get("feishu_bitable", {}).get("bugid_field", "jira号")
-            for rec in records:
-                fields = rec.get("fields", {})
-                field_value = fields.get(bugid_field, "")
-                if isinstance(field_value, list):
-                    field_value = "".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in field_value)
-                elif isinstance(field_value, dict):
-                    field_value = field_value.get("text", str(field_value))
-                jira_key = str(field_value).strip()
-                if not jira_key:
-                    continue
-                result_status = str(fields.get("分析结果", "")).strip()
-                if result_status == "成功":
-                    bitable_success.add(jira_key)
-                    # 提取飞书报告链接
-                    link_val = fields.get(report_field_name, "")
-                    if isinstance(link_val, dict) and "link" in link_val:
-                        bitable_links[jira_key] = link_val["link"]
-                    elif isinstance(link_val, str) and link_val.startswith("http"):
-                        bitable_links[jira_key] = link_val
-            logger.info("验证过滤: 多维表格成功记录 %d 条，含飞书链接 %d 条", len(bitable_success), len(bitable_links))
-        except Exception as e:
-            logger.warning("多维表格查询失败（跳过过滤）: %s", e)
-
-        for file_idx, csv_path in enumerate(csv_paths):
-            file_name = os.path.basename(csv_path)
-            _sse_d = {'type': 'file_start', 'file_index': file_idx,
-                                        'file_name': file_name, 'file_total': len(csv_paths)}
-            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-            rows = _read_csv_rows(csv_path)
-            if not rows:
-                _sse_d = {'type': 'file_error', 'file_index': file_idx,
-                                            'msg': f'{file_name}: CSV 为空'}
-                yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-                continue
-            # 识别 bugid 列
-            bugid_col = None
-            for col in ["jira号", "bugid", "key", "issue_key", "Bug ID"]:
-                if col in rows[0]:
-                    bugid_col = col
-                    break
-            if not bugid_col:
-                for c in rows[0].keys():
-                    if "jira" in c.lower() or "bug" in c.lower():
-                        bugid_col = c
-                        break
-            if not bugid_col:
-                bugid_col = list(rows[0].keys())[0]
-            # 置信度阈值：从配置读取，默认 0.7
-            confidence_threshold = float(load_config().get("similarity", {}).get("threshold", 0.7))
-            # 对比记录文件：原文件名 + _compare_log
-            base, ext = os.path.splitext(csv_path)
-            compare_log_path = f"{base}_compare_log{ext}"
-            total = len(rows)
-            _sse_d = {'type': 'start', 'file_index': file_idx,
-                                        'total': total, 'file_name': file_name}
-            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-            ready_count = 0
-            low_conf_count = 0
-            with open(compare_log_path, "w", newline="", encoding="utf-8-sig") as flog:
-                log_fields = ["jira号", "rootcause", "AI评论总结", "结果置信度", "达标", "原因"]
-                log_writer = _csv.DictWriter(flog, fieldnames=log_fields, extrasaction="ignore")
-                log_writer.writeheader()
-                for idx, row in enumerate(rows):
-                    # 客户端断开时停止验证
-                    if await request.is_disconnected():
-                        logger.info("verify: 客户端已断开，停止验证 bugid=%s", row.get(bugid_col, ""))
-                        yield f"data: {_json.dumps({'type': 'cancelled', 'file_index': file_idx}, ensure_ascii=False)}\n\n"
-                        return
-                    bugid = str(row.get(bugid_col, "")).strip()
-                    if not bugid:
-                        continue
-                    # 多维表格中未成功（不存在或失败）的记录跳过验证
-                    if bitable_available and bugid not in bitable_success:
-                        log_writer.writerow({"jira号": bugid, "达标": "否", "原因": "多维表格中未成功"})
-                        _sse_d = {'type': 'progress', 'file_index': file_idx,
-                                                    'index': idx + 1, 'total': total, 'bugid': bugid,
-                                                    'status': 'skipped', 'rootcause': '', 'confidence': '',
-                                                    'comment_summary': '', 'msg': '多维表格中未成功，已跳过'}
-                        yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-                        continue
-                    # 从多维表格注入飞书报告链接（若CSV行中缺失）
-                    if not row.get("AI分析结果(飞书链接)") and bugid in bitable_links:
-                        row["AI分析结果(飞书链接)"] = bitable_links[bugid]
-                    try:
-                        result = await loop.run_in_executor(None, pipeline.verify_and_fill_row, bugid, row)
-                        if result["success"]:
-                            conf_val = float(row.get("结果置信度", "0") or "0")
-                            calc_rootcause = row.get("rootcause", "") or ""
-                            calc_comment = row.get("AI评论总结", "") or ""
-                            calc_doc_url = row.get("doc_url", "") or ""
-                            calc_doc_path = row.get("doc_path", "") or ""
-                            is_ready = conf_val >= confidence_threshold
-                            extra_sim = result.get("extra_similarity", 0)
-                            reason = ""
-                            if not is_ready:
-                                if extra_sim >= confidence_threshold:
-                                    is_ready = True
-                                    reason = f"置信度{conf_val}<阈值，语义相似度{extra_sim}≥{confidence_threshold}，视为通过"
-                                else:
-                                    reason = f"置信度{conf_val}<{confidence_threshold}，语义相似度{extra_sim}<{confidence_threshold}"
-                            if is_ready:
-                                ready_count += 1
-                            else:
-                                low_conf_count += 1
-                            log_writer.writerow({"jira号": bugid, "rootcause": calc_rootcause[:200],
-                                                 "AI评论总结": calc_comment[:200],
-                                                 "结果置信度": str(conf_val),
-                                                 "达标": "是" if is_ready else "否",
-                                                 "原因": "" if is_ready else reason})
-                            _sse_d = {'type': 'progress', 'file_index': file_idx,
-                                                        'index': idx + 1, 'total': total, 'bugid': bugid,
-                                                        'status': 'success' if is_ready else 'low_confidence',
-                                                        'rootcause': calc_rootcause[:80],
-                                                        'confidence': str(conf_val),
-                                                        'comment_summary': calc_comment,
-                                                        'doc_url': calc_doc_url,
-                                                        'doc_path': calc_doc_path,
-                                                        'msg': '' if is_ready else reason}
-                            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-                        else:
-                            err_msg = result.get('error', '')
-                            is_skip = '根因分析内容为空' in err_msg
-                            log_writer.writerow({"jira号": bugid, "达标": "否", "原因": err_msg[:200]})
-                            _sse_d = {'type': 'progress', 'file_index': file_idx,
-                                                        'index': idx + 1, 'total': total, 'bugid': bugid,
-                                                        'status': 'skipped' if is_skip else 'fail',
-                                                        'rootcause': '', 'confidence': '',
-                                                        'comment_summary': '',
-                                                        'msg': err_msg}
-                            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-                    except Exception as e:
-                        log_writer.writerow({"jira号": bugid, "达标": "否", "原因": str(e)[:200]})
-                        _sse_d = {'type': 'progress', 'file_index': file_idx,
-                                                    'index': idx + 1, 'total': total, 'bugid': bugid,
-                                                    'status': 'fail', 'rootcause': '', 'confidence': '',
-                                                    'comment_summary': '',
-                                                    'msg': str(e)[:200]}
-                        yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-            _sse_d = {'type': 'file_done', 'file_index': file_idx,
-                                        'file_name': file_name, 'total': total,
-                                        'ready': ready_count, 'low_conf': low_conf_count,
-                                        'compare_log': compare_log_path, 'csv_path': csv_path}
-            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-        # 处理直接传入的 jira 号列表
-        if bugids:
-            file_idx = len(csv_paths)
-            file_name = f"jira输入({len(bugids)}个)"
-            _sse_d = {'type': 'file_start', 'file_index': file_idx,
-                                        'file_name': file_name, 'file_total': len(csv_paths) + 1}
-            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-            rows = [{"jira号": b} for b in bugids]
-            bugid_col = "jira号"
-            confidence_threshold = float(load_config().get("similarity", {}).get("threshold", 0.7))
-            # 对比记录文件：docs/日期/jira_input_compare_log.csv
-            date_str = datetime.now().strftime("%Y-%m-%d")
-            compare_log_dir = os.path.join(get_path("doc_dir"), date_str)
-            os.makedirs(compare_log_dir, exist_ok=True)
-            compare_log_path = os.path.join(compare_log_dir, "jira_input_compare_log.csv")
-            total = len(rows)
-            _sse_d = {'type': 'start', 'file_index': file_idx,
-                                        'total': total, 'file_name': file_name}
-            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-            ready_count = 0
-            low_conf_count = 0
-            with open(compare_log_path, "w", newline="", encoding="utf-8-sig") as flog:
-                log_fields = ["jira号", "rootcause", "AI评论总结", "结果置信度", "达标", "原因"]
-                log_writer = _csv.DictWriter(flog, fieldnames=log_fields, extrasaction="ignore")
-                log_writer.writeheader()
-                for idx, row in enumerate(rows):
-                    # 客户端断开时停止验证
-                    if await request.is_disconnected():
-                        logger.info("verify: 客户端已断开，停止验证 bugid=%s", row.get("jira号", ""))
-                        yield f"data: {_json.dumps({'type': 'cancelled', 'file_index': file_idx}, ensure_ascii=False)}\n\n"
-                        return
-                    bugid = row["jira号"]
-                    if bitable_available and bugid not in bitable_success:
-                        log_writer.writerow({"jira号": bugid, "达标": "否", "原因": "多维表格中未成功"})
-                        _sse_d = {'type': 'progress', 'file_index': file_idx,
-                                                    'index': idx + 1, 'total': total, 'bugid': bugid,
-                                                    'status': 'skipped', 'rootcause': '', 'confidence': '',
-                                                    'comment_summary': '', 'msg': '多维表格中未成功，已跳过'}
-                        yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-                        continue
-                    # 从多维表格注入飞书报告链接（jira输入模式无此字段）
-                    if not row.get("AI分析结果(飞书链接)") and bugid in bitable_links:
-                        row["AI分析结果(飞书链接)"] = bitable_links[bugid]
-                    try:
-                        result = await loop.run_in_executor(None, pipeline.verify_and_fill_row, bugid, row)
-                        if result["success"]:
-                            conf_val = float(row.get("结果置信度", "0") or "0")
-                            calc_rootcause = row.get("rootcause", "") or ""
-                            calc_comment = row.get("AI评论总结", "") or ""
-                            calc_doc_url = row.get("doc_url", "") or ""
-                            calc_doc_path = row.get("doc_path", "") or ""
-                            is_ready = conf_val >= confidence_threshold
-                            extra_sim = result.get("extra_similarity", 0)
-                            reason = ""
-                            if not is_ready:
-                                if extra_sim >= confidence_threshold:
-                                    is_ready = True
-                                    reason = f"置信度{conf_val}<阈值，语义相似度{extra_sim}≥{confidence_threshold}，视为通过"
-                                else:
-                                    reason = f"置信度{conf_val}<{confidence_threshold}，语义相似度{extra_sim}<{confidence_threshold}"
-                            if is_ready:
-                                ready_count += 1
-                            else:
-                                low_conf_count += 1
-                            log_writer.writerow({"jira号": bugid, "rootcause": calc_rootcause[:200],
-                                                 "AI评论总结": calc_comment[:200],
-                                                 "结果置信度": str(conf_val),
-                                                 "达标": "是" if is_ready else "否",
-                                                 "原因": "" if is_ready else reason})
-                            _sse_d = {'type': 'progress', 'file_index': file_idx,
-                                                        'index': idx + 1, 'total': total, 'bugid': bugid,
-                                                        'status': 'success' if is_ready else 'low_confidence',
-                                                        'rootcause': calc_rootcause[:80],
-                                                        'confidence': str(conf_val),
-                                                        'comment_summary': calc_comment,
-                                                        'doc_url': calc_doc_url,
-                                                        'doc_path': calc_doc_path,
-                                                        'msg': '' if is_ready else reason}
-                            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-                        else:
-                            err_msg = result.get('error', '')
-                            is_skip = '根因分析内容为空' in err_msg
-                            log_writer.writerow({"jira号": bugid, "达标": "否", "原因": err_msg[:200]})
-                            _sse_d = {'type': 'progress', 'file_index': file_idx,
-                                                        'index': idx + 1, 'total': total, 'bugid': bugid,
-                                                        'status': 'skipped' if is_skip else 'fail',
-                                                        'rootcause': '', 'confidence': '',
-                                                        'comment_summary': '',
-                                                        'msg': err_msg}
-                            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-                    except Exception as e:
-                        log_writer.writerow({"jira号": bugid, "达标": "否", "原因": str(e)[:200]})
-                        _sse_d = {'type': 'progress', 'file_index': file_idx,
-                                                    'index': idx + 1, 'total': total, 'bugid': bugid,
-                                                    'status': 'fail', 'rootcause': '', 'confidence': '',
-                                                    'comment_summary': '',
-                                                    'msg': str(e)[:200]}
-                        yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-            _sse_d = {'type': 'file_done', 'file_index': file_idx,
-                                        'file_name': file_name, 'total': total,
-                                        'ready': ready_count, 'low_conf': low_conf_count,
-                                        'compare_log': compare_log_path, 'csv_path': ''}
-            yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
-        yield f"data: {_json.dumps({'type': 'all_done'}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 def _diag_pick_error_info(fields: dict) -> str:
@@ -3419,13 +3174,10 @@ def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid:
             # 保留原始文件名（清理路径分隔符），以便分卷 zip 等格式正确识别
             safe_name = _re.sub(r'[/\\]', '_', filename) if filename else "att.bin"
             src_path = os.path.join(tmp, safe_name)
-            # 流式下载，避免一次性加载到内存
-            with _httpx.stream("GET", att_url, headers=headers, timeout=timeout, verify=False, follow_redirects=True) as resp:
-                resp.raise_for_status()
-                with open(src_path, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                        f.write(chunk)
-                        total_size += len(chunk)
+            # 流式下载：体积上限 / 磁盘水位 / 单bug预算 / 附件缓存由 attachment_guard 统一负责
+            total_size = _stream_download(
+                att_url, headers, src_path, timeout=timeout, bugid=bugid,
+                filename=safe_name, max_bytes=_MAX_ATTACHMENT_BYTES)
             logger.info("%s附件下载完成: size=%d bytes", _label, total_size)
             ok, names = _diag_archive_names(src_path)
             if not ok:
@@ -3451,17 +3203,19 @@ def _diag_list_rar_multi_entries(parts: list, headers: dict, timeout: int, bugid
             rar_dir = os.path.join(tmp, "rar_parts")
             os.makedirs(rar_dir, exist_ok=True)
             # 流式下载所有分卷到同一目录（保持原始文件名，7z 需要自动续卷）
+            # 分卷总量单独设 2GB 上限，避免多卷累计把磁盘写满
             for _p, att in parts:
                 fname = att.get("filename", "") or f"part{_p}.rar"
                 dst = os.path.join(rar_dir, fname)
                 logger.info("%s下载 rar 分卷: %s", _label, fname)
-                with open(dst, "wb") as out:
-                    with _httpx.stream("GET", att.get("content", ""), headers=headers,
-                                       timeout=timeout, verify=False, follow_redirects=True) as r:
-                        r.raise_for_status()
-                        for chunk in r.iter_bytes(chunk_size=1024 * 1024):
-                            out.write(chunk)
-                            total_size += len(chunk)
+                remaining = _MAX_RAR_VOLUME_BYTES - total_size
+                if remaining <= 0:
+                    return {"ok": False, "entries": [],
+                            "reason": f"rar 分卷总量超过 {_MAX_RAR_VOLUME_BYTES // 1024 // 1024 // 1024}GB 上限",
+                            "size": total_size}
+                total_size += _stream_download(
+                    att.get("content", ""), headers, dst, timeout=timeout, bugid=bugid,
+                    filename=fname, max_bytes=remaining)
             logger.info("%srar 分卷下载完成: %d bytes, %d 个卷", _label, total_size, len(parts))
             # 用第一卷的路径调用 7z/UnRAR 列出条目
             first_fname = parts[0][1].get("filename", "") or f"part{parts[0][0]}.rar"
@@ -3579,13 +3333,17 @@ def _diag_archive_read_heads(path: str, names: list, size: int = 65536) -> dict:
                     except Exception:
                         continue
             return result
-        # 7z 格式
+        # 7z 格式（解压前按条目大小过滤：7z 需整块落盘，超大条目先剔除）
         import py7zr
         if py7zr.is_7zfile(path):
             import tempfile
             with tempfile.TemporaryDirectory() as tmp:
                 with py7zr.SevenZipFile(path, "r") as zf:
-                    zf.extract(tmp, targets=names)
+                    _size_map = {getattr(i, "filename", ""): getattr(i, "uncompressed", 0) or 0
+                                 for i in zf.list()}
+                    names, _skipped = _filter_large_entries(names, _size_map, label="7z 压缩包")
+                    if names:
+                        zf.extract(tmp, targets=names)
                 for n in names:
                     fp = os.path.join(tmp, n)
                     if os.path.exists(fp):
@@ -3595,12 +3353,17 @@ def _diag_archive_read_heads(path: str, names: list, size: int = 65536) -> dict:
                         except Exception:
                             continue
             return result
-        # rar 格式
+        # rar 格式（解压前按条目大小过滤：rarfile 只能整条目解压）
         import rarfile
         if _setup_rarfile() and rarfile.is_rarfile(path):
             import tempfile
             with tempfile.TemporaryDirectory() as tmp:
                 with rarfile.RarFile(path) as rf:
+                    try:
+                        _size_map = {m.filename: m.file_size for m in rf.infolist()}
+                    except Exception:
+                        _size_map = {}
+                    names, _skipped = _filter_large_entries(names, _size_map, label="rar 压缩包")
                     for n in names:
                         try:
                             rf.extract(n, tmp)
@@ -3837,6 +3600,7 @@ def _diag_download_archives(attachments: list, headers: dict, timeout: int, prob
     archive_results = []
     matched_any = False
     _label = f"{bugid} " if bugid else ""
+    _ATTACH_BUDGET.begin_bug(bugid)  # 每个 bug 的附件预算独立计数
     # 连续解压失败计数器：超过阈值时停止下载（避免无意义的附件下载浪费时间和带宽）
     consecutive_fail_count = 0
     MAX_CONSECUTIVE_FAILS = 3  # 连续失败3次后停止下载
@@ -3948,6 +3712,7 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
     import httpx as _httpx
     import time as _time
     # 按基础名分组收集分卷：支持 .zip.001 后缀式与 .part1.rar 嵌入式命名，后缀数字为分卷号（单卷为0）
+    _ATTACH_BUDGET.begin_bug(bugid)  # 每个 bug 的附件预算独立计数
     groups = {}
     for att in attachments:
         fname = att.get("filename", "") or ""
@@ -3981,16 +3746,18 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                 rar_dir = os.path.join(tmp, os.path.basename(base) + "_rar")
                 os.makedirs(rar_dir, exist_ok=True)
                 try:
+                    _vol_total = 0
                     for _p, att in parts:
                         dst = os.path.join(rar_dir, att.get("filename", "") or f"part{_p}.rar")
-                        with open(dst, "wb") as out:
-                            with _httpx.stream("GET", att.get("content", ""), headers=headers,
-                                               timeout=timeout, verify=False, follow_redirects=True) as r:
-                                r.raise_for_status()
-                                for chunk in r.iter_bytes(chunk_size=1024 * 1024):
-                                    out.write(chunk)
-                                    if _time.time() - _dl_start > _DL_DEADLINE:
-                                        raise TimeoutError(f"gmlogger 下载超时({_DL_DEADLINE}s)")
+                        remaining = _MAX_RAR_VOLUME_BYTES - _vol_total
+                        if remaining <= 0:
+                            raise _AttachmentLimitError(
+                                f"rar 分卷总量超过 {_MAX_RAR_VOLUME_BYTES // 1024 // 1024 // 1024}GB 上限")
+                        _vol_total += _stream_download(
+                            att.get("content", ""), headers, dst, timeout=timeout,
+                            bugid=bugid, filename=os.path.basename(dst), max_bytes=remaining)
+                        if _time.time() - _dl_start > _DL_DEADLINE:
+                            raise TimeoutError(f"gmlogger 下载超时({_DL_DEADLINE}s)")
                 except TimeoutError as e:
                     logger.warning("gmlogger rar 下载超时: %s", e)
                     return {"status": "failed", "reason": f"gmlogger 下载超时({_DL_DEADLINE}s)",
@@ -4007,12 +3774,19 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
             merged = os.path.join(tmp, os.path.basename(base))
             try:
                 # 分卷按序流式下载拼接为完整压缩包，避免大文件占用内存
+                _merged_written = 0
                 with open(merged, "wb") as out:
                     for _p, att in parts:
                         with _httpx.stream("GET", att.get("content", ""), headers=headers,
                                            timeout=timeout, verify=False, follow_redirects=True) as r:
                             r.raise_for_status()
                             for chunk in r.iter_bytes(chunk_size=1024 * 1024):
+                                _merged_written += len(chunk)
+                                if _merged_written > _MAX_ATTACHMENT_BYTES:
+                                    raise _AttachmentLimitError(
+                                        f"gmlogger 压缩包超过 {_MAX_ATTACHMENT_BYTES // 1024 // 1024}MB 上限"
+                                        f"（已下载 {_merged_written / 1024 / 1024:.1f}MB），已中止")
+                                _ATTACH_BUDGET.charge(len(chunk), bugid)
                                 out.write(chunk)
                                 if _time.time() - _dl_start > _DL_DEADLINE:
                                     raise TimeoutError(f"gmlogger 下载超时({_DL_DEADLINE}s)")
@@ -5207,17 +4981,12 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
                         "（单视频）" if single_video else "")
             tmp_dir = tempfile.mkdtemp()
             video_path = os.path.join(tmp_dir, "video.bin")
-            _vfb_dl_start = _time.time()
             _VFB_DL_DEADLINE = 180  # 单个视频下载上限 3 分钟
-            with _httpx.stream("GET", video_url, headers=headers, timeout=120, verify=False, follow_redirects=True) as resp:
-                resp.raise_for_status()
-                with open(video_path, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                        f.write(chunk)
-                        if stop_event and stop_event.is_set():
-                            raise TimeoutError("用户停止")
-                        if _time.time() - _vfb_dl_start > _VFB_DL_DEADLINE:
-                            raise TimeoutError(f"视频下载超时({_VFB_DL_DEADLINE}s)")
+            # 统一走附件守卫：字节上限 + 磁盘水位 + 预算记账 + 可取消/超时
+            _stream_download(video_url, headers, video_path, timeout=120, bugid=bugid,
+                             max_bytes=_MAX_MEDIA_BYTES, filename="video.bin",
+                             use_cache=False, stop_event=stop_event,
+                             deadline_seconds=_VFB_DL_DEADLINE)
             logger.info("视频兜底提取：下载完成 %s", video_label)
             _timestudy_trace(bugid, "dl:ok")
         except Exception as e:
@@ -5678,15 +5447,11 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                             "（单视频）" if single_video else "")
                 tmp_dir = tempfile.mkdtemp()
                 video_path = os.path.join(tmp_dir, "video.bin")
-                _vid_dl_start = _time.time()
                 _VID_DL_DEADLINE = 180  # 单个视频下载上限 3 分钟
-                with _httpx.stream("GET", video_url, headers=headers, timeout=timeout, verify=False, follow_redirects=True) as resp:
-                    resp.raise_for_status()
-                    with open(video_path, "wb") as f:
-                        for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                            f.write(chunk)
-                            if _time.time() - _vid_dl_start > _VID_DL_DEADLINE:
-                                raise TimeoutError(f"视频下载超时({_VID_DL_DEADLINE}s)")
+                # 统一走附件守卫：字节上限 + 磁盘水位 + 预算记账 + 超时
+                _stream_download(video_url, headers, video_path, timeout=timeout, bugid=bugid,
+                                 max_bytes=_MAX_MEDIA_BYTES, filename="video.bin",
+                                 use_cache=False, deadline_seconds=_VID_DL_DEADLINE)
                 logger.info("视频帧提取：下载完成 %s", video_label)
             except TimeoutError as e:
                 logger.warning("视频帧提取：下载超时 %s: %s", video_name, e)
@@ -6001,13 +5766,11 @@ def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bug
             img_path = os.path.join(tmp, fname)
             logger.info("%s图片 OCR: 处理 %s", f"{bugid} " if bugid else "", fname)
             try:
-                # 下载图片
-                with _httpx.stream("GET", att.get("content", ""), headers=headers,
-                                   timeout=timeout, verify=False, follow_redirects=True) as resp:
-                    resp.raise_for_status()
-                    with open(img_path, "wb") as f:
-                        for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                            f.write(chunk)
+                # 下载图片（附件守卫：字节上限 + 磁盘水位 + 预算 + 可取消）
+                _stream_download(att.get("content", ""), headers, img_path, timeout=timeout,
+                                 bugid=bugid, max_bytes=_MAX_MEDIA_BYTES,
+                                 filename=fname or "image.bin", use_cache=False,
+                                 stop_event=stop_event)
                 # OCR 识别（返回 bbox + 文字 + 置信度）
                 img = cv2.imread(img_path)
                 if img is None:

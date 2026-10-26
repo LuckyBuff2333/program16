@@ -2,10 +2,13 @@
 from fastapi import APIRouter, Request, Body, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from datetime import datetime, timedelta
+import io
 import random
+import threading
 
 from src import pipeline
 from src.config import PROJECT_ROOT, get_path, load_config, setup_logger
+from src.core.attachment_guard import begin_batch as _begin_attach_batch
 from src.core import doc_generator
 from src.schemas.common import ApiResponse
 from src.api.routes.shared import (
@@ -26,9 +29,45 @@ from src.api.routes.shared import (
     _parse_reasoning_rounds,
     _scan_study_folders,
     _ts_parse_datetime,
+    MAX_EXPAND_BYTES as _MAX_EXPAND_BYTES,
+    ExpandBudget as _ExpandBudget,
+    check_archive_entries as _check_archive_entries,
+    read_upload_limited as _read_upload_limited,
+    run_blocking as _run_blocking,
     ok as _ok,
 )
 from fastapi.responses import JSONResponse as _JSONResponse
+
+
+# 上传文件解析结果在内存中的保留上限（避免长时间运行内存无限增长）
+_MAX_UPLOADED_FILES = 20
+_upload_seq = 0
+
+# 错误统计缓存：多维表格全量拉取较慢，60 秒内复用，避免连续查询重复拉全表
+_ERROR_STATS_CACHE = {"ts": 0.0, "records": None}
+_ERROR_STATS_TTL = 60.0
+_ERROR_STATS_LOCK = threading.Lock()
+
+
+def _adp_text_payload(result: dict) -> dict:
+    """ADP 结果回传给前端的文本字段：只给「预览 + 总长度 + 报告路径」
+
+    完整文本（可能几 MB~几十 MB）已经落盘到 docs/adp_results/<key>/，前端按需打开，
+    避免把整段文本塞进 SSE 帧/JSON 响应导致页面卡顿与内存暴涨。
+    """
+    result = result or {}
+    full = result.get("full_text") or ""
+    return {
+        "text_len": result.get("text_len") or len(full),
+        "text_preview": result.get("text_preview") or full[:2000],
+        "report_path": result.get("report_path", ""),
+    }
+
+
+def _adp_fail_type(result: dict) -> str:
+    """ADP 结果的失败类型（失败归因）；成功时为空字符串"""
+    result = result or {}
+    return result.get("fail_type") or (result.get("results") or {}).get("分析失败归因", "")
 
 
 def _fail(message: str, extra: dict = None):
@@ -36,6 +75,10 @@ def _fail(message: str, extra: dict = None):
     if extra:
         data.update(extra)
     return _JSONResponse(content=data, status_code=200)
+
+
+# 上传/解压限额工具统一放在 shared.py，见本文件顶部 import 的
+# _read_upload_limited / _check_archive_entries / _ExpandBudget / _MAX_EXPAND_BYTES
 
 
 logger = setup_logger("web.testing")
@@ -147,6 +190,13 @@ async def test_ai_analyze(request: Request):
         return _fail("bugid 不能为空")
     try:
         cfg = load_config()["ai_log_api"]
+        # mock 模式：不发真实请求，返回固定的成功响应供联调/测试使用
+        if cfg.get("mock", False):
+            return _ok({
+                "api_response": {"code": 200, "msg": "分析任务已启动(mock)",
+                                 "data": {"issue_key": bugid}},
+                "api_elapsed": 0.0, "api_success": True, "mock": True,
+            }, "mock 模式：AI 分析接口字段校验通过")
         # ── 阶段 1：调用 AI 接口，验证返回字段（15s 内完成）──
         payload = {cfg.get("bugid_field") or "issue_key": bugid}
         trigger_time = body.get("trigger_time") or None
@@ -215,7 +265,7 @@ async def test_ai_analyze(request: Request):
 
 
 @router.get("/api/test/batch_ai_csv_files", response_model=ApiResponse)
-async def test_batch_ai_csv_files():
+def test_batch_ai_csv_files():
     """列出 data/unanalyzed/ 下可用于功能7批量执行的 CSV 文件"""
     import os, re, json
     import csv as _csv
@@ -286,7 +336,7 @@ async def test_batch_ai_search(request: Request):
         return _fail("JQL 查询语句不能为空")
     try:
         from src.clients import jira_client
-        issues = jira_client.search_issues(jql, max_results=5000)
+        issues = await _run_blocking(jira_client.search_issues, jql, max_results=5000)
         vcu_issues = [i for i in issues if "VCU" in (i.get("key") or "").upper()]
         rows = []
         for i in vcu_issues:
@@ -347,7 +397,7 @@ async def test_jira_lookup(request: Request):
 
         if is_jql:
             try:
-                issues = jira_client.search_issues(raw, max_results=500)
+                issues = await _run_blocking(jira_client.search_issues, raw, max_results=500)
                 bugids = [(i.get("key") or "").strip() for i in issues if i.get("key")]
                 bugids = [b for b in bugids if b]
                 # 并行拉取详情（15路并发）
@@ -383,13 +433,13 @@ async def test_jira_lookup(request: Request):
 
 
 @router.post("/api/test/batch_ai_extract_times/stop", response_model=ApiResponse)
-async def stop_batch_ai_extract_times():
+def stop_batch_ai_extract_times():
     """触发批量提取停止信号（优雅停止：当前条目完成后停止后续）"""
     import os, re, json
     from src.api.routes.shared import batch_extract_stop_event as _batch_extract_stop_event
     _batch_extract_stop_event.set()
     logger.info("收到批量提取停止信号，当前条目完成后将停止后续处理")
-    return ok(None, "停止信号已发送，当前条目完成后停止")
+    return _ok(None, "停止信号已发送，当前条目完成后停止")
 
 
 @router.post("/api/test/filter_success_jiras", response_model=ApiResponse)
@@ -444,10 +494,11 @@ async def test_batch_ai_extract_times(request: Request):
     from src.api.routes.shared import batch_extract_stop_event as _batch_extract_stop_event
     from src.services.trigger_ops import (
         _load_cloud_trigger_cache, _ensure_trigger_time_bugid_cache,
-        _batch_save_trigger_times_to_cloud, _save_trigger_time_to_csv,
+        _batch_save_trigger_times_to_cloud, _save_trigger_time_to_csv, remember_ref_time,
+    _timestudy_record,
     )
     from src.services.report_ops import _load_bitable_success_jiras
-    from src.services.server_legacy import _diag_extract_time_from_video_simple, _has_gmlogger_logs, _diag_extract_time_from_images
+    from src.services.server_legacy import _diag_extract_time_from_video_simple, _has_gmlogger_logs, _diag_extract_time_from_images, _diag_gmlogger_times
     body = await request.json() or {}
     keys = body.get("keys") or []
     filter_existing = body.get("filter_existing", False)  # 过滤多维表格中已有数据
@@ -473,6 +524,7 @@ async def test_batch_ai_extract_times(request: Request):
         signal.signal(signal.SIGINT, _on_sigint)
         try:
             _batch_extract_stop_event.clear()  # 新批次开始时清除停止标志
+            _begin_attach_batch()              # 新批次：重置附件下载预算
             # 加载云端已有时间 + 所有已处理的 jira 号 + 成功分析记录（用于缓存过期判断，合并加载避免两次全量拉取）
             (cloud_times, cloud_keys), success_jiras = await asyncio.gather(
                 loop.run_in_executor(None, _load_cloud_trigger_cache),
@@ -565,6 +617,14 @@ async def test_batch_ai_extract_times(request: Request):
                 from src.clients import jira_client as _jc
                 _ocr_sem = asyncio.Semaphore(2)  # OCR 并发限制：最多 2 路同时 GPU 推理，避免显存争抢
 
+                def _lookup_ref_local(bid):
+                    from src.services.trigger_ops import _lookup_ref as _lr
+                    return _lr(bid)
+
+                def _self_check_local(tt, ref):
+                    from src.services.trigger_ops import self_check_trigger_time as _sc
+                    return _sc(tt, ref)
+
                 async def _process_one(key):
                     """处理单条触发时间提取，返回 (key, status, tt_val)"""
                     def _should_stop():
@@ -580,6 +640,14 @@ async def test_batch_ai_extract_times(request: Request):
                         if _should_stop():
                             return key, "stopped", ""
                         attachments = (issue.get("fields") or {}).get("attachment") or []
+                        # 登记日志包参考时间，供写表时做自检（时间差秒/窗口命中）
+                        try:
+                            _gm_times = _diag_gmlogger_times(attachments) or []
+                            if _gm_times:
+                                _g0 = _gm_times[0][0] if isinstance(_gm_times[0], tuple) else _gm_times[0]
+                                remember_ref_time(key, _g0.strftime("%Y-%m-%d %H:%M:%S") if hasattr(_g0, "strftime") else str(_g0)[:19])
+                        except Exception as _e:
+                            logger.debug("登记参考时间失败 %s: %s", key, _e)
                         _has_log = await loop.run_in_executor(None, _has_gmlogger_logs, attachments, key)
                         if not _has_log:
                             # 无gmlogger且包内无main → 不写空标记，下次仍可重新检查
@@ -598,12 +666,12 @@ async def test_batch_ai_extract_times(request: Request):
                                 tt = video_tt
                                 sources[key] = "视频提取"
                             if not tt:
-                                tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
+                                tt = await _run_blocking(_jc.extract_trigger_time_from_issue, issue, skip_attachment=True)
                                 if tt:
                                     sources[key] = "新提取"
                         else:
                             # 默认不勾选：评论 → 视频 → 图片
-                            tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
+                            tt = await _run_blocking(_jc.extract_trigger_time_from_issue, issue, skip_attachment=True)
                             if tt:
                                 sources[key] = "新提取"
                             if not tt:
@@ -639,6 +707,19 @@ async def test_batch_ai_extract_times(request: Request):
                             trigger_times[key] = tt
                             tt_val = tt
                             _write_buffer.append((key, tt))
+                            # P0-1：把本次提取写入自学习记录（来源/参考时间/时间差）
+                            try:
+                                _ref = _lookup_ref_local(key)
+                                _chk = _self_check_local(tt, _ref)
+                                _vids = sum(1 for a in attachments if (a.get("mimeType", "") or "").startswith("video"))
+                                _gms = len(_diag_gmlogger_times(attachments) or [])
+                                _timestudy_record(
+                                    key, tt, sources.get(key, ""),
+                                    ctx={"ref_times": _ref,
+                                         "match_diff": "" if _chk.get("diff_sec") is None else str(_chk["diff_sec"]),
+                                         "video_count": _vids, "gm_count": _gms})
+                            except Exception as _e:
+                                logger.debug("写自学习记录失败 %s: %s", key, _e)
                         else:
                             if key in old_cache:
                                 trigger_times[key] = old_cache[key]
@@ -1020,7 +1101,7 @@ async def test_batch_ai_sample(request: Request):
                     break
                 try:
                     from src.clients import jira_client as _jc
-                    issue = _jc.fetch_issue(k)
+                    issue = await _run_blocking(_jc.fetch_issue, k)
                     # gmlogger 前置检查：无 gmlogger 附件直接跳过（与批量提取保持一致）
                     attachments = (issue.get("fields") or {}).get("attachment") or []
                     if not _has_gmlogger_logs(attachments, k):
@@ -1028,7 +1109,7 @@ async def test_batch_ai_sample(request: Request):
                         extract_failed += 1
                         continue
                     # 评论/字段提取优先（文本提取准确率最高且速度最快）
-                    tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
+                    tt = await _run_blocking(_jc.extract_trigger_time_from_issue, issue, skip_attachment=True)
                     if not tt:
                         # 文本未命中，视频OCR兑底
                         tt = _diag_extract_time_from_video_simple(issue)
@@ -1261,7 +1342,7 @@ async def test_batch_quality_assess(request: Request):
     app_token, table_id = cfg.get("app_token", ""), cfg.get("table_id", "")
     if not app_token or not table_id:
         return _fail("多维表格未配置")
-    bitable = feishu_client.list_bitable_records(app_token, table_id)
+    bitable = await _run_blocking(feishu_client.list_bitable_records, app_token, table_id)
     jira_set = set(bugids)
     latest_done, missing_exec = "", []
     for rec in bitable:
@@ -1290,7 +1371,7 @@ async def test_batch_quality_assess(request: Request):
     if missing_exec and csv_ctime:
         updates = [{"record_id": m["record_id"], "fields": {"分析问题时间": csv_ctime}} for m in missing_exec]
         for i in range(0, len(updates), 100):
-            feishu_client.update_bitable_records(app_token, table_id, updates[i:i + 100])
+            await _run_blocking(feishu_client.update_bitable_records, app_token, table_id, updates[i:i + 100])
         backfilled = len(missing_exec)
     return _ok({"assessment": {
         "total": len(bugids), "backfilled": backfilled,
@@ -1318,13 +1399,13 @@ async def test_bitable_write(request: Request):
 
     try:
         # 获取字段定义
-        field_defs = feishu_client.list_bitable_fields(app_token, table_id)
+        field_defs = await _run_blocking(feishu_client.list_bitable_fields, app_token, table_id)
         field_name_map = {fd.get("field_name", ""): fd.get("field_name", "") for fd in field_defs}
         field_type_map = {fd.get("field_name", ""): fd.get("type", 0) for fd in field_defs}
 
         # 无 bugid 时：返回全量记录（供数据看板展示）
         if not bugid:
-            records = feishu_client.list_bitable_records(app_token, table_id)
+            records = await _run_blocking(feishu_client.list_bitable_records, app_token, table_id)
             result_rows = []
             for rec in records:
                 fields = rec.get("fields", {})
@@ -1350,7 +1431,7 @@ async def test_bitable_write(request: Request):
         cf_field = field_name_map.get("结果置信度") or field_name_map.get("置信度") or ""
 
         # 获取记录
-        records = feishu_client.list_bitable_records(app_token, table_id)
+        records = await _run_blocking(feishu_client.list_bitable_records, app_token, table_id)
         bugid_to_record = {}
         for rec in records:
             fields = rec.get("fields", {})
@@ -1388,7 +1469,7 @@ async def test_bitable_write(request: Request):
                     try:
                         doc_title = f"{bugid} AI评论总结"
                         doc_content = _find_comment_doc(bugid) or cleaned_comment
-                        doc_result = feishu_client.create_docx_document(doc_title, doc_content)
+                        doc_result = await _run_blocking(feishu_client.create_docx_document, doc_title, doc_content)
                         doc_url = doc_result.get("url", "")
                     except Exception as e:
                         logger.warning("创建在线文档失败: %s", e)
@@ -1420,7 +1501,7 @@ async def test_bitable_write(request: Request):
                 "dry_run": True
             }, "模拟写入成功，未实际发送")
 
-        feishu_client.update_bitable_records(app_token, table_id, update_records)
+        await _run_blocking(feishu_client.update_bitable_records, app_token, table_id, update_records)
         return _ok({
             "record_id": record_id,
             "fields": fields_to_write,
@@ -1436,6 +1517,7 @@ async def test_bitable_write(request: Request):
 async def test_jira_raw(request: Request):
     """功能测试5：Jira 接口原始返回字段验证，调用 Jira API 并返回完整响应内容"""
     import os, re, json
+    from src.clients import jira_client
     body = await request.json() or {}
     bugid = str(body.get("bugid", "")).strip()
     if not bugid:
@@ -1444,7 +1526,7 @@ async def test_jira_raw(request: Request):
         cfg = load_config()["jira_api"]
         is_mock = cfg.get("mock", False)
         # 调用 Jira 接口获取完整响应
-        raw_response = jira_client.fetch_issue(bugid)
+        raw_response = await _run_blocking(jira_client.fetch_issue, bugid)
         # 提取当前已使用的字段值，便于对比
         extracted = {
             "description": jira_client.extract_error_cause(raw_response),
@@ -1474,6 +1556,7 @@ async def test_jira_raw(request: Request):
 async def test_trigger_time(request: Request):
     """功能测试：触发时间提取，优先读云端已有数据，无记录再从 Jira 提取"""
     import os, re, json
+    from src.clients import jira_client
     from src.services.trigger_ops import (
         _load_trigger_times_from_cloud,
         _save_trigger_time_to_cloud,
@@ -1494,13 +1577,13 @@ async def test_trigger_time(request: Request):
                 "source": "cloud",
             }, f"云端已有触发时间: {cached_time}")
         # 云端无记录，从 Jira 提取
-        issue = jira_client.fetch_issue(bugid)
+        issue = await _run_blocking(jira_client.fetch_issue, bugid)
         # gmlogger 前置检查
         attachments = (issue.get("fields") or {}).get("attachment") or []
         if not _has_gmlogger_logs(attachments, bugid):
             return _fail("无gmlogger附件，跳过提取")
         # 评论/字段提取优先（文本提取准确率最高且速度最快）
-        trigger_time = jira_client.extract_trigger_time_from_issue(issue, skip_attachment=True)
+        trigger_time = await _run_blocking(jira_client.extract_trigger_time_from_issue, issue, skip_attachment=True)
         source = "jira_comment"
         if not trigger_time:
             # 文本未命中，视频OCR兑底
@@ -1564,7 +1647,7 @@ async def test_create_docx(request: Request):
     token_preview = (user_token or "")[:30] + "..." if (user_token or "") else "empty"
 
     try:
-        doc_result = feishu_client.create_docx_document(title, content)
+        doc_result = await _run_blocking(feishu_client.create_docx_document, title, content)
         return _ok({
             "document_id": doc_result.get("document_id"),
             "url": doc_result.get("url"),
@@ -1596,7 +1679,7 @@ async def test_bitable_failed_jiras(request: Request):
     if not app_token or not table_id:
         return _fail("多维表格 app_token/table_id 未配置")
     try:
-        records = feishu_client.list_bitable_records(app_token, table_id)
+        records = await _run_blocking(feishu_client.list_bitable_records, app_token, table_id)
         # 第一遍：收集所有已成功的 Jira 号
         success_jiras = set()
         if exclude_success:
@@ -1669,7 +1752,7 @@ async def test_bitable_failed_jiras(request: Request):
 
 
 @router.post("/api/test/gmlogger_rescan", response_model=ApiResponse)
-async def test_gmlogger_rescan(request: Request):
+def test_gmlogger_rescan(request: Request):
     """扫描多维表格中人工审核为'无gmlogger'的失败记录，重新检查Jira附件是否已有gmlogger/main文件"""
     import os, re, json
     from src.clients import feishu_client, jira_client
@@ -1774,7 +1857,7 @@ async def test_gmlogger_clear_review(request: Request):
         for i in range(0, len(updates), 100):
             batch = updates[i:i + 100]
             try:
-                feishu_client.update_bitable_records(app_token, table_id, batch)
+                await _run_blocking(feishu_client.update_bitable_records, app_token, table_id, batch)
                 success += len(batch)
             except Exception as e:
                 errors.append(f"批次 {i // 100 + 1}: {str(e)[:80]}")
@@ -1792,7 +1875,10 @@ async def test_gmlogger_clear_review(request: Request):
 
 @router.get("/api/test/confidence_batch_write", response_model=ApiResponse)
 async def test_confidence_batch_write(request: Request, after_time: str = "", only_empty: str = "", jira_ids: str = ""):
-    """置信度批量写入：填充 rootcause + AI问题分析根因，对比语义相似度写回置信度
+    """置信度批量写入（**只读分析**）：计算 rootcause + AI问题分析根因，对比语义相似度得出置信度
+
+    本端点不写多维表格：只把每条待写字段（write_fields）通过 SSE 推给页面，
+    真正写入由用户确认后调用 POST /api/test/confidence_batch_commit 完成。
 
     :param after_time: 可选时间筛选，仅处理分析完成时间在此时间之后的记录
     :param jira_ids: 可选 Jira 号列表（逗号分隔），指定时仅处理这些记录，忽略 after_time 和 only_empty
@@ -1815,7 +1901,7 @@ async def test_confidence_batch_write(request: Request, after_time: str = "", on
 
         # 加载字段定义，确定字段名和类型
         try:
-            field_defs = feishu_client.list_bitable_fields(app_token, table_id)
+            field_defs = await _run_blocking(feishu_client.list_bitable_fields, app_token, table_id)
             field_type_map = {fd.get("field_name", ""): fd.get("type", 0) for fd in field_defs}
             field_names = list(field_type_map.keys())
             # 置信度字段
@@ -1838,7 +1924,7 @@ async def test_confidence_batch_write(request: Request, after_time: str = "", on
 
         # 加载多维表格记录，筛选分析结果=成功 且 置信度为空/0
         try:
-            records = feishu_client.list_bitable_records(app_token, table_id)
+            records = await _run_blocking(feishu_client.list_bitable_records, app_token, table_id)
         except Exception as e:
             yield f"data: {_json.dumps({'type': 'error', 'msg': f'加载多维表格记录失败: {e}'}, ensure_ascii=False)}\n\n"
             return
@@ -1998,15 +2084,6 @@ async def test_confidence_batch_write(request: Request, after_time: str = "", on
                     best_sent = s
             return best_sent if best_count >= 2 else ""
 
-        def _write_one(record_id, fields_to_write):
-            """单条写入，失败时返回错误信息，不中断流程"""
-            try:
-                feishu_client.update_bitable_records(app_token, table_id,
-                                                     [{"record_id": record_id, "fields": fields_to_write}])
-                return ""
-            except Exception as e:
-                return str(e)[:120]
-        
         for idx, t in enumerate(targets):
             if await request.is_disconnected():
                 yield f"data: {_json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
@@ -2177,7 +2254,9 @@ async def test_confidence_batch_write(request: Request, after_time: str = "", on
                                     'msg': f'分析完成: {total}条, 达标{success_count}条, 未达标{total - success_count - fail_count}条, 跳过/失败{fail_count}条'}
         yield f"data: {_json.dumps(_sse_d, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 @router.post("/api/test/confidence_batch_commit", response_model=ApiResponse)
@@ -2203,8 +2282,7 @@ async def test_confidence_batch_commit(request: Request):
         if not record_id or not fields:
             continue
         try:
-            feishu_client.update_bitable_records(app_token, table_id,
-                                                 [{"record_id": record_id, "fields": fields}])
+            await _run_blocking(feishu_client.update_bitable_records, app_token, table_id, [{"record_id": record_id, "fields": fields}])
             written += 1
         except Exception as e:
             errors.append(f"{item.get('bugid', '?')}: {str(e)[:80]}")
@@ -2317,7 +2395,7 @@ async def test_unanalyzed_bugs(request: Request):
 
 
 @router.get("/api/test/prod_csv_files", response_model=ApiResponse)
-async def test_prod_csv_files():
+def test_prod_csv_files():
     """列出 data/unanalyzed/ 下所有 CSV 文件，分为未分析文件和执行结果文件（含成功/失败统计）"""
     import os, re, json
     import csv as _csv
@@ -2417,7 +2495,7 @@ async def test_prod_csv_bitable(request: Request):
     bitable_map = {}
     if app_token and table_id:
         try:
-            records = feishu_client.list_bitable_records(app_token, table_id)
+            records = await _run_blocking(feishu_client.list_bitable_records, app_token, table_id)
             for rec in records:
                 fields = rec.get("fields", {})
                 jira_key = _bitable_text(fields.get(bugid_field, ""))
@@ -2539,8 +2617,7 @@ async def test_prod_batch_run(request: Request):
         try:
             from src.clients import feishu_client
             cfg_fb = load_config().get("feishu_bitable", {})
-            bt_records = feishu_client.list_bitable_records(
-                cfg_fb.get("app_token", ""), cfg_fb.get("table_id", ""))
+            bt_records = await _run_blocking(feishu_client.list_bitable_records, cfg_fb.get("app_token", ""), cfg_fb.get("table_id", ""))
             bugid_field = cfg_fb.get("bugid_field", "jira号")
             existing_exclude = set()
             for rec in bt_records:
@@ -2807,168 +2884,6 @@ async def test_prod_batch_run(request: Request):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-@router.post("/api/test/comment_compare", response_model=ApiResponse)
-async def test_comment_compare(request: Request):
-    """功能测试2：评论提取与对比（单条），返回评论原文、提取步骤及双重比对结果"""
-    import os, re, json
-    body = await request.json() or {}
-    bugid = str(body.get("bugid", "")).strip()
-    if not bugid:
-        return _fail("bugid 不能为空")
-    try:
-        result = _compare_single_bug(bugid, body.get("trigger_time") or None)
-        return _ok(result, "评论提取与对比完成")
-    except Exception as e:
-        logger.error("评论对比功能测试失败: %s", e)
-        return _fail(str(e))
-
-
-@router.post("/api/test/comment_compare_strategies", response_model=ApiResponse)
-async def comment_compare_strategies(request: Request):
-    """评论分析侧重点对比：对同一 Jira 用多种 prompt 策略各跑一次评论分析，并列展示"""
-    import os, re, json
-    from src.core.filter import COMMENT_ANALYSIS_STRATEGIES, summarize_comments, generate_comment_analysis
-    from src.clients import jira_client, diana_client as _dc
-    body = await request.json() or {}
-    bugid = str(body.get("bugid", "")).strip()
-    if not bugid:
-        return _fail("bugid 不能为空")
-    try:
-        # 获取评论和 AI 结论（只执行一次，所有策略共用）
-        issue = jira_client.fetch_issue(bugid)
-        comments = jira_client.extract_comments(issue)
-        summaries = summarize_comments(comments)
-        # 获取 AI 日志分析结论（优先本地文档，回退从多维表格查飞书链接再下载）
-        ai_conclusion = ""
-        try:
-            ai_content = pipeline._get_ai_report_content(bugid, "")
-            ai_conclusion = doc_generator.parse_conclusion(ai_content) or ""
-        except Exception:
-            # 本地无文档，从多维表格查找飞书链接
-            feishu_link = ""
-            try:
-                from src.clients import feishu_client
-                cfg_bitable = load_config().get("feishu_bitable", {})
-                at = cfg_bitable.get("app_token", "")
-                tid = cfg_bitable.get("table_id", "")
-                bf = cfg_bitable.get("bugid_field", "jira号")
-                lf = "AI分析结果(飞书链接)"
-                if at and tid:
-                    records = feishu_client.list_bitable_records(at, tid)
-                    for rec in records:
-                        fields = rec.get("fields", {})
-                        bid_val = str(fields.get(bf, ""))
-                        if bid_val == bugid:
-                            link_val = fields.get(lf, "")
-                            if isinstance(link_val, dict):
-                                link_val = link_val.get("link", "") or link_val.get("text", "")
-                            feishu_link = str(link_val).strip() if link_val else ""
-                            break
-            except Exception as e:
-                logger.warning("从多维表格查找飞书链接失败: %s", e)
-            if feishu_link:
-                try:
-                    ai_content = pipeline._get_ai_report_content(bugid, feishu_link)
-                    ai_conclusion = doc_generator.parse_conclusion(ai_content) or ""
-                except Exception as e:
-                    logger.warning("bugid=%s 通过飞书链接下载AI报告失败: %s", bugid, e)
-        # 提取 Jira 根因
-        bug_rootcause = ""
-        try:
-            bug_rootcause = jira_client.extract_rootcause(issue) or ""
-        except Exception:
-            pass
-        # 对每种策略各跑一次评论分析
-        results = []
-        for key, strategy in COMMENT_ANALYSIS_STRATEGIES.items():
-            try:
-                analysis = generate_comment_analysis(
-                    summaries, ai_conclusion, style_instruction=strategy["instruction"])
-                # 从分析结果提取排查结论段落
-                conclusion_text = ""
-                if analysis:
-                    in_section = False
-                    for line in analysis.split("\n"):
-                        if "## 排查结论" in line or "### 排查结论" in line:
-                            in_section = True
-                            continue
-                        if in_section and line.startswith("##"):
-                            break
-                        if in_section and line.strip():
-                            conclusion_text += line.strip() + " "
-                    conclusion_text = conclusion_text.strip()[:120]
-                # 用 Diana 生成 8-20 字的表格结论
-                table_conclusion = ""
-                if conclusion_text:
-                    try:
-                        simplify_prompt = (
-                            f"用一句话（8到20字）概括以下排查结论，偏bug分析方向，必须是完整语义，只输出概括本身：\n"
-                            f"{conclusion_text}\n概括："
-                        )
-                        tc = _dc._llm_chat(simplify_prompt, max_tokens=50, timeout=15)
-                        if tc:
-                            from src.pipeline import _strip_conclusion_prefix
-                            table_conclusion = _strip_conclusion_prefix(tc.strip().rstrip('。.'))
-                    except Exception:
-                        pass
-                results.append({
-                    "key": key, "label": strategy["label"],
-                    "instruction": strategy["instruction"],
-                    "analysis": analysis or "（生成失败）",
-                    "bugid": bugid,
-                    "root_cause": bug_rootcause[:100] if bug_rootcause else "（未提取）",
-                    "table_conclusion": table_conclusion or conclusion_text[:40] or "（无）",
-                    "has_ai_conclusion": bool(ai_conclusion),
-                    "confidence_assessment": (
-                        "高" if (analysis and ai_conclusion and conclusion_text)
-                        else "中" if analysis and not analysis.startswith("（")
-                        else "低"
-                    ),
-                })
-            except Exception as e:
-                results.append({
-                    "key": key, "label": strategy["label"],
-                    "instruction": strategy["instruction"],
-                    "analysis": f"（异常: {str(e)[:60]}）",
-                    "bugid": bugid, "root_cause": "（异常）",
-                    "table_conclusion": "（异常）", "has_ai_conclusion": False,
-                    "confidence_assessment": "低",
-                })
-        # 读取当前已保存的风格偏好
-        cfg = load_config()
-        current_style = cfg.get("comment_analysis", {}).get("style_keywords", "")
-        return _ok({"strategies": results, "current_style": current_style,
-                    "comments_count": len(comments), "summaries_count": len(summaries)},
-                   f"对比完成: {len(results)} 种策略, {len(comments)} 条评论")
-    except Exception as e:
-        logger.error("评论分析侧重点对比失败: %s", e, exc_info=True)
-        return _fail(f"对比失败: {e}")
-
-
-@router.post("/api/test/save_style_preference", response_model=ApiResponse)
-async def save_style_preference(request: Request):
-    """保存评论分析风格偏好到配置"""
-    import os, re, json
-    body = await request.json() or {}
-    strategy_key = str(body.get("strategy_key", "")).strip()
-    instruction = str(body.get("instruction", "")).strip()
-    if not instruction:
-        return _fail("instruction 不能为空")
-    try:
-        cfg = load_config()
-        if "comment_analysis" not in cfg:
-            cfg["comment_analysis"] = {}
-        cfg["comment_analysis"]["style_keywords"] = instruction
-        cfg["comment_analysis"]["strategy_key"] = strategy_key
-        with open(cfg_module.CONFIG_PATH, "w", encoding="utf-8") as f:
-            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
-        load_config(cfg_module.CONFIG_PATH)
-        logger.info("评论分析风格偏好已保存: key=%s, keywords=%s", strategy_key, instruction[:40])
-        return _ok({"strategy_key": strategy_key, "style_keywords": instruction},
-                   f"风格偏好已保存: {instruction[:40]}")
-    except Exception as e:
-        logger.error("保存风格偏好失败: %s", e)
-        return _fail(f"保存失败: {e}")
 
 
 @router.post("/api/test/upload_bug_file", response_model=ApiResponse)
@@ -2980,12 +2895,17 @@ async def upload_bug_file(file: UploadFile = File(None)):
     if not file or not file.filename:
         return _fail("未找到上传文件或文件名为空")
     try:
-        content = await file.read()
+        content = await _read_upload_limited(file, "上传文件")
         rows = bug_source.parse_uploaded_file(content, file.filename)
         if not rows:
             return _fail("文件中未找到有效数据或缺少 bugid 列")
-        file_id = f"file_{len(_uploaded_files) + 1}"
+        global _upload_seq
+        _upload_seq += 1
+        file_id = f"file_{_upload_seq}"
         _uploaded_files[file_id] = rows
+        # 只保留最近 N 个上传结果，避免全局 dict 无限增长
+        while len(_uploaded_files) > _MAX_UPLOADED_FILES:
+            _uploaded_files.pop(next(iter(_uploaded_files)), None)
         logger.info("上传文件解析完成: file_id=%s, %d 行", file_id, len(rows))
         return _ok({"file_id": file_id, "row_count": len(rows)}, f"文件解析完成，共 {len(rows)} 条数据")
     except Exception as e:
@@ -3038,7 +2958,7 @@ async def batch_compare(request: Request):
 
 
 @router.post("/api/test/check_endpoints", response_model=ApiResponse)
-async def check_endpoints(request: Request):
+def check_endpoints(request: Request):
     """接口连通性检测：逐个测试所有已配置 API 的可达性与响应"""
     import os, re, json
     import time as _time
@@ -3176,7 +3096,7 @@ async def test_internal_api(request: Request):
                     except Exception:
                         app_token = wiki_token
             # 查询表格记录
-            records = feishu_client.list_bitable_records(app_token, table_id, view_id)
+            records = await _run_blocking(feishu_client.list_bitable_records, app_token, table_id, view_id)
             elapsed = round(_time.time() - t0, 2)
             mode = "Cookie" if feishu_client._is_cookie_mode() else "Token"
             return _ok({"ok": True, "elapsed": elapsed, "status_code": 200,
@@ -3435,7 +3355,7 @@ async def test_feishu_doc(request: Request):
 
 
 @router.post("/api/test/online_followup_compare", response_model=ApiResponse)
-async def online_followup_compare(request: Request):
+def online_followup_compare(request: Request):
     """对比 PC 执行成功 vs 线上执行成功，找出线上缺失/失败的 Jira"""
     import os, re, json
     import json as _json
@@ -3542,7 +3462,7 @@ def online_followup_load(date: str = None):
 
 
 @router.post("/api/test/auto_detect_stop", response_model=ApiResponse)
-async def auto_detect_stop():
+def auto_detect_stop():
     """强制停止自动检测执行"""
     import os, re, json
     import src.api.routes.shared as _shared
@@ -3581,7 +3501,7 @@ async def auto_detect_run(request: Request):
         total_fail = 0
 
         while True:
-            if _server._auto_detect_stop:
+            if _shared.auto_detect_stop:
                 yield f"data: {_json.dumps({'type': 'stopped', 'round': round_num, 'message': '已手动停止'}, ensure_ascii=False)}\n\n"
                 break
             if await request.is_disconnected():
@@ -3660,7 +3580,7 @@ async def auto_detect_run(request: Request):
             trigger_times = {}
             no_gmlogger = 0
             for bugid in list(bugids):
-                if _server._auto_detect_stop:
+                if _shared.auto_detect_stop:
                     break
                 try:
                     issue = await loop.run_in_executor(None, lambda b=bugid: jira_client.fetch_issue(b))
@@ -3688,7 +3608,7 @@ async def auto_detect_run(request: Request):
             results = []
             batch_fail_all = False
             for bugid in bugids:
-                if _server._auto_detect_stop:
+                if _shared.auto_detect_stop:
                     break
                 exec_time = trigger_times.get(bugid, "")
                 if not exec_time:
@@ -3918,10 +3838,10 @@ async def regression_batches(request: Request):
 
 
 @router.post("/api/test/regression_stop", response_model=ApiResponse)
-async def regression_stop():
+def regression_stop():
     """停止回归执行"""
-    from src.api.routes.shared import batch_extract_stop_event
-    batch_extract_stop_event.set()
+    from src.api.routes.shared import regression_stop_event
+    regression_stop_event.set()
     return _ok(None, "已发送停止信号")
 
 
@@ -3949,7 +3869,7 @@ async def regression_run(request: Request):
     async def event_generator():
         from src.clients import feishu_client, jira_client
         from src.clients.base import http_post
-        from src.api.routes.shared import batch_extract_stop_event as _stop_event
+        from src.api.routes.shared import regression_stop_event as _stop_event
         _stop_event.clear()  # 新执行开始时清除停止标志
         loop = asyncio.get_event_loop()
         # 读取配置中的 Jira 号字段名
@@ -4078,7 +3998,12 @@ async def regression_run(request: Request):
             logger.warning("回归执行: 保存失败: %s", e)
         yield f"data: {_json.dumps({'type': 'done', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'rounds': total_rounds, 'cloud_url': cloud_url}, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream",
+    # 注册作业：/api/jobs 可查进度，/api/jobs/{id}/stop 可单独停止本作业
+    from src.core.job_registry import JOBS as _JOBS
+    from src.api.routes.jobs import job_stream as _job_stream
+    from src.api.routes.shared import regression_stop_event as _reg_stop
+    _job = _JOBS.create("regression", f"回归执行（样本 {sample_count}，{total_rounds} 轮）")
+    return StreamingResponse(_job_stream(_job, event_generator, _reg_stop), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
@@ -4189,7 +4114,7 @@ async def smoke_test_query(request: Request):
     if not app_token or not table_id:
         return _fail("多维表格 app_token/table_id 未配置")
     try:
-        records = feishu_client.list_bitable_records(app_token, table_id)
+        records = await _run_blocking(feishu_client.list_bitable_records, app_token, table_id)
     except Exception as e:
         logger.error("冒烟测试查询：多维表格查询失败: %s", e)
         return _fail(f"多维表格查询失败: {e}")
@@ -4309,7 +4234,7 @@ async def smoke_test_save_record(request: Request):
         cfg = load_config().get("feishu_bitable", {})
         folder_token = cfg.get("smoke_test_folder", "") or cfg.get("drive_folder", "")
         doc_title = f"冒烟测试_{date_str}_{time_suffix}"
-        result = feishu_client.create_docx_document(doc_title, md_content, folder_token)
+        result = await _run_blocking(feishu_client.create_docx_document, doc_title, md_content, folder_token)
         cloud_url = result.get("url", "")
     except Exception as e:
         logger.warning("冒烟测试记录云端上传失败: %s", e)
@@ -4330,7 +4255,18 @@ async def error_stats_query(request: Request):
     if not app_token or not table_id:
         return _fail("多维表格 app_token/table_id 未配置")
     try:
-        records = feishu_client.list_bitable_records(app_token, table_id)
+        # 60 秒内复用上次全表结果，避免连续点击“按时间查询/全量查询”重复拉整张多维表格
+        with _ERROR_STATS_LOCK:
+            _cached_records, _cached_ts = _ERROR_STATS_CACHE["records"], _ERROR_STATS_CACHE["ts"]
+        if _cached_records is not None and _time_mod.time() - _cached_ts < _ERROR_STATS_TTL:
+            records = _cached_records
+            logger.info("错误统计命中缓存（%d 条，%.0fs 前拉取）",
+                        len(records), _time_mod.time() - _cached_ts)
+        else:
+            records = await _run_blocking(feishu_client.list_bitable_records, app_token, table_id)
+            with _ERROR_STATS_LOCK:
+                _ERROR_STATS_CACHE["records"] = records
+                _ERROR_STATS_CACHE["ts"] = _time_mod.time()
     except Exception as e:
         logger.error("错误统计查询：多维表格查询失败: %s", e)
         return _fail(f"多维表格查询失败: {e}")
@@ -4405,6 +4341,7 @@ async def delete_dirty_data(request: Request):
     用于清理有分析成功记录的 Jira 号下的失败行。
     """
     import os, re, json
+    body = await request.json() or {}
     jira_ids = body.get("jira_ids", [])
     if not jira_ids:
         return _fail("未提供要删除的 Jira 号列表")
@@ -4416,7 +4353,7 @@ async def delete_dirty_data(request: Request):
     if not app_token or not table_id:
         return _fail("多维表格 app_token/table_id 未配置")
     try:
-        records = feishu_client.list_bitable_records(app_token, table_id)
+        records = await _run_blocking(feishu_client.list_bitable_records, app_token, table_id)
     except Exception as e:
         logger.error("删除脏数据：多维表格查询失败: %s", e)
         return _fail(f"多维表格查询失败: {e}")
@@ -4432,7 +4369,7 @@ async def delete_dirty_data(request: Request):
     if not record_ids_to_delete:
         return _ok({"deleted_count": 0}, "无符合条件的失败记录")
     try:
-        feishu_client.batch_delete_records(app_token, table_id, record_ids_to_delete)
+        await _run_blocking(feishu_client.batch_delete_records, app_token, table_id, record_ids_to_delete)
         logger.info("批量删除脏数据成功: Jira 号 %d 个，删除记录 %d 条", len(jira_ids), len(record_ids_to_delete))
         return _ok({"deleted_count": len(record_ids_to_delete)}, 
                    f"已删除 {len(record_ids_to_delete)} 条失败记录")
@@ -4558,19 +4495,23 @@ async def ai_log_visual_upload(jira_id: str = "", file: UploadFile = File(None))
     if not jira_id:
         return _fail("请输入 Jira 号")
     try:
-        content = await file.read()
+        content = await _read_upload_limited(file, "上传文件")
         filename = file.filename.lower()
         lines = []
         file_info = []  # 记录解压后的文件信息
 
         if filename.endswith(".zip"):
-            # ZIP 压缩包：解压后读取所有文本文件
+            # ZIP 压缩包：解压后读取所有文本文件（限制条目数与解压总量）
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                for name in zf.namelist():
+                names = zf.namelist()
+                _check_archive_entries(names, "ZIP 压缩包")
+                _budget = _ExpandBudget(label="ZIP 压缩包")
+                for name in names:
                     if name.endswith("/"):
                         continue
                     name_lower = name.lower()
                     if any(name_lower.endswith(ext) for ext in (".log", ".txt", ".md", ".csv")):
+                        _budget.take(zf.getinfo(name).file_size)
                         try:
                             text = zf.read(name).decode("utf-8", errors="replace")
                             file_lines = text.splitlines()
@@ -4579,13 +4520,17 @@ async def ai_log_visual_upload(jira_id: str = "", file: UploadFile = File(None))
                         except Exception:
                             pass
         elif filename.endswith((".tar.gz", ".tgz")):
-            # tar.gz 压缩包
+            # tar.gz 压缩包（限制条目数与解压总量）
             with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as tf:
-                for member in tf.getmembers():
+                members = tf.getmembers()
+                _check_archive_entries(members, "tar.gz 压缩包")
+                _budget = _ExpandBudget(label="tar.gz 压缩包")
+                for member in members:
                     if not member.isfile():
                         continue
                     name_lower = member.name.lower()
                     if any(name_lower.endswith(ext) for ext in (".log", ".txt", ".md", ".csv")):
+                        _budget.take(member.size)
                         try:
                             f_obj = tf.extractfile(member)
                             if f_obj:
@@ -4596,8 +4541,12 @@ async def ai_log_visual_upload(jira_id: str = "", file: UploadFile = File(None))
                         except Exception:
                             pass
         elif filename.endswith(".gz") and not filename.endswith(".tar.gz"):
-            # 单个 .gz 文件
-            text = gzip.decompress(content).decode("utf-8", errors="replace")
+            # 单个 .gz 文件（限制解压后大小，避免压缩炸弹）
+            with gzip.GzipFile(fileobj=io.BytesIO(content)) as _gz:
+                _raw = _gz.read(_MAX_EXPAND_BYTES + 1)
+            if len(_raw) > _MAX_EXPAND_BYTES:
+                return _fail(f"gz 文件解压后超过 {_MAX_EXPAND_BYTES // 1024 // 1024}MB 限制")
+            text = _raw.decode("utf-8", errors="replace")
             lines = text.splitlines()
             file_info.append({"name": file.filename, "lines": len(lines)})
         elif any(filename.endswith(ext) for ext in (".log", ".txt", ".md", ".csv")):
@@ -4720,13 +4669,19 @@ async def ai_report_analyze(request: Request):
 
 
 @router.get("/api/test/open_dir")
-async def open_dir(path: str = ""):
-    """打开本地目录（xdg-open）"""
-    import subprocess, os
+def open_dir(path: str = ""):
+    """在系统文件管理器中打开本地目录（Windows/macOS/Linux 通用）"""
+    import subprocess, os, sys
     if not path or not os.path.isdir(path):
         return _fail(f"目录不存在: {path}")
     try:
-        subprocess.Popen(["xdg-open", path])
+        if sys.platform == "win32":
+            # 部分受限环境下 os.startfile 会 WinError 5，改由 explorer 打开；其退出码常为 1，故不等待
+            subprocess.Popen(["explorer", os.path.normpath(path)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
         return _ok(None, f"已打开: {path}")
     except Exception as e:
         return _fail(f"打开失败: {e}")
@@ -4744,7 +4699,7 @@ async def form_upload(file: UploadFile = File(None)):
     ext = os.path.splitext(file.filename)[1].lower()
     keys, csv_trigger_times, seen = [], {}, set()
     try:
-        content = await file.read()
+        content = await _read_upload_limited(file, "表单文件")
         if ext in (".xlsx", ".xls"):
             try:
                 import openpyxl
@@ -4819,7 +4774,7 @@ async def form_exec(request: Request):
     async def event_generator():
         from src.clients import jira_client as _jc
         from src.clients.base import http_post
-        from src.api.routes.shared import batch_extract_stop_event as _stop_event
+        from src.api.routes.shared import form_exec_stop_event as _stop_event
         _stop_event.clear()
         loop = asyncio.get_event_loop()
         cfg = load_config()
@@ -5002,7 +4957,12 @@ async def form_exec(request: Request):
             logger.warning("表单执行: 保存失败: %s", e)
         yield f"data: {_json.dumps({'type': 'done', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'rounds': total_rounds, 'no_time_count': len(all_no_time_dedup), 'cloud_url': cloud_url}, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream",
+    # 注册作业：/api/jobs 可查进度，/api/jobs/{id}/stop 可单独停止本作业
+    from src.core.job_registry import JOBS as _JOBS
+    from src.api.routes.jobs import job_stream as _job_stream
+    from src.api.routes.shared import form_exec_stop_event as _form_stop
+    _job = _JOBS.create("form_exec", f"表单执行（样本 {sample_count}，{total_rounds} 轮）")
+    return StreamingResponse(_job_stream(_job, event_generator, _form_stop), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
@@ -5059,8 +5019,13 @@ async def test_adp_single(request: Request):
             _step_queue.put({"step": step, "status": status, "detail": detail})
 
         def _run_in_thread():
-            _result_ref[0] = run_adp_single(bugid, description, trigger_time,
-                                            progress_cb=_progress_cb, keepalive_cb=_ka_cb)
+            try:
+                _result_ref[0] = run_adp_single(bugid, description, trigger_time,
+                                                progress_cb=_progress_cb, keepalive_cb=_ka_cb)
+            except Exception as e:  # 线程内异常也要带回结构化结果，避免前端只看到“线程异常”
+                logger.error("ADP 单条分析线程异常 %s: %s", bugid, e, exc_info=True)
+                _result_ref[0] = {"ok": False, "jira_key": bugid, "error": f"分析异常: {str(e)[:200]}",
+                                  "attachment_count": 0, "results": {}}
 
         import threading
         _thread = threading.Thread(target=_run_in_thread, daemon=True)
@@ -5100,15 +5065,43 @@ async def test_adp_single(request: Request):
         # 推送附件数 + 飞书状态等补充信息
         yield f"data: {_json.dumps({'type': 'step', 'step': 'attachments', 'status': 'done' if result.get('attachment_count', 0) > 0 else 'fail', 'count': result.get('attachment_count', 0)}, ensure_ascii=False)}\n\n"
         if not result.get('attachment_count'):
-            yield f"data: {_json.dumps({'type': 'done', 'ok': False, 'error': '无附件'}, ensure_ascii=False)}\n\n"
+            yield f"data: {_json.dumps({'type': 'done', 'ok': False, 'error': result.get('error') or '无附件', 'fail_type': _adp_fail_type(result), **_adp_text_payload(result)}, ensure_ascii=False)}\n\n"
             return
         fs = result.get('feishu') or {}
         yield f"data: {_json.dumps({'type': 'step', 'step': 'write_feishu', 'status': 'done' if fs.get('ok') else 'fail', 'message': fs.get('message', '')}, ensure_ascii=False)}\n\n"
         # 推送最终结果
-        yield f"data: {_json.dumps({'type': 'done', 'ok': result.get('ok', False), 'results': result.get('results', {}), 'elapsed': result.get('total_elapsed', 0), 'attachment_count': result.get('attachment_count', 0), 'feishu_ok': fs.get('ok', False), 'full_text': result.get('full_text', ''), 'file_urls': result.get('file_urls', [])}, ensure_ascii=False)}\n\n"
+        yield f"data: {_json.dumps({'type': 'done', 'ok': result.get('ok', False), 'results': result.get('results', {}), 'elapsed': result.get('total_elapsed', 0), 'attachment_count': result.get('attachment_count', 0), 'feishu_ok': fs.get('ok', False), 'fail_type': _adp_fail_type(result), **_adp_text_payload(result), 'file_urls': result.get('file_urls', [])}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.get("/api/test/adp_report")
+def adp_report_file(jira_key: str = ""):
+    """读取 ADP 分析报告全文（只允许读取 adp_results 下对应 bugid 的 md 报告）
+
+    前端不再接收完整文本，改为点「查看完整报告」时按需打开本接口。
+    """
+    import os
+    import re as _re
+    key = (jira_key or "").strip()
+    if not key or not _re.fullmatch(r"[A-Za-z0-9_\-]+", key):
+        return _fail("jira_key 不合法")
+    from src.config import get_path
+    from src.services.adp_ops import _get_adp_cfg
+    cfg = _get_adp_cfg()
+    base = get_path("doc_dir") if cfg.get("save_dir", "docs/adp_results") == "docs/adp_results" else cfg["save_dir"]
+    path = os.path.join(base, "adp_results", key, f"{key}_full_analysis.md")
+    if not os.path.isfile(path):
+        # 回退：失败快照（<key>_fail_*.md）取最新的一个，保证失败时也能看到返回内容
+        day_dir = os.path.join(base, "adp_results", key)
+        fails = sorted(
+            (f for f in os.listdir(day_dir) if f.startswith(f"{key}_fail_") and f.endswith(".md")),
+            reverse=True) if os.path.isdir(day_dir) else []
+        if not fails:
+            return _fail(f"报告不存在: {key}")
+        path = os.path.join(day_dir, fails[0])
+    return FileResponse(path, media_type="text/markdown; charset=utf-8")
 
 
 @router.post("/api/test/adp_batch")
@@ -5206,7 +5199,7 @@ async def test_adp_batch(request: Request):
                             it = remaining.pop(f)
                             r = {"ok": False, "jira_key": it.get("bugid", ""), "error": "ADP 分析超时"}
                             batch_results.append(r)
-                            yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': r['jira_key'], 'ok': False, 'results': {}, 'error': r['error'], 'full_text': '', 'file_urls': []}, ensure_ascii=False)}\n\n"
+                            yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': r['jira_key'], 'ok': False, 'results': {}, 'error': r['error'], 'fail_type': _adp_fail_type(r), **_adp_text_payload({}), 'file_urls': []}, ensure_ascii=False)}\n\n"
                         break
                     # 收集已完成的 future
                     done_now = [f for f in remaining if f.done()]
@@ -5218,7 +5211,7 @@ async def test_adp_batch(request: Request):
                         except Exception as e:
                             r = {"ok": False, "jira_key": it.get("bugid", ""), "error": str(e)[:100]}
                         batch_results.append(r)
-                        yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': r.get('jira_key', ''), 'ok': r.get('ok', False), 'results': r.get('results', {}), 'error': r.get('error', ''), 'full_text': (r.get('full_text') or ''), 'file_urls': r.get('file_urls', [])}, ensure_ascii=False)}\n\n"
+                        yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': r.get('jira_key', ''), 'ok': r.get('ok', False), 'results': r.get('results', {}), 'error': r.get('error', ''), 'fail_type': _adp_fail_type(r), **_adp_text_payload(r), 'file_urls': r.get('file_urls', [])}, ensure_ascii=False)}\n\n"
                     # 还有未完成的，发心跳并等待
                     if remaining and not done_now:
                         running_keys = [futures[f].get('bugid', '') for f in remaining]
@@ -5421,6 +5414,8 @@ async def test_adp_lookup(request: Request):
                     f.write(content)
             except Exception as e:
                 logger.warning("ADP 保存失败MD失败 %s: %s", bugid, e)
+                return ""
+            return path
 
         # ── 写回多维表格 ──
         async def _write_back(bugid, result, rec):
@@ -5501,7 +5496,8 @@ async def test_adp_lookup(request: Request):
                                 "bt_found": rec is not None,
                                 "desc_source": "bitable" if rec else "none",
                                 "time_source": "bitable" if rec else "none",
-                                "full_text": "", "file_urls": [],
+                                "text_len": 0, "text_preview": "", "report_path": "",
+                                "fail_type": "ADP 分析超时", "file_urls": [],
                             }
                             batch_results.append(item)
                             yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
@@ -5535,7 +5531,10 @@ async def test_adp_lookup(request: Request):
                                     error=result.get("error", ""),
                                     full_text=result.get("full_text", ""),
                                     attachment_count=result.get("attachment_count", 0))
-                            _save_fail_md(bugid, result)
+                            # 失败快照落到本地，并把路径带回前端，失败行也能点「查看完整报告」
+                            fail_md = _save_fail_md(bugid, result)
+                            if fail_md and not result.get("report_path"):
+                                result["report_path"] = fail_md
 
                         # 写回多维表格
                         feishu_ok = await _write_back(bugid, result, info["rec"])
@@ -5549,7 +5548,8 @@ async def test_adp_lookup(request: Request):
                             "bt_found": info["rec"] is not None,
                             "desc_source": "bitable" if info["bt_desc"] else ("api" if info["desc"] else "none"),
                             "time_source": "bitable" if info["bt_time"] else ("api" if info["tt"] else "none"),
-                            "full_text": (result.get("full_text") or ""),
+                            "fail_type": _adp_fail_type(result),
+                            **_adp_text_payload(result),
                             "file_urls": result.get("file_urls", []),
                         }
                         batch_results.append(item)
@@ -5579,15 +5579,20 @@ async def test_adp_lookup(request: Request):
 
         yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'fail': max(0, total_fail)}, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream",
+    # 注册作业：/api/jobs 可查进度，/api/jobs/{id}/stop 可单独停止本作业
+    from src.core.job_registry import JOBS as _JOBS
+    from src.api.routes.jobs import job_stream as _job_stream
+    from src.api.routes.shared import adp_lookup_stop_event as _job_stop
+    _job = _JOBS.create("adp_lookup", "ADP 表格查找作业")
+    return StreamingResponse(_job_stream(_job, event_generator, _job_stop), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/api/test/adp_lookup/stop")
-async def stop_adp_lookup():
+def stop_adp_lookup():
     """停止 ADP 表格查找执行"""
     from src.api.routes.shared import adp_lookup_stop_event as _stop_event, ok
     _stop_event.set()
     logger.info("收到 ADP lookup 停止信号")
-    return ok(None, "停止信号已发送")
+    return _ok(None, "停止信号已发送")
 

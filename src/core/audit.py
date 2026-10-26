@@ -18,8 +18,19 @@ from src import db
 from src.clients import ai_log_client
 from src.config import get_path, load_config, setup_logger
 from src.core import doc_generator, similarity
+from src.core.resource_lock import KeyedLockPool
 
 logger = setup_logger("audit")
+
+# 抽查相关 CSV 的并发写保护（按路径串行 + 原子替换）
+_audit_locks = KeyedLockPool()
+
+
+def _atomic_write(df, path: str) -> None:
+    """先写临时文件再原子替换，避免并发/中断留下半个 CSV"""
+    tmp_path = f"{path}.tmp"
+    df.to_csv(tmp_path, index=False, encoding="utf-8-sig")
+    os.replace(tmp_path, path)
 
 # 审核表格列定义（中文表头）
 AUDIT_COLUMNS = [
@@ -54,12 +65,21 @@ def load_audited_bugids() -> set:
 
 def _append_audited_records(rows: list):
     """将本次抽查的 bugid 追加到记录文件（含抽查时间，供追溯）"""
-    df_new = pd.DataFrame(rows)
     path = _audited_csv_path()
-    if os.path.exists(path):
-        df_old = pd.read_csv(path, encoding="utf-8-sig")
-        df_new = pd.concat([df_old, df_new], ignore_index=True)
-    df_new.to_csv(path, index=False, encoding="utf-8-sig")
+    with _audit_locks.get(path):
+        df_new = pd.DataFrame(rows)
+        if os.path.exists(path):
+            try:
+                df_old = pd.read_csv(path, encoding="utf-8-sig")
+                df_new = pd.concat([df_old, df_new], ignore_index=True)
+            except Exception as e:
+                logger.error("已抽查记录读取失败，将只写入本次记录（旧文件保留为 .corrupt 备份）: %s", e)
+                try:
+                    import shutil
+                    shutil.copy2(path, f"{path}.corrupt-{datetime.now().strftime('%Y%m%d%H%M%S')}.csv")
+                except OSError:
+                    pass
+        _atomic_write(df_new, path)
     logger.info("已抽查记录已更新: %s, 本次追加 %d 条", path, len(rows))
 
 
@@ -174,16 +194,20 @@ def sample_and_audit(count: int = None) -> str:
                 "人工审核结论": f"分析失败: {str(e)[:200]}",
             })
 
-    # 生成人工审核表格并持久化已抽查记录
-    df = pd.DataFrame(rows, columns=AUDIT_COLUMNS)
+    # 生成人工审核表格并持久化已抽查记录（并发安全：按路径加锁 + 原子写）
     day_dir = _spotcheck_day_dir()
     report_path = os.path.join(day_dir, cfg["report_file"])
-    # 同日多次抽查时，新结果前置（最新在上），旧结果追加在下，中间插入空行分隔
-    if os.path.exists(report_path):
-        df_old = pd.read_csv(report_path, encoding="utf-8-sig")
-        separator = pd.DataFrame([{col: "" for col in AUDIT_COLUMNS}])
-        df = pd.concat([df, separator, df_old], ignore_index=True)
-    df.to_csv(report_path, index=False, encoding="utf-8-sig")
+    with _audit_locks.get(report_path):
+        df = pd.DataFrame(rows, columns=AUDIT_COLUMNS)
+        # 同日多次抽查时，新结果前置（最新在上），旧结果追加在下，中间插入空行分隔
+        if os.path.exists(report_path):
+            try:
+                df_old = pd.read_csv(report_path, encoding="utf-8-sig")
+                separator = pd.DataFrame([{col: "" for col in AUDIT_COLUMNS}])
+                df = pd.concat([df, separator, df_old], ignore_index=True)
+            except Exception as e:
+                logger.error("抽查审核表格读取失败，将只写入本次结果: %s", e)
+        _atomic_write(df, report_path)
     logger.info("抽查审核表格已生成: %s, 本次 %d 条, 合计 %d 条", report_path, len(rows), len(df))
     # 不达标项单独输出报表
     failed_rows = [r for r in rows if r.get("判定结果") != "达标"]
@@ -202,6 +226,7 @@ def _save_failed_report(failed_rows: list, day_dir: str = None) -> str:
     filename = f"audit_failed_{today}.csv"
     path = os.path.join(day_dir, filename)
     df = pd.DataFrame(failed_rows, columns=AUDIT_COLUMNS)
-    df.to_csv(path, index=False, encoding="utf-8-sig")
+    with _audit_locks.get(path):
+        _atomic_write(df, path)
     logger.info("不达标报表已生成: %s, 共 %d 条", path, len(failed_rows))
     return path

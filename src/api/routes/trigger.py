@@ -6,6 +6,10 @@ from fastapi import APIRouter, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
 
 from src.config import PROJECT_ROOT, load_config, setup_logger
+from src.core.attachment_guard import begin_batch as _begin_attach_batch
+from src.api.routes.shared import run_blocking as _run_blocking
+from src.services.trigger_ops import remember_ref_time as _remember_ref_time
+from src.services.server_legacy import _diag_gmlogger_times as _gm_times_of
 from src.schemas.common import ApiResponse
 from src.schemas.trigger import (
     BugidListRequest, UpdateTriggerTimeRequest, BatchUpdateRequest,
@@ -56,7 +60,7 @@ async def batch_read_trigger_times(req: BugidListRequest):
 
 
 @router.post("/api/trigger_time/update", response_model=ApiResponse)
-async def update_trigger_time(req: UpdateTriggerTimeRequest):
+def update_trigger_time(req: UpdateTriggerTimeRequest):
     """修改指定bugid的触发时间"""
     from src.api.routes.shared import (
         ok as _ok,
@@ -88,7 +92,7 @@ async def update_trigger_time(req: UpdateTriggerTimeRequest):
 
 
 @router.post("/api/trigger_time/batch_update", response_model=ApiResponse)
-async def batch_update_trigger_time(req: BatchUpdateRequest):
+def batch_update_trigger_time(req: BatchUpdateRequest):
     """批量应用修正时间"""
     from src.services.trigger_ops import _batch_save_trigger_times_to_cloud
     from src.services.report_ops import _load_diagnose_cache, _save_diagnose_cache
@@ -243,7 +247,7 @@ async def cache_batch_scan(req: CacheBatchScanRequest):
 
 
 @router.post("/api/trigger_time/cache_batch_extract/stop", response_model=ApiResponse)
-async def stop_cache_batch_extract():
+def stop_cache_batch_extract():
     """触发云端缓存批量提取停止信号"""
     from src.api.routes.shared import cache_batch_stop_event as _cache_batch_stop_event, ok
     _cache_batch_stop_event.set()
@@ -277,7 +281,7 @@ def cache_batch_clear_progress():
 
 
 @router.post("/api/trigger_time/cache_batch_extract")
-async def cache_batch_extract(req: CacheBatchExtractRequest, request: Request):
+def cache_batch_extract(req: CacheBatchExtractRequest, request: Request):
     """云端缓存批量更新：SSE 流式推送进度，重新提取触发时间"""
     from src.api.routes.shared import cache_batch_stop_event as _cache_batch_stop_event, fail as _fail
     from src.services.trigger_ops import (
@@ -304,12 +308,17 @@ async def cache_batch_extract(req: CacheBatchExtractRequest, request: Request):
         video_suffixes=_VIDEO_SUFFIXES,
         request=request,
     )
-    return StreamingResponse(gen, media_type="text/event-stream",
+    # 注册作业：/api/jobs 可查进度，/api/jobs/{id}/stop 可单独停止本作业
+    from src.core.job_registry import JOBS as _JOBS
+    from src.api.routes.jobs import job_stream as _job_stream
+    from src.api.routes.shared import cache_batch_stop_event as _job_stop
+    _job = _JOBS.create("cache_batch", "缓存批处理作业")
+    return StreamingResponse(_job_stream(_job, gen, _job_stop), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/api/trigger_time/rebalance", response_model=ApiResponse)
-async def rebalance_trigger_time_tables_endpoint():
+def rebalance_trigger_time_tables_endpoint():
     """再平衡触发时间表：把超过500的表中多余记录搬运到不足500的表中"""
     from src.services.trigger_ops import rebalance_trigger_time_tables
     from src.api.routes.shared import ok as _ok, fail as _fail
@@ -351,7 +360,7 @@ async def batch_extract_time(request: Request):
     # ── 解析输入 ──
     if jql:
         try:
-            issues = _jc.search_issues(jql, max_results=500)
+            issues = await _run_blocking(_jc.search_issues, jql, max_results=500)
             bugids = [(i.get("key") or "").strip() for i in issues if i.get("key")]
             bugids = [b for b in bugids if b]
         except Exception as e:
@@ -360,6 +369,7 @@ async def batch_extract_time(request: Request):
         return _fail("无待提取的 Jira 号（JQL 未匹配或 bugids 为空）")
 
     _stop_event.clear()
+    _begin_attach_batch()  # 新批次：重置附件下载预算
 
     def event_generator():
         # 跳过已有缓存时，预加载云端缓存
@@ -435,6 +445,13 @@ async def batch_extract_time(request: Request):
                     return bugid, "", "stopped", "已停止"
                 fields = issue.get("fields") or {}
                 attachments = fields.get("attachment") or []
+                try:
+                    _gmt = _gm_times_of(attachments) or []
+                    if _gmt:
+                        _g0 = _gmt[0][0] if isinstance(_gmt[0], tuple) else _gmt[0]
+                        _remember_ref_time(bugid, _g0.strftime("%Y-%m-%d %H:%M:%S") if hasattr(_g0, "strftime") else str(_g0)[:19])
+                except Exception:
+                    pass
                 has_video = any((a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES) for a in attachments)
                 tt, source = "", ""
                 # 1. 视频 OCR（最高优先级）
@@ -521,12 +538,17 @@ async def batch_extract_time(request: Request):
             done_msg += f'，{ai_skip_count} 个已有AI分析跳过'
         yield f"data: {_json.dumps({'type': 'done', 'total': total, 'hit': hit_count, 'ai_skipped': ai_skip_count, 'message': done_msg}, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream",
+    # 注册作业：/api/jobs 可查进度，/api/jobs/{id}/stop 可单独停止本作业
+    from src.core.job_registry import JOBS as _JOBS
+    from src.api.routes.jobs import job_stream as _job_stream
+    from src.api.routes.shared import batch_extract_stop_event as _job_stop
+    _job = _JOBS.create("time_extract", "批量提取触发时间作业")
+    return StreamingResponse(_job_stream(_job, event_generator, _job_stop), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/api/trigger/batch_extract_time/stop", response_model=ApiResponse)
-async def stop_batch_extract_time():
+def stop_batch_extract_time():
     """停止批量提取触发时间"""
     from src.api.routes.shared import batch_extract_stop_event as _stop_event, ok
     _stop_event.set()
@@ -553,9 +575,15 @@ async def compare_extract_time(file: UploadFile = File(...)):
     )
     from src.config import load_config
 
-    # 读取上传文件
-    content = await file.read()
+    # 读取上传文件（带大小限制，避免超大表格打爆内存）
+    from src.api.routes.shared import read_upload_limited as _read_upload_limited
+    try:
+        content = await _read_upload_limited(file, "上传表格")
+    except ValueError as e:
+        from src.api.routes.shared import fail as _fail
+        return _fail(str(e))
     filename = file.filename or "upload.xlsx"
+    _begin_attach_batch()  # 新批次：重置附件下载预算
 
     def event_generator():
         # ── Step 1: 解析表格 ──
@@ -645,6 +673,13 @@ async def compare_extract_time(file: UploadFile = File(...)):
                 issue = _jc.fetch_issue(bugid)
                 fields = issue.get("fields") or {}
                 attachments = fields.get("attachment") or []
+                try:
+                    _gmt = _gm_times_of(attachments) or []
+                    if _gmt:
+                        _g0 = _gmt[0][0] if isinstance(_gmt[0], tuple) else _gmt[0]
+                        _remember_ref_time(bugid, _g0.strftime("%Y-%m-%d %H:%M:%S") if hasattr(_g0, "strftime") else str(_g0)[:19])
+                except Exception:
+                    pass
                 has_video = any((a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES) for a in attachments)
                 tt, source = "", ""
                 if has_video:

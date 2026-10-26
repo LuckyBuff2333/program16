@@ -783,6 +783,37 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
 
 # ===== 完整单条执行流程 =====
 
+def _save_adp_fail_snapshot(jira_key: str, full_text: str, description: str = "",
+                            trigger_time: str = "", error: str = "", results: dict = None) -> str:
+    """失败时保存快照（含完整 ADP 返回内容），返回 md 路径供前端「查看完整报告」
+
+    失败场景下完整文本同样有价值（能看出 ADP 分析到哪一步断的），
+    因此这里不做截断，整段写入文件。
+    """
+    adp_cfg = _get_adp_cfg()
+    save_dir = get_path("doc_dir") if adp_cfg["save_dir"] == "docs/adp_results" else adp_cfg["save_dir"]
+    out_dir = os.path.join(save_dir, "adp_results", jira_key)
+    os.makedirs(out_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(out_dir, f"{jira_key}_fail_{ts}.md")
+    with open(path, "w", encoding="utf-8-sig") as f:
+        f.write(f"# {jira_key} ADP 分析失败\n\n> 时间: {ts}\n\n")
+        f.write(f"## 错误信息\n\n{error or '-'}\n\n")
+        if description:
+            f.write(f"## 问题描述\n\n{description[:500]}\n\n")
+        if trigger_time:
+            f.write(f"## 触发时间\n\n{trigger_time}\n\n")
+        if results:
+            clean = {k: v for k, v in results.items() if not str(k).startswith("_")}
+            f.write("## 已提取字段\n\n```json\n")
+            f.write(json.dumps(clean, ensure_ascii=False, indent=2, default=str)[:3000])
+            f.write("\n```\n\n")
+        f.write("## ADP 返回内容\n\n")
+        f.write(full_text or "（无返回内容）")
+    logger.info("ADP 失败快照已保存: %s（%d 字）", path, len(full_text or ""))
+    return path
+
+
 def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_cb=None, keepalive_cb=None, skip_feishu: bool = False, stop_event=None) -> dict:
     """
     完整 ADP 分析流程（单条）
@@ -806,6 +837,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     if not attachments:
         out["error"] = "无附件"
         out["results"] = {"完成状态": "无法分析", "分析失败归因": "输入质量问题（无附件）"}
+        out["fail_type"] = "输入质量问题（无附件）"
         _progress("attachments", "fail", "无附件")
         return out
     # 检查过滤后是否有有效日志附件
@@ -814,6 +846,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         file_names = [a.get('filename', '?') for a in attachments]
         out["error"] = f"没有日志附件（已有: {', '.join(file_names[:5])}）"
         out["results"] = {"完成状态": "无法分析", "分析失败归因": "输入质量问题（无有效日志文件）"}
+        out["fail_type"] = "输入质量问题（无有效日志文件）"
         _progress("attachments", "fail", out["error"])
         return out
     _progress("attachments", "done", f"{len(valid_atts)} 个有效附件（共 {len(attachments)} 个）")
@@ -827,68 +860,115 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     if not full_text:
         out["error"] = "ADP 无返回"
         out["results"] = {"完成状态": "分析失败", "分析失败归因": "ADP连接超时或网络异常"}
+        out["fail_type"] = "ADP连接超时或网络异常"
         _progress("adp_analysis", "fail", "无返回")
         return out
     elapsed_sec = (end_ts - start_ts) / 1000 if start_ts and end_ts else 0
     out["elapsed_sec"] = round(elapsed_sec, 1)
+    # 先记录预览：后续步骤即使失败，前端也能看到 ADP 返回内容
+    out["text_len"] = len(full_text)
+    out["text_preview"] = full_text[:2000]
     _progress("adp_analysis", "done", f"{len(full_text)} 字符, {elapsed_sec:.0f}s")
 
-    # Step 3: 提取结果
-    _progress("extract", "running")
-    results = extract_adp_results(full_text, closeout_data, start_ts, end_ts, file_urls)
-    out["results"] = results
-    out["full_text"] = full_text  # 返回完整分析文本供前端展示
-    out["file_urls"] = file_urls
-    _progress("extract", "done", f"完成状态={results.get('完成状态', '')}")
+    try:
+        # Step 3: 提取结果
+        _progress("extract", "running")
+        results = extract_adp_results(full_text, closeout_data, start_ts, end_ts, file_urls)
+        out["results"] = results
+        out["full_text"] = full_text  # 返回完整分析文本供前端展示
+        out["file_urls"] = file_urls
+        _progress("extract", "done", f"完成状态={results.get('完成状态', '')}")
 
-    # Step 3.5: 下载 HTML 报告到本地，上传为多维表格附件
-    # HTML 是核心交付物，无报告则标记“分析失败”，但仍保留已提取的 root cause/置信度/模块等字段
-    report_url = results.get("_report_url", "")
-    html_file = results.get("_html_file", "")
-    if report_url:
-        _progress("download_report", "running")
-        dl_result = download_adp_report(jira_key, report_url, html_file)
-        file_token = dl_result.get("file_token", "")
-        local_path = dl_result.get("local_path", "")
-        if file_token:
-            results["_report_file_token"] = file_token
-            results["报告链接（分析报告、可观测报告）"] = f"附件: {html_file or 'report.html'}"
-            out["_report_file_token"] = file_token
+        # Step 3.5: 下载 HTML 报告到本地，上传为多维表格附件
+        # HTML 是核心交付物，无报告则标记“分析失败”，但仍保留已提取的 root cause/置信度/模块等字段
+        report_url = results.get("_report_url", "")
+        html_file = results.get("_html_file", "")
+        if report_url:
+            _progress("download_report", "running")
+            dl_result = download_adp_report(jira_key, report_url, html_file)
+            file_token = dl_result.get("file_token", "")
+            local_path = dl_result.get("local_path", "")
+            if file_token:
+                results["_report_file_token"] = file_token
+                results["报告链接（分析报告、可观测报告）"] = f"附件: {html_file or 'report.html'}"
+                out["_report_file_token"] = file_token
+            else:
+                # 下载失败：标记分析失败，但保留已提取的分析字段
+                results["完成状态"] = "分析失败"
+                results["分析失败归因"] = "分析完成但未产出HTML报告"
+                results.pop("报告链接（分析报告、可观测报告）", None)
+            # HTML 报告中的"断点模块"优先级高于文本提取，覆盖"问题模块"字段
+            html_module = _extract_module_from_html(local_path)
+            if html_module:
+                results["agent分析的问题模块"] = html_module
+            _progress("download_report", "done" if file_token else "fail")
         else:
-            # 下载失败：标记分析失败，但保留已提取的分析字段
+            # 无 CDN 链接：标记分析失败，但保留已提取的分析字段（root cause/置信度/模块）
             results["完成状态"] = "分析失败"
             results["分析失败归因"] = "分析完成但未产出HTML报告"
             results.pop("报告链接（分析报告、可观测报告）", None)
-        # HTML 报告中的"断点模块"优先级高于文本提取，覆盖"问题模块"字段
-        html_module = _extract_module_from_html(local_path)
-        if html_module:
-            results["agent分析的问题模块"] = html_module
-        _progress("download_report", "done" if file_token else "fail")
-    else:
-        # 无 CDN 链接：标记分析失败，但保留已提取的分析字段（root cause/置信度/模块）
-        results["完成状态"] = "分析失败"
-        results["分析失败归因"] = "分析完成但未产出HTML报告"
-        results.pop("报告链接（分析报告、可观测报告）", None)
 
-    # Step 4: 保存本地
-    _progress("save_local", "running")
-    save_adp_local(jira_key, full_text, closeout_data, file_urls,
-                   description=description, trigger_time=trigger_time,
-                   attachment_count=len(attachments), results=results,
-                   elapsed_sec=out.get("elapsed_sec", 0),
-                   trace_id=out.get("trace_id", ""))
-    _progress("save_local", "done")
+        # 失败归因：分析失败但没有明确原因时，按 ADP 返回内容自动归类（失败类型）
+        if results.get("完成状态") == "分析失败" and not results.get("分析失败归因"):
+            results["分析失败归因"] = classify_adp_failure(
+                error=out.get("error", ""), full_text=full_text,
+                attachment_count=len(attachments))
 
-    # Step 5: 写入飞书（可跳过，由调用方自行写回）
-    if skip_feishu:
-        _progress("write_feishu", "done", "跳过（由调用方写回）")
-        out["feishu"] = {"ok": True, "record_id": "", "message": "跳过"}
-        out["ok"] = bool(out.get("results", {}).get("_report_file_token", ""))
+        # Step 4: 保存本地
+        _progress("save_local", "running")
+        report_dir = save_adp_local(jira_key, full_text, closeout_data, file_urls,
+                                    description=description, trigger_time=trigger_time,
+                                    attachment_count=len(attachments), results=results,
+                                    elapsed_sec=out.get("elapsed_sec", 0),
+                                    trace_id=out.get("trace_id", ""))
+        # 完整文本只落盘、不随响应回传：前端只拿预览 + 报告路径（避免几十 MB 的 SSE/JSON 响应）
+        out["report_path"] = os.path.join(report_dir, f"{jira_key}_full_analysis.md") if report_dir else ""
+        _progress("save_local", "done")
+
+        # Step 5: 写入飞书（可跳过，由调用方自行写回）
+        if skip_feishu:
+            _progress("write_feishu", "done", "跳过（由调用方写回）")
+            out["feishu"] = {"ok": True, "record_id": "", "message": "跳过"}
+            out["ok"] = bool(out.get("results", {}).get("_report_file_token", ""))
+        else:
+            _progress("write_feishu", "running")
+            fs_result = write_adp_to_feishu(jira_key, results)
+            out["feishu"] = fs_result
+            _progress("write_feishu", "done" if fs_result["ok"] else "fail", fs_result["message"])
+            out["ok"] = fs_result["ok"]
+    except Exception as e:
+        logger.error("ADP 后续处理失败 %s: %s", jira_key, e, exc_info=True)
+        _results = out.get("results") or {}
+        _results.setdefault("完成状态", "分析失败")
+        _results.setdefault("分析失败归因", f"处理异常: {str(e)[:120]}")
+        out["results"] = _results
+        out["error"] = out.get("error") or f"处理异常: {str(e)[:200]}"
+        out["ok"] = False
+        # 失败也把 ADP 返回内容落盘，前端可点「查看完整报告」
+        try:
+            out["report_path"] = _save_adp_fail_snapshot(
+                jira_key, full_text, description=description, trigger_time=trigger_time,
+                error=out["error"], results=_results)
+            _progress("save_local", "done")
+        except Exception as save_err:
+            logger.warning("保存 ADP 失败快照失败 %s: %s", jira_key, save_err)
+
+    # 失败类型：成功时为空；失败时优先用已有归因，其次自动归类，保证前端总能拿到明确分类
+    if out.get("ok"):
+        out["fail_type"] = ""
     else:
-        _progress("write_feishu", "running")
-        fs_result = write_adp_to_feishu(jira_key, results)
-        out["feishu"] = fs_result
-        _progress("write_feishu", "done" if fs_result["ok"] else "fail", fs_result["message"])
-        out["ok"] = fs_result["ok"]
+        _res = out.get("results") or {}
+        _ft = _res.get("分析失败归因") or out.get("fail_type") or ""
+        if not _ft:
+            if _res.get("完成状态") == "完成":
+                _ft = "飞书写入失败"   # 分析本身成功，仅写回飞书失败
+            else:
+                _ft = classify_adp_failure(error=out.get("error", ""), full_text=full_text,
+                                           attachment_count=len(attachments))
+        out["fail_type"] = _ft
+        if _ft and not _res.get("分析失败归因"):
+            _res["分析失败归因"] = _ft
+            out["results"] = _res
+
     out["total_elapsed"] = round(time.time() - t0, 1)
     return out

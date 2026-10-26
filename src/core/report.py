@@ -10,11 +10,22 @@ from datetime import datetime
 import pandas as pd
 
 from src.config import get_day_dir, get_path, setup_logger
+from src.core.resource_lock import KeyedLockPool
 
 logger = setup_logger("report")
 
 # 报表列定义（ 6 列新格式）
 COLUMNS = ["jira号", "分析问题时间", "AI分析结果(飞书链接)", "AI评论总结", "rootcause", "结果置信度"]
+
+# 同一 CSV 的「读-改-写」按路径串行，避免并发批次互相覆盖
+_csv_locks = KeyedLockPool()
+
+
+def _atomic_write_csv(df, csv_path: str) -> None:
+    """先写临时文件再原子替换，避免写一半被读或进程中断留下半个文件"""
+    tmp_path = f"{csv_path}.tmp"
+    df.to_csv(tmp_path, index=False, encoding="utf-8-sig")
+    os.replace(tmp_path, csv_path)
 
 
 def generate_daily_csv(results: list, date_str: str = None) -> str:
@@ -30,22 +41,31 @@ def generate_daily_csv(results: list, date_str: str = None) -> str:
     date_str = date_str or datetime.now().strftime("%Y-%m-%d")
     day_dir = get_day_dir("doc_dir", date_str)
     csv_path = os.path.join(day_dir, f"{date_str}_daily.csv")
-    df_new = pd.DataFrame(results, columns=COLUMNS)
-    # 已存在当日报表时，按 jira号 去重覆盖（新结果覆盖旧结果，不添加分隔空行）
-    if os.path.exists(csv_path):
-        try:
-            df_old = pd.read_csv(csv_path, encoding="utf-8-sig")
-            # 过滤空行（jira号为空的行）
-            df_old = df_old[df_old["jira号"].notna() & (df_old["jira号"].astype(str).str.strip() != "")]
-            # 移除新结果中已包含的 jira号，用新结果覆盖
-            df_old = df_old[~df_old["jira号"].astype(str).isin(df_new["jira号"].astype(str))]
-            df_new = pd.concat([df_new, df_old], ignore_index=True)
-        except Exception:
-            pass  # 读取失败时直接覆盖
-    # utf-8-sig 保证 Excel 打开中文不乱码
-    df_new.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    logger.info("每日结论报表已生成: %s, 本次写入 %d 条, 合计 %d 条",
-                csv_path, len(results), len(df_new))
+    # 同一报表文件的并发读写串行化
+    with _csv_locks.get(csv_path):
+        df_new = pd.DataFrame(results, columns=COLUMNS)
+        # 已存在当日报表时，按 jira号 去重覆盖（新结果覆盖旧结果，不添加分隔空行）
+        if os.path.exists(csv_path):
+            try:
+                df_old = pd.read_csv(csv_path, encoding="utf-8-sig")
+                # 过滤空行（jira号为空的行）
+                df_old = df_old[df_old["jira号"].notna() & (df_old["jira号"].astype(str).str.strip() != "")]
+                # 移除新结果中已包含的 jira号，用新结果覆盖
+                df_old = df_old[~df_old["jira号"].astype(str).isin(df_new["jira号"].astype(str))]
+                df_new = pd.concat([df_new, df_old], ignore_index=True)
+            except Exception as e:
+                # 读失败时先把旧文件备份，再写新数据；连备份都失败则放弃写入，避免丢数据
+                backup = f"{csv_path}.corrupt-{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
+                try:
+                    shutil.copy2(csv_path, backup)
+                    logger.error("当日报表读取失败，旧文件已备份到 %s，本次覆盖写入: %s", backup, e)
+                except OSError as backup_err:
+                    logger.error("当日报表读取失败且备份失败，已跳过写入以免丢数据: %s / %s", e, backup_err)
+                    raise
+        # utf-8-sig 保证 Excel 打开中文不乱码；原子替换避免半个文件
+        _atomic_write_csv(df_new, csv_path)
+        logger.info("每日结论报表已生成: %s, 本次写入 %d 条, 合计 %d 条",
+                    csv_path, len(results), len(df_new))
     return csv_path
 
 

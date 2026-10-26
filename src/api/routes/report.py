@@ -215,7 +215,7 @@ def report_audit_failed():
 
 
 @router.post("/api/report/classify_docs", response_model=ApiResponse)
-async def classify_comment_docs_api(req: ClassifyDocsRequest):
+def classify_comment_docs_api(req: ClassifyDocsRequest):
     """根据执行记录对当天评论分析文档进行分类"""
     from src.core import report as report_module
     from src.api.routes.shared import ok as _ok, fail as _fail
@@ -551,8 +551,10 @@ def dashboard_dates():
         if folder_token:
             cloud_doc_count = None
             # 使用缓存避免每次打开都做递归列出
-            if _cloud_dates_cache["data"] and time.time() - _cloud_dates_cache["ts"] < _CLOUD_DATES_TTL:
-                cloud_doc_count = _cloud_dates_cache["data"]
+            with _dashboard_cache_lock:
+                _cd_cached, _cd_ts = _cloud_dates_cache["data"], _cloud_dates_cache["ts"]
+            if _cd_cached and time.time() - _cd_ts < _CLOUD_DATES_TTL:
+                cloud_doc_count = _cd_cached
             else:
                 cloud_files = feishu_client.list_folder_files(folder_token, recursive=True)
                 cloud_doc_count = {}
@@ -560,8 +562,9 @@ def dashboard_dates():
                     folder_name = f.get("folder", "")
                     if folder_name and _re.match(r"\d{4}-\d{2}-\d{2}$", folder_name) and f.get("type") in ("docx", "file"):
                         cloud_doc_count[folder_name] = cloud_doc_count.get(folder_name, 0) + 1
-                _cloud_dates_cache["ts"] = time.time()
-                _cloud_dates_cache["data"] = cloud_doc_count
+                with _dashboard_cache_lock:
+                    _cloud_dates_cache["ts"] = time.time()
+                    _cloud_dates_cache["data"] = cloud_doc_count
             # 合并到日期列表
             for d, count in cloud_doc_count.items():
                 if d not in date_map:
@@ -764,7 +767,8 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
                 b["_detail"] = detail
                 # 写入缓存
                 cache_key = (date_str, b["name"])
-                _batch_detail_cache[cache_key] = {"ts": time.time(), "data": detail}
+                with _dashboard_cache_lock:
+                    _batch_detail_cache[cache_key] = {"ts": time.time(), "data": detail}
             logger.info("看板预加载: %s %d 个批次详情已缓存", date_str, len(batches))
     except Exception as e:
         logger.warning("看板批次详情预加载失败: %s", e)
@@ -1033,7 +1037,8 @@ def dashboard_batch_detail(
     ttl = _BATCH_DETAIL_TTL_TODAY if _is_today(date) else _BATCH_DETAIL_TTL_HISTORY
 
     # ── 1. 内存缓存 ──
-    cached = _batch_detail_cache.get(cache_key)
+    with _dashboard_cache_lock:
+        cached = _batch_detail_cache.get(cache_key)
     if cached and time.time() - cached["ts"] < ttl:
         logger.info("批次详情命中内存缓存: %s/%s", date, batch)
         return _ok(cached["data"])
@@ -1041,7 +1046,8 @@ def dashboard_batch_detail(
     # ── 2. 云端 JSON 缓存 ──
     cloud_data = _load_batch_detail_cloud(date, batch)
     if cloud_data:
-        _batch_detail_cache[cache_key] = {"ts": time.time(), "data": cloud_data}
+        with _dashboard_cache_lock:
+            _batch_detail_cache[cache_key] = {"ts": time.time(), "data": cloud_data}
         return _ok(cloud_data)
 
     # ── 3. 未命中，查询多维表格 ──
@@ -1147,7 +1153,8 @@ def dashboard_batch_detail(
     }
 
     # ── 4. 写入缓存 ──
-    _batch_detail_cache[cache_key] = {"ts": time.time(), "data": data}
+    with _dashboard_cache_lock:
+        _batch_detail_cache[cache_key] = {"ts": time.time(), "data": data}
     _save_batch_detail_cloud(date, batch, data)
 
     return _ok(data)

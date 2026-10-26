@@ -65,11 +65,56 @@ def cmd_audit(args):
     print(f"随机抽查完成，人工审核表格: {report_path}")
 
 
+def cmd_cleanup(args):
+    """按保留期清理运行期生成的数据（docs/reports/logs/缓存），默认只预演"""
+    from src.core import retention
+    summary = retention.prune_runtime_data(args.days, dry_run=not args.apply)
+    mode = "已执行" if args.apply else "预演（未删除）"
+    print(f"保留期清理[{mode}] 保留 {summary['days']} 天："
+          f"{summary['file_count']} 个文件，约 {summary['bytes'] / 1024 / 1024:.1f} MB")
+    for s in summary.get("sample", [])[:10]:
+        print(f"  示例: {s}")
+    if args.apply:
+        print(f"  实际删除 {summary.get('removed', 0)} 个，失败 {summary.get('failed', 0)} 个")
+
+
+def _listener_pids(port: int) -> list:
+    """返回正在监听指定端口的进程 PID 列表（Windows 用 netstat，*nix 用 lsof）"""
+    import subprocess
+    import sys
+
+    pids = set()
+    if sys.platform == "win32":
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            out = subprocess.check_output(["netstat", "-ano", "-p", "TCP"],
+                                          stderr=subprocess.DEVNULL,
+                                          creationflags=flags).decode("utf-8", "ignore")
+        except Exception as e:
+            logger.warning("netstat 查询端口失败: %s", e)
+            return []
+        for line in out.splitlines():
+            parts = line.split()
+            # 形如：TCP  0.0.0.0:8060  0.0.0.0:0  LISTENING  8180
+            if len(parts) >= 5 and parts[0].upper() == "TCP" \
+                    and parts[1].endswith(f":{port}") and parts[3].upper().startswith("LISTEN"):
+                if parts[4].isdigit():
+                    pids.add(int(parts[4]))
+        return sorted(pids)
+    try:
+        out = subprocess.check_output(["lsof", "-ti", f":{port}"],
+                                      stderr=subprocess.DEVNULL).decode().strip()
+        return sorted({int(p) for p in out.split() if p.isdigit()})
+    except Exception:
+        return []
+
+
 def _kill_port_hog(port: int):
-    """启动前自动杀掉占用指定端口的旧进程"""
+    """启动前自动杀掉占用指定端口的旧进程（Windows 用 taskkill，*nix 用 SIGKILL）"""
     import signal
     import socket
     import subprocess
+    import sys
     import time
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -80,19 +125,26 @@ def _kill_port_hog(port: int):
         return  # 端口空闲，无需处理
 
     logger.info("端口 %d 被占用，正在清理旧进程...", port)
-    try:
-        out = subprocess.check_output(
-            ['lsof', '-ti', f':{port}'],
-            stderr=subprocess.DEVNULL
-        ).decode().strip()
-        pids = [int(p) for p in out.split() if p.isdigit()]
-        for pid in pids:
-            if pid != os.getpid():
+    pids = [pid for pid in _listener_pids(port) if pid != os.getpid()]
+    if not pids:
+        logger.warning("端口 %d 被占用，但未识别到监听进程", port)
+        return
+    for pid in pids:
+        try:
+            if sys.platform == "win32":
+                res = subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if res.returncode == 0:
+                    logger.info("已杀掉占用端口的旧进程 PID=%d", pid)
+                else:
+                    logger.warning("结束进程 %d 失败（可能属于其它用户/会话），返回码 %s", pid, res.returncode)
+            else:
                 os.kill(pid, signal.SIGKILL)
-                logger.info("已杀掉旧进程 PID=%d", pid)
-        time.sleep(1)  # 等待端口释放
-    except Exception as e:
-        logger.warning("清理端口 %d 失败: %s", port, e)
+                logger.info("已杀掉占用端口的旧进程 PID=%d", pid)
+        except Exception as e:
+            logger.warning("清理端口 %d 时结束进程 %d 失败: %s", port, pid, e)
+    time.sleep(1)  # 等待端口释放
 
 
 def cmd_web(args):
@@ -136,13 +188,21 @@ def cmd_web(args):
     logging.getLogger("uvicorn").addHandler(_error_fh)
 
     url = f"http://127.0.0.1:{args.port}"
-    # 清除上次的浏览器打开标记，确保本次启动可以打开
-    import tempfile
-    _flag = os.path.join(tempfile.gettempdir(), ".web_browser_opened")
-    try:
-        os.remove(_flag)
-    except FileNotFoundError:
-        pass
+    # 清除上次的浏览器打开标记，确保本次启动可以打开（含历史遗留位置）
+    from src.config import PROJECT_ROOT as _PROJECT_ROOT
+    import tempfile as _tempfile
+    _flags = [
+        os.path.join(_PROJECT_ROOT, "data", ".web_browser_opened"),
+        os.path.join(_tempfile.gettempdir(), ".web_browser_opened"),
+        os.path.join(os.getcwd(), ".web_browser_opened"),
+    ]
+    for _flag in _flags:
+        try:
+            os.remove(_flag)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
     # 通过环境变量传递 URL，由 app.py startup 事件在服务就绪后打开浏览器
     os.environ["_WEB_OPEN_URL"] = url
     if is_frozen:
@@ -182,6 +242,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_audit.add_argument("--count", type=int, default=None,
                          help="抽样数量，默认取配置 audit.sample_count（30）")
     p_audit.set_defaults(func=cmd_audit)
+
+    p_cleanup = sub.add_parser("cleanup", help="按保留期清理运行期生成的数据（默认只预演）")
+    p_cleanup.add_argument("--days", type=int, default=180, help="保留天数，默认 180")
+    p_cleanup.add_argument("--apply", action="store_true", help="实际删除（不加则只预演统计）")
+    p_cleanup.set_defaults(func=cmd_cleanup)
 
     p_web = sub.add_parser("web", help="启动前端可视化页面（流程可视化/接口设置/数据看板）")
     p_web.add_argument("--port", type=int, default=8060, help="服务端口，默认 8060")

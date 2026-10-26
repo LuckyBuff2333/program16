@@ -22,7 +22,7 @@ router = APIRouter()
 
 
 @router.post("/api/analyze", response_model=ApiResponse)
-async def run_analyze(req: AnalyzeRequest):
+def run_analyze(req: AnalyzeRequest):
     """执行内容补充流程，接收表格行数据，返回补充后的完整数据"""
     rows = req.rows
     if not rows and req.bugids:
@@ -116,7 +116,7 @@ async def flow_single(req: FlowSingleRequest, request: Request):
 
 
 @router.post("/api/flow/stop/{bugid}", response_model=ApiResponse)
-async def flow_stop(bugid: str):
+def flow_stop(bugid: str):
     """通知后端停止执行指定 bugid 的流程"""
     if bugid in flow_cancel:
         flow_cancel[bugid] = True
@@ -125,7 +125,7 @@ async def flow_stop(bugid: str):
 
 
 @router.get("/api/flow/check/{bugid}", response_model=ApiResponse)
-async def flow_check(bugid: str):
+def flow_check(bugid: str):
     """快速检查 bugid 的 6 字段状态（不执行补充）"""
     csv_path = daily_csv_path()
     rows = read_csv_rows(csv_path)
@@ -151,7 +151,7 @@ async def flow_check(bugid: str):
 
 
 @router.post("/api/retry", response_model=ApiResponse)
-async def run_retry(req: BugidRequest):
+def run_retry(req: BugidRequest):
     """失败 bug 重新补充"""
     bugid = req.bugid.strip()
     if not bugid:
@@ -165,7 +165,7 @@ async def run_retry(req: BugidRequest):
 
 
 @router.post("/api/store", response_model=ApiResponse)
-async def run_store(req: BugidRequest):
+def run_store(req: BugidRequest):
     """手工将分析文档推入知识库"""
     bugid = req.bugid.strip()
     if not bugid:
@@ -179,7 +179,7 @@ async def run_store(req: BugidRequest):
 
 
 @router.post("/api/audit", response_model=ApiResponse)
-async def run_audit(req: AuditRequest):
+def run_audit(req: AuditRequest):
     """随机抽查复核，返回人工审核表格数据（含达标/不达标判定）"""
     count = req.count
     try:

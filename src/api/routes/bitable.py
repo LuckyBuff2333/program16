@@ -9,7 +9,7 @@ router = APIRouter()
 
 
 @router.post("/api/bitable/unverified_jiras", response_model=ApiResponse)
-async def bitable_unverified_jiras(request: Request):
+def bitable_unverified_jiras(request: Request):
     """从多维表格提取所有"分析结果=成功"且置信度为空的记录"""
     from src.clients import feishu_client
     from src.api.routes.shared import ok as _ok, fail as _fail

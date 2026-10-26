@@ -31,7 +31,6 @@ from src.api.routes import trigger as trigger_router
 from src.api.routes import docs as docs_router
 from src.api.routes import bitable as bitable_router
 from src.api.routes import feishu as feishu_router
-from src.api.routes import verify as verify_router
 from src.api.routes import troubleshoot as troubleshoot_router
 from src.api.routes import misc as misc_router
 from src.api.routes import testing as testing_router
@@ -69,11 +68,17 @@ def create_app() -> FastAPI:
     _ROUTERS = [
         system_router, flow_router, audit_router, timestudy_router,
         tuning_router, report_router, data_router, trigger_router,
-        docs_router, bitable_router, feishu_router, verify_router,
+        docs_router, bitable_router, feishu_router,
         troubleshoot_router, misc_router, testing_router,
     ]
     for r in _ROUTERS:
         application.include_router(r.router)
+    # 作业注册表（可选模块，缺失时不影响主流程）
+    try:
+        from src.api.routes import jobs as _jobs_module
+        application.include_router(_jobs_module.router)
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("作业状态路由注册失败: %s", _e)
 
     # ── 挂载前端构建产物 ──
     misc_router.mount_frontend_assets(application)
@@ -118,19 +123,34 @@ async def _on_startup():
     # 服务就绪后打开浏览器（仅首次，reload 时不重复打开）
     _open_url = os.environ.pop("_WEB_OPEN_URL", None)
     if _open_url:
-        _flag = os.path.join(tempfile.gettempdir(), ".web_browser_opened")
+        from src.config import PROJECT_ROOT as _PROJECT_ROOT
+        _flag = os.path.join(_PROJECT_ROOT, "data", ".web_browser_opened")
         if not os.path.exists(_flag):
             import subprocess, sys
 
             def _open_browser(url: str):
-                """跨平台打开浏览器，xdg-open 会在已有窗口中新建标签页"""
+                """跨平台打开浏览器：Windows 优先 ShellExecute（os.startfile），失败退回 cmd start"""
                 if sys.platform == "win32":
-                    subprocess.Popen(["cmd", "/c", "start", "", url])
+                    try:
+                        os.startfile(url)  # noqa: S606  ShellExecute，走默认浏览器
+                        _logger.info("已通过默认浏览器打开页面: %s", url)
+                        return
+                    except Exception as e:
+                        _logger.warning("os.startfile 打开浏览器失败(%s)，尝试 cmd start", e)
+                    try:
+                        subprocess.Popen(["cmd", "/c", "start", "", url])
+                        _logger.info("已通过 cmd start 请求打开页面: %s", url)
+                    except Exception as e2:
+                        _logger.warning("打开浏览器失败: %s，请手动访问 %s", e2, url)
                     return
                 # xdg-open 通过桌面协议复用已有浏览器实例开新标签页
-                subprocess.Popen(["xdg-open", url],
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL)
+                try:
+                    subprocess.Popen(["xdg-open", url],
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+                    _logger.info("已通过 xdg-open 请求打开页面: %s", url)
+                except Exception as e:
+                    _logger.warning("打开浏览器失败: %s，请手动访问 %s", e, url)
 
             threading.Timer(0.5, lambda: _open_browser(_open_url)).start()
             try:
