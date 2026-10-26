@@ -366,7 +366,22 @@ export default {
       batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND created >= startOfDay(-1d) AND created <= endOfDay(-1d) AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC', 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND status != closed AND created >= "2026/10/01" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'], jqlLabels: ['今日新增Bug', '昨日新增Bug', '本周新增Bug', '10月新增未关闭', '远控', 'coreservice', '导航'], sampleCount: 5, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, filterExistingSuccess: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '', envSavedMsg: '', rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, preSample: null },
     };
   },
+  mounted() {
+    this.loadBatchEnv();
+  },
   methods: {
+    async loadBatchEnv() {
+      // 软件版本等环境设置持久化在后端 config.yaml，页面打开时自动回填
+      try {
+        const resp = await fetch('/api/config/batch_env');
+        const body = await resp.json();
+        const ver = (body && body.data && body.data.software_version) || '';
+        if (ver) {
+          this.batchAi.softwareVersion = ver;
+          if (this.aiDirect && !this.aiDirect.softwareVersion) this.aiDirect.softwareVersion = ver;
+        }
+      } catch (e) { /* 读取失败不阻断页面 */ }
+    },
     async batchAiSearch() {
       if (!this.batchAi.jql.trim()) return ElMessage.warning('请输入 JQL');
       this.running.batchSearch = true;
@@ -508,6 +523,16 @@ export default {
         softwareVersion: this.batchAi.softwareVersion,
       };
       localStorage.setItem(`envSettings_${mode}`, JSON.stringify(data));
+      // 软件版本持久化到后端配置，换浏览器/换机器也能读到
+      const ver = (this.batchAi.softwareVersion || '').trim();
+      if (ver) {
+        fetch('/api/config/batch_env', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ software_version: ver }),
+        }).then(r => r.json()).then(j => {
+          if (!j.ok) ElMessage.error(j.message || '保存软件版本失败');
+        }).catch(() => { /* 后端不可用时不阻断本地保存 */ });
+      }
       this.batchAi.envSavedMsg = '已保存';
       setTimeout(() => { this.batchAi.envSavedMsg = ''; }, 2000);
     },
@@ -520,6 +545,7 @@ export default {
         if (data.downloadConcurrency) this[target].downloadConcurrency = data.downloadConcurrency;
         if (data.model) this[target].model = data.model;
         if (data.triggerSource) this[target].triggerSource = data.triggerSource;
+        if (data.softwareVersion) this[target].softwareVersion = data.softwareVersion;
       } catch (e) { /* ignore */ }
     },
     async batchAiOneClick() {

@@ -311,6 +311,43 @@ async def save_config(request: Request):
         return fail(f"配置保存失败: {e}")
 
 
+@router.get("/api/config/batch_env", response_model=ApiResponse)
+def get_batch_env():
+    """读取批量执行的测试环境设置（持久化在 config.yaml 的 batch_env 段）"""
+    env = load_config().get("batch_env") or {}
+    return ok({"software_version": str(env.get("software_version", ""))}, "读取成功")
+
+
+@router.post("/api/config/batch_env", response_model=ApiResponse)
+async def save_batch_env(request: Request):
+    """保存批量执行的测试环境设置（目前只有软件版本）
+
+    写入 config.yaml 的 batch_env 段，页面下次打开自动读取，不必每次执行都手填。
+    """
+    try:
+        body = await request.json() or {}
+    except Exception:
+        return fail("请求体不是合法 JSON")
+    version = str(body.get("software_version", "") or "").strip()
+    if len(version) > 64:
+        return fail("软件版本过长（最多 64 个字符）")
+    if not version:
+        return fail("软件版本不能为空")
+    try:
+        cfg = copy.deepcopy(load_config())
+        env = cfg.get("batch_env")
+        env = dict(env) if isinstance(env, dict) else {}
+        env["software_version"] = version
+        cfg["batch_env"] = env
+        backup = _write_config(cfg)
+        load_config(cfg_module.CONFIG_PATH)   # 刷新内存缓存
+        logger.info("批量执行环境设置已保存: software_version=%s", version)
+        return ok({"software_version": version, "backup": backup}, f"已保存：{version}")
+    except Exception as e:
+        logger.error("保存批量执行环境设置失败: %s", e)
+        return fail(f"保存失败: {e}")
+
+
 @router.get("/api/overview", response_model=ApiResponse)
 def overview():
     """首页概览：统计指标与接口模式状态"""
