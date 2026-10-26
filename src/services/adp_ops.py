@@ -14,6 +14,9 @@ from src.config import load_config, get_path, setup_logger
 
 logger = setup_logger("adp_ops")
 
+# SSE 已知事件类型（不触发未知事件日志）
+_KNOWN_EVENT_TYPES = {"text.delta", "text.replace", "content.added", "response.created"}
+
 
 # ===== 配置读取 =====
 
@@ -29,6 +32,7 @@ def _get_adp_cfg() -> dict:
         "timeout": int(cfg.get("timeout", 3600)),
         "bitable_app_token": cfg.get("bitable_app_token", ""),
         "bitable_table_id": cfg.get("bitable_table_id", ""),
+        "bitable_view_id": cfg.get("bitable_view_id", ""),
         "jira_field": cfg.get("jira_field", "Jira链接"),
         "save_dir": cfg.get("save_dir", "docs/adp_results"),
     }
@@ -102,14 +106,28 @@ def build_adp_message(jira_key: str, description: str, trigger_time: str, attach
     return msg
 
 
-def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3) -> tuple:
+def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, stop_event=None) -> tuple:
     """
     调用 ADP v2 SSE 接口（流式读取，支持心跳回调和自动重试）
     :param keepalive_cb: 可选回调 fn(elapsed_sec)，每 30 秒调用一次用于 SSE 心跳
     :param max_retries: 连接失败时最大重试次数（默认 3 次）
+    :param stop_event: 可选 threading.Event，设置后尽快中止流式读取
     返回: (full_text, file_urls, closeout_data, start_ts, end_ts)
     """
     import time
+
+    def _should_stop():
+        return stop_event is not None and stop_event.is_set()
+
+    def _interruptible_sleep(total_sec):
+        """可中断的 sleep：每 0.5 秒检查 stop_event"""
+        elapsed = 0.0
+        while elapsed < total_sec:
+            if _should_stop():
+                return True
+            time.sleep(min(0.5, total_sec - elapsed))
+            elapsed += 0.5
+        return False
     adp_cfg = _get_adp_cfg()
     payload = {
         "RequestId": uuid.uuid4().hex[:32],
@@ -123,6 +141,9 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3) -
     }
     logger.info("ADP 调用 SSE 接口（流式，超时 %ds，最多重试 %d 次）...", adp_cfg["timeout"], max_retries)
     last_err = None
+    event_types_seen = set()
+    logged_unknown = set()
+    trace_id = ""
     for attempt in range(1, max_retries + 1):
         full_text = ""
         file_urls = []
@@ -136,12 +157,18 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3) -
                 "POST", adp_cfg["url"],
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=httpx.Timeout(adp_cfg["timeout"], connect=30),
+                timeout=httpx.Timeout(adp_cfg["timeout"], connect=30, read=60),
             ) as resp:
                 if resp.status_code != 200:
                     logger.error("ADP SSE HTTP %d", resp.status_code)
-                    return "", [], None, 0, 0
+                    return "", [], None, 0, 0, trace_id
+                if _should_stop():
+                    logger.info("ADP SSE 收到停止信号，中止读取")
+                    return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id
                 for line in resp.iter_lines():
+                    if _should_stop():
+                        logger.info("ADP SSE 收到停止信号，中止读取")
+                        return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id
                     # 心跳回调
                     now = time.time()
                     if keepalive_cb and now - last_keepalive >= 30:
@@ -158,8 +185,23 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3) -
                         continue
                     et = data.get("Type", "")
                     ts = int(data.get("Timestamp", 0))
-                    if et == "response.created" and ts > 0:
-                        start_ts = ts
+                    event_types_seen.add(et)
+                    # 未知事件类型每种只打一次（诊断用，不刷屏）
+                    if et and et not in _KNOWN_EVENT_TYPES and et not in logged_unknown:
+                        logged_unknown.add(et)
+                        logger.info("ADP SSE 未知事件: Type=%s", et)
+                    if et == "response.created":
+                        if ts > 0:
+                            start_ts = ts
+                        # 提取 trace_id（可能在多个字段名中）
+                        for tid_key in ("TraceId", "trace_id", "TraceID", "ConversationId", "conversation_id"):
+                            v = data.get(tid_key, "")
+                            if v and not trace_id:
+                                trace_id = str(v)
+                                break
+                        # 记录 response.created 完整字段（诊断 trace_id 等）
+                        logger.info("ADP response.created: %s",
+                                    json.dumps(data, ensure_ascii=False)[:500])
                     if ts > 0:
                         end_ts = ts
                     if et == "text.delta":
@@ -169,13 +211,25 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3) -
                         if '"ok"' in raw and '"html"' in raw:
                             try:
                                 closeout_data = json.loads(raw)
+                                logger.info("ADP closeout_data keys: %s", list(closeout_data.keys()))
                             except json.JSONDecodeError:
                                 pass
                     elif et == "content.added":
                         content = data.get("Content", {})
                         if content.get("Type") == "file":
                             finfo = content.get("File", {})
-                            file_urls.append({"name": finfo.get("FileName", ""), "url": finfo.get("FileUrl", "")})
+                            fname = finfo.get("FileName", "")
+                            furl = finfo.get("FileUrl", "")
+                            file_urls.append({"name": fname, "url": furl})
+                            if fname.endswith(".html"):
+                                logger.info("ADP SSE 捕获 HTML 文件: %s", fname)
+        except httpx.ReadTimeout:
+            # 读超时（60s 无新数据）：非连接错误，检查停止信号后返回已收集的数据
+            if _should_stop():
+                logger.info("ADP SSE 读超时且收到停止信号，中止")
+            else:
+                logger.warning("ADP SSE 读超时（60s 无新数据），已收集 %d 字符", len(full_text))
+            return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id
         except Exception as e:
             last_err = e
             # 连接级错误（DNS/超时/断连）可重试，已收到数据则不重试
@@ -185,16 +239,18 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3) -
                 logger.warning("ADP SSE 连接失败（第 %d/%d 次）: %s，%ds 后重试...", attempt, max_retries, e, wait)
                 if keepalive_cb:
                     keepalive_cb(round(time.time() - t0, 1))
-                time.sleep(wait)
+                if _interruptible_sleep(wait):
+                    logger.info("ADP SSE 重试等待中被停止")
+                    return "", [], None, 0, 0, trace_id
                 continue
             logger.error("ADP SSE 流式读取异常: %s", e)
-            return full_text, file_urls, closeout_data, start_ts, end_ts
+            return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id
         # 成功完成，跳出重试循环
         break
     else:
         # 所有重试均失败
         logger.error("ADP SSE 连接失败，已重试 %d 次: %s", max_retries, last_err)
-        return "", [], None, 0, 0
+        return "", [], None, 0, 0, trace_id
     # closeout 兜底
     if closeout_data is None:
         for pattern in [r'\{[^{}]*"ok"\s*:\s*true[^{}]*"html"[^{}]*\}', r'\{[^{}]*"case_id"[^{}]*\}']:
@@ -205,81 +261,111 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3) -
                     break
                 except json.JSONDecodeError:
                     pass
-    # ---- 迟到报告检测：分析有实质内容但无 HTML 报告，最多等 2 轮 x 5 分钟 ----
-    def _has_report():
-        return (closeout_data is not None
-                or bool(re.search(r'report_[^\s"\']*\.html', full_text))
-                or bool(re.search(r'agent\.adp-cos\.com', full_text)))
+    # ---- 迟到报告检测：仅在流耗时 > 5 分钟时触发，短流说明连接异常中断 ----
+    def _has_downloadable_report():
+        """检查是否有真正可下载的报告链接（agent.adp-cos.com CDN 或 file_urls 中的 HTML）"""
+        if re.search(r'agent\.adp-cos\.com', full_text):
+            return True
+        if any(f.get("name", "").endswith(".html") and "meta" not in f.get("name", "").lower()
+               for f in file_urls):
+            return True
+        return False
 
-    if full_text and len(full_text) > 500 and not _has_report():
-        for round_idx in range(2):  # 最多 2 轮，每轮等 5 分钟，总计最多 10 分钟
-            wait_sec = 300
-            logger.info("ADP 无 HTML 报告信号，%d 秒后尝试第 %d 轮续接...", wait_sec, round_idx + 1)
-            if keepalive_cb:
-                keepalive_cb(round(time.time() - t0, 1))
-            time.sleep(wait_sec)
-            logger.info("续接 ADP 会话（第 %d 轮）...", round_idx + 1)
-            prev_text_len = len(full_text)
-            prev_file_count = len(file_urls)
-            try:
-                payload2 = dict(payload)
-                payload2["RequestId"] = uuid.uuid4().hex[:32]
-                client2 = httpx.Client(timeout=httpx.Timeout(adp_cfg["timeout"], connect=30))
+    stream_sec = (end_ts - start_ts) / 1000 if start_ts and end_ts else 0
+    if full_text and len(full_text) > 500 and not _has_downloadable_report():
+        if stream_sec <= 300:
+            logger.warning("ADP 流异常结束（%.0fs < 5分钟），跳过迟到检测", stream_sec)
+        else:
+            for round_idx in range(2):  # 最多 2 轮，每轮等 5 分钟，总计最多 10 分钟
+                wait_sec = 300
+                logger.info("ADP 无 HTML 报告信号，%d 秒后尝试第 %d 轮续接...", wait_sec, round_idx + 1)
+                if keepalive_cb:
+                    keepalive_cb(round(time.time() - t0, 1))
+                if _interruptible_sleep(wait_sec):
+                    logger.info("ADP 续接等待中被停止")
+                    break
+                logger.info("续接 ADP 会话（第 %d 轮）...", round_idx + 1)
+                prev_text_len = len(full_text)
+                prev_file_count = len(file_urls)
                 try:
-                    with client2.stream("POST", adp_cfg["url"], json=payload2,
-                                        headers={"Content-Type": "application/json"}) as sse_resp:
-                        if sse_resp.status_code == 200:
-                            new_text_len = 0
-                            for line in sse_resp.iter_lines():
-                                if not line or not line.startswith("data: "):
-                                    continue
-                                data_str = line[6:]
-                                if data_str == "[DONE]":
-                                    break
-                                try:
-                                    data = json.loads(data_str)
-                                except json.JSONDecodeError:
-                                    continue
-                                et = data.get("Type", "")
-                                ts = int(data.get("Timestamp", 0))
-                                if ts > 0:
-                                    end_ts = ts
-                                if et == "text.delta":
-                                    chunk = _fix_encoding(data.get("Text", ""))
-                                    full_text += chunk
-                                    new_text_len += len(chunk)
-                                elif et == "text.replace":
-                                    raw = _fix_encoding(data.get("Text", ""))
-                                    if '"ok"' in raw and '"html"' in raw:
-                                        try:
-                                            closeout_data = json.loads(raw)
-                                        except json.JSONDecodeError:
-                                            pass
-                                elif et == "content.added":
-                                    content = data.get("Content", {})
-                                    if content.get("Type") == "file":
-                                        finfo = content.get("File", {})
-                                        file_urls.append({"name": finfo.get("FileName", ""),
-                                                          "url": finfo.get("FileUrl", "")})
-                            logger.info("ADP 续接第 %d 轮完成: 新增 %d 字符, file_urls=%d, closeout=%s",
-                                        round_idx + 1, new_text_len, len(file_urls), closeout_data is not None)
-                finally:
-                    client2.close()
-            except Exception as e:
-                logger.warning("ADP 续接会话第 %d 轮失败: %s", round_idx + 1, e)
-                break
-            # 有报告信号了，不再等待
-            if _has_report():
-                logger.info("ADP 续接第 %d 轮检测到 HTML 报告信号", round_idx + 1)
-                break
-            # 无变化，不再等待
-            has_change = (len(full_text) > prev_text_len or len(file_urls) > prev_file_count)
-            if not has_change:
-                logger.info("ADP 续接第 %d 轮无新内容，停止等待", round_idx + 1)
-                break
+                    payload2 = dict(payload)
+                    payload2["RequestId"] = uuid.uuid4().hex[:32]
+                    client2 = httpx.Client(timeout=httpx.Timeout(adp_cfg["timeout"], connect=30))
+                    try:
+                        with client2.stream("POST", adp_cfg["url"], json=payload2,
+                                            headers={"Content-Type": "application/json"}) as sse_resp:
+                            if sse_resp.status_code == 200:
+                                new_text_len = 0
+                                for line in sse_resp.iter_lines():
+                                    if _should_stop():
+                                        logger.info("ADP 续接 SSE 收到停止信号")
+                                        break
+                                    if not line or not line.startswith("data: "):
+                                        continue
+                                    data_str = line[6:]
+                                    if data_str == "[DONE]":
+                                        break
+                                    try:
+                                        data = json.loads(data_str)
+                                    except json.JSONDecodeError:
+                                        continue
+                                    et = data.get("Type", "")
+                                    ts = int(data.get("Timestamp", 0))
+                                    event_types_seen.add(et)
+                                    if et and et not in _KNOWN_EVENT_TYPES and et not in logged_unknown:
+                                        logged_unknown.add(et)
+                                        logger.info("ADP 续接 SSE 未知事件: Type=%s", et)
+                                    if ts > 0:
+                                        end_ts = ts
+                                    if et == "text.delta":
+                                        chunk = _fix_encoding(data.get("Text", ""))
+                                        full_text += chunk
+                                        new_text_len += len(chunk)
+                                    elif et == "text.replace":
+                                        raw = _fix_encoding(data.get("Text", ""))
+                                        if '"ok"' in raw and '"html"' in raw:
+                                            try:
+                                                closeout_data = json.loads(raw)
+                                            except json.JSONDecodeError:
+                                                pass
+                                    elif et == "content.added":
+                                        content = data.get("Content", {})
+                                        if content.get("Type") == "file":
+                                            finfo = content.get("File", {})
+                                            fname = finfo.get("FileName", "")
+                                            furl = finfo.get("FileUrl", "")
+                                            file_urls.append({"name": fname, "url": furl})
+                                            if fname.endswith(".html"):
+                                                logger.info("ADP 续接 SSE 捕获 HTML 文件: %s", fname)
+                                logger.info("ADP 续接第 %d 轮完成: 新增 %d 字符, file_urls=%d, closeout=%s",
+                                            round_idx + 1, new_text_len, len(file_urls), closeout_data is not None)
+                    finally:
+                        client2.close()
+                except Exception as e:
+                    logger.warning("ADP 续接会话第 %d 轮失败: %s", round_idx + 1, e)
+                    break
+                # 有报告信号了，不再等待
+                if _has_downloadable_report():
+                    logger.info("ADP 续接第 %d 轮检测到 HTML 报告信号", round_idx + 1)
+                    break
+                # 无变化，不再等待
+                has_change = (len(full_text) > prev_text_len or len(file_urls) > prev_file_count)
+                if not has_change:
+                    logger.info("ADP 续接第 %d 轮无新内容，停止等待", round_idx + 1)
+                    break
     elapsed_sec = (end_ts - start_ts) / 1000 if start_ts and end_ts else 0
-    logger.info("ADP 分析完成: %d 字符, 耗时 %.0fs", len(full_text), elapsed_sec)
-    return full_text, file_urls, closeout_data, start_ts, end_ts
+    # trace_id 兑底：从 closeout_data 或 payload 中获取
+    if not trace_id and closeout_data:
+        for tid_key in ("trace_id", "TraceId", "TraceID", "conversation_id", "ConversationId"):
+            v = closeout_data.get(tid_key, "")
+            if v:
+                trace_id = str(v)
+                break
+    if not trace_id:
+        trace_id = payload.get("ConversationId", "")
+    logger.info("ADP 分析完成: %d 字符, 耗时 %.0fs, trace_id=%s, SSE 事件类型: %s",
+                len(full_text), elapsed_sec, trace_id, sorted(event_types_seen))
+    return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id
 
 
 def call_adp_sse(message: str) -> tuple:
@@ -445,11 +531,12 @@ def _validate_confidence(raw: str) -> str:
         return ""
 
 
-def _extract_report_url(text: str, file_urls: list, closeout_data: dict) -> tuple:
-    """从多个来源提取报告链接（优先级：文本中 agent.adp-cos.com > file_urls > closeout sandbox > 文件名）
+def _extract_report_url(text: str, file_urls: list) -> tuple:
+    """从文本或 file_urls 中提取报告链接（只认 agent.adp-cos.com CDN 或 file_urls 中的 HTML）
+    sandbox URL 需要认证无法直接下载，不再使用
     返回: (html_filename, direct_url)
     """
-    # 1. 从最终 reply 文本中提取 agent.adp-cos.com 报告链接（最准确）
+    # 1. 从最终 reply 文本中提取 agent.adp-cos.com 报告链接（带签名参数，可直接下载）
     m = re.search(r'(https?://agent\.adp-cos\.com/[^\s)"\']*(?:report_|out/)[^\s)"\']*\.html[^\s)"\']*)', text)
     if m:
         url = m.group(1)
@@ -461,19 +548,7 @@ def _extract_report_url(text: str, file_urls: list, closeout_data: dict) -> tupl
         url = f.get("url", "")
         if name.endswith(".html") and "meta" not in name.lower():
             return name, url
-    # 3. closeout_data 拼 sandbox 路径（兜底）
-    if closeout_data:
-        case_id = closeout_data.get("case_id", "")
-        html_file = closeout_data.get("html", "")
-        if case_id and html_file:
-            adp_cfg = _get_adp_cfg()
-            return html_file, f"{adp_cfg['sandbox_base']}/workdir/{case_id}/out/{html_file}"
-    # 4. 文本中的其他 URL
-    m = re.search(r'(https?://[^\s)"\']*report_[^\s)"\']*\.html[^\s)"\']*)', text)
-    if m:
-        url = m.group(1)
-        name = re.search(r'(report_[^\s)"\'/?]*\.html)', url)
-        return (name.group(1) if name else "report.html"), url
+    # 无可下载的报告链接
     return "", ""
 
 
@@ -522,7 +597,7 @@ def extract_adp_results(full_text: str, closeout_data: dict, start_ts: int, end_
     """从 ADP 返回内容中提取需要写入飞书的 6 个字段"""
     result = {"完成状态": "完成"}
     # 报告链接（多来源提取）
-    html_file, report_url = _extract_report_url(full_text, file_urls or [], closeout_data)
+    html_file, report_url = _extract_report_url(full_text, file_urls or [])
     if report_url:
         result["报告链接（分析报告、可观测报告）"] = report_url
     elif html_file:
@@ -553,7 +628,8 @@ def extract_adp_results(full_text: str, closeout_data: dict, start_ts: int, end_
 
 def save_adp_local(jira_key: str, full_text: str, closeout_data: dict,
                    file_urls: list = None, description: str = "", trigger_time: str = "",
-                   attachment_count: int = 0, results: dict = None, elapsed_sec: float = 0) -> str:
+                   attachment_count: int = 0, results: dict = None, elapsed_sec: float = 0,
+                   trace_id: str = "") -> str:
     """保存完整分析报告到本地 docs/adp_results/{jira_key}/"""
     adp_cfg = _get_adp_cfg()
     save_dir = get_path("doc_dir") if adp_cfg["save_dir"] == "docs/adp_results" else adp_cfg["save_dir"]
@@ -571,7 +647,10 @@ def save_adp_local(jira_key: str, full_text: str, closeout_data: dict,
         f.write(f"- **描述**: {description[:300]}{'...' if len(description) > 300 else ''}\n")
         f.write(f"- **触发时间**: {trigger_time}\n")
         f.write(f"- **附件数**: {attachment_count}\n")
-        f.write(f"- **耗时**: {elapsed_sec:.1f}s\n\n")
+        f.write(f"- **耗时**: {elapsed_sec:.1f}s\n")
+        if trace_id:
+            f.write(f"- **Trace ID**: {trace_id}\n")
+        f.write("\n")
         # 提取结果
         if results:
             f.write("## 提取结果\n\n")
@@ -606,6 +685,7 @@ def save_adp_local(jira_key: str, full_text: str, closeout_data: dict,
         "trigger_time": trigger_time,
         "attachment_count": attachment_count,
         "elapsed_sec": elapsed_sec,
+        "trace_id": trace_id,
         "closeout_data": closeout_data,
         "file_urls": file_urls or [],
         "results": {k: v for k, v in (results or {}).items() if not k.startswith("_")},
@@ -703,11 +783,12 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
 
 # ===== 完整单条执行流程 =====
 
-def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_cb=None, keepalive_cb=None, skip_feishu: bool = False) -> dict:
+def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_cb=None, keepalive_cb=None, skip_feishu: bool = False, stop_event=None) -> dict:
     """
     完整 ADP 分析流程（单条）
     :param progress_cb: 可选回调 fn(step_name, status, detail) 用于 SSE 推送
     :param keepalive_cb: 可选回调 fn(elapsed_sec)，ADP 分析期间每 30s 触发
+    :param stop_event: 可选 threading.Event，设置后尽快中止分析
     :return: {ok, jira_key, description, trigger_time, attachment_count, results, feishu, elapsed_sec, error}
     """
     import time
@@ -740,7 +821,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     # Step 2: 构建消息 + 调用 ADP
     _progress("adp_analysis", "running")
     message = build_adp_message(jira_key, description, trigger_time, attachments)
-    full_text, file_urls, closeout_data, start_ts, end_ts = call_adp_sse_stream(message, keepalive_cb=keepalive_cb)
+    full_text, file_urls, closeout_data, start_ts, end_ts, trace_id = call_adp_sse_stream(
+        message, keepalive_cb=keepalive_cb, stop_event=stop_event)
+    out["trace_id"] = trace_id
     if not full_text:
         out["error"] = "ADP 无返回"
         out["results"] = {"完成状态": "分析失败", "分析失败归因": "ADP连接超时或网络异常"}
@@ -759,6 +842,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     _progress("extract", "done", f"完成状态={results.get('完成状态', '')}")
 
     # Step 3.5: 下载 HTML 报告到本地，上传为多维表格附件
+    # HTML 是核心交付物，无报告则标记“分析失败”，但仍保留已提取的 root cause/置信度/模块等字段
     report_url = results.get("_report_url", "")
     html_file = results.get("_html_file", "")
     if report_url:
@@ -771,20 +855,28 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             results["报告链接（分析报告、可观测报告）"] = f"附件: {html_file or 'report.html'}"
             out["_report_file_token"] = file_token
         else:
-            # 下载失败时移除报告链接字段，避免 URL 字符串写入附件类型字段
+            # 下载失败：标记分析失败，但保留已提取的分析字段
+            results["完成状态"] = "分析失败"
+            results["分析失败归因"] = "分析完成但未产出HTML报告"
             results.pop("报告链接（分析报告、可观测报告）", None)
-        # HTML 报告中的“断点模块”优先级高于文本提取，覆盖“问题模块”字段
+        # HTML 报告中的"断点模块"优先级高于文本提取，覆盖"问题模块"字段
         html_module = _extract_module_from_html(local_path)
         if html_module:
             results["agent分析的问题模块"] = html_module
         _progress("download_report", "done" if file_token else "fail")
+    else:
+        # 无 CDN 链接：标记分析失败，但保留已提取的分析字段（root cause/置信度/模块）
+        results["完成状态"] = "分析失败"
+        results["分析失败归因"] = "分析完成但未产出HTML报告"
+        results.pop("报告链接（分析报告、可观测报告）", None)
 
     # Step 4: 保存本地
     _progress("save_local", "running")
     save_adp_local(jira_key, full_text, closeout_data, file_urls,
                    description=description, trigger_time=trigger_time,
                    attachment_count=len(attachments), results=results,
-                   elapsed_sec=out.get("elapsed_sec", 0))
+                   elapsed_sec=out.get("elapsed_sec", 0),
+                   trace_id=out.get("trace_id", ""))
     _progress("save_local", "done")
 
     # Step 5: 写入飞书（可跳过，由调用方自行写回）

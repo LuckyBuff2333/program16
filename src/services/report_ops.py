@@ -260,6 +260,20 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
     """
     # 计算播报覆盖的日期范围（工作日 + 后续非工作日）
     report_dates = _get_report_date_range(date_str)
+    # 昨日新增Bug / 昨日已完成（有AI初步分析结果 customfield_13714）
+    yesterday_new = 0
+    yesterday_done = 0
+    try:
+        from src.clients import jira_client as _jc
+        jql = 'issuetype = bug AND created >= startOfDay(\'-1d\') AND created <= endOfDay(\'-1d\')'
+        issues = _jc.search_issues(jql, max_results=1000, fields="customfield_13714")
+        yesterday_new = len(issues)
+        for iss in issues:
+            f = (iss.get("fields") or {}).get("customfield_13714")
+            if f and str(f).strip() and str(f).strip().lower() not in ("none", "null"):
+                yesterday_done += 1
+    except Exception as e:
+        logger.warning("每日播报：昨日新增Bug查询失败: %s", e)
     # 读取批次记录（支持外部传入，避免重复读取云端文档）
     if preloaded_batch is not None:
         jira_exec, dedup_count = preloaded_batch
@@ -269,7 +283,8 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
         return {"total": 0, "regression": 0, "success": 0, "fail": 0,
                 "pending": 0, "failures": {}, "todo_items": [],
                 "too_long": 0, "avg_total_duration": "-", "avg_analysis_duration": "-",
-                "report_dates": report_dates, "rows": [], "dedup": 0}
+                "report_dates": report_dates, "rows": [], "dedup": 0,
+                "yesterday_new": yesterday_new, "yesterday_done": yesterday_done}
     # 查多维表格（支持外部传入预查询数据，避免重复查询）
     from src.clients import feishu_client
     if bt_map is None:
@@ -425,7 +440,9 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
             "pc_meta": pc_meta, "online_meta": online_meta,
             "report_dates": report_dates,
             "rows": rows,
-            "dedup": dedup_count}
+            "dedup": dedup_count,
+            "yesterday_new": yesterday_new,
+            "yesterday_done": yesterday_done}
 
 
 def _classify_failure(jira_no: str, bf: dict) -> str:
@@ -502,7 +519,13 @@ def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -
     fail = report["fail"]
     pending = report.get("pending", 0)
     if total == 0:
-        return f"📊 {date_str} 每日结论\n\n当日无批量执行记录"
+        msg = f"📊 {date_str} 每日结论\n\n"
+        yn = report.get("yesterday_new", 0)
+        yd = report.get("yesterday_done", 0)
+        if yn or yd:
+            msg += f"📝 昨日新增Bug：{yn} | 昨日已完成：{yd}\n\n"
+        msg += "当日无批量执行记录"
+        return msg
     rate = f"{success / total * 100:.0f}%" if total > 0 else "0%"
     # 日期标签：多天时显示范围
     report_dates = report.get("report_dates", [date_str])
@@ -511,6 +534,10 @@ def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -
     else:
         date_label = date_str
     msg = f"📊 {date_label} 每日结论\n\n"
+    yesterday_new = report.get("yesterday_new", 0)
+    yesterday_done = report.get("yesterday_done", 0)
+    if yesterday_new or yesterday_done:
+        msg += f"📝 昨日新增Bug：{yesterday_new} | 昨日已完成：{yesterday_done}\n"
     msg += f"执行总数：{total}\n"
     pc_count = report.get("pc_count", 0)
     online_count = report.get("online_count", 0)
@@ -620,6 +647,7 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
     online_info = _md_meta_str(report.get("online_meta", {}), report.get("online_dup", 0))
     lines = [f"# {doc_title}", "",
              "## 结论", "",
+             f"- 昨日新增Bug：{report.get('yesterday_new', 0)} | 昨日已完成：{report.get('yesterday_done', 0)}",
              f"- 执行总数：{total}",
              f"- 💻 PC：{report.get('pc_count', 0)} {pc_info}",
              f"- 🌐 线上：{report.get('online_count', 0)} {online_info}",

@@ -5127,6 +5127,8 @@ async def test_adp_batch(request: Request):
     async def event_generator():
         loop = asyncio.get_event_loop()
         from src.services.adp_ops import run_adp_single
+        from src.api.routes.shared import adp_lookup_stop_event as _batch_stop
+        _batch_stop.clear()
 
         # 去重：排除已执行的
         executed_keys = set()
@@ -5151,6 +5153,8 @@ async def test_adp_batch(request: Request):
 
         all_results = []
         for batch_idx in range(total_batches):
+            if _batch_stop.is_set():
+                break
             batch = todo[batch_idx * batch_size : (batch_idx + 1) * batch_size]
             yield f"data: {_json.dumps({'type': 'batch_start', 'batch': batch_idx + 1, 'total_batches': total_batches, 'count': len(batch)}, ensure_ascii=False)}\n\n"
             # 并发执行本批次
@@ -5177,7 +5181,7 @@ async def test_adp_batch(request: Request):
                     except Exception as _e:
                         logger.warning("ADP batch Jira兜底失败 %s: %s", bugid, _e)
                 try:
-                    return run_adp_single(bugid, desc, tt)
+                    return run_adp_single(bugid, desc, tt, stop_event=_batch_stop)
                 except Exception as e:
                     return {"ok": False, "jira_key": bugid, "error": str(e)[:100]}
 
@@ -5191,6 +5195,11 @@ async def test_adp_batch(request: Request):
                 remaining = dict(futures)
                 batch_deadline = _time.time() + 600  # 单批超时 10 分钟
                 while remaining:
+                    if _batch_stop.is_set():
+                        for f in remaining:
+                            f.cancel()
+                        pool.shutdown(wait=False, cancel_futures=True)
+                        break
                     if _time.time() > batch_deadline:
                         for f in list(remaining):
                             f.cancel()
@@ -5292,21 +5301,21 @@ async def test_adp_lookup(request: Request):
         adp_cfg = _get_adp_cfg()
         app_token = adp_cfg["bitable_app_token"]
         table_id = adp_cfg["bitable_table_id"]
+        view_id = adp_cfg.get("bitable_view_id", "") or None
         jira_field = adp_cfg["jira_field"]
 
         # ── Step 1: 读取多维表格记录，构建 bugid → record 映射 ──
         yield f"data: {_json.dumps({'type': 'step', 'step': 'read_bitable', 'status': 'running'}, ensure_ascii=False)}\n\n"
         try:
             records = await loop.run_in_executor(
-                None, feishu_client.list_bitable_records, app_token, table_id)
+                None, lambda: feishu_client.list_bitable_records(app_token, table_id, view_id=view_id))
         except Exception as e:
             yield f"data: {_json.dumps({'type': 'step', 'step': 'read_bitable', 'status': 'fail', 'error': str(e)[:100]}, ensure_ascii=False)}\n\n"
             return
         import re as _re
         bt_map = {}
-        # auto 模式：收集无报告记录，按表格顺序取前 limit 条
+        # auto 模式：收集未完成记录（完成状态为空），按表格顺序取前 limit 条
         no_report_keys = []
-        report_field = "报告链接（分析报告、可观测报告）"
         for rec in records:
             fv = rec.get("fields", {}).get(jira_field, "")
             if isinstance(fv, list) and fv:
@@ -5317,23 +5326,15 @@ async def test_adp_lookup(request: Request):
             if m:
                 key = m.group(1)
                 bt_map[key] = rec
-                # 判断该行是否已完成分析（有报告 或 有完整状态）
+                # 判断该行是否已完成分析（只看完成状态是否有值）
                 fields = rec.get("fields", {})
-                has_report = False
-                rv = fields.get(report_field, "")
-                if rv:
-                    if isinstance(rv, list) and len(rv) > 0:
-                        has_report = True
-                    elif isinstance(rv, str) and rv.strip():
-                        has_report = True
-                # 检查完成状态：已有明确状态的跳过
                 status = ""
                 sv = fields.get("完成状态", "")
                 if isinstance(sv, list) and sv:
                     status = sv[0].get("text", "") if isinstance(sv[0], dict) else str(sv[0])
                 elif isinstance(sv, str):
                     status = sv.strip()
-                is_done = has_report or status in ("完成", "分析失败", "无法分析")
+                is_done = bool(status)
                 if not is_done:
                     no_report_keys.append(key)
         if mode == "auto":
@@ -5393,7 +5394,7 @@ async def test_adp_lookup(request: Request):
             """
             try:
                 info = _prepare_fields(bugid)
-                result = run_adp_single(bugid, info["desc"], info["tt"], skip_feishu=True)
+                result = run_adp_single(bugid, info["desc"], info["tt"], skip_feishu=True, stop_event=_stop_event)
                 has_html = bool((result.get("results") or {}).get("_report_file_token", ""))
                 return {"bugid": bugid, "result": result, "has_html": has_html, "info": info}
             except Exception as e:

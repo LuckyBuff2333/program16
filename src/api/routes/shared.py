@@ -50,6 +50,10 @@ def handle_sigint(signum, frame):
     interrupted = True
     for bugid in list(diag_cancel):
         diag_cancel[bugid] = True
+    # 设置所有停止事件，让各路由的批量循环及时退出
+    batch_extract_stop_event.set()
+    cache_batch_stop_event.set()
+    adp_lookup_stop_event.set()
     logger.warning("收到 Ctrl+C，正在停止当前操作（再次按 Ctrl+C 强制退出）")
     if prev_sigint and callable(prev_sigint) and prev_sigint not in (signal.SIG_IGN, signal.SIG_DFL):
         prev_sigint(signum, frame)
