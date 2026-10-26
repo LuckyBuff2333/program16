@@ -126,33 +126,112 @@ async def _on_startup():
         from src.config import PROJECT_ROOT as _PROJECT_ROOT
         _flag = os.path.join(_PROJECT_ROOT, "data", ".web_browser_opened")
         if not os.path.exists(_flag):
-            import subprocess, sys
+            import subprocess
+            import sys
+
+            def _default_browser_hint() -> str:
+                """从注册表读取系统默认浏览器（返回 msedge/chrome/firefox 或空串）"""
+                try:
+                    import winreg
+                    key_path = (r"Software\Microsoft\Windows\Shell\Associations"
+                                r"\UrlAssociations\http\UserChoice")
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as k:
+                        prog_id = str(winreg.QueryValueEx(k, "ProgId")[0] or "").lower()
+                    for name in ("edge", "chrome", "firefox"):
+                        if name in prog_id:
+                            return {"edge": "msedge"}.get(name, name)
+                except Exception:
+                    pass
+                return ""
+
+            def _configured_browser() -> str:
+                """读取 config.web.browser（auto/chrome/edge/firefox/system），默认 auto"""
+                try:
+                    from src.config import load_config
+                    mode = str((load_config().get("web") or {}).get("browser", "auto")).strip().lower()
+                except Exception:
+                    return "auto"
+                return {"edge": "msedge", "msedge": "msedge"}.get(mode, mode)
+
+            def _find_browser_exe():
+                """查找浏览器可执行文件：优先 config.web.browser，其次系统默认，最后 Chrome/Edge 兜底"""
+                roots = [
+                    os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+                    os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+                    os.environ.get("LOCALAPPDATA", ""),
+                ]
+                rels = {
+                    "msedge": r"Microsoft\Edge\Application\msedge.exe",
+                    "chrome": r"Google\Chrome\Application\chrome.exe",
+                    "firefox": r"Mozilla Firefox\firefox.exe",
+                }
+                found = {}
+                for name, rel in rels.items():
+                    for root in roots:
+                        if not root:
+                            continue
+                        path = os.path.join(root, rel)
+                        if os.path.isfile(path):
+                            found[name] = path
+                            break
+                if not found:
+                    return "", ""
+                mode = _configured_browser()
+                if mode == "system":          # 显式要求交给系统关联
+                    return "", ""
+                if mode in found:             # 配置里指定的浏览器
+                    return found[mode], mode
+                hint = _default_browser_hint()
+                if hint in found:             # 系统默认浏览器
+                    return found[hint], hint
+                for name in ("chrome", "msedge", "firefox"):
+                    if name in found:
+                        return found[name], name
+                return "", ""
 
             def _open_browser(url: str):
-                """跨平台打开浏览器：Windows 优先 ShellExecute（os.startfile），失败退回 cmd start"""
-                if sys.platform == "win32":
+                """打开浏览器：优先直接启动浏览器可执行文件（不依赖注册表关联），再退回系统关联"""
+                if sys.platform != "win32":
                     try:
-                        os.startfile(url)  # noqa: S606  ShellExecute，走默认浏览器
-                        _logger.info("已通过默认浏览器打开页面: %s", url)
+                        subprocess.Popen(["xdg-open", url],
+                                         stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL)
+                        _logger.info("已通过 xdg-open 请求打开页面: %s", url)
+                    except Exception as e:
+                        _logger.warning("打开浏览器失败: %s，请手动访问 %s", e, url)
+                    return
+
+                exe, browser = _find_browser_exe()
+                if exe:
+                    try:
+                        # 保证每次都是新窗口，且不依赖注册表关联
+                        args = [exe, "-new-window", url] if browser == "firefox" else [exe, "--new-window", url]
+                        subprocess.Popen(args, close_fds=True)
+                        _logger.info("已用浏览器新窗口打开页面: %s (%s, 配置=%s, 系统默认=%s)",
+                                     url, os.path.basename(exe), _configured_browser(),
+                                     _default_browser_hint() or "未知")
                         return
                     except Exception as e:
-                        _logger.warning("os.startfile 打开浏览器失败(%s)，尝试 cmd start", e)
-                    try:
-                        subprocess.Popen(["cmd", "/c", "start", "", url])
-                        _logger.info("已通过 cmd start 请求打开页面: %s", url)
-                    except Exception as e2:
-                        _logger.warning("打开浏览器失败: %s，请手动访问 %s", e2, url)
-                    return
-                # xdg-open 通过桌面协议复用已有浏览器实例开新标签页
+                        _logger.warning("直接启动浏览器失败(%s)，改用系统关联", e)
                 try:
-                    subprocess.Popen(["xdg-open", url],
-                                     stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL)
-                    _logger.info("已通过 xdg-open 请求打开页面: %s", url)
+                    os.startfile(url)  # noqa: S606  ShellExecute，走默认浏览器
+                    _logger.info("已通过默认浏览器打开页面: %s", url)
+                    return
                 except Exception as e:
-                    _logger.warning("打开浏览器失败: %s，请手动访问 %s", e, url)
+                    _logger.warning("默认浏览器打开失败(%s)，尝试 cmd start", e)
+                try:
+                    subprocess.Popen(["cmd", "/c", "start", "", url])
+                    _logger.info("已通过 cmd start 请求打开页面: %s", url)
+                except Exception as e2:
+                    _logger.warning("打开浏览器失败: %s，请手动访问 %s", e2, url)
 
             threading.Timer(0.5, lambda: _open_browser(_open_url)).start()
+            try:
+                with open(_flag, "w") as f:
+                    f.write("1")
+            except Exception:
+                pass
+
             try:
                 with open(_flag, "w") as f:
                     f.write("1")
