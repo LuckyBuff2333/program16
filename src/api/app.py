@@ -129,68 +129,97 @@ async def _on_startup():
             import subprocess
             import sys
 
-            def _default_browser_hint() -> str:
-                """从注册表读取系统默认浏览器（返回 msedge/chrome/firefox 或空串）"""
-                try:
-                    import winreg
-                    key_path = (r"Software\Microsoft\Windows\Shell\Associations"
-                                r"\UrlAssociations\http\UserChoice")
-                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as k:
-                        prog_id = str(winreg.QueryValueEx(k, "ProgId")[0] or "").lower()
-                    for name in ("edge", "chrome", "firefox"):
-                        if name in prog_id:
-                            return {"edge": "msedge"}.get(name, name)
-                except Exception:
-                    pass
-                return ""
-
-            def _configured_browser() -> str:
-                """读取 config.web.browser（auto/chrome/edge/firefox/system），默认 auto"""
+            def _cfg_browser() -> str:
+                """config.web.browser：auto(默认)/chrome/edge/firefox/system"""
                 try:
                     from src.config import load_config
-                    mode = str((load_config().get("web") or {}).get("browser", "auto")).strip().lower()
+                    return str((load_config().get("web") or {}).get("browser", "auto")).strip().lower()
                 except Exception:
                     return "auto"
-                return {"edge": "msedge", "msedge": "msedge"}.get(mode, mode)
 
-            def _find_browser_exe():
-                """查找浏览器可执行文件：优先 config.web.browser，其次系统默认，最后 Chrome/Edge 兜底"""
-                roots = [
+            def _user_choice_progid() -> str:
+                """读取系统默认浏览器的 ProgId（http 协议）"""
+                try:
+                    import winreg
+                    with winreg.OpenKey(
+                        winreg.HKEY_CURRENT_USER,
+                        r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice",
+                    ) as k:
+                        return str(winreg.QueryValueEx(k, "ProgId")[0] or "")
+                except Exception:
+                    return ""
+
+            def _progid_exe(prog_id: str) -> str:
+                r"""从 ProgId 的 shell\open\command 解析出浏览器可执行文件路径"""
+                try:
+                    import winreg
+                except Exception:
+                    return ""
+                for root, sub in (
+                    (winreg.HKEY_CLASSES_ROOT, rf"{prog_id}\shell\open\command"),
+                    (winreg.HKEY_CURRENT_USER, rf"Software\Classes\{prog_id}\shell\open\command"),
+                    (winreg.HKEY_LOCAL_MACHINE, rf"Software\Classes\{prog_id}\shell\open\command"),
+                ):
+                    try:
+                        with winreg.OpenKey(root, sub) as k:
+                            cmd = str(winreg.QueryValueEx(k, "")[0] or "")
+                    except Exception:
+                        continue
+                    exe = cmd[1:cmd.find('"', 1)] if cmd.startswith('"') else cmd.split(" ")[0]
+                    if exe and os.path.isfile(exe):
+                        return exe
+                return ""
+
+            def _known_exe(name: str) -> str:
+                rels = {
+                    "chrome": r"Google\Chrome\Application\chrome.exe",
+                    "edge": r"Microsoft\Edge\Application\msedge.exe",
+                    "msedge": r"Microsoft\Edge\Application\msedge.exe",
+                    "firefox": r"Mozilla Firefox\firefox.exe",
+                }
+                rel = rels.get(name, "")
+                if not rel:
+                    return ""
+                for root in (
                     os.environ.get("PROGRAMFILES", r"C:\Program Files"),
                     os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
                     os.environ.get("LOCALAPPDATA", ""),
-                ]
-                rels = {
-                    "msedge": r"Microsoft\Edge\Application\msedge.exe",
-                    "chrome": r"Google\Chrome\Application\chrome.exe",
-                    "firefox": r"Mozilla Firefox\firefox.exe",
-                }
-                found = {}
-                for name, rel in rels.items():
-                    for root in roots:
-                        if not root:
-                            continue
+                ):
+                    if root:
                         path = os.path.join(root, rel)
                         if os.path.isfile(path):
-                            found[name] = path
-                            break
-                if not found:
+                            return path
+                return ""
+
+            def _pick_browser():
+                """返回 (exe, 说明)；("","") 表示交给系统关联"""
+                mode = _cfg_browser()
+                if mode == "system":
                     return "", ""
-                mode = _configured_browser()
-                if mode == "system":          # 显式要求交给系统关联
-                    return "", ""
-                if mode in found:             # 配置里指定的浏览器
-                    return found[mode], mode
-                hint = _default_browser_hint()
-                if hint in found:             # 系统默认浏览器
-                    return found[hint], hint
-                for name in ("chrome", "msedge", "firefox"):
-                    if name in found:
-                        return found[name], name
+                if mode in ("chrome", "edge", "msedge", "firefox"):
+                    exe = _known_exe(mode)
+                    return (exe, f"配置={mode}") if exe else ("", "")
+                prog_id = _user_choice_progid()
+                if prog_id:
+                    exe = _progid_exe(prog_id)
+                    if exe:
+                        return exe, f"系统默认={prog_id}"
+                for name in ("chrome", "edge", "firefox"):
+                    exe = _known_exe(name)
+                    if exe:
+                        return exe, f"默认不可用，回退={name}"
                 return "", ""
 
+            def _launch_args(exe: str, url: str):
+                name = os.path.basename(exe).lower()
+                if "firefox" in name:
+                    return [exe, "-new-window", url]
+                if any(k in name for k in ("chrome", "msedge", "chromium", "brave", "opera")):
+                    return [exe, "--new-window", url]
+                return [exe, url]
+
             def _open_browser(url: str):
-                """打开浏览器：优先直接启动浏览器可执行文件（不依赖注册表关联），再退回系统关联"""
+                """打开浏览器：直接用系统默认浏览器的可执行文件开新窗口，失败逐级回退"""
                 if sys.platform != "win32":
                     try:
                         subprocess.Popen(["xdg-open", url],
@@ -200,25 +229,20 @@ async def _on_startup():
                     except Exception as e:
                         _logger.warning("打开浏览器失败: %s，请手动访问 %s", e, url)
                     return
-
-                exe, browser = _find_browser_exe()
+                exe, why = _pick_browser()
                 if exe:
                     try:
-                        # 保证每次都是新窗口，且不依赖注册表关联
-                        args = [exe, "-new-window", url] if browser == "firefox" else [exe, "--new-window", url]
-                        subprocess.Popen(args, close_fds=True)
-                        _logger.info("已用浏览器新窗口打开页面: %s (%s, 配置=%s, 系统默认=%s)",
-                                     url, os.path.basename(exe), _configured_browser(),
-                                     _default_browser_hint() or "未知")
+                        subprocess.Popen(_launch_args(exe, url), close_fds=True)
+                        _logger.info("已用浏览器打开页面: %s (%s, %s)", url, os.path.basename(exe), why)
                         return
                     except Exception as e:
                         _logger.warning("直接启动浏览器失败(%s)，改用系统关联", e)
                 try:
-                    os.startfile(url)  # noqa: S606  ShellExecute，走默认浏览器
-                    _logger.info("已通过默认浏览器打开页面: %s", url)
+                    os.startfile(url)  # noqa: S606  ShellExecute
+                    _logger.info("已通过系统关联打开页面: %s", url)
                     return
                 except Exception as e:
-                    _logger.warning("默认浏览器打开失败(%s)，尝试 cmd start", e)
+                    _logger.warning("系统关联打开失败: %s，尝试 cmd start", e)
                 try:
                     subprocess.Popen(["cmd", "/c", "start", "", url])
                     _logger.info("已通过 cmd start 请求打开页面: %s", url)
@@ -231,13 +255,6 @@ async def _on_startup():
                     f.write("1")
             except Exception:
                 pass
-
-            try:
-                with open(_flag, "w") as f:
-                    f.write("1")
-            except Exception:
-                pass
-
 
 async def _on_shutdown():
     """服务关闭时：设置所有取消标志，让轮询线程快速退出"""
