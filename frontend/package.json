@@ -9,7 +9,7 @@
     "build:check": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
-    "gen:api-types": "cd .. && py scripts/dump_openapi.py && cd frontend && npx openapi-typescript src/types/openapi.json -o src/types/api.d.ts"
+    "gen:api-types": "cd .. && python scripts/dump_openapi.py && cd frontend && npx openapi-typescript src/types/openapi.json -o src/types/api.d.ts"
   },
   "dependencies": {
     "echarts": "^5.6.0",

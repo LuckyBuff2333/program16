@@ -44,26 +44,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/system/git_pull": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Git Pull And Restart
-         * @description 远程拉取最新代码并可选重启服务
-         */
-        post: operations["git_pull_and_restart_api_system_git_pull_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/config": {
         parameters: {
             query?: never;
@@ -73,13 +53,17 @@ export interface paths {
         };
         /**
          * Get Config
-         * @description 读取当前全局配置
+         * @description 读取当前全局配置：敏感字段以占位符返回，内部服务段不下发
          */
         get: operations["get_config_api_config_get"];
         put?: never;
         /**
          * Save Config
-         * @description 更新配置：按配置段合并前端提交项并写回 config.yaml
+         * @description 更新配置：字段级合并 + 显式删除 + 敏感字段保留，原子写回 config.yaml
+         *
+         *     请求体支持两种形式（旧式仍兼容）：
+         *     1) {"config": {"<段>": {...}}, "delete": [["<段>", "<字段>"], ...]}
+         *     2) {"<段>": {...}}  （等价于只带 config）
          */
         post: operations["save_config_api_config_post"];
         delete?: never;
@@ -102,6 +86,49 @@ export interface paths {
         get: operations["overview_api_overview_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/applog/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download App Log
+         * @description 代理下载远程服务器 app.log（流式落盘 + 体积上限），source=pc|online
+         *
+         *     原先用 client.get() 把整个日志读进内存，几 GB 的日志会直接把进程打满；
+         *     现在改为流式写临时文件，成功后再原子替换，超限即中止并清理半成品。
+         */
+        get: operations["download_app_log_api_applog_download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/applog/open_folder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open App Log Folder
+         * @description 打开 app.log 所在目录
+         */
+        post: operations["open_app_log_folder_api_applog_open_folder_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -608,6 +635,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/dates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dashboard Dates
+         * @description 列出所有有批次数据的日期（本地 + 云端，按倒序）
+         */
+        get: operations["dashboard_dates_api_dashboard_dates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/data": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dashboard Data
+         * @description 获取指定日期的看板数据：优先云端批次，本地 CSV 作补充
+         */
+        get: operations["dashboard_data_api_dashboard_data_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/task_overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dashboard Task Overview
+         * @description 任务总览：5 维度统计（执行总数/成功/分析中/待排查/待重试）
+         */
+        get: operations["dashboard_task_overview_api_dashboard_task_overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/prefetch_range": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dashboard Prefetch Range
+         * @description 批量预热指定日期范围的云端看板缓存，只拉取未缓存的日期
+         */
+        get: operations["dashboard_prefetch_range_api_dashboard_prefetch_range_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/batch_detail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dashboard Batch Detail
+         * @description 获取单个批次的详细信息（含多维表格交叉分析），支持内存+云端两级缓存
+         */
+        get: operations["dashboard_batch_detail_api_dashboard_batch_detail_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/report/verify": {
         parameters: {
             query?: never;
@@ -622,6 +749,66 @@ export interface paths {
         get: operations["report_verify_api_report_verify_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/report/gen_batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gen Batch Report
+         * @description 生成单批次 HTML 报告
+         */
+        post: operations["gen_batch_report_api_report_gen_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/report/gen_daily": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gen Daily Report
+         * @description 生成日报 HTML
+         */
+        post: operations["gen_daily_report_api_report_gen_daily_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/report/gen_monthly": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gen Monthly Report
+         * @description 生成月报 HTML
+         */
+        post: operations["gen_monthly_report_api_report_gen_monthly_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -697,7 +884,7 @@ export interface paths {
         };
         /**
          * Data History Jira
-         * @description 数据面板：从云端文档读取批次 Jira 列表并聚合多维表格匹配记录
+         * @description 数据面板：从云端文档读取批次 Jira 列表并聚合多维表格匹配记录，支持多批次（逗号分隔 token）
          */
         get: operations["data_history_jira_api_data_history_jira_get"];
         put?: never;
@@ -908,6 +1095,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/trigger_time/rebalance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rebalance Trigger Time Tables Endpoint
+         * @description 再平衡触发时间表：把超过500的表中多余记录搬运到不足500的表中
+         */
+        post: operations["rebalance_trigger_time_tables_endpoint_api_trigger_time_rebalance_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trigger/batch_extract_time": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Batch Extract Time
+         * @description 批量提取触发时间（SSE 流式）：支持 JQL 查询或直接传入 bugid 列表
+         *
+         *     提取链路：视频OCR → 评论/描述 → 图片OCR
+         *     并行数 2，缓冲 20 条批量写入云端
+         */
+        post: operations["batch_extract_time_api_trigger_batch_extract_time_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trigger/batch_extract_time/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop Batch Extract Time
+         * @description 停止批量提取触发时间
+         */
+        post: operations["stop_batch_extract_time_api_trigger_batch_extract_time_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trigger/compare_extract_time": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Compare Extract Time
+         * @description 表格时间对比提取：上传 Excel/CSV，提取触发时间并与表格中的时间对比（SSE 流式）
+         *
+         *     不写入云端，仅保存本地 CSV。
+         */
+        post: operations["compare_extract_time_api_trigger_compare_extract_time_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/docs/files": {
         parameters: {
             query?: never;
@@ -920,26 +1192,6 @@ export interface paths {
          * @description 列出 docs/ 目录下所有 CSV 文件，按日期分组倒序
          */
         get: operations["list_docs_files_api_docs_files_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/docs/preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Preview Docs File
-         * @description 预览指定 CSV 文件内容（前 50 行）
-         */
-        get: operations["preview_docs_file_api_docs_preview_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1022,108 +1274,6 @@ export interface paths {
          * @description 调试用：尝试所有认证方式读取指定群聊的消息
          */
         post: operations["test_feishu_msg_debug_api_test_feishu_msg_debug_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/verify/history_files": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Verify History Files */
-        get: operations["list_verify_history_files_api_verify_history_files_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/verify/history_load": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Load Verify History */
-        get: operations["load_verify_history_api_verify_history_load_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/verify_and_fill": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Verify And Fill */
-        post: operations["verify_and_fill_api_verify_and_fill_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/verify_write": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Verify Write */
-        post: operations["verify_write_api_verify_write_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/verify_bitable_eligible": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Verify Bitable Eligible */
-        get: operations["verify_bitable_eligible_api_verify_bitable_eligible_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/verify_write_bitable": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Verify Write Bitable */
-        post: operations["verify_write_bitable_api_verify_write_bitable_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1266,6 +1416,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/troubleshoot/batch_pre_classify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Troubleshoot Batch Pre Classify
+         * @description 批量预归类：根据错误信息和人工审核结果快速分类，跳过无需深度分析的记录
+         */
+        post: operations["troubleshoot_batch_pre_classify_api_troubleshoot_batch_pre_classify_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/troubleshoot/send_to_developer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Troubleshoot Send To Developer
+         * @description 将自动归类记录通过飞书机器人发送给后端开发者
+         */
+        post: operations["troubleshoot_send_to_developer_api_troubleshoot_send_to_developer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/doc-images/{bugid}/{filename}": {
         parameters: {
             query?: never;
@@ -1343,7 +1533,7 @@ export interface paths {
         };
         /**
          * Index
-         * @description Serve 前端构建产物，未构建时返回提示信息
+         * @description Serve 前端构建产物，未构建时提示构建命令
          */
         get: operations["index__get"];
         put?: never;
@@ -1434,6 +1624,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/test/jira_lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Jira Lookup
+         * @description Jira 概要查询：输入支持两种形态
+         *     - 纯 Jira 号（多个用逗号/空格/换行分隔）
+         *     - JQL 查询（如 summary ~ "关键词"、key = VCU-123 等）
+         *     返回 key + 概要 + 状态 + 根因
+         */
+        post: operations["test_jira_lookup_api_test_jira_lookup_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/test/batch_ai_extract_times/stop": {
         parameters: {
             query?: never;
@@ -1505,7 +1718,7 @@ export interface paths {
         put?: never;
         /**
          * Test Batch Ai Filter
-         * @description 步骤3：查询多维表格，过滤掉已存在的记录。支持多种过滤模式组合
+         * @description 步骤3：过滤候选记录。顺序：多维表格去重 → AI初步分析过滤
          */
         post: operations["test_batch_ai_filter_api_test_batch_ai_filter_post"];
         delete?: never;
@@ -1725,7 +1938,10 @@ export interface paths {
         };
         /**
          * Test Confidence Batch Write
-         * @description 置信度批量写入：填充 rootcause + AI问题分析根因，对比语义相似度写回置信度
+         * @description 置信度批量写入（**只读分析**）：计算 rootcause + AI问题分析根因，对比语义相似度得出置信度
+         *
+         *     本端点不写多维表格：只把每条待写字段（write_fields）通过 SSE 推给页面，
+         *     真正写入由用户确认后调用 POST /api/test/confidence_batch_commit 完成。
          *
          *     :param after_time: 可选时间筛选，仅处理分析完成时间在此时间之后的记录
          *     :param jira_ids: 可选 Jira 号列表（逗号分隔），指定时仅处理这些记录，忽略 after_time 和 only_empty
@@ -1853,66 +2069,6 @@ export interface paths {
          * @description AI日志分析批量执行：读取CSV → 提取触发时间(优先云端) → 去重 → 批量调用接口（支持PC/线上模式）
          */
         post: operations["test_prod_batch_run_api_test_prod_batch_run_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/test/comment_compare": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Test Comment Compare
-         * @description 功能测试2：评论提取与对比（单条），返回评论原文、提取步骤及双重比对结果
-         */
-        post: operations["test_comment_compare_api_test_comment_compare_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/test/comment_compare_strategies": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Comment Compare Strategies
-         * @description 评论分析侧重点对比：对同一 Jira 用多种 prompt 策略各跑一次评论分析，并列展示
-         */
-        post: operations["comment_compare_strategies_api_test_comment_compare_strategies_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/test/save_style_preference": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Save Style Preference
-         * @description 保存评论分析风格偏好到配置
-         */
-        post: operations["save_style_preference_api_test_save_style_preference_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2139,6 +2295,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/test/regression_batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regression Batches
+         * @description 按时间获取云端批次列表（按日期逐天加载，避免超时），统计每批次的失败 Jira 数量
+         */
+        post: operations["regression_batches_api_test_regression_batches_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/test/regression_stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regression Stop
+         * @description 停止回归执行
+         */
+        post: operations["regression_stop_api_test_regression_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/test/regression_run": {
         parameters: {
             query?: never;
@@ -2348,6 +2544,230 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/test/ai_report/{bugid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Ai Report
+         * @description 获取 AI 日志分析报告：优先读本地 docs/日期/bugid.md，不存在则从远程下载并保存
+         */
+        get: operations["get_ai_report_api_test_ai_report__bugid__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/test/ai_report_analyze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ai Report Analyze
+         * @description 直接分析 MD 内容（02_reasoning_rounds 格式），返回轮次解析结果
+         */
+        post: operations["ai_report_analyze_api_test_ai_report_analyze_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/test/open_dir": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Open Dir
+         * @description 在系统文件管理器中打开本地目录（Windows/macOS/Linux 通用）
+         */
+        get: operations["open_dir_api_test_open_dir_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/test/form_upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Form Upload
+         * @description 表单执行：上传 CSV/Excel 文件，解析 Jira 号和触发时间
+         */
+        post: operations["form_upload_api_test_form_upload_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/test/form_exec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Form Exec
+         * @description 表单执行：多轮抽样 + 执行，SSE 实时推送，触发时间优先云端缓存→新提取
+         */
+        post: operations["form_exec_api_test_form_exec_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/test/adp_single": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Adp Single
+         * @description ADP 单条分析：输入 Jira 号，自动获取描述和触发时间，调用 ADP v2 分析并写入飞书
+         */
+        post: operations["test_adp_single_api_test_adp_single_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/test/adp_report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Adp Report File
+         * @description 读取 ADP 分析报告全文（只允许读取 adp_results 下对应 bugid 的 md 报告）
+         *
+         *     前端不再接收完整文本，改为点「查看完整报告」时按需打开本接口。
+         */
+        get: operations["adp_report_file_api_test_adp_report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/test/adp_batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Adp Batch
+         * @description ADP 批量分析：Excel 导入 → 分批执行(2个/批) → 写入飞书，支持连续/单次模式
+         */
+        post: operations["test_adp_batch_api_test_adp_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/test/adp_enrich": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Adp Enrich
+         * @description ADP 补全：对多条 Jira 号通过 API 获取 description 和 trigger_time，用于 Excel 导入后补全缺失字段
+         */
+        post: operations["test_adp_enrich_api_test_adp_enrich_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/test/adp_lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Adp Lookup
+         * @description ADP 按 Jira 号查找：多维表格读记录 → 补全字段 → 2个并发执行 → 失败重试一次 → 写回
+         *     mode=manual: 使用传入的 bugids
+         *     mode=auto:   自动从多维表格中查找无报告记录，按顺序取前 limit 条执行
+         */
+        post: operations["test_adp_lookup_api_test_adp_lookup_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/test/adp_lookup/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop Adp Lookup
+         * @description 停止 ADP 表格查找执行
+         */
+        post: operations["stop_adp_lookup_api_test_adp_lookup_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2422,6 +2842,19 @@ export interface components {
             count?: number | null;
         };
         /**
+         * BatchPreClassifyRequest
+         * @description 批量预归类
+         */
+        BatchPreClassifyRequest: {
+            /**
+             * Records
+             * @description 待归类记录列表
+             */
+            records?: {
+                [key: string]: unknown;
+            }[];
+        };
+        /**
          * BatchUpdateItem
          * @description 批量更新项
          */
@@ -2461,18 +2894,22 @@ export interface components {
         };
         /** Body_ai_log_visual_upload_api_test_ai_log_visual_upload_post */
         Body_ai_log_visual_upload_api_test_ai_log_visual_upload_post: {
-            /**
-             * File
-             * Format: binary
-             */
+            /** File */
+            file?: string;
+        };
+        /** Body_compare_extract_time_api_trigger_compare_extract_time_post */
+        Body_compare_extract_time_api_trigger_compare_extract_time_post: {
+            /** File */
+            file: string;
+        };
+        /** Body_form_upload_api_test_form_upload_post */
+        Body_form_upload_api_test_form_upload_post: {
+            /** File */
             file?: string;
         };
         /** Body_upload_bug_file_api_test_upload_bug_file_post */
         Body_upload_bug_file_api_test_upload_bug_file_post: {
-            /**
-             * File
-             * Format: binary
-             */
+            /** File */
             file?: string;
         };
         /**
@@ -2654,18 +3091,6 @@ export interface components {
              */
             trigger_time: string;
         };
-        /**
-         * GitPullRequest
-         * @description Git 拉取并可选重启
-         */
-        GitPullRequest: {
-            /**
-             * Restart
-             * @description 是否重启服务
-             * @default true
-             */
-            restart: boolean;
-        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -2727,10 +3152,15 @@ export interface components {
             /** Bugid */
             bugid: string;
             /**
-             * Review
+             * Done Time
              * @default
              */
-            review: string;
+            done_time: string;
+            /**
+             * Human Reason
+             * @default
+             */
+            human_reason: string;
         };
         /**
          * RootCauseRequest
@@ -2760,6 +3190,19 @@ export interface components {
              * @default
              */
             keyword: string;
+        };
+        /**
+         * SendToDeveloperRequest
+         * @description 发送给开发者
+         */
+        SendToDeveloperRequest: {
+            /**
+             * Records
+             * @description 待发送记录列表
+             */
+            records?: {
+                [key: string]: unknown;
+            }[];
         };
         /**
          * SyncCloudBatchesRequest
@@ -2839,45 +3282,10 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
-        };
-        /**
-         * VerifyWriteItem
-         * @description 单条验证写入项
-         */
-        VerifyWriteItem: {
-            /** Bugid */
-            bugid: string;
-            /**
-             * Rootcause
-             * @default
-             */
-            rootcause: string;
-            /**
-             * Comment Summary
-             * @default
-             */
-            comment_summary: string;
-            /**
-             * Confidence
-             * @default
-             */
-            confidence: string;
-        };
-        /**
-         * VerifyWriteRequest
-         * @description 写入验证结果到 CSV
-         */
-        VerifyWriteRequest: {
-            /**
-             * Csv Path
-             * @description CSV 文件路径
-             */
-            csv_path: string;
-            /**
-             * Items
-             * @description 待写入项
-             */
-            items?: components["schemas"]["VerifyWriteItem"][];
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
         };
     };
     responses: never;
@@ -2924,39 +3332,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse"];
-                };
-            };
-        };
-    };
-    git_pull_and_restart_api_system_git_pull_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GitPullRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3017,6 +3392,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+        };
+    };
+    download_app_log_api_applog_download_get: {
+        parameters: {
+            query?: {
+                source?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_app_log_folder_api_applog_open_folder_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
@@ -3758,11 +4184,265 @@ export interface operations {
             };
         };
     };
+    dashboard_dates_api_dashboard_dates_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+        };
+    };
+    dashboard_data_api_dashboard_data_get: {
+        parameters: {
+            query?: {
+                /** @description 日期 YYYY-MM-DD，默认今天 */
+                date?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dashboard_task_overview_api_dashboard_task_overview_get: {
+        parameters: {
+            query?: {
+                /** @description 日期 YYYY-MM-DD，默认今天 */
+                date?: string;
+                /** @description 强制刷新缓存 */
+                force?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dashboard_prefetch_range_api_dashboard_prefetch_range_get: {
+        parameters: {
+            query: {
+                /** @description 起始日期 YYYY-MM-DD */
+                start_date: string;
+                /** @description 结束日期 YYYY-MM-DD */
+                end_date: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dashboard_batch_detail_api_dashboard_batch_detail_get: {
+        parameters: {
+            query: {
+                /** @description 日期 */
+                date: string;
+                /** @description 批次名 */
+                batch: string;
+                /** @description jira号列表，逗号分隔（云端批次直接传） */
+                jira_ids?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     report_verify_api_report_verify_get: {
         parameters: {
             query?: {
                 /** @description 日期 YYYY-MM-DD */
                 date?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    gen_batch_report_api_report_gen_batch_post: {
+        parameters: {
+            query: {
+                /** @description 日期 YYYY-MM-DD */
+                date: string;
+                /** @description 批次名，不传则生成该日所有批次 */
+                batch?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    gen_daily_report_api_report_gen_daily_post: {
+        parameters: {
+            query: {
+                /** @description 日期 YYYY-MM-DD */
+                date: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    gen_monthly_report_api_report_gen_monthly_post: {
+        parameters: {
+            query: {
+                /** @description 年月，格式 YYYY-MM */
+                year_month: string;
             };
             header?: never;
             path?: never;
@@ -4202,7 +4882,7 @@ export interface operations {
             };
         };
     };
-    list_docs_files_api_docs_files_get: {
+    rebalance_trigger_time_tables_endpoint_api_trigger_time_rebalance_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -4222,12 +4902,29 @@ export interface operations {
             };
         };
     };
-    preview_docs_file_api_docs_preview_get: {
+    batch_extract_time_api_trigger_batch_extract_time_post: {
         parameters: {
-            query?: {
-                /** @description 文件路径 */
-                path?: string;
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
             };
+        };
+    };
+    stop_batch_extract_time_api_trigger_batch_extract_time_stop_post: {
+        parameters: {
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
@@ -4243,6 +4940,30 @@ export interface operations {
                     "application/json": components["schemas"]["ApiResponse"];
                 };
             };
+        };
+    };
+    compare_extract_time_api_trigger_compare_extract_time_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_compare_extract_time_api_trigger_compare_extract_time_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -4250,6 +4971,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_docs_files_api_docs_files_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
                 };
             };
         };
@@ -4315,151 +5056,6 @@ export interface operations {
         };
     };
     test_feishu_msg_debug_api_test_feishu_msg_debug_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    list_verify_history_files_api_verify_history_files_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse"];
-                };
-            };
-        };
-    };
-    load_verify_history_api_verify_history_load_get: {
-        parameters: {
-            query?: {
-                /** @description 文件路径 */
-                path?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    verify_and_fill_api_verify_and_fill_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    verify_write_api_verify_write_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VerifyWriteRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    verify_bitable_eligible_api_verify_bitable_eligible_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse"];
-                };
-            };
-        };
-    };
-    verify_write_bitable_api_verify_write_bitable_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -4743,6 +5339,72 @@ export interface operations {
             };
         };
     };
+    troubleshoot_batch_pre_classify_api_troubleshoot_batch_pre_classify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchPreClassifyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    troubleshoot_send_to_developer_api_troubleshoot_send_to_developer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendToDeveloperRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     serve_doc_image_api_doc_images__bugid___filename__get: {
         parameters: {
             query?: never;
@@ -4928,6 +5590,26 @@ export interface operations {
         };
     };
     test_batch_ai_search_api_test_batch_ai_search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+        };
+    };
+    test_jira_lookup_api_test_jira_lookup_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -5380,66 +6062,6 @@ export interface operations {
             };
         };
     };
-    test_comment_compare_api_test_comment_compare_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse"];
-                };
-            };
-        };
-    };
-    comment_compare_strategies_api_test_comment_compare_strategies_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse"];
-                };
-            };
-        };
-    };
-    save_style_preference_api_test_save_style_preference_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse"];
-                };
-            };
-        };
-    };
     upload_bug_file_api_test_upload_bug_file_post: {
         parameters: {
             query?: never;
@@ -5684,6 +6306,46 @@ export interface operations {
             };
         };
     };
+    regression_batches_api_test_regression_batches_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    regression_stop_api_test_regression_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+        };
+    };
     regression_run_api_test_regression_run_post: {
         parameters: {
             query?: never;
@@ -5895,6 +6557,274 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+        };
+    };
+    get_ai_report_api_test_ai_report__bugid__get: {
+        parameters: {
+            query?: {
+                source?: string;
+            };
+            header?: never;
+            path: {
+                bugid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ai_report_analyze_api_test_ai_report_analyze_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+        };
+    };
+    open_dir_api_test_open_dir_get: {
+        parameters: {
+            query?: {
+                path?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    form_upload_api_test_form_upload_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_form_upload_api_test_form_upload_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    form_exec_api_test_form_exec_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    test_adp_single_api_test_adp_single_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    adp_report_file_api_test_adp_report_get: {
+        parameters: {
+            query?: {
+                jira_key?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_adp_batch_api_test_adp_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    test_adp_enrich_api_test_adp_enrich_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    test_adp_lookup_api_test_adp_lookup_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    stop_adp_lookup_api_test_adp_lookup_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

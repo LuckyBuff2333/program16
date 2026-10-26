@@ -43,49 +43,10 @@
         }
       }
     },
-    "/api/system/git_pull": {
-      "post": {
-        "summary": "Git Pull And Restart",
-        "description": "远程拉取最新代码并可选重启服务",
-        "operationId": "git_pull_and_restart_api_system_git_pull_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GitPullRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/config": {
       "get": {
         "summary": "Get Config",
-        "description": "读取当前全局配置",
+        "description": "读取当前全局配置：敏感字段以占位符返回，内部服务段不下发",
         "operationId": "get_config_api_config_get",
         "responses": {
           "200": {
@@ -102,7 +63,7 @@
       },
       "post": {
         "summary": "Save Config",
-        "description": "更新配置：按配置段合并前端提交项并写回 config.yaml",
+        "description": "更新配置：字段级合并 + 显式删除 + 敏感字段保留，原子写回 config.yaml\n\n请求体支持两种形式（旧式仍兼容）：\n1) {\"config\": {\"<段>\": {...}}, \"delete\": [[\"<段>\", \"<字段>\"], ...]}\n2) {\"<段>\": {...}}  （等价于只带 config）",
         "operationId": "save_config_api_config_post",
         "responses": {
           "200": {
@@ -131,6 +92,62 @@
                 "schema": {
                   "$ref": "#/components/schemas/ApiResponse"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/applog/download": {
+      "get": {
+        "summary": "Download App Log",
+        "description": "代理下载远程服务器 app.log（流式落盘 + 体积上限），source=pc|online\n\n原先用 client.get() 把整个日志读进内存，几 GB 的日志会直接把进程打满；\n现在改为流式写临时文件，成功后再原子替换，超限即中止并清理半成品。",
+        "operationId": "download_app_log_api_applog_download_get",
+        "parameters": [
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "pc",
+              "title": "Source"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/applog/open_folder": {
+      "post": {
+        "summary": "Open App Log Folder",
+        "description": "打开 app.log 所在目录",
+        "operationId": "open_app_log_folder_api_applog_open_folder_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           }
@@ -1031,6 +1048,239 @@
         }
       }
     },
+    "/api/dashboard/dates": {
+      "get": {
+        "summary": "Dashboard Dates",
+        "description": "列出所有有批次数据的日期（本地 + 云端，按倒序）",
+        "operationId": "dashboard_dates_api_dashboard_dates_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dashboard/data": {
+      "get": {
+        "summary": "Dashboard Data",
+        "description": "获取指定日期的看板数据：优先云端批次，本地 CSV 作补充",
+        "operationId": "dashboard_data_api_dashboard_data_get",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "日期 YYYY-MM-DD，默认今天",
+              "title": "Date"
+            },
+            "description": "日期 YYYY-MM-DD，默认今天"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dashboard/task_overview": {
+      "get": {
+        "summary": "Dashboard Task Overview",
+        "description": "任务总览：5 维度统计（执行总数/成功/分析中/待排查/待重试）",
+        "operationId": "dashboard_task_overview_api_dashboard_task_overview_get",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "日期 YYYY-MM-DD，默认今天",
+              "title": "Date"
+            },
+            "description": "日期 YYYY-MM-DD，默认今天"
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "强制刷新缓存",
+              "default": false,
+              "title": "Force"
+            },
+            "description": "强制刷新缓存"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dashboard/prefetch_range": {
+      "get": {
+        "summary": "Dashboard Prefetch Range",
+        "description": "批量预热指定日期范围的云端看板缓存，只拉取未缓存的日期",
+        "operationId": "dashboard_prefetch_range_api_dashboard_prefetch_range_get",
+        "parameters": [
+          {
+            "name": "start_date",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "起始日期 YYYY-MM-DD",
+              "title": "Start Date"
+            },
+            "description": "起始日期 YYYY-MM-DD"
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "结束日期 YYYY-MM-DD",
+              "title": "End Date"
+            },
+            "description": "结束日期 YYYY-MM-DD"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dashboard/batch_detail": {
+      "get": {
+        "summary": "Dashboard Batch Detail",
+        "description": "获取单个批次的详细信息（含多维表格交叉分析），支持内存+云端两级缓存",
+        "operationId": "dashboard_batch_detail_api_dashboard_batch_detail_get",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "日期",
+              "title": "Date"
+            },
+            "description": "日期"
+          },
+          {
+            "name": "batch",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "批次名",
+              "title": "Batch"
+            },
+            "description": "批次名"
+          },
+          {
+            "name": "jira_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "jira号列表，逗号分隔（云端批次直接传）",
+              "default": "",
+              "title": "Jira Ids"
+            },
+            "description": "jira号列表，逗号分隔（云端批次直接传）"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/report/verify": {
       "get": {
         "summary": "Report Verify",
@@ -1047,6 +1297,143 @@
               "title": "Date"
             },
             "description": "日期 YYYY-MM-DD"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/gen_batch": {
+      "post": {
+        "summary": "Gen Batch Report",
+        "description": "生成单批次 HTML 报告",
+        "operationId": "gen_batch_report_api_report_gen_batch_post",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "日期 YYYY-MM-DD",
+              "title": "Date"
+            },
+            "description": "日期 YYYY-MM-DD"
+          },
+          {
+            "name": "batch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "批次名，不传则生成该日所有批次",
+              "title": "Batch"
+            },
+            "description": "批次名，不传则生成该日所有批次"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/gen_daily": {
+      "post": {
+        "summary": "Gen Daily Report",
+        "description": "生成日报 HTML",
+        "operationId": "gen_daily_report_api_report_gen_daily_post",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "日期 YYYY-MM-DD",
+              "title": "Date"
+            },
+            "description": "日期 YYYY-MM-DD"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/gen_monthly": {
+      "post": {
+        "summary": "Gen Monthly Report",
+        "description": "生成月报 HTML",
+        "operationId": "gen_monthly_report_api_report_gen_monthly_post",
+        "parameters": [
+          {
+            "name": "year_month",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "年月，格式 YYYY-MM",
+              "title": "Year Month"
+            },
+            "description": "年月，格式 YYYY-MM"
           }
         ],
         "responses": {
@@ -1177,7 +1564,7 @@
     "/api/data/history_jira": {
       "get": {
         "summary": "Data History Jira",
-        "description": "数据面板：从云端文档读取批次 Jira 列表并聚合多维表格匹配记录",
+        "description": "数据面板：从云端文档读取批次 Jira 列表并聚合多维表格匹配记录，支持多批次（逗号分隔 token）",
         "operationId": "data_history_jira_api_data_history_jira_get",
         "parameters": [
           {
@@ -1569,11 +1956,11 @@
         }
       }
     },
-    "/api/docs/files": {
-      "get": {
-        "summary": "List Docs Files",
-        "description": "列出 docs/ 目录下所有 CSV 文件，按日期分组倒序",
-        "operationId": "list_docs_files_api_docs_files_get",
+    "/api/trigger_time/rebalance": {
+      "post": {
+        "summary": "Rebalance Trigger Time Tables Endpoint",
+        "description": "再平衡触发时间表：把超过500的表中多余记录搬运到不足500的表中",
+        "operationId": "rebalance_trigger_time_tables_endpoint_api_trigger_time_rebalance_post",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1588,25 +1975,28 @@
         }
       }
     },
-    "/api/docs/preview": {
-      "get": {
-        "summary": "Preview Docs File",
-        "description": "预览指定 CSV 文件内容（前 50 行）",
-        "operationId": "preview_docs_file_api_docs_preview_get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "description": "文件路径",
-              "default": "",
-              "title": "Path"
-            },
-            "description": "文件路径"
+    "/api/trigger/batch_extract_time": {
+      "post": {
+        "summary": "Batch Extract Time",
+        "description": "批量提取触发时间（SSE 流式）：支持 JQL 查询或直接传入 bugid 列表\n\n提取链路：视频OCR → 评论/描述 → 图片OCR\n并行数 2，缓冲 20 条批量写入云端",
+        "operationId": "batch_extract_time_api_trigger_batch_extract_time_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
           }
-        ],
+        }
+      }
+    },
+    "/api/trigger/batch_extract_time/stop": {
+      "post": {
+        "summary": "Stop Batch Extract Time",
+        "description": "停止批量提取触发时间",
+        "operationId": "stop_batch_extract_time_api_trigger_batch_extract_time_stop_post",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1617,6 +2007,33 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/trigger/compare_extract_time": {
+      "post": {
+        "summary": "Compare Extract Time",
+        "description": "表格时间对比提取：上传 Excel/CSV，提取触发时间并与表格中的时间对比（SSE 流式）\n\n不写入云端，仅保存本地 CSV。",
+        "operationId": "compare_extract_time_api_trigger_compare_extract_time_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_compare_extract_time_api_trigger_compare_extract_time_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -1624,6 +2041,25 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/docs/files": {
+      "get": {
+        "summary": "List Docs Files",
+        "description": "列出 docs/ 目录下所有 CSV 文件，按日期分组倒序",
+        "operationId": "list_docs_files_api_docs_files_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
                 }
               }
             }
@@ -1691,154 +2127,6 @@
         "summary": "Test Feishu Msg Debug",
         "description": "调试用：尝试所有认证方式读取指定群聊的消息",
         "operationId": "test_feishu_msg_debug_api_test_feishu_msg_debug_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/verify/history_files": {
-      "get": {
-        "summary": "List Verify History Files",
-        "operationId": "list_verify_history_files_api_verify_history_files_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/verify/history_load": {
-      "get": {
-        "summary": "Load Verify History",
-        "operationId": "load_verify_history_api_verify_history_load_get",
-        "parameters": [
-          {
-            "name": "path",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "description": "文件路径",
-              "default": "",
-              "title": "Path"
-            },
-            "description": "文件路径"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/verify_and_fill": {
-      "post": {
-        "summary": "Verify And Fill",
-        "operationId": "verify_and_fill_api_verify_and_fill_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/verify_write": {
-      "post": {
-        "summary": "Verify Write",
-        "operationId": "verify_write_api_verify_write_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VerifyWriteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/verify_bitable_eligible": {
-      "get": {
-        "summary": "Verify Bitable Eligible",
-        "operationId": "verify_bitable_eligible_api_verify_bitable_eligible_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/verify_write_bitable": {
-      "post": {
-        "summary": "Verify Write Bitable",
-        "operationId": "verify_write_bitable_api_verify_write_bitable_post",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2155,6 +2443,84 @@
         }
       }
     },
+    "/api/troubleshoot/batch_pre_classify": {
+      "post": {
+        "summary": "Troubleshoot Batch Pre Classify",
+        "description": "批量预归类：根据错误信息和人工审核结果快速分类，跳过无需深度分析的记录",
+        "operationId": "troubleshoot_batch_pre_classify_api_troubleshoot_batch_pre_classify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchPreClassifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/troubleshoot/send_to_developer": {
+      "post": {
+        "summary": "Troubleshoot Send To Developer",
+        "description": "将自动归类记录通过飞书机器人发送给后端开发者",
+        "operationId": "troubleshoot_send_to_developer_api_troubleshoot_send_to_developer_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendToDeveloperRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/doc-images/{bugid}/{filename}": {
       "get": {
         "summary": "Serve Doc Image",
@@ -2286,7 +2652,7 @@
     "/": {
       "get": {
         "summary": "Index",
-        "description": "Serve 前端构建产物，未构建时返回提示信息",
+        "description": "Serve 前端构建产物，未构建时提示构建命令",
         "operationId": "index__get",
         "responses": {
           "200": {
@@ -2376,6 +2742,25 @@
         }
       }
     },
+    "/api/test/jira_lookup": {
+      "post": {
+        "summary": "Test Jira Lookup",
+        "description": "Jira 概要查询：输入支持两种形态\n- 纯 Jira 号（多个用逗号/空格/换行分隔）\n- JQL 查询（如 summary ~ \"关键词\"、key = VCU-123 等）\n返回 key + 概要 + 状态 + 根因",
+        "operationId": "test_jira_lookup_api_test_jira_lookup_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/test/batch_ai_extract_times/stop": {
       "post": {
         "summary": "Stop Batch Ai Extract Times",
@@ -2436,7 +2821,7 @@
     "/api/test/batch_ai_filter": {
       "post": {
         "summary": "Test Batch Ai Filter",
-        "description": "步骤3：查询多维表格，过滤掉已存在的记录。支持多种过滤模式组合",
+        "description": "步骤3：过滤候选记录。顺序：多维表格去重 → AI初步分析过滤",
         "operationId": "test_batch_ai_filter_api_test_batch_ai_filter_post",
         "responses": {
           "200": {
@@ -2643,7 +3028,7 @@
     "/api/test/confidence_batch_write": {
       "get": {
         "summary": "Test Confidence Batch Write",
-        "description": "置信度批量写入：填充 rootcause + AI问题分析根因，对比语义相似度写回置信度\n\n:param after_time: 可选时间筛选，仅处理分析完成时间在此时间之后的记录\n:param jira_ids: 可选 Jira 号列表（逗号分隔），指定时仅处理这些记录，忽略 after_time 和 only_empty",
+        "description": "置信度批量写入（**只读分析**）：计算 rootcause + AI问题分析根因，对比语义相似度得出置信度\n\n本端点不写多维表格：只把每条待写字段（write_fields）通过 SSE 推给页面，\n真正写入由用户确认后调用 POST /api/test/confidence_batch_commit 完成。\n\n:param after_time: 可选时间筛选，仅处理分析完成时间在此时间之后的记录\n:param jira_ids: 可选 Jira 号列表（逗号分隔），指定时仅处理这些记录，忽略 after_time 和 only_empty",
         "operationId": "test_confidence_batch_write_api_test_confidence_batch_write_get",
         "parameters": [
           {
@@ -2799,63 +3184,6 @@
         "summary": "Test Prod Batch Run",
         "description": "AI日志分析批量执行：读取CSV → 提取触发时间(优先云端) → 去重 → 批量调用接口（支持PC/线上模式）",
         "operationId": "test_prod_batch_run_api_test_prod_batch_run_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/test/comment_compare": {
-      "post": {
-        "summary": "Test Comment Compare",
-        "description": "功能测试2：评论提取与对比（单条），返回评论原文、提取步骤及双重比对结果",
-        "operationId": "test_comment_compare_api_test_comment_compare_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/test/comment_compare_strategies": {
-      "post": {
-        "summary": "Comment Compare Strategies",
-        "description": "评论分析侧重点对比：对同一 Jira 用多种 prompt 策略各跑一次评论分析，并列展示",
-        "operationId": "comment_compare_strategies_api_test_comment_compare_strategies_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/test/save_style_preference": {
-      "post": {
-        "summary": "Save Style Preference",
-        "description": "保存评论分析风格偏好到配置",
-        "operationId": "save_style_preference_api_test_save_style_preference_post",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -3117,6 +3445,42 @@
         }
       }
     },
+    "/api/test/regression_batches": {
+      "post": {
+        "summary": "Regression Batches",
+        "description": "按时间获取云端批次列表（按日期逐天加载，避免超时），统计每批次的失败 Jira 数量",
+        "operationId": "regression_batches_api_test_regression_batches_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test/regression_stop": {
+      "post": {
+        "summary": "Regression Stop",
+        "description": "停止回归执行",
+        "operationId": "regression_stop_api_test_regression_stop_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/test/regression_run": {
       "post": {
         "summary": "Regression Run",
@@ -3333,6 +3697,289 @@
           }
         }
       }
+    },
+    "/api/test/ai_report/{bugid}": {
+      "get": {
+        "summary": "Get Ai Report",
+        "description": "获取 AI 日志分析报告：优先读本地 docs/日期/bugid.md，不存在则从远程下载并保存",
+        "operationId": "get_ai_report_api_test_ai_report__bugid__get",
+        "parameters": [
+          {
+            "name": "bugid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bugid"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "pc",
+              "title": "Source"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test/ai_report_analyze": {
+      "post": {
+        "summary": "Ai Report Analyze",
+        "description": "直接分析 MD 内容（02_reasoning_rounds 格式），返回轮次解析结果",
+        "operationId": "ai_report_analyze_api_test_ai_report_analyze_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test/open_dir": {
+      "get": {
+        "summary": "Open Dir",
+        "description": "在系统文件管理器中打开本地目录（Windows/macOS/Linux 通用）",
+        "operationId": "open_dir_api_test_open_dir_get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test/form_upload": {
+      "post": {
+        "summary": "Form Upload",
+        "description": "表单执行：上传 CSV/Excel 文件，解析 Jira 号和触发时间",
+        "operationId": "form_upload_api_test_form_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_form_upload_api_test_form_upload_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test/form_exec": {
+      "post": {
+        "summary": "Form Exec",
+        "description": "表单执行：多轮抽样 + 执行，SSE 实时推送，触发时间优先云端缓存→新提取",
+        "operationId": "form_exec_api_test_form_exec_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test/adp_single": {
+      "post": {
+        "summary": "Test Adp Single",
+        "description": "ADP 单条分析：输入 Jira 号，自动获取描述和触发时间，调用 ADP v2 分析并写入飞书",
+        "operationId": "test_adp_single_api_test_adp_single_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test/adp_report": {
+      "get": {
+        "summary": "Adp Report File",
+        "description": "读取 ADP 分析报告全文（只允许读取 adp_results 下对应 bugid 的 md 报告）\n\n前端不再接收完整文本，改为点「查看完整报告」时按需打开本接口。",
+        "operationId": "adp_report_file_api_test_adp_report_get",
+        "parameters": [
+          {
+            "name": "jira_key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Jira Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test/adp_batch": {
+      "post": {
+        "summary": "Test Adp Batch",
+        "description": "ADP 批量分析：Excel 导入 → 分批执行(2个/批) → 写入飞书，支持连续/单次模式",
+        "operationId": "test_adp_batch_api_test_adp_batch_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test/adp_enrich": {
+      "post": {
+        "summary": "Test Adp Enrich",
+        "description": "ADP 补全：对多条 Jira 号通过 API 获取 description 和 trigger_time，用于 Excel 导入后补全缺失字段",
+        "operationId": "test_adp_enrich_api_test_adp_enrich_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test/adp_lookup": {
+      "post": {
+        "summary": "Test Adp Lookup",
+        "description": "ADP 按 Jira 号查找：多维表格读记录 → 补全字段 → 2个并发执行 → 失败重试一次 → 写回\nmode=manual: 使用传入的 bugids\nmode=auto:   自动从多维表格中查找无报告记录，按顺序取前 limit 条执行",
+        "operationId": "test_adp_lookup_api_test_adp_lookup_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test/adp_lookup/stop": {
+      "post": {
+        "summary": "Stop Adp Lookup",
+        "description": "停止 ADP 表格查找执行",
+        "operationId": "stop_adp_lookup_api_test_adp_lookup_stop_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3437,6 +4084,22 @@
         "title": "AuditRequest",
         "description": "随机抽查"
       },
+      "BatchPreClassifyRequest": {
+        "properties": {
+          "records": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Records",
+            "description": "待归类记录列表"
+          }
+        },
+        "type": "object",
+        "title": "BatchPreClassifyRequest",
+        "description": "批量预归类"
+      },
       "BatchUpdateItem": {
         "properties": {
           "bugid": {
@@ -3496,18 +4159,43 @@
         "properties": {
           "file": {
             "type": "string",
-            "format": "binary",
+            "contentMediaType": "application/octet-stream",
             "title": "File"
           }
         },
         "type": "object",
         "title": "Body_ai_log_visual_upload_api_test_ai_log_visual_upload_post"
       },
+      "Body_compare_extract_time_api_trigger_compare_extract_time_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_compare_extract_time_api_trigger_compare_extract_time_post"
+      },
+      "Body_form_upload_api_test_form_upload_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "title": "Body_form_upload_api_test_form_upload_post"
+      },
       "Body_upload_bug_file_api_test_upload_bug_file_post": {
         "properties": {
           "file": {
             "type": "string",
-            "format": "binary",
+            "contentMediaType": "application/octet-stream",
             "title": "File"
           }
         },
@@ -3742,19 +4430,6 @@
         "title": "FlowSingleRequest",
         "description": "单 bugid 流程执行（SSE）"
       },
-      "GitPullRequest": {
-        "properties": {
-          "restart": {
-            "type": "boolean",
-            "title": "Restart",
-            "description": "是否重启服务",
-            "default": true
-          }
-        },
-        "type": "object",
-        "title": "GitPullRequest",
-        "description": "Git 拉取并可选重启"
-      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -3824,9 +4499,14 @@
             "type": "string",
             "title": "Bugid"
           },
-          "review": {
+          "done_time": {
             "type": "string",
-            "title": "Review",
+            "title": "Done Time",
+            "default": ""
+          },
+          "human_reason": {
+            "type": "string",
+            "title": "Human Reason",
             "default": ""
           }
         },
@@ -3873,6 +4553,22 @@
         "type": "object",
         "title": "SearchJiraRequest",
         "description": "关键词搜索 Jira"
+      },
+      "SendToDeveloperRequest": {
+        "properties": {
+          "records": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Records",
+            "description": "待发送记录列表"
+          }
+        },
+        "type": "object",
+        "title": "SendToDeveloperRequest",
+        "description": "发送给开发者"
       },
       "SyncCloudBatchesRequest": {
         "properties": {
@@ -4012,6 +4708,13 @@
           "type": {
             "type": "string",
             "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
           }
         },
         "type": "object",
@@ -4021,59 +4724,6 @@
           "type"
         ],
         "title": "ValidationError"
-      },
-      "VerifyWriteItem": {
-        "properties": {
-          "bugid": {
-            "type": "string",
-            "title": "Bugid"
-          },
-          "rootcause": {
-            "type": "string",
-            "title": "Rootcause",
-            "default": ""
-          },
-          "comment_summary": {
-            "type": "string",
-            "title": "Comment Summary",
-            "default": ""
-          },
-          "confidence": {
-            "type": "string",
-            "title": "Confidence",
-            "default": ""
-          }
-        },
-        "type": "object",
-        "required": [
-          "bugid"
-        ],
-        "title": "VerifyWriteItem",
-        "description": "单条验证写入项"
-      },
-      "VerifyWriteRequest": {
-        "properties": {
-          "csv_path": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Csv Path",
-            "description": "CSV 文件路径"
-          },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/VerifyWriteItem"
-            },
-            "type": "array",
-            "title": "Items",
-            "description": "待写入项"
-          }
-        },
-        "type": "object",
-        "required": [
-          "csv_path"
-        ],
-        "title": "VerifyWriteRequest",
-        "description": "写入验证结果到 CSV"
       }
     }
   }

@@ -1,10 +1,10 @@
 <template>
-  <div>
+  <div class="test-panel">
     <div class="section-title">时间批量提取</div>
     <el-alert type="info" :closable="false"
       title="通过 JQL 查询或手动输入 Jira 号，批量提取触发时间（评论/字段 → 视频OCR → 图片OCR），20条一批写入云端"></el-alert>
 
-    <el-tabs v-model="activeTab" style="margin-top:12px">
+    <el-tabs v-model="activeTab" type="border-card" class="time-tabs" style="margin-top:12px">
       <!-- ====== Tab 1: JQL/手动提取 ====== -->
       <el-tab-pane label="JQL/手动提取" name="jql">
 
@@ -400,3 +400,10 @@ export default {
   },
 };
 </script>
+
+<style scoped>
+.test-panel { padding: 0; }
+.section-title { font-size: 16px; font-weight: 600; margin-bottom: 10px; color: #303133; }
+.time-tabs { border-radius: 8px; }
+.time-tabs :deep(.el-tabs__content) { padding: 16px; overflow: visible; }
+</style>

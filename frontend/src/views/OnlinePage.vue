@@ -85,6 +85,17 @@
 
     <!-- 页签2：接口设置 -->
     <el-tab-pane label="接口设置" name="config">
+      <div class="cfg-toolbar">
+        <span class="cfg-toolbar-hint">
+          密钥/令牌类字段不回显，留空表示保持原值；删除字段与新增字段均需点「保存配置」后生效
+          <b v-if="sensitivePaths.length">（已隐藏 {{ sensitivePaths.length }} 个密钥/令牌字段）</b>
+          <b v-if="pendingDeletes.length">（待删除 {{ pendingDeletes.length }} 项）</b>
+        </span>
+        <div style="display:flex;gap:8px;flex-shrink:0">
+          <el-button size="small" :disabled="running.saveConfig" @click="reloadConfig">放弃修改</el-button>
+          <el-button size="small" type="primary" :loading="running.saveConfig" @click="saveConfig">保存配置</el-button>
+        </div>
+      </div>
       <el-row :gutter="14">
         <el-col :span="8" v-for="item in apiSections" :key="item.key">
           <el-card shadow="never" style="margin-bottom:14px">
@@ -101,7 +112,23 @@
             <el-form label-width="90px" size="small" style="min-width:260px">
               <template v-for="(val, field) in config[item.key]">
                 <template v-if="field !== 'mock'">
-                  <el-form-item v-if="typeof val === 'number'">
+                  <!-- 共用凭证：页面只读，后端同样拒绝修改与删除 -->
+                  <el-form-item v-if="isLocked(item.key, s(field))">
+                    <template #label><el-tooltip :content="s(field)" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
+                    <div class="cfg-field-row">
+                      <el-input :model-value="lockedText(item.key, s(field), val)" disabled></el-input>
+                      <el-tag size="small" type="danger" style="flex-shrink:0">锁定</el-tag>
+                    </div>
+                  </el-form-item>
+                  <!-- 留空即复用其它段凭证的字段：只读展示生效值，避免误填覆盖共用配置 -->
+                  <el-form-item v-else-if="isFallbackOnly(item.key, s(field), val)">
+                    <template #label><el-tooltip :content="s(field)" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
+                    <div class="cfg-field-row">
+                      <el-input :model-value="fallbackText(item.key, s(field))" disabled></el-input>
+                      <el-tag size="small" type="info" style="flex-shrink:0">复用</el-tag>
+                    </div>
+                  </el-form-item>
+                  <el-form-item v-else-if="typeof val === 'number'">
                     <template #label><el-tooltip :content="field" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
                     <div class="cfg-field-row">
                       <el-input-number v-model="config[item.key][field]" :min="0" :step="val < 1 ? 0.05 : 1"></el-input-number>
@@ -115,10 +142,13 @@
                       <span class="field-del-btn" title="删除字段" @click="removeField(item.key, s(field))">&#x2715;</span>
                     </div>
                   </el-form-item>
-                  <el-form-item v-else-if="s(field).includes('token') || s(field).includes('password') || s(field).includes('api_key') || s(field).includes('secret')">
-                    <template #label><el-tooltip :content="field" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
+                  <el-form-item v-else-if="isSensitive(s(field))">
+                    <template #label><el-tooltip :content="s(field)" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
                     <div class="cfg-field-row">
-                      <el-input v-model="config[item.key][field]" type="password" show-password :placeholder="val || '可选'"></el-input>
+                      <el-input :model-value="secretDraft[secretKey(item.key, s(field))] || ''"
+                        @update:model-value="(v) => setSecret(item.key, s(field), v)"
+                        type="password" show-password
+                        :placeholder="fieldPlaceholder(item.key, s(field), val)"></el-input>
                       <span class="field-del-btn" title="删除字段" @click="removeField(item.key, s(field))">&#x2715;</span>
                     </div>
                   </el-form-item>
@@ -149,7 +179,7 @@
                       <div v-for="(subVal, subKey) in val" :key="subKey" v-show="subKey !== '_newKey'" style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
                         <span style="min-width:50px;font-size:11px;color:#606266">{{ subKey }}</span>
                         <el-input v-model="config[item.key][field][subKey]" size="small" :placeholder="subVal || '可选'"></el-input>
-                        <span class="field-del-btn" title="删除子项" @click="delete config[item.key][field][subKey]">&#x2715;</span>
+                        <span class="field-del-btn" title="删除子项" @click="removeSubField(item.key, s(field), s(subKey))">&#x2715;</span>
                       </div>
                       <div style="display:flex;gap:4px;margin-top:4px">
                         <el-input v-model="config[item.key][field]._newKey" size="small" placeholder="新键名" style="width:100px" @keyup.enter="addSubField(item.key, s(field))"></el-input>
@@ -160,7 +190,7 @@
                   <el-form-item v-else>
                     <template #label><el-tooltip :content="s(field)" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
                     <div class="cfg-field-row">
-                      <el-input v-model="config[item.key][field]" :placeholder="val || '可选'"></el-input>
+                      <el-input v-model="config[item.key][field]" :placeholder="fieldPlaceholder(item.key, s(field), val)"></el-input>
                       <span class="field-del-btn" title="删除字段" @click="removeField(item.key, s(field))">&#x2715;</span>
                     </div>
                   </el-form-item>
@@ -299,6 +329,15 @@ export default {
         { key: 'knowledge_base_api', title: '知识库入库接口' },
       ],
       running: { saveConfig: false },
+      // 配置页：敏感字段不回显，用户重新输入才提交；删除项缓存到 pendingDeletes
+      sensitivePaths: [] as string[],
+      maskToken: '********',
+      secretDraft: {} as Record<string, string>,
+      pendingDeletes: [] as any[],
+      // 留空时会自动复用其它段的字段（如机器人复用多维表格的 App ID/Secret）
+      fallbackFields: {} as Record<string, any>,
+      // 共用凭证：页面只读（后端也拒绝改/删）
+      lockedPaths: [] as string[],
       errorStats: {
         afterTime: '', querying: false, records: [] as any[], queryMsg: '', queryError: false,
         successFilter: '', deletingDirty: false,
@@ -348,50 +387,155 @@ export default {
     },
     async loadConfig() {
       const body = await api('/api/config');
-      this.config = { ...this.config, ...(body.data || {}) };
+      const data: Record<string, any> = body.data || {};
+      this.sensitivePaths = Array.isArray(data._sensitive) ? data._sensitive : [];
+      this.maskToken = data._mask || '********';
+      this.fallbackFields = data._fallbacks || {};
+      this.lockedPaths = Array.isArray(data._locked) ? data._locked : [];
+      const rest: Record<string, any> = { ...data };
+      delete rest._sensitive;
+      delete rest._mask;
+      delete rest._fallbacks;
+      delete rest._locked;
+      this.config = { ...this.config, ...rest };
+      this.secretDraft = {};
     },
+    async reloadConfig() {
+      this.pendingDeletes = [];
+      this.secretDraft = {};
+      await this.loadConfig();
+      ElMessage.success('已重新加载配置，未保存的修改已丢弃');
+    },
+    // 是否为密钥/令牌类字段（与后端 _is_sensitive_key 判定保持一致）
+    isSensitive(field: string): boolean {
+      const low = String(field).toLowerCase();
+      if (/(_url|_uri|_field|_column|_timeout|_path|_dir)$/.test(low)) return false;
+      return /(token|secret|password|passwd|api_key|apikey|app_key|appkey|cookie|credential|private_key)/.test(low);
+    },
+    secretKey(section: string, field: string): string { return `${section}.${field}`; },
+    sectionTitle(key: string): string {
+      const item = this.apiSections.find((x: any) => x.key === key);
+      return item ? item.title : key;
+    },
+    // 共用凭证：只读展示，不允许在页面修改或删除
+    isLocked(section: string, field: string): boolean {
+      return this.lockedPaths.includes(this.secretKey(section, field));
+    },
+    lockedText(section: string, field: string, val: any): string {
+      if (this.isSensitive(field)) return val === this.maskToken ? '已配置（共用，不可修改）' : '未配置';
+      return val === undefined || val === null ? '' : String(val);
+    },
+    // 该字段留空且存在回退来源 → 页面按只读展示生效值（如机器人复用多维表格的 App ID）
+    isFallbackOnly(section: string, field: string, val: any): boolean {
+      const fb = this.fallbackFields[this.secretKey(section, field)];
+      if (!fb) return false;
+      return val === undefined || val === null || val === '';
+    },
+    fallbackText(section: string, field: string): string {
+      const fb = this.fallbackFields[this.secretKey(section, field)] || {};
+      const fromSection = String(fb.from || '').split('.')[0];
+      return `${fb.preview || '已配置'}（复用「${this.sectionTitle(fromSection)}」）`;
+    },
+    // 占位符要说明“留空会发生什么”，尤其是留空会回退复用其它段凭证的字段
+    fieldPlaceholder(section: string, field: string, val: any): string {
+      const fb = this.fallbackFields[this.secretKey(section, field)];
+      const isEmpty = val === undefined || val === null || val === '';
+      if (isEmpty && fb) {
+        const fromSection = String(fb.from || '').split('.')[0];
+        return `未单独配置，留空则复用「${this.sectionTitle(fromSection)}」（当前：${fb.preview || '未配置'}）`;
+      }
+      if (this.isSensitive(field)) {
+        return val === this.maskToken ? '已配置，留空则不修改' : '未配置，留空则不修改';
+      }
+      return val || '可选';
+    },
+    setSecret(section: string, field: string, value: string) {
+      this.secretDraft[this.secretKey(section, field)] = value;
+    },
+    markDeleted(path: any[]) {
+      const key = path.join('.');
+      if (!this.pendingDeletes.some((p: any[]) => p.join('.') === key)) this.pendingDeletes.push(path);
+    },
+    dropDeleted(path: any[]) {
+      const key = path.join('.');
+      this.pendingDeletes = this.pendingDeletes.filter((p: any[]) => p.join('.') !== key);
+    },
+    // 保存配置：字段级合并 + 显式删除，敏感字段只提交用户重新输入的值
     async saveConfig() {
       this.running.saveConfig = true;
       try {
-        const payload: Record<string, any> = {};
-        this.apiSections.forEach(s => {
-          payload[s.key] = JSON.parse(JSON.stringify(this.config[s.key] || {}));
-          if (payload[s.key].enabled !== undefined) payload[s.key].enabled = !payload[s.key].mock;
-          Object.values(payload[s.key]).forEach((v: any) => { if (v && typeof v === 'object' && !Array.isArray(v)) delete v._newKey; });
+        const config: Record<string, any> = {};
+        this.apiSections.forEach((sec: any) => {
+          const section = JSON.parse(JSON.stringify(this.config[sec.key] || {}));
+          delete section._newKey;
+          Object.values(section).forEach((v: any) => {
+            if (v && typeof v === 'object' && !Array.isArray(v)) delete v._newKey;
+          });
+          // 敏感字段：只有重新输入才下发；占位符/空值一律不提交，由后端保留原值
+          // 说明：这里按字段名判定（而不是只看 _sensitive 列表），否则"原本为空"的密钥字段新填值不会被提交
+          Object.keys(section).forEach((field: string) => {
+            if (!this.isSensitive(field)) return;
+            const draft = (this.secretDraft[this.secretKey(sec.key, field)] || '').trim();
+            if (draft) section[field] = draft;
+            else delete section[field];
+          });
+          // 只有同时存在 mock 与 enabled 时，才用 mock 派生 enabled（否则会把 enabled 强制改回 true）
+          if (section.enabled !== undefined && section.mock !== undefined) section.enabled = !section.mock;
+          config[sec.key] = section;
         });
-        payload.similarity = this.config.similarity;
-        payload.database = this.config.database;
-        payload.audit = this.config.audit;
-        payload.output = (this.config as any).output;
-        const body = await api('/api/config', { method: 'POST', body: JSON.stringify(payload) });
+        ['similarity', 'database', 'audit', 'output'].forEach((k: string) => {
+          if (this.config[k] !== undefined) config[k] = this.config[k];
+        });
+        const body = await api('/api/config', {
+          method: 'POST',
+          body: JSON.stringify({ config, delete: this.pendingDeletes }),
+        });
         ElMessage.success(body.message);
+        this.pendingDeletes = [];
+        await this.loadConfig();
         await this.loadFlowStats();
-      } catch (e) { /* 错误已提示 */ } finally { this.running.saveConfig = false; }
+      } catch (e) { /* 错误已由 api() 统一提示 */ } finally { this.running.saveConfig = false; }
     },
     openAddField(sectionKey: string) {
+      if (!this.config[sectionKey]) this.config[sectionKey] = {};
       this.newForm = { section: sectionKey, fieldName: '', fieldType: 'string', fieldValue: '', fieldValueNum: 0, fieldValueBool: false };
       this.showAddFieldDialog = true;
     },
     confirmAddField() {
       const name = this.newForm.fieldName.trim();
       if (!name) return ElMessage.warning('请输入字段名称');
-      if (this.config[this.newForm.section][name] !== undefined) return ElMessage.warning(`字段 "${name}" 已存在，请更换名称`);
+      if (!/^[A-Za-z0-9_.\-]+$/.test(name)) return ElMessage.warning('字段名只能包含字母、数字、下划线、点和短横线');
+      if (name.startsWith('_')) return ElMessage.warning('字段名不能以下划线开头');
+      if (!this.config[this.newForm.section]) this.config[this.newForm.section] = {};
+      const section = this.config[this.newForm.section];
+      if (section[name] !== undefined) return ElMessage.warning(`字段 "${name}" 已存在，请更换名称`);
       let value: any;
       if (this.newForm.fieldType === 'number') value = this.newForm.fieldValueNum;
       else if (this.newForm.fieldType === 'boolean') value = this.newForm.fieldValueBool;
       else value = this.newForm.fieldValue;
-      this.config[this.newForm.section][name] = value;
+      this.config[this.newForm.section] = { ...section, [name]: value };
+      this.dropDeleted([this.newForm.section, name]);
       this.showAddFieldDialog = false;
-      ElMessage.success(`已添加字段 "${name}"`);
+      ElMessage.success(`已添加字段 "${name}"，点「保存配置」后生效`);
     },
     removeField(sectionKey: string, fieldName: string) {
-      ElMessageBox.confirm(`确认删除字段 "${fieldName}"？`, '删除确认', {
+      ElMessageBox.confirm(`确认删除字段 "${fieldName}"？点「保存配置」后才会从配置文件移除`, '删除确认', {
         confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning',
       }).then(() => {
         delete this.config[sectionKey][fieldName];
         this.config[sectionKey] = { ...this.config[sectionKey] };
-        ElMessage.success(`已删除字段 "${fieldName}"`);
+        delete this.secretDraft[this.secretKey(sectionKey, fieldName)];
+        this.markDeleted([sectionKey, fieldName]);
+        ElMessage.success(`已删除字段 "${fieldName}"，点「保存配置」后生效`);
       }).catch(() => {});
+    },
+    removeSubField(sectionKey: string, fieldName: string, subKey: string) {
+      const obj = this.config[sectionKey] && this.config[sectionKey][fieldName];
+      if (!obj || obj[subKey] === undefined) return;
+      delete obj[subKey];
+      this.config[sectionKey][fieldName] = { ...obj };
+      this.markDeleted([sectionKey, fieldName, subKey]);
+      ElMessage.success(`已删除子项 "${subKey}"，点「保存配置」后生效`);
     },
     addSubField(sectionKey: string, fieldName: string) {
       const obj = this.config[sectionKey][fieldName] as any;
@@ -401,6 +545,7 @@ export default {
       obj[newKey] = '';
       delete obj._newKey;
       this.config[sectionKey][fieldName] = { ...obj };
+      this.dropDeleted([sectionKey, fieldName, newKey]);
     },
     async loadFlowStats() {
       try { const body = await api('/api/overview'); this.overview = body.data as any; } catch (_) {}
@@ -491,6 +636,14 @@ export default {
 </script>
 
 <style scoped>
+/* ── 接口设置工具条 ── */
+.cfg-toolbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 12px; padding: 10px 14px; border-radius: 8px;
+  background: #f5f8ff; border: 1px solid #dbe6fb;
+}
+.cfg-toolbar-hint { font-size: 12px; color: #5a6b8a; line-height: 1.6; }
+.cfg-toolbar-hint b { color: #d97706; }
 /* ── 任务总览 ── */
 .to-head { display: flex; align-items: center; margin-bottom: 16px; }
 .to-title { font-size: 16px; font-weight: 700; color: #1f3b73; }

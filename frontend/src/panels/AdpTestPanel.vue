@@ -99,11 +99,15 @@
           max-height="300" style="margin-top:14px" row-key="jira_key">
           <el-table-column type="expand">
             <template #default="{ row }">
-              <div v-if="row.full_text" style="padding:12px 20px">
-                <div style="font-size:12px;color:#606266;margin-bottom:6px">完整分析文本：</div>
-                <pre style="max-height:300px;overflow:auto;background:#f5f7fa;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all">{{ row.full_text }}</pre>
+              <div v-if="row.text_preview || row.report_path" style="padding:12px 20px">
+                <div style="font-size:12px;color:#606266;margin-bottom:6px">
+                  分析文本预览<span v-if="row.text_len">（共 {{ row.text_len }} 字符）</span>
+                  <a v-if="row.report_path" :href="adpReportUrl(row.jira_key)" target="_blank"
+                     style="color:#409eff;margin-left:8px">查看完整报告</a>
+                </div>
+                <pre style="max-height:300px;overflow:auto;background:#f5f7fa;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all">{{ row.text_preview }}</pre>
               </div>
-              <div v-else style="padding:12px 20px;color:#909399;font-size:12px">无完整文本</div>
+              <div v-else style="padding:12px 20px;color:#909399;font-size:12px">无分析文本</div>
             </template>
           </el-table-column>
           <el-table-column prop="jira_key" label="Jira号" width="130">
@@ -114,6 +118,12 @@
           <el-table-column label="状态" width="60" align="center">
             <template #default="{ row }">
               <el-tag :type="row.ok ? 'success' : 'danger'" size="small">{{ row.ok ? '成功' : '失败' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="失败类型" width="160" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.fail_type" style="color:#f56c6c">{{ row.fail_type }}</span>
+              <span v-else style="color:#c0c4cc">-</span>
             </template>
           </el-table-column>
           <el-table-column label="问题模块" width="120" show-overflow-tooltip>
@@ -167,6 +177,9 @@
                   {{ single.result['完成状态'] || '-' }}
                 </el-tag>
               </el-descriptions-item>
+              <el-descriptions-item v-if="single.failType" label="失败类型">
+                <span style="color:#f56c6c;font-weight:600">{{ single.failType }}</span>
+              </el-descriptions-item>
               <el-descriptions-item label="耗时">
                 <span v-if="single.running && single.elapsed && !single.result" style="color:#e6a23c">
                   分析中... {{ single.elapsed }}s
@@ -202,12 +215,14 @@
                 <span v-else>{{ f.name }}</span>
               </div>
             </div>
-            <!-- 完整分析文本 -->
-            <div v-if="single.fullText" style="margin-top:10px">
-              <details>
-                <summary style="cursor:pointer;font-size:13px;color:#409eff;user-select:none">查看完整分析文本 ({{ single.fullText.length }} 字符)</summary>
-                <pre style="max-height:400px;overflow:auto;background:#f5f7fa;padding:12px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all;margin-top:6px">{{ single.fullText }}</pre>
-              </details>
+            <!-- 分析文本：只展示预览，完整内容按需打开落盘报告（失败时也有快照） -->
+            <div v-if="single.textLen || single.reportPath" style="margin-top:10px">
+              <div style="font-size:12px;color:#606266;margin-bottom:4px">
+                分析文本预览<span v-if="single.textLen">（共 {{ single.textLen }} 字符，此处仅显示前 2000 字）</span><span v-else>（无返回内容）</span>
+                <a v-if="single.reportPath" :href="adpReportUrl(single.bugid)" target="_blank"
+                   style="color:#409eff;margin-left:8px">查看完整报告</a>
+              </div>
+              <pre v-if="single.textPreview" style="max-height:300px;overflow:auto;background:#f5f7fa;padding:12px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all">{{ single.textPreview }}</pre>
             </div>
           </div>
           <el-alert v-if="single.error" type="error" :title="single.error" show-icon style="margin-top:12px"></el-alert>
@@ -286,11 +301,15 @@
           max-height="360" style="margin-top:14px" row-key="jira_key">
           <el-table-column type="expand">
             <template #default="{ row }">
-              <div v-if="row.full_text" style="padding:12px 20px">
-                <div style="font-size:12px;color:#606266;margin-bottom:6px">完整分析文本：</div>
-                <pre style="max-height:300px;overflow:auto;background:#f5f7fa;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all">{{ row.full_text }}</pre>
+              <div v-if="row.text_preview || row.report_path" style="padding:12px 20px">
+                <div style="font-size:12px;color:#606266;margin-bottom:6px">
+                  分析文本预览<span v-if="row.text_len">（共 {{ row.text_len }} 字符）</span>
+                  <a v-if="row.report_path" :href="adpReportUrl(row.jira_key)" target="_blank"
+                     style="color:#409eff;margin-left:8px">查看完整报告</a>
+                </div>
+                <pre style="max-height:300px;overflow:auto;background:#f5f7fa;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all">{{ row.text_preview }}</pre>
               </div>
-              <div v-else style="padding:12px 20px;color:#909399;font-size:12px">无完整文本</div>
+              <div v-else style="padding:12px 20px;color:#909399;font-size:12px">无分析文本</div>
             </template>
           </el-table-column>
           <el-table-column prop="jira_key" label="Jira号" width="130">
@@ -302,6 +321,12 @@
             <template #default="{ row }">
               <el-tag v-if="row.skipped" type="info" size="small">跳过</el-tag>
               <el-tag v-else :type="row.has_html ? 'success' : 'danger'" size="small">{{ row.has_html ? '成功' : '失败' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="失败类型" width="160" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.fail_type" style="color:#f56c6c">{{ row.fail_type }}</span>
+              <span v-else style="color:#c0c4cc">-</span>
             </template>
           </el-table-column>
           <el-table-column label="表格命中" width="70" align="center">
@@ -350,7 +375,7 @@ export default {
       single: {
         bugid: '', running: false, steps: [], jiraInfo: null,
         result: null, error: '', elapsed: 0, feishuOk: false, attachmentCount: 0,
-        fullText: '', fileUrls: [],
+        textPreview: '', textLen: 0, reportPath: '', failType: '', fileUrls: [],
       },
       batch: {
         items: [], fileName: '', batchSize: 3, continuous: false,
@@ -370,6 +395,10 @@ export default {
     },
   },
   methods: {
+    /** 打开某条 ADP 分析报告的完整文本（后端按 jira_key 读取落盘 md） */
+    adpReportUrl(key) {
+      return `/api/test/adp_report?jira_key=${encodeURIComponent(key || '')}`;
+    },
     stepStatus(s) {
       if (s.status === 'done') return 'success';
       if (s.status === 'fail') return 'error';
@@ -379,7 +408,8 @@ export default {
     resetSingle() {
       Object.assign(this.single, {
         steps: [], jiraInfo: null, result: null, error: '', elapsed: 0,
-        feishuOk: false, attachmentCount: 0, fullText: '', fileUrls: [],
+        feishuOk: false, attachmentCount: 0,
+        textPreview: '', textLen: 0, reportPath: '', failType: '', fileUrls: [],
       });
     },
 
@@ -431,7 +461,10 @@ export default {
                 this.single.result = d.results || null;
                 if (d.error) this.single.error = d.error;
                 if (d.ok !== undefined) this.single.feishuOk = d.ok;
-                this.single.fullText = d.full_text || '';
+                this.single.textPreview = d.text_preview || '';
+      this.single.textLen = d.text_len || 0;
+      this.single.reportPath = d.report_path || '';
+      this.single.failType = d.fail_type || '';
                 this.single.fileUrls = d.file_urls || [];
               }
             } catch { /* skip */ }
