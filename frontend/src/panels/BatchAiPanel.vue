@@ -524,17 +524,19 @@ export default {
       };
       localStorage.setItem(`envSettings_${mode}`, JSON.stringify(data));
       // 软件版本持久化到后端配置，换浏览器/换机器也能读到
-      const ver = (this.batchAi.softwareVersion || '').trim();
-      if (ver) {
-        fetch('/api/config/batch_env', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ software_version: ver }),
-        }).then(r => r.json()).then(j => {
-          if (!j.ok) ElMessage.error(j.message || '保存软件版本失败');
-        }).catch(() => { /* 后端不可用时不阻断本地保存 */ });
-      }
+      this.persistBatchEnv();
       this.batchAi.envSavedMsg = '已保存';
       setTimeout(() => { this.batchAi.envSavedMsg = ''; }, 2000);
+    },
+    persistBatchEnv() {
+      const ver = (this.batchAi.softwareVersion || '').trim();
+      if (!ver) return;
+      fetch('/api/config/batch_env', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ software_version: ver }),
+      }).then(r => r.json()).then(j => {
+        if (!j.ok) ElMessage.error(j.message || '保存软件版本失败');
+      }).catch(() => { /* 后端不可用时不阻断执行 */ });
     },
     loadEnvSettings(mode, target = 'batchAi') {
       try {
@@ -554,6 +556,7 @@ export default {
       this.batchAiAbort = new AbortController();
       try {
         if (!this.batchAi.softwareVersion.trim()) throw new Error('请填写软件版本');
+        this.persistBatchEnv();   // 执行时顺带写回配置，下次打开自动带出
         if (!this.batchAi.jql.trim()) throw new Error('请输入 JQL'); await this.batchAiSearch();
         if (!this.batchAi.rows.length) throw new Error('候选列表为空');
         const hasAnyFilter = this.batchAi.filterAllExisting || this.batchAi.filterPcOnly || this.batchAi.filterOnlineOnly || this.batchAi.filterAiPreliminary || this.batchAi.filterExistingSuccess;
