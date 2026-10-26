@@ -205,6 +205,78 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3) -
                     break
                 except json.JSONDecodeError:
                     pass
+    # ---- 迟到报告检测：分析有实质内容但无 HTML 报告，最多等 2 轮 x 5 分钟 ----
+    def _has_report():
+        return (closeout_data is not None
+                or bool(re.search(r'report_[^\s"\']*\.html', full_text))
+                or bool(re.search(r'agent\.adp-cos\.com', full_text)))
+
+    if full_text and len(full_text) > 500 and not _has_report():
+        for round_idx in range(2):  # 最多 2 轮，每轮等 5 分钟，总计最多 10 分钟
+            wait_sec = 300
+            logger.info("ADP 无 HTML 报告信号，%d 秒后尝试第 %d 轮续接...", wait_sec, round_idx + 1)
+            if keepalive_cb:
+                keepalive_cb(round(time.time() - t0, 1))
+            time.sleep(wait_sec)
+            logger.info("续接 ADP 会话（第 %d 轮）...", round_idx + 1)
+            prev_text_len = len(full_text)
+            prev_file_count = len(file_urls)
+            try:
+                payload2 = dict(payload)
+                payload2["RequestId"] = uuid.uuid4().hex[:32]
+                client2 = httpx.Client(timeout=httpx.Timeout(adp_cfg["timeout"], connect=30))
+                try:
+                    with client2.stream("POST", adp_cfg["url"], json=payload2,
+                                        headers={"Content-Type": "application/json"}) as sse_resp:
+                        if sse_resp.status_code == 200:
+                            new_text_len = 0
+                            for line in sse_resp.iter_lines():
+                                if not line or not line.startswith("data: "):
+                                    continue
+                                data_str = line[6:]
+                                if data_str == "[DONE]":
+                                    break
+                                try:
+                                    data = json.loads(data_str)
+                                except json.JSONDecodeError:
+                                    continue
+                                et = data.get("Type", "")
+                                ts = int(data.get("Timestamp", 0))
+                                if ts > 0:
+                                    end_ts = ts
+                                if et == "text.delta":
+                                    chunk = _fix_encoding(data.get("Text", ""))
+                                    full_text += chunk
+                                    new_text_len += len(chunk)
+                                elif et == "text.replace":
+                                    raw = _fix_encoding(data.get("Text", ""))
+                                    if '"ok"' in raw and '"html"' in raw:
+                                        try:
+                                            closeout_data = json.loads(raw)
+                                        except json.JSONDecodeError:
+                                            pass
+                                elif et == "content.added":
+                                    content = data.get("Content", {})
+                                    if content.get("Type") == "file":
+                                        finfo = content.get("File", {})
+                                        file_urls.append({"name": finfo.get("FileName", ""),
+                                                          "url": finfo.get("FileUrl", "")})
+                            logger.info("ADP 续接第 %d 轮完成: 新增 %d 字符, file_urls=%d, closeout=%s",
+                                        round_idx + 1, new_text_len, len(file_urls), closeout_data is not None)
+                finally:
+                    client2.close()
+            except Exception as e:
+                logger.warning("ADP 续接会话第 %d 轮失败: %s", round_idx + 1, e)
+                break
+            # 有报告信号了，不再等待
+            if _has_report():
+                logger.info("ADP 续接第 %d 轮检测到 HTML 报告信号", round_idx + 1)
+                break
+            # 无变化，不再等待
+            has_change = (len(full_text) > prev_text_len or len(file_urls) > prev_file_count)
+            if not has_change:
+                logger.info("ADP 续接第 %d 轮无新内容，停止等待", round_idx + 1)
+                break
     elapsed_sec = (end_ts - start_ts) / 1000 if start_ts and end_ts else 0
     logger.info("ADP 分析完成: %d 字符, 耗时 %.0fs", len(full_text), elapsed_sec)
     return full_text, file_urls, closeout_data, start_ts, end_ts
@@ -246,25 +318,28 @@ def _extract_problem_module(text: str) -> str:
 
 
 def _extract_module_from_html(html_path: str) -> str:
-    """从 HTML 报告中提取断点模块值（优先级最高）"""
+    """从 HTML 报告中提取断点模块/现象承载模块值（优先级最高）"""
     if not html_path or not os.path.isfile(html_path):
         return ""
     try:
         with open(html_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
-        # HTML 结构：<strong>断点模块：</strong>值<br>
-        m = re.search(
-            r'<strong>\s*断点模块[：:]\s*</strong>\s*(.+?)(?:<br|<strong|</div)',
-            content, re.DOTALL)
-        if m:
-            val = re.sub(r'<[^>]+>', '', m.group(1)).strip()
-            if val:
-                return val
+        # HTML 结构：<strong>断点模块：</strong>值<br> 或 <strong>现象承载模块：</strong>值<br>
+        for kw in ("断点模块", "现象承载模块"):
+            m = re.search(
+                rf'<strong>\s*{kw}[：:]\s*</strong>\s*(.+?)(?:<br|<strong|</div)',
+                content, re.DOTALL)
+            if m:
+                val = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+                if val:
+                    return val
         # 降级纯文本匹配
-        m = re.search(r'断点模块[：:：]\s*(.+?)(?:\n|$)', content)
-        if m:
-            val = re.sub(r'<[^>]+>', '', m.group(1)).strip()
-            return val
+        for kw in ("断点模块", "现象承载模块"):
+            m = re.search(rf'{kw}[：:：]\s*(.+?)(?:\n|$)', content)
+            if m:
+                val = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+                if val:
+                    return val
     except Exception:
         pass
     return ""
@@ -280,7 +355,10 @@ def _extract_root_cause(text: str) -> str:
     for p in adp_patterns:
         matches = re.findall(p, text, re.IGNORECASE)
         if matches:
-            return matches[-1].strip()
+            val = matches[-1].strip()
+            # 清除 HTML 标签残留
+            val = re.sub(r'<[^>]+>', '', val).strip()
+            return val
     # 通用模式：仅搜索末尾 5000 字符
     tail = text[-5000:] if len(text) > 5000 else text
     generic_patterns = [
@@ -299,7 +377,9 @@ def _extract_root_cause(text: str) -> str:
     for p in generic_patterns:
         m = re.search(p, tail, re.IGNORECASE)
         if m:
-            return m.group(1).strip()
+            val = m.group(1).strip()
+            val = re.sub(r'<[^>]+>', '', val).strip()
+            return val
     return ""
 
 
