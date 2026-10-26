@@ -490,8 +490,10 @@ export default {
 
     setBatchMeta(target, mode) {
       const defaults = mode === 'online'
-        ? { analysisConcurrency: 5, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上' }
-        : { analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC' };
+        ? { analysisConcurrency: 5, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上',
+            filterExistingSuccess: false, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false }
+        : { analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC',
+            filterExistingSuccess: false, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false };
       Object.assign(this[target], defaults);
       this.loadEnvSettings(mode, target);
     },

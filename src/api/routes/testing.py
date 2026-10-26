@@ -832,7 +832,15 @@ async def test_batch_ai_filter(request: Request):
                 if filter_all:
                     exclude_keys.add(jira_key)  # 过滤所有已存在
                 elif filter_existing_success and is_excluded:
-                    exclude_keys.add(jira_key)  # 过滤已存在且分析成功的
+                    # 区分来源：线上模式只排除线上成功的，PC模式只排除PC成功的
+                    # is_pc=True表示PC来源(jira_analyze)，is_pc=False表示线上来源(parseFullTicket)
+                    is_online_record = not is_pc
+                    if filter_online_only and is_online_record:
+                        exclude_keys.add(jira_key)  # 线上模式：只排除线上分析成功的
+                    elif filter_pc_only and is_pc:
+                        exclude_keys.add(jira_key)  # PC模式：只排除PC分析成功的
+                    elif not filter_online_only and not filter_pc_only:
+                        exclude_keys.add(jira_key)  # 未指定来源时：排除所有成功的
                 elif filter_pc_only and filter_online_only:
                     if is_excluded:
                         exclude_keys.add(jira_key)
