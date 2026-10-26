@@ -218,6 +218,14 @@ async def _on_startup():
                     return [exe, "--new-window", url]
                 return [exe, url]
 
+            def _is_elevated() -> bool:
+                """当前进程是否以管理员（High 完整性）运行"""
+                try:
+                    import ctypes
+                    return bool(ctypes.windll.shell32.IsUserAnAdmin())
+                except Exception:
+                    return False
+
             def _open_browser(url: str):
                 """打开浏览器：直接用系统默认浏览器的可执行文件开新窗口，失败逐级回退"""
                 if sys.platform != "win32":
@@ -229,6 +237,15 @@ async def _on_startup():
                     except Exception as e:
                         _logger.warning("打开浏览器失败: %s，请手动访问 %s", e, url)
                     return
+                if _is_elevated():
+                    # 管理员进程直接起 chrome/edge 时，会和桌面普通权限的浏览器实例冲突（静默无窗口），
+                    # 交给 explorer（桌面 shell，中等权限）打开更可靠
+                    try:
+                        subprocess.Popen(["explorer.exe", url])
+                        _logger.info("当前为管理员权限，已通过桌面 shell 打开默认浏览器: %s", url)
+                        return
+                    except Exception as e:
+                        _logger.warning("explorer 打开失败: %s，尝试直接启动浏览器", e)
                 exe, why = _pick_browser()
                 if exe:
                     try:
