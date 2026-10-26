@@ -245,6 +245,31 @@ def _extract_problem_module(text: str) -> str:
     return ""
 
 
+def _extract_module_from_html(html_path: str) -> str:
+    """从 HTML 报告中提取断点模块值（优先级最高）"""
+    if not html_path or not os.path.isfile(html_path):
+        return ""
+    try:
+        with open(html_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        # HTML 结构：<strong>断点模块：</strong>值<br>
+        m = re.search(
+            r'<strong>\s*断点模块[：:]\s*</strong>\s*(.+?)(?:<br|<strong|</div)',
+            content, re.DOTALL)
+        if m:
+            val = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+            if val:
+                return val
+        # 降级纯文本匹配
+        m = re.search(r'断点模块[：:：]\s*(.+?)(?:\n|$)', content)
+        if m:
+            val = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+            return val
+    except Exception:
+        pass
+    return ""
+
+
 def _extract_root_cause(text: str) -> str:
     """从分析文本中提取 root cause（支持 ADP 根因归属、现象级归因等格式）"""
     # ADP 专有模式：全文搜索取最后匹配（高度特异）
@@ -370,6 +395,47 @@ def _extract_report_url(text: str, file_urls: list, closeout_data: dict) -> tupl
         name = re.search(r'(report_[^\s)"\'/?]*\.html)', url)
         return (name.group(1) if name else "report.html"), url
     return "", ""
+
+
+def classify_adp_failure(error: str = "", full_text: str = "", attachment_count: int = 0) -> str:
+    """根据错误信息和分析返回内容，自动归类 ADP 分析失败原因（5 种大类）"""
+    # ---- 前置条件不满足 ----
+    if error == "无附件":
+        return "输入质量问题（无附件）"
+    if error.startswith("没有日志附件"):
+        return "输入质量问题（无有效日志文件）"
+    if error == "ADP 无返回":
+        return "ADP连接超时或网络异常"
+    # ---- 分析 ADP 返回的 full_text ----
+    if full_text:
+        text_short = full_text[:2000]
+        text_lower = text_short.lower()
+        # 输入质量问题（ADP 短文本回复，要求澄清/补充）
+        if len(full_text) < 1500:
+            # 日志链接为空
+            if any(kw in text_short for kw in ("日志附件下载链接", "日志包路径", "日志包下载链接")) \
+               and any(kw in text_short for kw in ("缺失", "空", "补充", "请提供", "请补充")):
+                return "输入质量问题（日志附件链接为空）"
+            for kw in ("请先明确", "请先确认", "确认", "无法启动", "矛盾", "不一致", "不明确"):
+                if kw in text_short:
+                    return "输入质量问题（描述矛盾或信息不足）"
+        # 下载链接失效（含 404 / 传输中断 / 体积对账误判）
+        if ("404" in text_short and ("下载" in text_short or "链接" in text_short)) or "链接已失效" in text_short:
+            return "下载链接失效"
+        if ("rc=18" in text_short or "transfer closed" in text_lower or "下载中断" in text_short) \
+            and "残件" in text_short:
+            return "下载链接失效（传输中断）"
+        if "expect=46" in text_short or ("体积对账" in text_short and "误判" in text_short):
+            return "下载链接失效（签名URL响应异常）"
+        # 分析过程未完成
+        if any(kw in text_short for kw in ("下载", "解包", "索引", "fetch_raw", "unpack")) \
+           and len(full_text) > 3000:
+            return "分析过程未完成"
+    # ---- 连接/超时 ----
+    err_lower = (error or "").lower()
+    if "connect" in err_lower or "timed out" in err_lower or "timeout" in err_lower:
+        return "ADP连接超时或网络异常"
+    return "分析完成但未产出HTML报告"
 
 
 def extract_adp_results(full_text: str, closeout_data: dict, start_ts: int, end_ts: int, file_urls: list = None) -> dict:
@@ -536,9 +602,9 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             record_id = recs[0].get("record_id", "") if recs else ""
         if not record_id:
             return {"ok": False, "record_id": "", "message": "无法获取 record_id"}
-        # 写入 6 个字段
+        # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
-                    "agent分析的问题模块", "agent分析的root cause", "置信度"]
+                    "agent分析的问题模块", "agent分析的root cause", "置信度", "分析失败归因"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         # 附件字段"报告链接"需要 file_token 格式，无 file_token 则移除该字段（避免 URL 字符串写入附件类型字段）
         file_token = fields_dict.get("_report_file_token", "")
@@ -578,7 +644,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     out["attachment_count"] = len(attachments)
     if not attachments:
         out["error"] = "无附件"
-        out["results"] = {"完成状态": "无法分析"}
+        out["results"] = {"完成状态": "无法分析", "分析失败归因": "输入质量问题（无附件）"}
         _progress("attachments", "fail", "无附件")
         return out
     # 检查过滤后是否有有效日志附件
@@ -586,7 +652,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     if not valid_atts:
         file_names = [a.get('filename', '?') for a in attachments]
         out["error"] = f"没有日志附件（已有: {', '.join(file_names[:5])}）"
-        out["results"] = {"完成状态": "无法分析"}
+        out["results"] = {"完成状态": "无法分析", "分析失败归因": "输入质量问题（无有效日志文件）"}
         _progress("attachments", "fail", out["error"])
         return out
     _progress("attachments", "done", f"{len(valid_atts)} 个有效附件（共 {len(attachments)} 个）")
@@ -597,6 +663,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     full_text, file_urls, closeout_data, start_ts, end_ts = call_adp_sse_stream(message, keepalive_cb=keepalive_cb)
     if not full_text:
         out["error"] = "ADP 无返回"
+        out["results"] = {"完成状态": "分析失败", "分析失败归因": "ADP连接超时或网络异常"}
         _progress("adp_analysis", "fail", "无返回")
         return out
     elapsed_sec = (end_ts - start_ts) / 1000 if start_ts and end_ts else 0
@@ -618,6 +685,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         _progress("download_report", "running")
         dl_result = download_adp_report(jira_key, report_url, html_file)
         file_token = dl_result.get("file_token", "")
+        local_path = dl_result.get("local_path", "")
         if file_token:
             results["_report_file_token"] = file_token
             results["报告链接（分析报告、可观测报告）"] = f"附件: {html_file or 'report.html'}"
@@ -625,6 +693,10 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         else:
             # 下载失败时移除报告链接字段，避免 URL 字符串写入附件类型字段
             results.pop("报告链接（分析报告、可观测报告）", None)
+        # HTML 报告中的“断点模块”优先级高于文本提取，覆盖“问题模块”字段
+        html_module = _extract_module_from_html(local_path)
+        if html_module:
+            results["agent分析的问题模块"] = html_module
         _progress("download_report", "done" if file_token else "fail")
 
     # Step 4: 保存本地

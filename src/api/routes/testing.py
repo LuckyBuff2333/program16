@@ -5280,7 +5280,7 @@ async def test_adp_lookup(request: Request):
         import time as _time
         loop = asyncio.get_event_loop()
         from src.clients import feishu_client, jira_client as _jc
-        from src.services.adp_ops import run_adp_single, _get_adp_cfg
+        from src.services.adp_ops import run_adp_single, _get_adp_cfg, classify_adp_failure
         adp_cfg = _get_adp_cfg()
         app_token = adp_cfg["bitable_app_token"]
         table_id = adp_cfg["bitable_table_id"]
@@ -5517,9 +5517,15 @@ async def test_adp_lookup(request: Request):
                         results_dict = result.get("results") or {}
                         is_skipped = results_dict.get("完成状态") == "无法分析"
 
-                        # 失败（没拿到html且非跳过）：设"分析失败"并保存本地MD
+                        # 失败（没拿到html且非跳过）：设“分析失败”+ 自动归因并保存本地MD
                         if not has_html and not is_skipped:
                             results_dict["完成状态"] = "分析失败"
+                            # 自动归因：分析ADP返回内容判定失败类型
+                            if not results_dict.get("分析失败归因"):
+                                results_dict["分析失败归因"] = classify_adp_failure(
+                                    error=result.get("error", ""),
+                                    full_text=result.get("full_text", ""),
+                                    attachment_count=result.get("attachment_count", 0))
                             _save_fail_md(bugid, result)
 
                         # 写回多维表格
