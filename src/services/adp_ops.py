@@ -71,9 +71,9 @@ def query_attachments(jira_key: str) -> list:
 
 # ===== Step 2: 构建消息 + 调用 ADP SSE =====
 
-# 有效附件格式正则：压缩包 + txt
+# 有效附件格式正则：压缩包 + txt + 分卷压缩包（.7z.001, .zip.001 等）
 _VALID_ATTACH_RE = re.compile(
-    r'\.(zip|z\d+|rar|7z|tar|gz|bz2|xz|tgz|txt|log)$', re.IGNORECASE)
+    r'\.(zip|z\d+|rar|7z|tar|gz|bz2|xz|tgz|txt|log)(\.\d{3})?$', re.IGNORECASE)
 
 
 def _is_valid_attachment(att: dict) -> bool:
