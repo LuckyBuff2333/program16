@@ -273,7 +273,8 @@ def _sync_local_to_cloud(cloud_times: dict, cloud_keys: set):
         if not missing:
             return
         logger.info("本地-云端差值同步: 发现 %d 条本地有但云端无的触发时间", len(missing))
-        ok = _batch_save_trigger_times_to_cloud(missing)
+        ok = _batch_save_trigger_times_to_cloud(
+            missing, {k: "本地CSV同步" for k in missing})
         if ok:
             # 写入成功，就地更新内存缓存，避免上层重复提取
             cloud_times.update(missing)
@@ -593,14 +594,41 @@ def _ensure_fields_once():
         _TRIGGER_TIME_FIELDS_ENSURED["done"] = True
 
 
-def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "", ref_time: str = ""):
+def _resolve_ref_time(bugid: str, ref_time: str = "") -> str:
+    """解析日志包参考时间：显式值 > 缓存 > 现场查 Jira 日志附件名（用于补全自检列）"""
+    if ref_time:
+        return str(ref_time)[:19]
+    cached = _lookup_ref(bugid)
+    if cached:
+        return cached
+    try:
+        from src.clients import jira_client as _jc
+        from src.services.server_legacy import _diag_gmlogger_times
+        issue = _jc.fetch_issue(bugid)
+        atts = (issue.get("fields") or {}).get("attachment") or []
+        gm = _diag_gmlogger_times(atts) or []
+        if gm:
+            dt = gm[0][1]
+            s = dt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(dt, "strftime") else str(dt)[:19]
+            remember_ref_time(bugid, s)
+            return s
+    except Exception as e:
+        logger.warning("参考时间自动解析失败 %s: %s", bugid, e)
+    return ""
+
+
+def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "", ref_time: str = "",
+                                auto_ref: bool = True):
     """将单条触发时间写入云端 bitable（有则更新，无则新建），云端成功后再写本地 CSV
 
     :param source: 触发时间来源（可选），如 "text:评论第3条(100%:评论/附件名)"
     :param ref_time: 日志包参考时间（可选），用于写入自检结果（时间差秒/窗口命中/时间状态）
     """
     _ensure_fields_once()
-    _meta = _trigger_time_meta(trigger_time, source, _lookup_ref(bugid, {bugid: ref_time} if ref_time else None))
+    if auto_ref:
+        ref_time = _resolve_ref_time(bugid, ref_time)
+    _meta = _trigger_time_meta(trigger_time, source or "未标注",
+                               _lookup_ref(bugid, {bugid: ref_time} if ref_time else None))
     # 空值保护：不覆盖已有的非空触发时间
     if not trigger_time:
         _ensure_trigger_time_bugid_cache()
@@ -637,7 +665,7 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "",
             _trigger_time_bugid_cache.pop(bugid, None)
     if not cloud_ok:
         # 缓存未命中或更新失败：走批量模式
-        src_dict = {bugid: source} if source else {}
+        src_dict = {bugid: source or "未标注"}
         ref_dict = {bugid: ref_time} if ref_time else {}
         cloud_ok = _batch_save_trigger_times_to_cloud({bugid: trigger_time}, src_dict, ref_dict)
     # 云端成功后才写本地 CSV，避免云端失败时本地多余

@@ -33,6 +33,7 @@ async def batch_read_trigger_times(req: BugidListRequest):
         return _fail("请输入 jira 号列表")
     local_times = _load_trigger_times_from_cloud()
     result, extracted_count, batch_to_cloud = [], 0, {}
+    batch_refs = {}
     for bugid in bugids:
         bugid = bugid.strip()
         if not bugid:
@@ -48,12 +49,23 @@ async def batch_read_trigger_times(req: BugidListRequest):
                     current_time = tt
                     _save_trigger_time_to_csv(bugid, tt)
                     batch_to_cloud[bugid] = tt
+                    try:
+                        from src.services.server_legacy import _diag_gmlogger_times as _gm_times
+                        _gm = _gm_times((issue.get("fields") or {}).get("attachment") or []) or []
+                        if _gm:
+                            _d = _gm[0][1]
+                            batch_refs[bugid] = (_d.strftime("%Y-%m-%d %H:%M:%S")
+                                                 if hasattr(_d, "strftime") else str(_d)[:19])
+                    except Exception:
+                        pass
                     extracted_count += 1
             except Exception as e:
                 logger.warning("批量读取触发时间-提取失败 %s: %s", bugid, e)
         result.append({"bugid": bugid, "current_time": current_time})
     if batch_to_cloud:
-        _batch_save_trigger_times_to_cloud(batch_to_cloud)
+        _batch_save_trigger_times_to_cloud(
+            batch_to_cloud, {k: "时间对比(读取)" for k in batch_to_cloud},
+            {k: v for k, v in batch_refs.items() if v})
     hit_count = sum(1 for r in result if r["current_time"])
     return _ok({"rows": result, "total": len(result), "hit": hit_count},
                f"查询完成：{len(result)} 个 Jira 号，{hit_count} 个有记录（本地命中 {hit_count - extracted_count}，新提取 {extracted_count}）")
@@ -78,7 +90,7 @@ def update_trigger_time(req: UpdateTriggerTimeRequest):
     if not new_time:
         return _fail("请输入新的触发时间")
     try:
-        _save_trigger_time_to_cloud(bugid, new_time)
+        _save_trigger_time_to_cloud(bugid, new_time, source="人工修正")
         cached = _load_diagnose_cache(bugid)
         if cached:
             cached["verify_status"] = "corrected"
@@ -109,7 +121,8 @@ def batch_update_trigger_time(req: BatchUpdateRequest):
         valid_items[bugid] = new_time
     if not valid_items:
         return _fail("待应用列表为空")
-    cloud_ok = _batch_save_trigger_times_to_cloud(valid_items)
+    cloud_ok = _batch_save_trigger_times_to_cloud(
+        valid_items, {k: "人工修正(批量)" for k in valid_items})
     if not cloud_ok:
         return _fail("云端写入失败")
     cache_updated = 0

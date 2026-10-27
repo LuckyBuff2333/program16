@@ -1081,6 +1081,8 @@ async def test_batch_ai_sample(request: Request):
     new_extracted = 0
     extract_failed = 0
     new_to_cloud = {}  # 循环内收集待上传云端的数据，循环后批量上传
+    new_sources = {}   # {jira号: 来源}
+    new_refs = {}      # {jira号: 日志包抓包时间}
     if with_time:
         pick_with = min(sample_size, len(with_time))
         selected.extend(random.sample(with_time, pick_with))
@@ -1139,6 +1141,15 @@ async def test_batch_ai_sample(request: Request):
                         trigger_times[k] = tt
                         _save_trigger_time_to_csv(k, tt)
                         new_to_cloud[k] = tt
+                        new_sources[k] = "抽样提取"
+                        try:
+                            _gm = _diag_gmlogger_times(attachments) or []
+                            if _gm:
+                                _d = _gm[0][1]
+                                new_refs[k] = (_d.strftime("%Y-%m-%d %H:%M:%S")
+                                               if hasattr(_d, "strftime") else str(_d)[:19])
+                        except Exception:
+                            pass
                         selected.append(k)
                         new_extracted += 1
                     else:
@@ -1154,12 +1165,14 @@ async def test_batch_ai_sample(request: Request):
                 # 增量保存云端：每 N 个刷新一次，防止请求超时导致已提取数据全部丢失
                 _cloud_flush_counter += 1
                 if _cloud_flush_counter >= _cloud_flush_interval and new_to_cloud:
-                    _batch_save_trigger_times_to_cloud(new_to_cloud)
+                    _batch_save_trigger_times_to_cloud(new_to_cloud, dict(new_sources), dict(new_refs))
                     new_to_cloud.clear()
+                    new_sources.clear()
+                    new_refs.clear()
                     _cloud_flush_counter = 0
     # 循环结束后保存剩余未上传的到云端
     if new_to_cloud:
-        _batch_save_trigger_times_to_cloud(new_to_cloud)
+        _batch_save_trigger_times_to_cloud(new_to_cloud, dict(new_sources), dict(new_refs))
     # 统计
     with_time_count = len([k for k in selected if k in trigger_times])
     time_info = f"，{with_time_count} 条有触发时间（云端 {cloud_picked} + CSV {csv_hit} + 新提取 {new_extracted}）"
@@ -1612,8 +1625,8 @@ async def test_trigger_time(request: Request):
         # 防御性处理：确保 tt 是字符串
         if not isinstance(trigger_time, str):
             trigger_time = trigger_time.strftime("%Y-%m-%d %H:%M:%S") if hasattr(trigger_time, 'strftime') else str(trigger_time)
-        # 提取成功后保存到云端+本地
-        _save_trigger_time_to_cloud(bugid, trigger_time)
+        # 提取成功后保存到云端+本地（带来源与日志包参考时间）
+        _save_trigger_time_to_cloud(bugid, trigger_time, source=f"单条提取:{source}")
         comments = jira_client.extract_comments(issue)
         return _ok({
             "trigger_time": trigger_time,
@@ -2761,11 +2774,11 @@ async def test_prod_batch_run(request: Request):
                         bugid, tt = future.result()
                         if tt:
                             trigger_times[bugid] = tt
-                            _save_trigger_time_to_cloud(bugid, tt)
+                            _save_trigger_time_to_cloud(bugid, tt, source="线上批量(预提取)")
                         elif tt is None:
                             pass  # 无gmlogger，不写空标签到云端（下次仍可重试）
                         else:
-                            _save_trigger_time_to_cloud(bugid, "")
+                            _save_trigger_time_to_cloud(bugid, "", source="线上批量(预提取失败)")
                     except Exception:
                         pass
                     if done_count % 20 == 0 or done_count == len(batch):
@@ -3594,7 +3607,7 @@ async def auto_detect_run(request: Request):
                     tt = await loop.run_in_executor(None, lambda b=bugid, iss=issue: extract_trigger_time_from_issue(b, iss))
                     if tt:
                         trigger_times[bugid] = tt
-                        _save_trigger_time_to_cloud(bugid, tt)
+                        _save_trigger_time_to_cloud(bugid, tt, source="自动检测")
                 except Exception as e:
                     logger.warning("自动检测: 处理 %s 失败: %s", bugid, e)
             yield f"data: {_json.dumps({'type': 'prepare', 'round': round_num, 'to_run': len(bugids), 'no_gmlogger': no_gmlogger, 'with_time': len(trigger_times)}, ensure_ascii=False)}\n\n"
@@ -4424,7 +4437,8 @@ async def write_trigger_time_batch(request: Request):
     failed_count = 0
     if to_write:
         try:
-            ok = _batch_save_trigger_times_to_cloud(to_write)
+            ok = _batch_save_trigger_times_to_cloud(
+                to_write, {k: "批量应用(人工)" for k in to_write})
             if ok:
                 written_count = len(to_write)
                 for bugid, tt in to_write.items():

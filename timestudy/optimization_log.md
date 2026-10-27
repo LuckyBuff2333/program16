@@ -479,3 +479,19 @@ flowchart TD
 - **实现文件**：`src/services/trigger_ops.py`（自检方向敏感）、`src/services/server_legacy.py`（日志包命名识别）、`tests/test_time_check.py`（更新分级用例）、`tests/test_log_name_parse.py`（新增 6 个用例）
 
 </details>
+
+<details>
+<summary><b>36. 触发时间自检列在所有提取路径都写入（2026-10-27）</b></summary>
+
+- **问题描述**：云端触发时间表里 8598 条有触发时间的记录中，**8345 条（97%）`时间来源` 和 `参考时间` 都是空的**，只有“时间批量提取”写入了自检列，其他入口（抽样提取、线上批量、自动检测、时间对比、单条提取、人工修正、机器人、pipeline、flow）写入时都没带来源/参考时间
+- **根因**：自检列由 `_trigger_time_meta(trigger_time, source, ref_time)` 生成，但绝大多数调用点直接 `_save_trigger_time_to_cloud(bugid, tt)` / `_batch_save_trigger_times_to_cloud(items)`，没有传 `source` 和 `ref_time`；`_resolve_ref_time` 也不存在，缓存未命中时参考时间只能为空
+- **解决方案**：
+  1. 新增 `_resolve_ref_time(bugid, ref_time)`：显式值 > `_TRIGGER_TIME_REF_CACHE` 缓存 > 现场查 Jira 日志包文件名（`_diag_gmlogger_times`），解析后写回缓存
+  2. `_save_trigger_time_to_cloud` 增加 `auto_ref=True`（默认开启），`source` 为空时写 `未标注`，避免出现“来源空白”的行
+  3. 11 个写入点全部补上来源标注：pipeline(补充行)、flow(单Jira提取)、单条提取:x、线上批量(预提取)、自动检测、时间对比(读取)、人工修正、人工修正(批量)、机器人提取、本地CSV同步、批量应用(人工)；抽样提取额外带上参考时间
+  4. 批量写入（时间对比读取、抽样提取）在循环里用 issue 附件名解析参考时间，避免额外请求
+- **验证结果**：单测 5 个新增通过（缓存命中/现场解析/异常降级/默认来源/显式来源），全量 80 passed；真机验证 VCU-561531 写入后：参考时间=2026-10-19 21:14:43、差秒=583、窗口命中=否、状态=正常
+- **遗留**：历史 8345 条仍为空，需要逐条查 Jira 回填（约 2~3 小时），可按时间窗口分批执行
+- **实现文件**：`src/services/trigger_ops.py`、`src/api/routes/trigger.py`、`src/api/routes/testing.py`、`src/api/routes/flow.py`、`src/pipeline.py`、`src/services/server_legacy.py`、`tests/test_trigger_meta_paths.py`（新增）
+
+</details>

@@ -2087,7 +2087,7 @@ def _bot_get_trigger_times(bugids: list) -> dict:
             if tt:
                 trigger_times[bugid] = str(tt)
             try:
-                _save_trigger_time_to_cloud(bugid, str(tt) if tt else "")
+                _save_trigger_time_to_cloud(bugid, str(tt) if tt else "", source="机器人提取")
             except Exception as save_e:
                 logger.warning("云端保存触发时间失败 %s（不影响流程）: %s", bugid, save_e)
         except Exception as e:

@@ -58,7 +58,7 @@ async def flow_extract_time(req: ExtractTimeRequest):
         issue = await loop.run_in_executor(None, _jc.fetch_issue, bugid)
         tt = await loop.run_in_executor(None, _jc.extract_trigger_time_from_issue, issue)
         if tt:
-            _save_trigger_time_to_cloud(bugid, tt)
+            _save_trigger_time_to_cloud(bugid, tt, source="flow(单Jira提取)")
             return ok({"trigger_time": tt, "source": "jira"}, f"提取成功: {tt}")
         return fail(f"{bugid} 未提取到触发时间（评论中未找到有效时间戳）")
     except Exception as e:
