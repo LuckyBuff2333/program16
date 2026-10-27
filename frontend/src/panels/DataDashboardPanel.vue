@@ -282,7 +282,7 @@ export default {
     },
     async loadDashboard(force = false) {
       const ttl = this.isToday ? 60000 : 6 * 3600 * 1000;
-      const url = `/api/dashboard/data?date=${this.selectedDate}`;
+      const url = `/api/dashboard/data?date=${this.selectedDate}${force ? '&force=1' : ''}`;
       const hit = !force && peekCached(url, ttl);
       if (!hit) this.dataLoading = true;
       try {

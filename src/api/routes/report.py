@@ -17,7 +17,7 @@ router = APIRouter()
 _dashboard_cloud_cache = {}  # {date_str: {"ts": float, "batches": list}}
 _dashboard_cache_lock = threading.Lock()
 _DASHBOARD_CLOUD_TTL = 120  # 今天: 2 分钟（手动刷新时更新）
-_DASHBOARD_HISTORY_TTL = 86400  # 历史日期: 24 小时（数据不会变）
+_DASHBOARD_HISTORY_TTL = 10 * 365 * 86400  # 历史日期: 永久（数据不会变，除非 force 或云端 JSON 被删）
 _DASHBOARD_CACHE_FOLDER = "JXbNfpdzJlJELNdv10Pc5ElVnAc"  # 看板缓存 JSON 文件夹（批次文件夹下的 dashboard_cache 子文件夹，user_access_token 创建）
 _dashboard_cloud_index = {}  # {date_str: file_token} 缓存云端 JSON 文件索引
 _cloud_json_enabled = True  # 云端 JSON 缓存开关，权限错误后自动关闭
@@ -79,6 +79,84 @@ def _get_main_table_records(force: bool = False) -> list:
 _batch_detail_cache = {}  # {(date, batch): {"ts": float, "data": dict}}
 _BATCH_DETAIL_TTL_TODAY = 300  # 今天: 5 分钟
 _BATCH_DETAIL_TTL_HISTORY = 86400  # 历史: 24 小时
+
+
+# ── 云端批次文件列表缓存（列表本身很贵，5 分钟内复用）──
+_cloud_docs_cache = {"ts": 0.0, "data": None}
+_cloud_docs_lock = threading.Lock()
+_CLOUD_DOCS_TTL = 300
+
+
+def _list_cloud_docs_all() -> list:
+    """列出云端批次文件夹下所有 docx（递归），5 分钟缓存"""
+    global _cloud_docs_cache
+    now = time.time()
+    with _cloud_docs_lock:
+        if _cloud_docs_cache["data"] is not None and now - _cloud_docs_cache["ts"] < _CLOUD_DOCS_TTL:
+            return _cloud_docs_cache["data"]
+    try:
+        from src.clients import feishu_client
+        from src.api.routes.data import _get_batch_folder_token
+        folder_token = _get_batch_folder_token()
+        if not folder_token:
+            return []
+        files = feishu_client.list_folder_files(folder_token, recursive=True) or []
+    except Exception as e:
+        logger.warning("云端批次列表获取失败: %s", e)
+        return _cloud_docs_cache["data"] or []
+    with _cloud_docs_lock:
+        _cloud_docs_cache = {"ts": now, "data": files}
+    return files
+
+
+def _batch_settled(batch: dict) -> bool:
+    """批次是否已执行且分析完成：完成的不再重新下载/重算"""
+    detail = batch.get("_detail") or {}
+    total = int(batch.get("total") or 0)
+    if total and int(detail.get("bt_match") or 0) >= total:
+        return True
+    if batch.get("has_report") or batch.get("all_failed"):
+        return True
+    return False
+
+
+def _refresh_batches_incremental(date_str: str, prev_batches: list = None, force: bool = False) -> tuple:
+    """当天批次增量刷新：已完成的批次直接复用，只重新拉取未完成/新增批次
+
+    :return: (batches, reused_names)  reused_names 用于判断详情能否沿用
+    """
+    from src.api.routes.shared import parse_markdown_batch_table as _parse
+    from src.clients import feishu_client
+
+    prev = {b.get("name"): b for b in (prev_batches or []) if b.get("name")}
+    docs = [f for f in _list_cloud_docs_all()
+            if f.get("folder") == date_str and f.get("type") == "docx" and f.get("token")]
+    result = []
+    reused_names = set()
+    refreshed = 0
+    for i, doc in enumerate(docs):
+        token = doc.get("token", "")
+        name = doc.get("name", "") or token
+        old = prev.get(name)
+        # 已完成批次永远复用（force 只代表“忽略整日缓存”，不代表要重算已完成批次）
+        if old and _batch_settled(old):
+            result.append(old)  # 已完成批次：不下载、不重算
+            reused_names.add(name)
+            continue
+        try:
+            md = feishu_client.fetch_docx_as_markdown(token)
+            rows = _parse(md) or []
+        except Exception as e:
+            logger.warning("云端批次读取失败 %s/%s: %s", date_str, name, e)
+            rows = (old or {}).get("rows") or []
+        result.append({"name": name, "token": token, "rows": rows})
+        refreshed += 1
+        if i < len(docs) - 1:
+            time.sleep(0.2)
+    result.sort(key=lambda b: b["name"], reverse=True)
+    logger.info("看板增量刷新: %s 共 %d 批，复用 %d，刷新 %d",
+                date_str, len(result), len(result) - refreshed, refreshed)
+    return result, reused_names
 
 
 def _is_today(date_str: str) -> bool:
@@ -627,29 +705,43 @@ def dashboard_dates():
 
 
 @router.get("/api/dashboard/data", response_model=ApiResponse)
-def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-DD，默认今天")):
+def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-DD，默认今天"),
+                   force: bool = Query(default=False, description="强制刷新（忽略缓存）")):
     """获取指定日期的看板数据：优先云端批次，本地 CSV 作补充"""
     import re as _re
     import csv as _csv
     date_str = date or datetime.now().strftime("%Y-%m-%d")
     reports_dir = os.path.join(PROJECT_ROOT, "reports", date_str)
 
-    # ── 1. 云端优先：内存缓存 → 云端 JSON → 原始文档 ──
+    is_today = _is_today(date_str)
+    # ── 1. 数据来源：历史日期永久缓存；今天按批次增量刷新 ──
     cloud_batches = None
     with _dashboard_cache_lock:
         cached = _dashboard_cloud_cache.get(date_str)
-        if cached and time.time() - cached["ts"] < _cache_ttl(date_str):
-            cloud_batches = cached["batches"]
+        cached_batches = (cached or {}).get("batches")
+    if not force and cached_batches and time.time() - cached["ts"] < _cache_ttl(date_str):
+        cloud_batches = cached_batches
     if cloud_batches is None:
-        # 尝试云端 JSON 缓存（历史日期持久化）
-        cloud_batches = _load_cloud_json_cache(date_str)
-        if cloud_batches is None:
-            cloud_batches = _fetch_cloud_batches_for_date(date_str)
-            # 历史日期保存到云端 JSON 缓存
-            if cloud_batches:
-                _save_cloud_json_cache(date_str, cloud_batches)
+        if is_today:
+            # 今天：已执行且分析完的批次直接复用，只刷新未完成/新增的批次
+            cloud_batches, _reused_names = _refresh_batches_incremental(date_str, cached_batches, force=force)
+        elif not force and cached_batches:
+            # 历史：内存里有就永久复用（数据不会变）
+            cloud_batches = cached_batches
+        else:
+            # 历史：云端 JSON 持久缓存 → 原始文档（force 时强制重拉）
+            if not force:
+                cloud_batches = _load_cloud_json_cache(date_str)
+            if cloud_batches is None:
+                cloud_batches = _fetch_cloud_batches_for_date(date_str)
+                if cloud_batches:
+                    _save_cloud_json_cache(date_str, cloud_batches)
         with _dashboard_cache_lock:
             _dashboard_cloud_cache[date_str] = {"ts": time.time(), "batches": cloud_batches}
+    # 已完成批次的详情直接沿用（只对本次真正复用的批次生效，刷新的批次会重算）
+    _prev_detail = {cb.get("name"): cb.get("_detail")
+                    for cb in (cached_batches or []) if cb.get("_detail")}
+    _reused_names = locals().get("_reused_names") or set()
 
     batches = []
     seen_names = set()  # 用于本地补充时去重（按 (执行时间+条数) 作为稳定 key）
@@ -698,6 +790,8 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
                 "备注": (r.get("备注") or "").strip(),
             } for r in rows],
         })
+        if name in _reused_names and _prev_detail.get(name):
+            batches[-1]["_detail"] = _prev_detail[name]
         # 生成稳定 key 供本地去重
         seen_names.add((exec_time, total))
 
@@ -741,7 +835,11 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
                 if jid:
                     all_jira_set.add(jid)
         if all_jira_set:
-            records = _get_main_table_records()
+            pending = [b for b in batches if not b.get("_detail")]
+            if not pending:
+                records = []
+            else:
+                records = _get_main_table_records()
             bt_all_map = {}  # {jira: [records]}
             for rec in records:
                 fields = rec.get("fields", {})
@@ -749,8 +847,8 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
                 if jk and jk in all_jira_set:
                     bt_all_map.setdefault(jk, []).append(
                         _flatten_bitable_record_all(fields, report_field))
-            # 为每个批次计算详情
-            for b in batches:
+            # 为每个批次计算详情（已缓存且未刷新的批次跳过）
+            for b in (pending if records else []):
                 row_list = b.get("rows", [])
                 b_ok = b_fail = b_miss = 0
                 b_fail_cats = {}
@@ -812,9 +910,26 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
                 cache_key = (date_str, b["name"])
                 with _dashboard_cache_lock:
                     _batch_detail_cache[cache_key] = {"ts": time.time(), "data": detail}
-            logger.info("看板预加载: %s %d 个批次详情已缓存", date_str, len(batches))
+            logger.info("看板预加载: %s 共 %d 批，本次计算详情 %d 批",
+                        date_str, len(batches), len(pending) if records else 0)
     except Exception as e:
         logger.warning("看板批次详情预加载失败: %s", e)
+
+    # 把详情回写到云端批次缓存，供下次「增量刷新」判断哪些批次已完成
+    try:
+        with _dashboard_cache_lock:
+            entry = _dashboard_cloud_cache.get(date_str)
+            if entry:
+                by_name = {cb.get("name"): cb for cb in entry.get("batches", [])}
+                for b in batches:
+                    cb = by_name.get(b.get("name"))
+                    if cb is not None:
+                        cb["_detail"] = b.get("_detail")
+                        cb["total"] = b.get("total")
+                        cb["has_report"] = b.get("has_report")
+                        cb["all_failed"] = b.get("all_failed")
+    except Exception as _e:
+        logger.warning("回写看板详情缓存失败: %s", _e)
 
     from src.api.routes.shared import ok as _ok
     logger.info("看板数据: %s, %d 批次(云端 %d), %d 提交",

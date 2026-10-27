@@ -536,3 +536,26 @@ flowchart TD
 - **实现文件**：`src/api/app.py`（启动预热）、`frontend/src/composables/apiCache.ts`（新增）、`frontend/src/panels/DataDashboardPanel.vue`（缓存接入 + 时区修正）
 
 </details>
+
+<details>
+<summary><b>39. 看板缓存按“历史永久 + 当天批次增量”优化（2026-10-27）</b></summary>
+
+- **问题描述**：启动预热后首次打开看板已从 85 秒降到 66 毫秒，但仍有浪费：① 历史日期缓存 TTL 只有 24 小时，过期后会重新拉全量文档；② 当天每次刷新都会把所有批次文档重新下载，包括已经分析完的批次
+- **根因**：
+  1. `_DASHBOARD_HISTORY_TTL = 86400`，历史数据其实不会变，不该过期
+  2. 当天刷新走 `_fetch_cloud_batches_for_date`，整日全量重拉，没有“已完成批次”的概念
+  3. `force` 参数会连带把已完成批次也重算
+- **解决方案**：
+  1. 历史日期 TTL 改为 10 年（等价永久），只有 `force` 或删除云端 JSON 才重算
+  2. 新增 `_batch_settled()`：`bt_match >= total` 或 `has_report` 或 `all_failed` 视为“已执行且分析完”
+  3. 新增 `_refresh_batches_incremental()`：当天只重新下载**未完成/新增**批次，已完成批次直接复用；`force` 只忽略整日缓存、不重算已完成批次
+  4. 新增云端批次文件列表缓存（5 分钟），避免每次刷新都递归列文件夹
+  5. 批次详情只对“本次刷新且有变化”的批次重算，复用批次沿用缓存详情；详情回写云端批次缓存供下次判断
+  6. 前端 `force=1` 参数贯通，手动刷新/生成报告走增量
+- **验证结果**（真实云端 6 个批次）：
+  - 预热后首次：91 ms；命中缓存：16 ms
+  - `force=1` 增量刷新：**复用 5 批、刷新 1 批**，耗时 3023 ms → **544 ms**，详情只算 1 批
+  - 历史日期 2026-10-26：首次 28084 ms，之后永久命中（15 ms）
+- **实现文件**：`src/api/routes/report.py`（`_batch_settled`/`_refresh_batches_incremental`/云端列表缓存/详情回写/force）、`frontend/src/panels/DataDashboardPanel.vue`（force 参数）
+
+</details>
