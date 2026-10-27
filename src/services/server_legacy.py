@@ -5120,7 +5120,10 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
                                 _vid_fn_ts, _vid_fn_dt = _vid_fn_parsed
                                 _ocr_hm = time_str[:5]
                                 _fn_hm = _vid_fn_dt.strftime("%H:%M")
-                                if _ocr_hm == _fn_hm or (len(time_str) >= 8 and _vid_fn_dt.strftime("%H:%M:%S") == time_str[:8]):
+                                _fn_verified = (not video_ref_pool) or any(
+                                    abs((dt - _vid_fn_dt).total_seconds()) <= _match_tolerance
+                                    for dt in video_ref_pool)
+                                if (_ocr_hm == _fn_hm or (len(time_str) >= 8 and _vid_fn_dt.strftime("%H:%M:%S") == time_str[:8])) and _fn_verified:
                                     logger.info("视频兜底命中(%s, 视频文件名日期+OCR时间多级确认): %s", video_label, _vid_fn_dt_str)
                                     cache[cache_key] = {"time": _vid_fn_dt_str, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
                                     _save_video_time_cache()
@@ -5428,9 +5431,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     if not best_full:
                         best_full = ts
                         best_full_detail = f"从视频{video_label}缓存命中完整日期时间 {ts}"
-                    if not best_partial:
-                        best_partial = ts
-                        best_partial_detail = f"从视频{video_label}缓存命中 {ts}"
+                    # 缓存时间未通过日志包校验：不再当部分结果
             continue  # 缓存无时间，也跳过处理
         # 下载视频（流式下载，避免一次性加载到内存）
         video_path = None
@@ -5566,7 +5567,10 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                                 # 视频文件名时间与 OCR 时间一致（容差 1 分钟）
                                 _ocr_hm = time_str[:5]  # HH:MM
                                 _fn_hm = _vid_fn_dt.strftime("%H:%M")
-                                if _ocr_hm == _fn_hm or (len(time_str) >= 5 and _vid_fn_dt.strftime("%H:%M:%S") == time_str[:8]):
+                                _fn_verified = (not validation_pool) or any(
+                                    abs((dt - _vid_fn_dt).total_seconds()) <= strict_tol
+                                    for dt in validation_pool)
+                                if (_ocr_hm == _fn_hm or (len(time_str) >= 5 and _vid_fn_dt.strftime("%H:%M:%S") == time_str[:8])) and _fn_verified:
                                     detail = f"从视频{video_label}第{sec+1}秒 OCR 识别到 {time_str}，视频文件名含 {_vid_fn_dt_str}，时间完全匹配"
                                     logger.info("视频帧提取命中(视频文件名日期+OCR时间): %s", _vid_fn_dt_str)
                                     cache[cache_key] = {"time": _vid_fn_dt_str, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -5702,27 +5706,16 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                 shutil.rmtree(tmp_dir, ignore_errors=True)
     if cache_updated:
         _save_video_time_cache()
-    # fallback 机制：所有视频都未严格命中，但存在 fallback 候选（15分钟~1小时）
+    # 所有候选（15min~1h fallback / 12h / 完整时间 / 部分时间）都必须通过日志包校验才返回，
+    # 否则交给文本提取兜底，避免把错误日期或错误时钟当成触发时间。
     if fallback_candidate:
-        logger.info("视频帧提取(fallback): 所有视频均未在±15分钟内命中，使用最接近候选 %s（差值 %.0f 秒）", fallback_candidate, fallback_diff)
-        return fallback_candidate, f"所有视频均未在±15分钟内命中，使用最接近候选 {fallback_candidate}（差值 {fallback_diff:.0f} 秒）"
-    # 12h 制兜底：所有视频原始时间均未严格命中，尝试 12h 转换取差值最小的
+        logger.info("视频帧提取：候选 %s 未在容差内命中，丢弃（差值 %.0f 秒）", fallback_candidate, fallback_diff)
     if best_12h_cand:
-        cand_time, cand_dt, is_time_only = best_12h_cand
-        logger.info("视频帧提取(12h兜底): 所有视频原始时间均未命中，使用 12h 候选 %s（差值 %.0f 秒，%s）", cand_time, best_12h_diff, "仅时间差" if is_time_only else "完整差值")
-        cache_key_12h = _get_video_cache_key(bugid, ranked_videos[0].get("filename", "") if ranked_videos else "")
-        if cache_key_12h:
-            cache[cache_key_12h] = {"time": cand_time, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
-            _save_video_time_cache()
-        return cand_time, f"所有视频原始时间均未命中，12h制转换为 {cand_time}（差值 {best_12h_diff:.0f} 秒）"
+        logger.info("视频帧提取：12h 候选 %s 未在容差内命中，丢弃（差值 %.0f 秒）", best_12h_cand[0], best_12h_diff)
     if best_full:
-        return best_full, best_full_detail
-    if single_video and best_partial:
-        logger.info("视频帧提取(单视频兜底): %s", best_partial)
-        return best_partial, best_partial_detail
+        logger.info("视频帧提取：完整时间候选 %s 未通过校验，丢弃", best_full)
     if best_partial:
-        logger.info("视频帧提取(多视频均未命中，返回第一个部分结果): %s", best_partial)
-        return best_partial, best_partial_detail
+        logger.info("视频帧提取：部分时间候选 %s 未通过校验，丢弃", best_partial)
     return "", ""
 
 
