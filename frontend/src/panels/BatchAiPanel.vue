@@ -64,6 +64,22 @@
           </div>
         </div>
 
+        <!-- ③.5 过滤结果明细（候选 → 各类去重 → 剩余） -->
+        <div v-if="batchAi.filterCounts" class="exec-section">
+          <div class="filter-summary">
+            <span class="section-label">过滤结果</span>
+            <el-tag size="small" type="info">候选 {{ batchAi.filterCounts.total }}</el-tag>
+            <span class="fs-sep">→</span>
+            <el-tag size="small">表格去重 {{ batchAi.filterCounts.bitable }}</el-tag>
+            <el-tag size="small">云端去重 {{ batchAi.filterCounts.cloud }}</el-tag>
+            <el-tag size="small">内存去重 {{ batchAi.filterCounts.memory }}</el-tag>
+            <el-tag size="small" type="warning">AI初步分析 {{ batchAi.filterCounts.ai }}</el-tag>
+            <span class="fs-sep">→</span>
+            <el-tag size="small" type="success">剩余 {{ batchAi.filterCounts.remaining }}</el-tag>
+            <span v-if="batchAi.filterMsg" class="fs-msg">{{ batchAi.filterMsg }}</span>
+          </div>
+        </div>
+
         <!-- ④ 测试环境设置 -->
         <div class="exec-section">
           <div class="env-settings">
@@ -363,7 +379,7 @@ export default {
         running: false, abortController: null, currentRound: 0,
         results: [], noTimeJiras: [], sampleStats: null, doneMsg: '', doneError: false,
       },
-      batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND created >= startOfDay(-1d) AND created <= endOfDay(-1d) AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC', 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND status != closed AND created >= "2026/10/01" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'], jqlLabels: ['今日新增Bug', '昨日新增Bug', '本周新增Bug', '10月新增未关闭', '远控', 'coreservice', '导航'], sampleCount: 5, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, filterExistingSuccess: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '', envSavedMsg: '', rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, preSample: null },
+      batchAi: { jql: 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', jqlPresets: ['issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND created >= startOfDay(-1d) AND created <= endOfDay(-1d) AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC', 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND status != closed AND created >= "2026/10/01" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'], jqlLabels: ['今日新增Bug', '昨日新增Bug', '本周新增Bug', '10月新增未关闭', '远控', 'coreservice', '导航'], sampleCount: 5, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, filterExistingSuccess: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '', envSavedMsg: '', rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, filterCounts: null, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, preSample: null },
     };
   },
   mounted() {
@@ -398,7 +414,8 @@ export default {
     onFilterSourceChange() { if (this.batchAi.filterPcOnly || this.batchAi.filterOnlineOnly) { this.batchAi.filterAllExisting = false; } },
     async batchAiFilter() {
       if (!this.batchAi.rows.length) return ElMessage.warning('请先执行步骤1');
-      this.running.batchFilter = true; this.batchAi.filterMsg = ''; this.batchAi.filterError = false; this.batchAi.filteredKeys = [];
+      this.running.batchFilter = true; this.batchAi.filterMsg = ''; this.batchAi.filterError = false;
+      this.batchAi.filterCounts = null; this.batchAi.filteredKeys = [];
       try {
         const keys = this.batchAi.rows.map(r => r.key);
         const body = await api('/api/test/batch_ai_filter', { method: 'POST', body: JSON.stringify({
@@ -408,6 +425,7 @@ export default {
         }) });
         this.batchAi.filteredKeys = body.data.filtered || [];
         this.batchAi.filterMsg = body.message;
+        this.batchAi.filterCounts = body.data.counts || null;
       } catch (e) { this.batchAi.filterMsg = e.message || '过滤失败'; this.batchAi.filterError = true; } finally { this.running.batchFilter = false; }
     },
     async batchAiSample(silent = false) {
@@ -854,6 +872,10 @@ export default {
 .input-row { margin-bottom: 8px; }
 .preset-bar { display: flex; gap: 6px; flex-wrap: wrap; }
 .filter-bar { margin-top: 10px; padding: 10px 14px; background: #fafbfc; border-radius: 6px; border: 1px solid #ebeef5; }
+.filter-summary { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 12px; background: #f7f9fc; border-radius: 8px; }
+.filter-summary .section-label { margin-right: 4px; }
+.fs-sep { color: #c0c4cc; }
+.fs-msg { font-size: 12px; color: #909399; margin-left: 6px; }
 .filter-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
 .action-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; background: #f8f9fb; border-radius: 8px; }
 .action-left { display: flex; align-items: center; gap: 10px; }

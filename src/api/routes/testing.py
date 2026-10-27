@@ -935,6 +935,7 @@ async def test_batch_ai_filter(request: Request):
                     exclude_keys.add(jira_key)  # 默认：分析成功的排除
         except Exception as e:
             logger.warning("多维表格重复过滤查询失败（跳过此检查）: %s", e)
+    bitable_removed = len(exclude_keys)  # ① 多维表格去重条数（后续云端去重会在此基础上累加）
     # —— 第1.5步：同来源云端批量记录去重（默认模式 + 指定来源时使用）——
     if not filter_all:
         if filter_pc_only:
@@ -950,7 +951,8 @@ async def test_batch_ai_filter(request: Request):
                 exclude_keys |= (cloud_executed & set(keys))
                 added_cloud = len(exclude_keys) - before_cloud
                 if added_cloud:
-                    logger.info("云端同来源去重(%s): 额外排除 %d 条", cs, added_cloud)
+                    logger.debug("云端同来源去重(%s): 额外排除 %d 条", cs, added_cloud)
+    cloud_removed = len(exclude_keys) - bitable_removed
     # 日志记录过滤模式
     mode_parts = []
     if filter_all:
@@ -967,7 +969,6 @@ async def test_batch_ai_filter(request: Request):
         if filter_online_only:
             mode_parts.append("线上正确+通用失败")
     mode_desc = "+".join(mode_parts) if mode_parts else "无过滤"
-    logger.info("重复过滤(%s): 排除记录 %d 条", mode_desc, len(exclude_keys))
     filtered = [k for k in keys if k not in exclude_keys]
     # —— 内存级跨批次去重：排除最近已提交但多维表格可能尚未更新的 JIRA ——
     mem_skipped = 0
@@ -998,13 +999,14 @@ async def test_batch_ai_filter(request: Request):
             if r:
                 ai_exclude.add(r)
         if ai_exclude:
-            logger.info("AI初步分析过滤(customfield_13714): 排除 %d 条", len(ai_exclude))
             filtered = [k for k in filtered if k not in ai_exclude]
     # —— 汇总返回 ——
     removed = len(keys) - len(filtered)
+    ai_removed = len(ai_exclude)
+    logger.info("过滤汇总(%s): 候选 %d → 表格去重 %d / 云端去重 %d / 内存去重 %d / AI初步分析 %d → 剩余 %d",
+                mode_desc, len(keys), bitable_removed, cloud_removed, mem_skipped, ai_removed, len(filtered))
     if not filtered:
-        return _fail(f"所有候选均已被过滤（共过滤 {removed} 条）")
-    bitable_removed = len(exclude_keys)
+        return _fail(f"所有候选均已被过滤（候选 {len(keys)} 条，共过滤 {removed} 条）")
     filter_desc = f"候选 {len(keys)} 条，多维表格过滤 {bitable_removed} 条"
     if mem_skipped:
         filter_desc += f"，内存去重 {mem_skipped} 条"
@@ -1012,6 +1014,8 @@ async def test_batch_ai_filter(request: Request):
         filter_desc += f"，AI字段过滤 {len(ai_exclude)} 条"
     filter_desc += f"，剩余 {len(filtered)} 条"
     return _ok({"filtered": filtered, "removed": removed, "total": len(keys),
+                 "counts": {"total": len(keys), "bitable": bitable_removed, "cloud": cloud_removed,
+                            "memory": mem_skipped, "ai": ai_removed, "remaining": len(filtered)},
                  "exclude_keys": list(exclude_keys)[:20]},
                 filter_desc)
 

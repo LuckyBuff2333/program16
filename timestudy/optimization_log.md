@@ -559,3 +559,18 @@ flowchart TD
 - **实现文件**：`src/api/routes/report.py`（`_batch_settled`/`_refresh_batches_incremental`/云端列表缓存/详情回写/force）、`frontend/src/panels/DataDashboardPanel.vue`（force 参数）
 
 </details>
+
+<details>
+<summary><b>40. 批量执行过滤：日志一行汇总 + 前端展示过滤明细（2026-10-27）</b></summary>
+
+- **问题描述**：用户看到日志只有「AI初步分析过滤: 排除 3 条」，误以为本周只识别出 3 条已分析的记录，实际已执行 100+ 条
+- **根因**：过滤分四步（多维表格去重 → 云端同来源去重 → 内存去重 → AI 初步分析过滤），日志分散在多行，且最后一行只显示 AI 字段过滤的数量；其余 180 条在去重阶段已排除，用户看不到
+- **数据核对**：本周带 `customfield_13714` 的 bug 共 120 条，其中 118 条已在云端批量执行记录、120 条都在多维表格，因此去重后剩余候选里只剩 3 条带 AI 初步分析
+- **解决方案**：
+  1. 新增一行汇总日志：`过滤汇总(模式): 候选 N → 表格去重 X / 云端去重 Y / 内存去重 Z / AI初步分析 A → 剩余 M`；各分步日志降为 debug
+  2. 接口返回 `counts` 结构化计数（total/bitable/cloud/memory/ai/remaining）
+  3. 前端在「过滤选项」下方新增过滤结果明细：候选 → 表格去重 / 云端去重 / 内存去重 / AI初步分析 → 剩余，用标签展示，并附原始提示文案
+- **验证结果**：用 5 个 Jira 号实测：返回 `counts={total:5, bitable:0, cloud:1, memory:0, ai:1, remaining:3}`，日志输出单行 `过滤汇总(云端去重): 候选 5 → 表格去重 0 / 云端去重 1 / 内存去重 0 / AI初步分析 1 → 剩余 3`；前端构建通过
+- **实现文件**：`src/api/routes/testing.py`（过滤汇总日志 + counts）、`frontend/src/panels/BatchAiPanel.vue`（过滤明细展示 + 样式）
+
+</details>
