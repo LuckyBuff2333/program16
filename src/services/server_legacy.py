@@ -4909,13 +4909,8 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
     # 统一去除时区信息，避免与 naive datetime 比较异常
     if gm_ref_dt and gm_ref_dt.tzinfo is not None:
         gm_ref_dt = gm_ref_dt.replace(tzinfo=None)
-    # gmlogger 文件名无日期时，将上传时间加入 ref_pool 作为参考
-    if gm_ref_dt and gm_ref_dt not in ref_pool:
-        ref_pool.append(gm_ref_dt)
-        d = (gm_ref_dt.year, gm_ref_dt.month, gm_ref_dt.day)
-        if d not in gm_dates:
-            gm_dates.append(d)
-        logger.info("视频兜底提取(%s)：gmlogger 文件名无日期，使用上传时间 %s 作为参考", bugid, gm_ref_dt)
+    # 注意：gmlogger 上传时间 ≠ 事件时间，禁止写入 ref_pool。
+    # 否则“日期取上传日”的候选会被当成验证通过（曾把 10-19 的事件算成 10-27）。
     # 按优先级排序视频
     ranked_videos = _rank_videos(videos, attachments)
     single_video = len(ranked_videos) == 1
@@ -4947,14 +4942,28 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
             for gm in closest_gm:
                 if gm["filename_time"]:
                     close_refs.append(gm["filename_time"])
-                if gm["upload_time"] and gm["upload_time"] not in close_refs:
-                    close_refs.append(gm["upload_time"])
             # 最近的在前 + 其余补充
             video_ref_pool = close_refs + [dt for dt in ref_pool if dt not in close_refs]
             closest_name = closest_gm[0]["filename"]
             logger.info("视频 %s 最近 gmlogger: %s", video_label, closest_name)
         else:
             video_ref_pool = ref_pool
+        # 同期性约束：视频文件名带完整日期时间时，只接受与之相差 ≤6h 的日志包参考。
+        # 否则说明这个视频是“事后复现”，与日志包不是同一时段，不能拿来当触发时间。
+        _vfn_str = _parse_video_filename_datetime(video_name)
+        if _vfn_str:
+            _vfn_parsed = _parse_datetime_string(_vfn_str)
+            if _vfn_parsed:
+                _vfn_dt = _vfn_parsed[1]
+                _same_period = [dt for dt in video_ref_pool
+                                if abs((dt - _vfn_dt).total_seconds()) <= 6 * 3600]
+                if _same_period:
+                    video_ref_pool = _same_period
+                else:
+                    logger.info("视频兜底提取(%s)：视频 %s 与日志包参考相差超过 6 小时，跳过该视频",
+                                bugid, video_label)
+                    _timestudy_trace(bugid, "video:out_of_period")
+                    continue
         cache_key = _get_video_cache_key(bugid, video_name)
         # 检查缓存：缓存命中则跳过下载+OCR
         cached_entry = cache.get(cache_key)
@@ -4970,8 +4979,7 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
                         _timestudy_update_ctx(bugid, source="video_ocr")
                         _timestudy_trace(bugid, "cache:hit")
                         return ts
-                    if not best_partial:
-                        best_partial = ts
+                    # 缓存时间未通过日志包校验：不再当部分结果（旧逻辑会把错误日期带出来）
                 continue  # 缓存无时间，也跳过处理
         # 下载视频（流式下载，避免一次性加载到内存）
         video_path = None
@@ -5093,12 +5101,9 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
                                     best_12h_cand = (ts, ext_dt)
                             if not first_full:
                                 first_full = ts
-                    # 仅时间+日期补充：优先用视频自身上传日期（新开bug日志可能不全）
+                    # 仅时间+日期补充：日期只能来自日志包（gmlogger），禁止用视频上传时间
                     m = _OCR_TIME_ONLY_RE.search(all_text)
-                    _vid_created = _ts_parse_datetime(video_att.get("created", ""))
                     closest_date = None
-                    if _vid_created:
-                        closest_date = (_vid_created.year, _vid_created.month, _vid_created.day)
                     if not closest_date and closest_gm and closest_gm[0]["filename_time"]:
                         closest_date = (closest_gm[0]["filename_time"].year,
                                         closest_gm[0]["filename_time"].month,
@@ -5204,11 +5209,8 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
                                         best_12h_diff = d_orig
                                         best_12h_cand = (ts, ext_dt)
                         m = _OCR_TIME_ONLY_RE.search(diff_text)
-                        # 日期补充：优先用视频自身上传日期
-                        _vid_created2 = _ts_parse_datetime(video_att.get("created", ""))
+                        # 日期补充：只能用日志包日期（gmlogger），禁止用视频上传时间
                         closest_date = None
-                        if _vid_created2:
-                            closest_date = (_vid_created2.year, _vid_created2.month, _vid_created2.day)
                         if not closest_date and closest_gm and closest_gm[0]["filename_time"]:
                             closest_date = (closest_gm[0]["filename_time"].year,
                                             closest_gm[0]["filename_time"].month,
@@ -5262,11 +5264,8 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
                 _timestudy_trace(bugid, "fn:try")
                 fn_time = _parse_video_filename_time(video_name)
                 if fn_time:
-                    # 日期补充：优先用视频自身上传日期
-                    _vid_created3 = _ts_parse_datetime(video_att.get("created", ""))
+                    # 日期补充：只能用日志包日期（gmlogger），禁止用视频上传时间
                     closest_date = None
-                    if _vid_created3:
-                        closest_date = (_vid_created3.year, _vid_created3.month, _vid_created3.day)
                     if not closest_date and closest_gm and closest_gm[0]["filename_time"]:
                         closest_date = (closest_gm[0]["filename_time"].year,
                                         closest_gm[0]["filename_time"].month,
@@ -5336,25 +5335,21 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
         _timestudy_trace(bugid, "image:fallback")
         return img_ts
     # 12h 制兜底
-    if best_12h_cand:
+    if best_12h_cand and best_12h_diff <= _match_tolerance:
         cand_time, cand_dt = best_12h_cand
         logger.info("视频兜底提取(%s, 12h兜底): 使用 12h 候选 %s（差值 %.0f 秒）", bugid, cand_time, best_12h_diff)
         _timestudy_update_ctx(bugid, source="video_ocr", h12="yes", match_diff=str(int(best_12h_diff)))
         _timestudy_trace(bugid, "12h:fallback")
         return cand_time
-    # 单视频兜底
-    if single_video and best_partial:
-        logger.info("视频兜底提取(%s, 单视频兜底): %s", bugid, best_partial)
-        _timestudy_update_ctx(bugid, source="video_ocr", error_type="time_no_match_gmlogger",
-                              error_detail=f"单视频兜底: {best_partial}")
-        _timestudy_trace(bugid, "partial:single")
-        return best_partial
+    if best_12h_cand:
+        logger.info("视频兜底提取(%s)：12h 候选 %s 差值 %.0f 秒超过容差 %d，丢弃",
+                    bugid, best_12h_cand[0], best_12h_diff, _match_tolerance)
+    # 未通过日志包校验的候选一律不返回，交由文本提取兜底（避免把错误日期写进触发时间）
     if best_partial:
-        logger.info("视频兜底提取(%s, 多视频均未命中，返回第一个部分结果): %s", bugid, best_partial)
-        _timestudy_update_ctx(bugid, source="video_ocr", error_type="time_no_match_gmlogger",
-                              error_detail=f"多视频均未命中兜底: {best_partial}")
-        _timestudy_trace(bugid, "partial:multi")
-        return best_partial
+        logger.info("视频兜底提取(%s)：候选 %s 未通过日志包校验，丢弃", bugid, best_partial)
+        _timestudy_update_ctx(bugid, error_type="time_no_match_gmlogger",
+                              error_detail=f"未通过日志包校验: {best_partial}")
+        _timestudy_trace(bugid, "partial:rejected")
     logger.info("视频兜底提取(%s)：所有视频封面及前6帧均未识别到时间", bugid)
     _timestudy_update_ctx(bugid, error_type="ocr_no_time_pattern", error_detail="所有视频OCR均未识别到时间")
     _timestudy_trace(bugid, "ocr:no_pattern")
@@ -6230,15 +6225,7 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
                     _vid_fn_dt = _p[1]
                     _vid_fn_date = (_vid_fn_dt.year, _vid_fn_dt.month, _vid_fn_dt.day)
             break
-    # A2b: 视频上传日期（仅用于与视频OCR时间组合补全，不作为独立候选）
-    _vid_upload_date = None  # (year, month, day)
-    for _att in attachments:
-        _fn = _att.get("filename", "") or ""
-        if _fn.lower().endswith(_VIDEO_SUFFIXES):
-            _vid_created = _ts_parse_datetime(_att.get("created", ""))
-            if _vid_created:
-                _vid_upload_date = (_vid_created.year, _vid_created.month, _vid_created.day)
-            break
+    # A2b: 视频上传日期不再参与日期补全（上传日≠事件日，会算错日期）
     # A3: gmlogger 文件名日期时间仅作为兑底，不直接作为日期提供者（已在步骤E处理）
     # A4: 视频 OCR（完整日期）
     if video_time and len(video_time) >= 16:
@@ -6303,8 +6290,6 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
     _vid_date_providers = []  # [(date_tuple, label)]
     if _vid_fn_date:
         _vid_date_providers.append((_vid_fn_date, "视频文件名"))
-    if _vid_upload_date:
-        _vid_date_providers.append((_vid_upload_date, "视频上传日期"))
     if _vid_date_providers and _time_only_candidates:
         for _hm, _hm_src in _time_only_candidates:
             if _hm_src != "视频OCR":
@@ -6501,15 +6486,7 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                     _vid_fn_dt = _p[1]
                     _vid_fn_date = (_vid_fn_dt.year, _vid_fn_dt.month, _vid_fn_dt.day)
             break
-    # A2b: 视频上传日期（仅用于与视频OCR时间组合补全，不作为独立候选）
-    _vid_upload_date = None  # (year, month, day)
-    for _att in attachments:
-        _fn = _att.get("filename", "") or ""
-        if _fn.lower().endswith(_VIDEO_SUFFIXES):
-            _vid_created = _ts_parse_datetime(_att.get("created", ""))
-            if _vid_created:
-                _vid_upload_date = (_vid_created.year, _vid_created.month, _vid_created.day)
-            break
+    # A2b: 视频上传日期不再参与日期补全（上传日≠事件日，会算错日期）
     # A3: gmlogger 文件名日期时间仅作为兑底，不直接作为日期提供者（已在步骤E处理）
     # A4: 视频 OCR 结果（如果有完整日期）
     if video_time and len(video_time) >= 16:
@@ -6578,8 +6555,6 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
     _vid_date_providers = []  # [(date_tuple, label)]
     if _vid_fn_date:
         _vid_date_providers.append((_vid_fn_date, "视频文件名"))
-    if _vid_upload_date:
-        _vid_date_providers.append((_vid_upload_date, "视频上传日期"))
     if _vid_date_providers and _time_only_candidates:
         for _hm, _hm_src in _time_only_candidates:
             if _hm_src != "视频OCR":
