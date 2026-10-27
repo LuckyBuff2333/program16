@@ -214,7 +214,23 @@
           <template #default="{row}"><el-tag :type="diagCategoryTagType(row.category)" size="small">{{ row.category }}</el-tag></template>
         </el-table-column>
         <el-table-column prop="done_time" label="分析完成时间" width="160"></el-table-column>
-        <el-table-column prop="problem_time" label="错误时间" width="150"></el-table-column>
+        <el-table-column label="当前触发时间" width="200">
+          <template #default="{row}">
+            <span>{{ row.problem_time || '-' }}</span>
+            <el-tag v-if="row.time_check && row.time_check.current && row.time_check.current.status"
+              size="mini" style="margin-left:6px" :type="timeStatusTagType(row.time_check.current.status)">
+              {{ row.time_check.current.status }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="建议时间" width="190">
+          <template #default="{row}">
+            <span v-if="row.suggested_time">{{ row.suggested_time }}</span>
+            <span v-else style="color:#c0c4cc">-</span>
+            <span v-if="row.time_check && row.time_check.change_sec !== null && row.time_check.change_sec !== undefined"
+              style="margin-left:6px;font-size:12px;color:#909399">{{ formatChange(row.time_check) }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="抓包时间" width="150">
           <template #default="{row}">{{ (row.time_check && row.time_check.ref_time) || '-' }}</template>
         </el-table-column>
@@ -531,6 +547,16 @@ export default {
         if (s && stat[s] !== undefined) stat[s] += 1;
       }
       return stat;
+    },
+    formatChange(tc) {
+      if (!tc) return '';
+      const d = tc.change_sec;
+      if (d === null || d === undefined) return '';
+      if (d === 0) return '无变化';
+      const sign = d > 0 ? '晚' : '早';
+      const abs = Math.abs(d);
+      const txt = abs >= 3600 ? `${(abs / 3600).toFixed(1)}h` : (abs >= 60 ? `${Math.round(abs / 60)}min` : `${abs}s`);
+      return `${sign} ${txt}`;
     },
     formatDelta(tc) {
       if (!tc) return '-';

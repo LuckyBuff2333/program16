@@ -596,3 +596,16 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`（`_diag_time_check` + 结果注入 + 判定升降级）、`src/services/report_ops.py`（诊断缓存版本号）、`frontend/src/panels/TroubleshootPanel.vue`（列/统计条/依据弹层/高置信度应用）
 
 </details>
+
+<details>
+<summary><b>42. 问题排查新增“当前触发时间 vs 建议时间”对比（2026-10-27）</b></summary>
+
+- **问题描述**：诊断表只能看到建议时间，看不到记录当前使用的触发时间，无法判断“改前/改后”差多少
+- **解决方案**：
+  1. 后端 `_diag_time_check` 增加 `current_time` 参数，返回 `current={time,status,delta_sec}`（当前时间的方向判定）与 `change_sec`（建议时间相对当前的变化，正=更晚）
+  2. 诊断两条主路径（多源置信度、gmlogger 验证）都传入当前 `problem_time`
+  3. 前端批量诊断表：「当前触发时间」列内联当前判定标签；新增「建议时间」列并显示变化量（早/晚 N 分钟）
+- **验证结果**：VCU-561518 实测：current=14:26（不可用、早 169 分钟），建议为空、change=0；前端构建通过
+- **实现文件**：`src/services/server_legacy.py`（current/change_sec）、`frontend/src/panels/TroubleshootPanel.vue`（两列 + 变化量展示）
+
+</details>

@@ -6117,7 +6117,7 @@ def _troubleshoot_diagnose_impl(bugid, err_msg, problem_time, done_time, force=F
 
 def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
                      main_times: list = None, all_times: list = None,
-                     vid_time: str = "") -> dict:
+                     vid_time: str = "", current_time: str = "") -> dict:
     """问题排查：对“建议时间/当前时间”做方向敏感判定，并给出证据链
 
     :return: {"status": 正常/待确认/不可用/无参考, "ref_time": str, "delta_sec": int|None,
@@ -6157,14 +6157,29 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
     if cap:
         _add("包内最晚时间戳", ref)
     # 展示用的差值带方向（正=晚于抓包，负=早于抓包）
-    signed_delta = None
-    if candidate and cap:
-        _cand_dt = _ts_parse_datetime(str(candidate))
-        if _cand_dt:
-            signed_delta = int((_cand_dt - cap).total_seconds())
+    def _signed(t):
+        if not t or not cap:
+            return None
+        _dt = _ts_parse_datetime(str(t))
+        return int((_dt - cap).total_seconds()) if _dt else None
+
+    signed_delta = _signed(candidate)
+    cur_chk = self_check_trigger_time(current_time, ref) if current_time else {}
+    cur_delta = _signed(current_time)
+    # 建议时间相对当前时间的变化（正=建议更晚）
+    change_sec = None
+    if current_time and candidate:
+        _c = _ts_parse_datetime(str(current_time))
+        _n = _ts_parse_datetime(str(candidate))
+        if _c and _n:
+            change_sec = int((_n - _c).total_seconds())
     return {"status": chk.get("status", "无参考"), "ref_time": ref,
             "delta_sec": signed_delta,
-            "need_fix": chk.get("status") == "不可用", "evidence": evidence}
+            "need_fix": chk.get("status") == "不可用", "evidence": evidence,
+            "current": {"time": str(current_time or "")[:19],
+                        "status": cur_chk.get("status", "无参考"),
+                        "delta_sec": cur_delta},
+            "change_sec": change_sec}
 
 
 def _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force=False):
@@ -6755,7 +6770,8 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
         verify_desc = vdetail or "验证通过"
         detail = _build_simple_detail(comment_time, video_time, img_time_str, f"触发时间问题（{verify_desc}）")
         report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time)
-        _tc = _diag_time_check(issue, suggested_time or problem_time, gm_times, None, None, video_time or "")
+        _tc = _diag_time_check(issue, suggested_time or problem_time, gm_times, None, None,
+                               video_time or "", current_time=problem_time)
         if _tc["status"] == "不可用" and verify_status == "success":
             verify_status = "manual"
         result = {"bugid": bugid, "category": category, "problem_time": problem_time,
@@ -6861,7 +6877,8 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
         if _vid_extracted:
             video_time = _vid_extracted
         # 方向敏感判定：晚于抓包 >300s 判不可用；早于抓包 <=15min 属正常
-        time_check = _diag_time_check(issue, suggested_time or problem_time, gm_times, main_times, all_times, video_time or "")
+        time_check = _diag_time_check(issue, suggested_time or problem_time, gm_times, main_times, all_times,
+                                      video_time or "", current_time=problem_time)
         if time_check["status"] == "不可用" and verify_status == "success":
             verify_status = "manual"
             vdetail = f"{vdetail}（时间方向异常，需人工确认）" if vdetail else "时间方向异常，需人工确认"
