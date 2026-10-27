@@ -9,6 +9,7 @@ import re
 import signal
 import sys
 import threading
+import uuid
 from datetime import datetime
 
 import pandas as pd
@@ -31,6 +32,10 @@ diag_cancel: dict = {}
 # 全局中断标志：Ctrl+C 时设为 True
 interrupted = False
 prev_sigint = None  # 保存 uvicorn/asyncio 的原始 SIGINT 处理器
+
+# 服务启动标识：每个进程启动时生成一次。前端批量诊断会携带它，
+# 服务重启后旧页面/旧批量任务的请求会被拒绝，避免“重启后仍继续上次排查”。
+SERVER_BOOT_ID = uuid.uuid4().hex
 
 
 def handle_sigint(signum, frame):

@@ -456,7 +456,7 @@ export default {
         diagRunning: false, diagLoadingMap: {}, diagResults: [], categoryFilter: '',
         skipCategoryFilter: '', editingSkipBugid: '', editingSkipReason: '',
         writingReview: false, sendingToDeveloper: false, exportingTriggerIssues: false, batchApplyingTime: false, onlyEmptyReview: false,
-        stopFlag: false, abortController: null, skipVideoCache: false, execOnlyEmptyReview: false, preClassifying: false,
+        stopFlag: false, abortController: null, skipVideoCache: false, execOnlyEmptyReview: false, preClassifying: false, bootId: '',
         correctionEditor: { visible: false, row: null, time: '', note: '', humanReason: '', matchedCategory: '', saving: false },
         rootCauses: {},
       },
@@ -499,7 +499,13 @@ export default {
         });
         this.troubleshoot.records = (body.data && body.data.rows) || [];
         ElMessage.success(body.message || `查询到 ${this.troubleshoot.records.length} 条`);
-      } catch (e) { /* 已由 api() 提示 */ }
+      } catch (e) {
+        // api() 默认 120s 超时，超时会抛 TimeoutError；此前这里静默忽略，
+        // 用户只看到按钮转圈结束、没有结果也没有提示。
+        if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+          ElMessage.warning('查询超时（超过 120 秒），多维表格数据量较大，请稍后重试');
+        }
+      }
       finally { this.troubleshoot.querying = false; }
     },
     async querySuccessRecords() {
@@ -523,6 +529,15 @@ export default {
       } catch (e) { /* 已由 api() 提示 */ }
       finally { this.troubleshoot.queryingSuccess = false; }
     },
+    async ensureBootId() {
+      // 批量诊断会带上服务启动标识；服务重启后旧页面/旧批量会被后端拒绝，
+      // 避免“重启后浏览器里的上一轮排查继续下载附件、继续提取”。
+      try {
+        const b = await api('/api/troubleshoot/boot_id');
+        this.troubleshoot.bootId = (b.data && b.data.boot_id) || '';
+      } catch (e) { /* 取不到时留空，后端会拒绝并提示刷新 */ }
+      return this.troubleshoot.bootId;
+    },
     async _diagnoseRow(row, force = false, skipVideoCache = false) {
       const bugid = row['jira号'];
       this.troubleshoot.diagLoadingMap = { ...this.troubleshoot.diagLoadingMap, [bugid]: true };
@@ -535,7 +550,7 @@ export default {
         } else { signal = abortSig || timeoutSig || undefined; }
         const body = await api('/api/troubleshoot/diagnose', {
           method: 'POST',
-          body: JSON.stringify({ bugid, err_msg: row['错误信息'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析完成时间'] || '', force, skip_video_cache: skipVideoCache }),
+          body: JSON.stringify({ bugid, err_msg: row['错误信息'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析完成时间'] || '', force, skip_video_cache: skipVideoCache, boot_id: this.troubleshoot.bootId || '' }),
           signal,
         });
         const d = body.data || {};
@@ -543,6 +558,17 @@ export default {
         if (idx >= 0) { this.troubleshoot.diagResults.splice(idx, 1, d); }
         else { this.troubleshoot.diagResults.push(d); }
       } catch (e) {
+        const msg = String(e?.message || '');
+        if (msg.includes('服务已重启')) {
+          this.troubleshoot.stopFlag = true;
+          ElMessage.warning('批量诊断已停止：服务已重启，请刷新页面后重新执行');
+          return;
+        }
+        if (e?.name === 'TypeError' || /Failed to fetch|NetworkError|Load failed/i.test(msg)) {
+          this.troubleshoot.stopFlag = true;
+          ElMessage.error('诊断连接中断（服务可能已重启），批量诊断已停止');
+          return;
+        }
         if (e && e.name === 'TimeoutError') ElMessage.warning(`${bugid} 诊断超时，请稍后重试`);
         const idx = this.troubleshoot.diagResults.findIndex(r => r.bugid === bugid);
         const fallback = { bugid, category: '诊断超时/异常', problem_time: row['分析问题时间'] || '',
@@ -553,7 +579,10 @@ export default {
       }
       finally { this.troubleshoot.diagLoadingMap = { ...this.troubleshoot.diagLoadingMap, [bugid]: false }; }
     },
-    async diagnoseOne(row) { await this._diagnoseRow(row); },
+    async diagnoseOne(row) {
+      await this.ensureBootId();
+      await this._diagnoseRow(row);
+    },
     async searchSingleTroubleshoot() {
       const st = this.singleTroubleshoot;
       if (!st.keyword.trim()) return ElMessage.warning('请输入 Jira 号');
@@ -573,9 +602,10 @@ export default {
       const st = this.singleTroubleshoot;
       st.diagnosing = true; st.diagResult = null;
       try {
+        await this.ensureBootId();
         const body = await api('/api/troubleshoot/diagnose', {
           method: 'POST',
-          body: JSON.stringify({ bugid: row['jira号'], err_msg: row['错误信息'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析完成时间'] || '' })
+          body: JSON.stringify({ bugid: row['jira号'], err_msg: row['错误信息'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析完成时间'] || '', boot_id: this.troubleshoot.bootId || '' })
         });
         st.diagResult = body.data || {};
         ElMessage.success(`${row['jira号']} 诊断完成：${st.diagResult.category || ''}`);
@@ -723,6 +753,12 @@ export default {
       this.troubleshoot.diagRunning = true;
       this.troubleshoot.stopFlag = false;
       this.troubleshoot.abortController = new AbortController();
+      await this.ensureBootId();
+      if (!this.troubleshoot.bootId) {
+        this.troubleshoot.diagRunning = false;
+        ElMessage.error('无法获取服务启动标识，请刷新页面后重试');
+        return;
+      }
       this.troubleshoot.diagResults = [];
       this.troubleshoot.rootCauses = {};
       // 阶段一：批量预归类（快速筛出无需分析的记录）
@@ -1021,6 +1057,12 @@ export default {
       this.troubleshoot.diagRunning = true;
       this.troubleshoot.stopFlag = false;
       this.troubleshoot.abortController = new AbortController();
+      await this.ensureBootId();
+      if (!this.troubleshoot.bootId) {
+        this.troubleshoot.diagRunning = false;
+        ElMessage.error('无法获取服务启动标识，请刷新页面后重试');
+        return;
+      }
       const queue = [...manuals];
       const worker = async () => {
         while (queue.length && !this.troubleshoot.stopFlag) {

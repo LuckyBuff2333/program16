@@ -132,7 +132,10 @@ def _kill_port_hog(port: int):
     for pid in pids:
         try:
             if sys.platform == "win32":
-                res = subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                # 用 /T 连子进程一起结束：uvicorn reload 模式下真正监听端口的是
+                # reloader 派生的 worker 子进程，只杀父进程会留下“孤儿 worker”
+                # 继续占用端口并运行旧代码，导致重启后请求时快时慢/改动不生效。
+                res = subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 if res.returncode == 0:

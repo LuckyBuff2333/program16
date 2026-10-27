@@ -4,7 +4,7 @@
 """
 from fastapi import APIRouter
 
-from src.api.routes.shared import ok, fail
+from src.api.routes.shared import ok, fail, SERVER_BOOT_ID
 from src.schemas.common import ApiResponse
 from src.schemas.troubleshoot import (
     RecordsQueryRequest, DirectQueryRequest, SearchJiraRequest,
@@ -14,6 +14,12 @@ from src.schemas.troubleshoot import (
 )
 
 router = APIRouter()
+
+
+@router.get("/api/troubleshoot/boot_id", response_model=ApiResponse)
+def troubleshoot_boot_id():
+    """返回当前服务进程的启动标识（前端批量诊断开始时获取）"""
+    return ok({"boot_id": SERVER_BOOT_ID})
 
 
 @router.post("/api/troubleshoot/records", response_model=ApiResponse)
@@ -108,6 +114,10 @@ def troubleshoot_diagnose(req: DiagnoseRequest):
     skip_video_cache = req.skip_video_cache
     if not bugid:
         return fail("bugid 不能为空")
+    # 服务重启后，上一轮批量诊断（旧页面持有旧 boot_id）必须失效，
+    # 否则浏览器里的批量循环会在服务恢复后继续下载附件/OCR 提取。
+    if req.boot_id.strip() != SERVER_BOOT_ID:
+        return fail("服务已重启，上一轮批量诊断已失效，请刷新页面后重新查询执行")
     # 预归类保护：错误信息命中跳过类别时直接返回，不执行诊断
     if not force:
         _pre_cat = ""

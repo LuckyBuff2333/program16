@@ -49,12 +49,18 @@ def _get_bitable_config() -> dict:
     return cfg
 
 
-def _query_bitable_records() -> list:
-    """查询飞书多维表格全部记录，失败时抛出异常"""
+def _query_bitable_records(filter_expr: Optional[str] = None) -> list:
+    """查询飞书多维表格记录，失败时抛出异常
+
+    :param filter_expr: 可选的飞书过滤表达式。传入后由服务端过滤，避免把整表
+        （当前 6000+ 条、13 页）全部拉回本地再筛选。
+    """
     cfg = _get_bitable_config()
     if not cfg:
         raise ValueError("多维表格 app_token/table_id 未配置")
-    return feishu_client.list_bitable_records(cfg["app_token"], cfg["table_id"])
+    return feishu_client.list_bitable_records(
+        cfg["app_token"], cfg["table_id"], filter_expr=filter_expr, timeout=60
+    )
 
 
 def _bitable_text(val) -> str:
@@ -150,7 +156,23 @@ def query_records(
     if not cfg:
         raise ValueError("多维表格 app_token/table_id 未配置")
 
-    records = _query_bitable_records()
+    # 服务端先按“分析完成时间”过滤：只拉取时间窗口内的记录。
+    # 该字段在表里是文本（YYYY-MM-DD HH:MM:SS），字符串比较等价于时间比较。
+    # 之前每次查询都把全表 6000+ 条分页拉回本地再筛选，耗时 60~180s，会超过前端 120s 超时。
+    filter_expr = (
+        f'CurrentValue.[分析完成时间] > "'
+        f'{cutoff.strftime("%Y-%m-%d %H:%M:%S")}"'
+    )
+    try:
+        records = _query_bitable_records(filter_expr=filter_expr)
+        logger.info("按分析完成时间过滤查询: after=%s, 返回 %d 条", after_time, len(records))
+    except ValueError as e:
+        # 字段被改名/过滤语法不支持时回退全表，保证功能可用（只牺牲速度）
+        if "1254018" in str(e) or "InvalidFilter" in str(e):
+            logger.warning("按时间过滤查询失败(%s)，回退为全表查询", e)
+            records = _query_bitable_records()
+        else:
+            raise
     bugid_field = cfg.get("bugid_field", "jira号")
     picked = {}
 

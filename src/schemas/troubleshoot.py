@@ -36,6 +36,7 @@ class DiagnoseRequest(BaseModel):
     done_time: str = Field(default="", description="完成时间")
     force: bool = Field(default=False, description="强制重新诊断")
     skip_video_cache: bool = Field(default=False, description="跳过视频缓存")
+    boot_id: str = Field(default="", description="服务启动标识；服务重启后旧批量任务自动失效")
 
 
 class UpdateCacheRequest(BaseModel):
