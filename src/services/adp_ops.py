@@ -51,26 +51,41 @@ def _fix_encoding(text: str) -> str:
 # ===== Step 1: dpportal 查询附件 =====
 
 def query_attachments(jira_key: str) -> list:
-    """查询 JIRA 附件列表，返回附件 dict 列表"""
+    """查询 JIRA 附件列表，返回附件 dict 列表
+    超时或网络错误时自动重试 1 次（dpportal 后端偶发慢）
+    """
     adp_cfg = _get_adp_cfg()
     logger.info("ADP 查询附件: %s", jira_key)
-    try:
-        resp = httpx.post(
-            adp_cfg["attach_api"],
-            headers={"Content-Type": "application/json", "X-API-Key": adp_cfg["attach_api_key"]},
-            json={"jiraKey": jira_key},
-            timeout=30,
-        )
-        data = resp.json()
-        if data.get("code") != 0:
-            logger.warning("ADP 附件查询失败: %s -> %s", jira_key, data)
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = httpx.post(
+                adp_cfg["attach_api"],
+                headers={"Content-Type": "application/json", "X-API-Key": adp_cfg["attach_api_key"]},
+                json={"jiraKey": jira_key},
+                timeout=60,
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                logger.warning("ADP 附件查询失败: %s -> %s", jira_key, data)
+                return []
+            attachments = data.get("data", {}).get("attachments", [])
+            logger.info("ADP 附件查询: %s 找到 %d 个附件", jira_key, len(attachments))
+            return attachments
+        except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as e:
+            # 可重试的网络/超时错误
+            if attempt < max_attempts:
+                logger.warning("ADP 附件查询超时/网络错误（第 %d/%d 次）: %s -> %s，2s 后重试",
+                               attempt, max_attempts, jira_key, e)
+                import time as _t
+                _t.sleep(2)
+                continue
+            logger.error("ADP 附件查询异常（重试耗尽）: %s -> %s", jira_key, e)
             return []
-        attachments = data.get("data", {}).get("attachments", [])
-        logger.info("ADP 附件查询: %s 找到 %d 个附件", jira_key, len(attachments))
-        return attachments
-    except Exception as e:
-        logger.error("ADP 附件查询异常: %s -> %s", jira_key, e)
-        return []
+        except Exception as e:
+            # 不可重试（如 JSON 解析错误、业务错误）
+            logger.error("ADP 附件查询异常: %s -> %s", jira_key, e)
+            return []
 
 
 # ===== Step 2: 构建消息 + 调用 ADP SSE =====
@@ -432,11 +447,13 @@ def _extract_module_from_html(html_path: str) -> str:
 
 
 def _extract_root_cause(text: str) -> str:
-    """从分析文本中提取 root cause（支持 ADP 根因归属、现象级归因等格式）"""
+    """从分析文本中提取 root cause（支持 ADP 根因归属、现象级归因、定位归因等格式）"""
     # ADP 专有模式：全文搜索取最后匹配（高度特异）
     adp_patterns = [
         r"根因归属[：:：]\s*(.+?)(?:\n|$)",                 # ADP 标准格式
         r"现象级归因[：:：]\s*(.+?)(?:\n|$)",                # ADP 现象级归因
+        r"##\s*定位归因[^\n]*\n+\*\*结论\*\*[：:：]\s*(.+?)(?:\n|$)",  # 定位归因 + **结论**：
+        r"###\s*归因[（(][^\n)]*[）)]\s*\n+(.{10,300}?)(?:\n\n|\n(?=###)|$)",  # ### 归因（为什么断）
     ]
     for p in adp_patterns:
         matches = re.findall(p, text, re.IGNORECASE)
@@ -449,6 +466,7 @@ def _extract_root_cause(text: str) -> str:
     tail = text[-5000:] if len(text) > 5000 else text
     generic_patterns = [
         r"结论[：:：]\s*(.+?)(?:\n|$)",
+        r"\*\*结论\*\*[：:：]\s*(.+?)(?:\n|$)",              # **结论**：加粗格式
         r"根因[：:：]\s*(.+?)(?:\n|$)",
         r"根本原因[：:：]\s*(.+?)(?:\n|$)",
         r"根本原因[是：:：]\s*(.+?)(?:\*\*|\n)",
@@ -532,23 +550,45 @@ def _validate_confidence(raw: str) -> str:
 
 
 def _extract_report_url(text: str, file_urls: list) -> tuple:
-    """从文本或 file_urls 中提取报告链接（只认 agent.adp-cos.com CDN 或 file_urls 中的 HTML）
-    sandbox URL 需要认证无法直接下载，不再使用
+    """从文本或 file_urls 中提取报告链接（兼容三种域名 + lke 短链 + 沙箱路径）
+    优先级：
+      1) reply 文本中 agent.adp-cos.com 的直签 CDN URL（最可靠）
+      2) reply 文本中 lke.cloud.tencent.com/s/xxx 分享短链（302 → COS 签名 URL）
+      3) file_urls 里的 .html 文件（content.added 事件）
+      4) 文本中的沙箱报告路径（sandbox.adp，401 不可下载，仅作链接展示）
     返回: (html_filename, direct_url)
     """
-    # 1. 从最终 reply 文本中提取 agent.adp-cos.com 报告链接（带签名参数，可直接下载）
+    # 1. agent.adp-cos.com CDN 直链（带签名，可直接下载）
     m = re.search(r'(https?://agent\.adp-cos\.com/[^\s)"\']*(?:report_|out/)[^\s)"\']*\.html[^\s)"\']*)', text)
     if m:
         url = m.group(1)
         name = re.search(r'(report_[^\s)"\'/?]*\.html)', url)
         return (name.group(1) if name else url.split("/")[-1].split("?")[0]), url
-    # 2. file_urls（content.added 事件中的文件），只匹配 .html 报告文件
+    # 2. lke.cloud.tencent.com/s/xxx 分享短链（302 跳转到 COS 签名 URL）
+    m = re.search(r'(https?://lke\.cloud\.tencent\.com/s/[A-Za-z0-9]+)', text)
+    if m:
+        url = m.group(1)
+        # 从文本中就近提取 html 文件名（通常在链接前面的 markdown 文本里）
+        name = re.search(r'(report_[A-Za-z0-9_\-]+\.html)', text[max(0, m.start() - 500):m.end() + 200])
+        return (name.group(1) if name else "adp_report.html"), url
+    # 3. file_urls（content.added 事件中的文件），只匹配 .html 报告文件
     for f in (file_urls or []):
         name = f.get("name", "")
         url = f.get("url", "")
         if name.endswith(".html") and "meta" not in name.lower():
             return name, url
-    # 无可下载的报告链接
+    # 4. 沙箱报告路径（sandbox.adp，401 不可下载，仅作为链接展示）
+    # 4a. 已有完整 sandbox URL
+    m = re.search(r'(https?://sandbox\.adp\.cloud\.tencent\.com/files\?path=[^\s)"\']*report_[^\s)"\']*\.html)', text)
+    if m:
+        url = m.group(1)
+        name = re.search(r'(report_[^\s)"\'/?]*\.html)', url)
+        return (name.group(1) if name else "report.html"), url
+    # 4b. 文本中的沙箱报告路径（如 /workdir/case_.../out/report_full_....html）
+    m = re.search(r'(/workdir/case_[A-Za-z0-9_\-]+/out/(report_[A-Za-z0-9_\-]+\.html))', text)
+    if m:
+        path, name = m.group(1), m.group(2)
+        return name, f"https://sandbox.adp.cloud.tencent.com/files?path={path}"
     return "", ""
 
 
@@ -616,7 +656,9 @@ def extract_adp_results(full_text: str, closeout_data: dict, start_ts: int, end_
         elapsed_min = round((end_ts - start_ts) / 1000 / 60, 1)
         result["耗时(分)"] = str(elapsed_min)
     # 问题模块 + root cause
-    result["agent分析的问题模块"] = _extract_problem_module(full_text)
+    problem_module = _extract_problem_module(full_text)
+    result["agent分析的问题模块"] = problem_module
+    result["问题所在模块"] = problem_module
     result["agent分析的root cause"] = _extract_root_cause(full_text)
     # 额外返回报告直链（供前端展示，不写入飞书）
     result["_report_url"] = report_url
@@ -764,14 +806,21 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             return {"ok": False, "record_id": "", "message": "无法获取 record_id"}
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
-                    "agent分析的问题模块", "agent分析的root cause", "置信度", "分析失败归因"]
+                    "问题所在模块", "agent分析的问题模块", "agent分析的root cause",
+                    "置信度", "分析失败归因", "traceid"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
-        # 附件字段"报告链接"需要 file_token 格式，无 file_token 则移除该字段（避免 URL 字符串写入附件类型字段）
+        # 附件字段"报告链接"处理：file_token 为附件格式，沙箱 URL 不写入附件字段（链接已追加到 root cause）
         file_token = fields_dict.get("_report_file_token", "")
+        report_url = fields_dict.get("_report_url", "")
+        is_sandbox = bool(report_url and "sandbox.adp" in report_url)
         if file_token:
             write_fields["报告链接（分析报告、可观测报告）"] = [{"file_token": file_token}]
         else:
             write_fields.pop("报告链接（分析报告、可观测报告）", None)
+            if report_url and not is_sandbox:
+                existing = write_fields.get("分析失败归因", "") or ""
+                suffix = f"\n报告链接（下载受限）: {report_url}"
+                write_fields["分析失败归因"] = (existing + suffix).strip()
         feishu_client.update_bitable_records(app_token, table_id,
                                               [{"record_id": record_id, "fields": write_fields}])
         logger.info("ADP 飞书写入成功: %s -> %s", jira_key, list(write_fields.keys()))
@@ -878,12 +927,15 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         out["full_text"] = full_text  # 返回完整分析文本供前端展示
         out["file_urls"] = file_urls
         _progress("extract", "done", f"完成状态={results.get('完成状态', '')}")
+        # 将 trace_id 写入结果（供飞书表格展示）
+        if trace_id:
+            results["traceid"] = trace_id
 
         # Step 3.5: 下载 HTML 报告到本地，上传为多维表格附件
-        # HTML 是核心交付物，无报告则标记“分析失败”，但仍保留已提取的 root cause/置信度/模块等字段
         report_url = results.get("_report_url", "")
         html_file = results.get("_html_file", "")
-        if report_url:
+        is_sandbox = bool(report_url and "sandbox.adp" in report_url)
+        if report_url and not is_sandbox:
             _progress("download_report", "running")
             dl_result = download_adp_report(jira_key, report_url, html_file)
             file_token = dl_result.get("file_token", "")
@@ -901,9 +953,17 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             html_module = _extract_module_from_html(local_path)
             if html_module:
                 results["agent分析的问题模块"] = html_module
+                results["问题所在模块"] = html_module
             _progress("download_report", "done" if file_token else "fail")
+        elif is_sandbox:
+            # 沙箱 URL 不可下载（401），保持完成状态，链接追加到 root cause 文本末尾
+            rc = results.get("agent分析的root cause", "") or ""
+            if report_url and report_url not in rc:
+                results["agent分析的root cause"] = (rc + f"\n报告链接: {report_url}").strip()
+            out["_sandbox_url"] = report_url
+            _progress("download_report", "done", "沙箱链接（不可下载）")
         else:
-            # 无 CDN 链接：标记分析失败，但保留已提取的分析字段（root cause/置信度/模块）
+            # 无任何报告链接
             results["完成状态"] = "分析失败"
             results["分析失败归因"] = "分析完成但未产出HTML报告"
             results.pop("报告链接（分析报告、可观测报告）", None)
