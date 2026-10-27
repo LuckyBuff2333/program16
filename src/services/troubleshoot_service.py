@@ -113,6 +113,31 @@ def _pick_error_info(fields: dict) -> str:
     return ""
 
 
+_BUGID_FALLBACK_FIELDS = ("jira号", "Jira号", "jira", "Jira", "bugid")
+_ASCII_FIELD_RE = __import__("re").compile(r"^[A-Za-z0-9_\-\s\(\)]+$")
+
+
+def _resolve_bugid_field(cfg: dict, fields: dict = None) -> str:
+    """解析「Jira 号」字段名
+
+    历史配置里 bugid_field 可能被写成乱码（如 jira鍙?），直接取字段会得到空值，
+    导致查询结果全部被跳过（问题排查查 0 条）。这里按三层兜底：
+    1) 配置值确实存在于当前记录字段 → 用它
+    2) 记录里有已知候选字段（jira号/Jira号/jira/...）→ 用候选
+    3) 配置值看起来已损坏（含非 ASCII 且不在候选里）→ 回退 jira号
+    """
+    configured = str((cfg or {}).get("bugid_field") or "").strip()
+    if configured and fields and configured in fields:
+        return configured
+    if fields:
+        for name in _BUGID_FALLBACK_FIELDS:
+            if name in fields:
+                return name
+    if configured and (configured in _BUGID_FALLBACK_FIELDS or _ASCII_FIELD_RE.match(configured)):
+        return configured
+    return _BUGID_FALLBACK_FIELDS[0]
+
+
 def _extract_record_row(fields: dict, cfg: dict) -> dict:
     """从飞书记录字段提取标准化的排查行"""
     done_dt = _ts_parse_datetime(fields.get("分析完成时间", ""))
@@ -122,7 +147,7 @@ def _extract_record_row(fields: dict, cfg: dict) -> dict:
     if isinstance(report_val, dict):
         report_link = report_val.get("link", "")
     return {
-        "jira号": _bitable_text(fields.get(cfg.get("bugid_field", "jira号"), "")),
+        "jira号": _bitable_text(fields.get(_resolve_bugid_field(cfg, fields), "")),
         "分析结果": _bitable_text(fields.get("分析结果", "")),
         "触发来源": _bitable_text(fields.get("触发来源", "")),
         "分析完成时间": done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else _bitable_text(fields.get("分析完成时间", "")),
@@ -173,7 +198,7 @@ def query_records(
             records = _query_bitable_records()
         else:
             raise
-    bugid_field = cfg.get("bugid_field", "jira号")
+    bugid_field = _resolve_bugid_field(cfg)
     picked = {}
 
     for rec in records:
@@ -215,7 +240,7 @@ def query_by_bugids(bugids: list[str]) -> dict:
         raise ValueError("多维表格 app_token/table_id 未配置")
 
     records = _query_bitable_records()
-    bugid_field = cfg.get("bugid_field", "jira号")
+    bugid_field = _resolve_bugid_field(cfg)
     target_set = set(b.strip().upper() for b in bugids if b.strip())
     picked = {}
 
@@ -248,7 +273,7 @@ def search_by_keyword(keyword: str) -> dict:
         raise ValueError("多维表格 app_token/table_id 未配置")
 
     records = _query_bitable_records()
-    bugid_field = cfg.get("bugid_field", "jira号")
+    bugid_field = _resolve_bugid_field(cfg)
     keyword_upper = keyword.strip().upper()
     rows = []
 
@@ -283,7 +308,7 @@ def batch_write_review(items: list[dict], only_empty_review: bool = False) -> di
 
     app_token = cfg["app_token"]
     table_id = cfg["table_id"]
-    bugid_field = cfg.get("bugid_field", "jira号")
+    bugid_field = _resolve_bugid_field(cfg)
     review_field = cfg.get("review_field", "人工审核结果")
 
     records = feishu_client.list_bitable_records(app_token, table_id)

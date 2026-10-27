@@ -446,3 +446,18 @@ flowchart TD
 - **实现文件**：`src/services/broadcast_state.py`（新增）、`src/services/server_legacy.py`（`_bot_daily_broadcast` 返回结果并落状态、`_daily_scheduler_loop` 接入 claim）、`tests/test_broadcast_state.py`（新增）
 
 </details>
+
+<details>
+<summary><b>34. 问题排查查询 0 条：bugid_field 配置乱码导致整表被跳过（2026-10-27）</b></summary>
+
+- **问题描述**：问题排查“分析完成时间从周一 0 点起 + 分析结果=失败 + 人工审核为空”查出来 0 条，但同期多维表格里实际有 60 条失败记录（其中 36 条人工审核为空）
+- **相关Bug号**：VCU-560912 等 36 条（查询窗口 2026-10-26 00:00 之后）
+- **根因**：`config.yaml` 里 `feishu_bitable.bugid_field` 被写坏成乱码 `jira鍙?`，查询时 `fields.get("jira鍙?")` 恒为空 → 循环里 `if not jira_no: continue` 把所有记录跳过，最终 0 条；`_extract_record_row` 同样受影响（jira号 显示为空）
+- **解决方案**：
+  1. 新增 `_resolve_bugid_field(cfg, fields)` 三层兜底：配置字段在记录里存在 → 用配置值；否则用候选字段（jira号/Jira号/jira/Jira/bugid）；配置值明显损坏（含非 ASCII 且不在候选内）→ 回退 `jira号`
+  2. 文件内 5 处 `cfg.get("bugid_field", "jira号")` 全部改为调用该函数，`_extract_record_row` 额外传入字段集合做真实匹配
+  3. 修复本机 `config.yaml` 的乱码值（`jira鍙?` → `jira号`）；其他机器即使配置仍乱码，代码兜底也能正常查
+- **验证结果**：修复后同一查询返回 **36 条**（失败 60 条 − 有人工审核 24 条）；把配置再改成乱码后模拟查询仍返回 36 条（兜底生效）；单测 5 个通过
+- **实现文件**：`src/services/troubleshoot_service.py`、`config/config.yaml`（本地修复）、`tests/test_troubleshoot_field.py`（新增）
+
+</details>
