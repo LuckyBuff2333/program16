@@ -1640,6 +1640,10 @@ def _troubleshoot_cache_dir() -> str:
     return cache_dir
 
 
+# 诊断缓存版本：时间提取逻辑升级后自增，旧缓存自动失效（避免旧结论一直生效）
+_DIAG_CACHE_VERSION = 2
+
+
 def _load_diagnose_cache(bugid: str) -> dict:
     """从本地缓存读取诊断结果，未命中返回 None"""
     cache_dir = _troubleshoot_cache_dir()
@@ -1649,6 +1653,10 @@ def _load_diagnose_cache(bugid: str) -> dict:
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        if data.get("_v") != _DIAG_CACHE_VERSION:
+            logger.info("诊断缓存版本过期(%s != %s)，重新诊断: %s",
+                        data.get("_v"), _DIAG_CACHE_VERSION, bugid)
+            return None
         logger.info("诊断结果本地缓存命中: %s", bugid)
         # 验证 verify_status 是否为有效值
         valid_status = {"success", "manual", "corrected", ""}
@@ -1665,8 +1673,10 @@ def _save_diagnose_cache(bugid: str, result: dict):
     cache_dir = _troubleshoot_cache_dir()
     cache_path = os.path.join(cache_dir, f"{bugid}.json")
     try:
+        payload = dict(result)
+        payload["_v"] = _DIAG_CACHE_VERSION
         with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
+            json.dump(payload, f, ensure_ascii=False, indent=2)
         logger.info("诊断结果已缓存: %s", cache_path)
     except Exception as e:
         logger.warning("诊断结果缓存失败 %s: %s", bugid, e)

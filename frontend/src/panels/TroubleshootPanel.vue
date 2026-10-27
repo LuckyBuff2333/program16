@@ -200,6 +200,13 @@
           </el-button>
         </div>
       </template>
+      <div v-if="getFilteredDiagResults().length" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 8px">
+        <el-tag size="small" type="info">本次诊断 {{ getFilteredDiagResults().length }} 条</el-tag>
+        <el-tag size="small" type="success">正常 {{ diagTimeStats()['正常'] || 0 }}</el-tag>
+        <el-tag size="small" type="warning">待确认 {{ diagTimeStats()['待确认'] || 0 }}</el-tag>
+        <el-tag size="small" type="danger">不可用 {{ diagTimeStats()['不可用'] || 0 }}</el-tag>
+        <el-tag size="small">无参考 {{ diagTimeStats()['无参考'] || 0 }}</el-tag>
+      </div>
       <el-table :data="getFilteredDiagResults()" size="small" stripe border max-height="320" row-key="bugid">
         <el-table-column type="index" label="#" width="45"></el-table-column>
         <el-table-column prop="bugid" label="Jira号" width="120"></el-table-column>
@@ -208,6 +215,46 @@
         </el-table-column>
         <el-table-column prop="done_time" label="分析完成时间" width="160"></el-table-column>
         <el-table-column prop="problem_time" label="错误时间" width="150"></el-table-column>
+        <el-table-column label="抓包时间" width="150">
+          <template #default="{row}">{{ (row.time_check && row.time_check.ref_time) || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="差秒" width="90">
+          <template #default="{row}">
+            <span v-if="row.time_check && row.time_check.delta_sec !== null && row.time_check.delta_sec !== undefined"
+              :style="{color: (row.time_check.status==='不可用') ? '#f56c6c' : ((row.time_check.status==='待确认') ? '#e6a23c' : '#67c23a')}">
+              {{ formatDelta(row.time_check) }}
+            </span>
+            <span v-else style="color:#c0c4cc">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="时间判定" width="100">
+          <template #default="{row}">
+            <el-tag v-if="row.time_check && row.time_check.status" size="small" :type="timeStatusTagType(row.time_check.status)">
+              {{ row.time_check.status }}
+            </el-tag>
+            <span v-else style="color:#c0c4cc">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="依据" width="150">
+          <template #default="{row}">
+            <el-popover v-if="row.time_check && row.time_check.evidence && row.time_check.evidence.length"
+              placement="left" :width="380" trigger="click">
+              <template #reference>
+                <el-button size="small" link type="primary" style="font-size:12px">
+                  {{ row.time_check.evidence.map(e => e['来源']).join(' / ') }}
+                </el-button>
+              </template>
+              <el-table :data="row.time_check.evidence" size="mini" border>
+                <el-table-column prop="来源" label="来源" width="110"></el-table-column>
+                <el-table-column prop="时间" label="时间" width="150"></el-table-column>
+                <el-table-column label="与抓包差" width="100">
+                  <template #default="{row: ev}">{{ formatDelta({ delta_sec: ev['与抓包差秒'] }) }}</template>
+                </el-table-column>
+              </el-table>
+            </el-popover>
+            <span v-else style="color:#c0c4cc">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="诊断详情" min-width="260">
           <template #default="{row}">
             <div v-if="isNewDetailFormat(row.detail)" style="white-space:pre-wrap;line-height:1.4;font-size:13px">
@@ -474,6 +521,29 @@ export default {
     };
   },
   methods: {
+    diagTimeStats() {
+      const stat = { '正常': 0, '待确认': 0, '不可用': 0, '无参考': 0 };
+      const rows = (this.troubleshoot && this.troubleshoot.diagResults) || [];
+      const list = this.troubleshoot.categoryFilter
+        ? rows.filter((r) => r.category === this.troubleshoot.categoryFilter) : rows;
+      for (const r of list) {
+        const s = r.time_check && r.time_check.status;
+        if (s && stat[s] !== undefined) stat[s] += 1;
+      }
+      return stat;
+    },
+    formatDelta(tc) {
+      if (!tc) return '-';
+      const d = tc.delta_sec;
+      if (d === null || d === undefined) return '-';
+      const sign = d > 0 ? '晚' : (d < 0 ? '早' : '');
+      const abs = Math.abs(d);
+      const txt = abs >= 3600 ? `${(abs / 3600).toFixed(1)}h` : (abs >= 60 ? `${Math.round(abs / 60)}min` : `${abs}s`);
+      return `${sign} ${txt}`.trim();
+    },
+    timeStatusTagType(s) {
+      return s === '正常' ? 'success' : (s === '待确认' ? 'warning' : (s === '不可用' ? 'danger' : 'info'));
+    },
     diagCategoryTagType,
     getMainEntries(row) {
       const bugid = row['jira号'] || row['bugid'];
@@ -625,15 +695,20 @@ export default {
         row.correction_time = row.suggested_time;
       } catch (e) { /* 已提示 */ }
     },
+    getApplicableCorrections() {
+      return this.troubleshoot.diagResults.filter((r) => {
+        if (r.verify_status !== 'success' || !r.suggested_time) return false;
+        if (r.suggested_time === r.problem_time) return false;
+        // 时间方向判定为“不可用”的不自动应用（避免把逻辑上不可能的时间写回去）
+        if (r.time_check && r.time_check.status === '不可用') return false;
+        return true;
+      });
+    },
     getApplicableCorrectionCount() {
-      return this.troubleshoot.diagResults.filter(
-        r => r.verify_status === 'success' && r.suggested_time && r.suggested_time !== r.problem_time
-      ).length;
+      return this.getApplicableCorrections().length;
     },
     async batchApplyCorrectionTimes() {
-      const targets = this.troubleshoot.diagResults.filter(
-        r => r.verify_status === 'success' && r.suggested_time && r.suggested_time !== r.problem_time
-      );
+      const targets = this.getApplicableCorrections();
       if (!targets.length) return ElMessage.warning('无待应用的修正时间');
       this.troubleshoot.batchApplyingTime = true;
       try {

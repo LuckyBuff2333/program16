@@ -574,3 +574,25 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`（过滤汇总日志 + counts）、`frontend/src/panels/BatchAiPanel.vue`（过滤明细展示 + 样式）
 
 </details>
+
+<details>
+<summary><b>41. 问题排查：时间判定改为方向敏感 + 展示/批量应用升级（2026-10-27）</b></summary>
+
+- **问题描述**：问题排查的时间校验用 ±300 秒对称窗口，把大量“早于抓包 1~15 分钟”的正常时间判成“需修正”；诊断表只有纯文本，看不出差多少、该不该应用
+- **相关Bug号**：VCU-561531（正常时间被判 manual）、VCU-561518（应判不可用但无判定）
+- **根因**：
+  1. `_diag_verify_suggestion` 用 `abs(时间-包内时间戳) <= 300` 判定，未考虑“事件必然发生在抓包之前”（实测批量数据 107/118 条早于抓包，中位早 156 秒）
+  2. 诊断结果没有结构化的“抓包时间/差值/判定/依据”，前端只能展示一段文字
+  3. 诊断缓存没有版本号，时间提取逻辑升级后旧结论继续生效
+  4. “一键应用”不区分置信度，可能把方向异常的建议写回
+- **解决方案**：
+  1. 新增 `_diag_time_check()`：抓包时间优先取**日志包文件名时间**（包内时间戳可能是历史轮转日志，不能当抓包时刻），再用 `self_check_trigger_time` 做方向敏感判定，输出 status/ref_time/delta_sec（带方向）/need_fix/evidence
+  2. 诊断结果新增 `time_check` 字段（score 路径与 gmlogger 主路径都注入）；方向正常但原判 manual 的升级为 success，方向异常的 success 降级为 manual
+  3. 诊断缓存加 `_DIAG_CACHE_VERSION=2`，旧缓存自动失效重算
+  4. 前端批量诊断表新增列：抓包时间 / 差秒（带早/晚）/ 时间判定标签 / 依据（可点开查看证据清单：来源/时间/与抓包差）
+  5. 表格上方新增统计条：本次诊断 N 条 → 正常/待确认/不可用/无参考
+  6. “一键应用正确时间”只应用非“不可用”的建议（高置信度过滤）
+- **验证结果**：真机诊断 2 条：VCU-561531 → status=正常、delta=0、verify=success；VCU-561518 → status=不可用、delta 有方向、verify=manual；前端构建通过，全量 86 passed
+- **实现文件**：`src/services/server_legacy.py`（`_diag_time_check` + 结果注入 + 判定升降级）、`src/services/report_ops.py`（诊断缓存版本号）、`frontend/src/panels/TroubleshootPanel.vue`（列/统计条/依据弹层/高置信度应用）
+
+</details>

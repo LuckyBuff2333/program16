@@ -6115,6 +6115,58 @@ def _troubleshoot_diagnose_impl(bugid, err_msg, problem_time, done_time, force=F
         _diag_cancel.pop(bugid, None)
 
 
+def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
+                     main_times: list = None, all_times: list = None,
+                     vid_time: str = "") -> dict:
+    """问题排查：对“建议时间/当前时间”做方向敏感判定，并给出证据链
+
+    :return: {"status": 正常/待确认/不可用/无参考, "ref_time": str, "delta_sec": int|None,
+              "need_fix": bool, "evidence": [{"来源","时间","与抓包差秒"}]}
+    """
+    from src.clients import jira_client as _jc
+    from src.services.trigger_ops import self_check_trigger_time
+    refs = [dt for _, dt in (main_times or [])] + [dt for _, dt in (all_times or [])]
+    # 优先用日志包文件名时间（真正的抓包时刻）；包内时间戳可能是历史轮转日志，不能直接当抓包时间
+    try:
+        cap = _jc.get_log_capture_time(issue)
+    except Exception:
+        cap = None
+    if cap is None and gm_times:
+        cap = max(dt for _, dt in gm_times)
+    if cap is None and refs:
+        cap = max(refs)
+    ref = cap.strftime("%Y-%m-%d %H:%M:%S") if cap else ""
+    chk = self_check_trigger_time(candidate, ref)
+    evidence = []
+    def _add(src_name, t):
+        if not t:
+            return
+        t_str = str(t)[:19]
+        if any(e["来源"] == src_name and e["时间"] == t_str for e in evidence):
+            return
+        d = None
+        if cap and _ts_parse_datetime(t_str):
+            d = int((_ts_parse_datetime(t_str) - cap).total_seconds())
+        evidence.append({"来源": src_name, "时间": t_str, "与抓包差秒": d})
+    _add("建议时间", candidate)
+    _add("视频OCR", vid_time if vid_time and len(str(vid_time)) >= 16 else "")
+    try:
+        _add("附件名", _jc.extract_attachment_time(issue))
+    except Exception:
+        pass
+    if cap:
+        _add("包内最晚时间戳", ref)
+    # 展示用的差值带方向（正=晚于抓包，负=早于抓包）
+    signed_delta = None
+    if candidate and cap:
+        _cand_dt = _ts_parse_datetime(str(candidate))
+        if _cand_dt:
+            signed_delta = int((_cand_dt - cap).total_seconds())
+    return {"status": chk.get("status", "无参考"), "ref_time": ref,
+            "delta_sec": signed_delta,
+            "need_fix": chk.get("status") == "不可用", "evidence": evidence}
+
+
 def _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force=False):
     """诊断内部实现（实际逻辑）"""
     # —— 优先读取本地缓存 ——
@@ -6703,9 +6755,13 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
         verify_desc = vdetail or "验证通过"
         detail = _build_simple_detail(comment_time, video_time, img_time_str, f"触发时间问题（{verify_desc}）")
         report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time)
+        _tc = _diag_time_check(issue, suggested_time or problem_time, gm_times, None, None, video_time or "")
+        if _tc["status"] == "不可用" and verify_status == "success":
+            verify_status = "manual"
         result = {"bugid": bugid, "category": category, "problem_time": problem_time,
                    "archive_files": [], "detail": detail, "main_entries": [],
-                   "verify_status": verify_status, "suggested_time": suggested_time, "report": report, "done_time": done_time}
+                   "verify_status": verify_status, "suggested_time": suggested_time,
+                   "time_check": _tc, "report": report, "done_time": done_time}
         _save_diagnose_cache(bugid, result)
         return _ok(result, f"{bugid} 诊断完成：{category}（{verify_desc}）")
     # 置信度不足（仅单源提取到），进入 gmlogger 压缩包验证流程
@@ -6804,11 +6860,20 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
         # 直接使用函数返回的视频提取时间（即使未通过验证也记录）
         if _vid_extracted:
             video_time = _vid_extracted
+        # 方向敏感判定：晚于抓包 >300s 判不可用；早于抓包 <=15min 属正常
+        time_check = _diag_time_check(issue, suggested_time or problem_time, gm_times, main_times, all_times, video_time or "")
+        if time_check["status"] == "不可用" and verify_status == "success":
+            verify_status = "manual"
+            vdetail = f"{vdetail}（时间方向异常，需人工确认）" if vdetail else "时间方向异常，需人工确认"
+        elif time_check["status"] == "正常" and verify_status == "manual":
+            verify_status = "success"
+            vdetail = f"{vdetail}（方向判定正常：与抓包差 {time_check['delta_sec']} 秒）" if vdetail else "方向判定正常"
         detail = _build_simple_detail(comment_time, video_time, img_time_str, final_msg)
     report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time, archive_results)
     result = {"bugid": bugid, "category": category, "problem_time": problem_time,
                "archive_files": archive_results, "detail": detail, "main_entries": main_entries,
-               "verify_status": verify_status, "suggested_time": suggested_time, "report": report, "done_time": done_time}
+               "verify_status": verify_status, "suggested_time": suggested_time,
+               "time_check": locals().get("time_check"), "report": report, "done_time": done_time}
     _save_diagnose_cache(bugid, result)
     logger.info("诊断 %s: 最终分类=%s, verify_status=%s", bugid, category, verify_status or "N/A")
     return _ok(result, f"{bugid} 诊断完成：{category}")
