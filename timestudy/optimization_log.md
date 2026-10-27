@@ -430,3 +430,19 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`（`_diag_extract_time_from_video_simple` 的 ref_pool 构建、日期补全、兜底返回、同期性约束；`_diag_run_core` 日期提供者）
 
 </details>
+
+<details>
+<summary><b>33. 每日播报跨机器去重：状态写入飞书多维表格（2026-10-27）</b></summary>
+
+- **问题描述**：两台机器同时开服务时，同一个群同一天收到两次“昨日结论播报”
+- **根因**：`data/daily_broadcast_config.json` 的 `last_run_date` 和 `data/broadcast_locks/` 都是本机文件，跨机器不共享；调度器只判断本机是否播过
+- **解决方案**：
+  1. 新增 `src/services/broadcast_state.py`：在飞书多维表格建「播报状态」表（群ID/播报日期/播报时间/机器/状态/详情/更新时间），所有机器读同一份
+  2. 抢占式写入 + 并发复查：创建记录后 0.6 秒重读，同 (群,日期) 内 record_id 最小者胜出，落败方删除自己的记录并放弃
+  3. claim 超过 30 分钟仍未完成（机器中途挂掉）允许接管，避免当天永远不播
+  4. 调度器：先 `claim(群, 报告日期)`，返回 exists 就直接跳过并把本地 `last_run_date` 记账；云端不可用（unavailable）回退本地文件锁，保持旧行为不阻塞播报
+  5. 手动单次播报也写状态（`record_result` 按 群+报告日期 upsert），定时任务不会把同一报告日期再播一次
+- **验证结果**：6 个单测覆盖抢占/去重/回退/超时接管/并发落败删除，全部通过；真机冒烟：首次 claim=claimed、二次 claim=exists、finish 后状态=success，测试记录已清理
+- **实现文件**：`src/services/broadcast_state.py`（新增）、`src/services/server_legacy.py`（`_bot_daily_broadcast` 返回结果并落状态、`_daily_scheduler_loop` 接入 claim）、`tests/test_broadcast_state.py`（新增）
+
+</details>

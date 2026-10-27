@@ -2181,9 +2181,14 @@ def _bot_trigger_and_reply(chat_id: str, bugids: list, trigger_times: dict, real
     return success, lines, results
 
 
-def _bot_daily_broadcast(chat_id: str, date_str: str, is_scheduled: bool):
-    """昨日结论播报执行函数（单次和定时共用），自动扩展到后续非工作日"""
+def _bot_daily_broadcast(chat_id: str, date_str: str, is_scheduled: bool) -> bool:
+    """昨日结论播报执行函数（单次和定时共用），自动扩展到后续非工作日
+
+    :return: 是否成功发出播报（用于写跨机器播报状态）
+    """
     from src.clients import feishu_client
+    from src.services import broadcast_state
+    sent_ok = False
     try:
         # 计算日期范围用于展示
         report_dates = _get_report_date_range(date_str)
@@ -2192,7 +2197,7 @@ def _bot_daily_broadcast(chat_id: str, date_str: str, is_scheduled: bool):
             ok = feishu_client.send_bot_message(chat_id, f"正在生成 {date_label} 每日结论...")
             if not ok:
                 _auto_disable_daily_broadcast(chat_id)
-                return
+                return False
         report = _generate_daily_report(date_str)
         # 先上传云端，拿到文档 URL 后再发消息
         cloud_url = _upload_daily_report_to_cloud(report, date_str)
@@ -2204,7 +2209,8 @@ def _bot_daily_broadcast(chat_id: str, date_str: str, is_scheduled: bool):
         ok = feishu_client.send_bot_message(chat_id, msg)
         if not ok:
             _auto_disable_daily_broadcast(chat_id)
-            return
+            return False
+        sent_ok = True
         # 保存到本地 CSV
         doc_dir = get_path("doc_dir")
         day_dir = os.path.join(doc_dir, date_str)
@@ -2224,7 +2230,14 @@ def _bot_daily_broadcast(chat_id: str, date_str: str, is_scheduled: bool):
         except Exception:
             pass
     finally:
+        # 跨机器播报状态：成功/失败都落一条，其他机器据此跳过同一天
+        try:
+            broadcast_state.record_result(chat_id, date_str, sent_ok,
+                                          "定时" if is_scheduled else "手动")
+        except Exception as e:
+            logger.warning("写入播报状态失败: %s", e)
         _clear_running_task(chat_id)
+    return sent_ok
 
 
 def _bot_weekly_broadcast(chat_id: str, date_str: str):
@@ -2300,6 +2313,7 @@ def _daily_scheduler_loop():
     - 进程被长任务卡住几十秒、或某次 30 秒轮询恰好错过整分钟，都能在下一个周期补上
     - 服务重启后如果当天还没播过，会立即补播（不会重复播）
     """
+    from src.services import broadcast_state
     logger.info("昨日播报调度器已启动")
     while not _daily_scheduler_stop.is_set():
         try:
@@ -2318,14 +2332,26 @@ def _daily_scheduler_loop():
                         continue
                     if chat_cfg.get("last_run_date") == cur_date:
                         continue  # 今天已播过
-                    # 文件锁防止多实例重复播报
-                    if not _try_acquire_broadcast_lock(chat_id, cur_date, cur_time):
-                        continue
                     # 播报前一工作日的数据
                     prev_workday = _get_prev_chinese_workday(now)
-                    logger.info("触发昨日播报(%s): chat=%s, 当前=%s, 播报日期=%s, 设定=%s",
+                    # 跨机器共享状态：别的机器已播过这个报告日期就跳过，避免重复播报
+                    claim_state, claim_rec = broadcast_state.claim(chat_id, prev_workday, cur_time)
+                    if claim_state == "exists":
+                        chat_cfg["last_run_date"] = cur_date  # 本地记账，避免每 30 秒反复查云端
+                        try:
+                            _save_daily_broadcast_config(cfg)
+                        except Exception:
+                            pass
+                        logger.info("跳过昨日播报(%s): chat=%s 已由其他机器播报",
+                                    prev_workday, chat_id[:12])
+                        continue
+                    if claim_state == "unavailable":
+                        # 云端不可用：回退本地文件锁，仍能防同机多进程重复播报
+                        if not _try_acquire_broadcast_lock(chat_id, cur_date, cur_time):
+                            continue
+                    logger.info("触发昨日播报(%s): chat=%s, 当前=%s, 播报日期=%s, 设定=%s, 状态=%s",
                                 "准点" if now_min == target_min else "补播",
-                                chat_id[:12], cur_date, prev_workday, report_time)
+                                chat_id[:12], cur_date, prev_workday, report_time, claim_state)
                     chat_cfg["last_run_date"] = cur_date  # 先记账，避免失败后每 30 秒重试造成刷屏
                     try:
                         _bot_daily_broadcast(chat_id, prev_workday, True)
