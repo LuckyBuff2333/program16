@@ -273,6 +273,27 @@ async def _on_startup():
             except Exception:
                 pass
 
+    # 后台预热看板缓存：冷启动首次计算要 60~90 秒（主表 6000+ 条 + CSV），
+    # 提前算好，用户打开「数据看板」时直接命中缓存
+    def _warm_dashboard_cache():
+        import time as _time
+        _time.sleep(8)
+        try:
+            from src.api.routes.report import dashboard_data as _dash_data, dashboard_dates as _dash_dates
+            _dash_data(date=None)
+            try:
+                _dash_dates()
+            except Exception as _e2:
+                _logger.warning("看板日期列表预热失败: %s", _e2)
+            _logger.info("看板缓存预热完成（今天 + 日期列表）")
+        except Exception as _e:
+            _logger.warning("看板缓存预热失败（不影响主服务）: %s", _e)
+
+    try:
+        threading.Thread(target=_warm_dashboard_cache, name="dashboard-warmup", daemon=True).start()
+    except Exception as _e:
+        _logger.warning("看板预热线程启动失败: %s", _e)
+
 async def _on_shutdown():
     """服务关闭时：设置所有取消标志，让轮询线程快速退出"""
     from src.api.routes import shared as _shared

@@ -518,3 +518,21 @@ flowchart TD
 - **实现文件**：`src/clients/jira_client.py`（方向校验 + 抓包时间解析）、`src/services/server_legacy.py`（复用解析）、`tests/test_text_time_guard.py`（新增 6 个用例）
 
 </details>
+
+<details>
+<summary><b>38. 数据看板：首次 85 秒 → 66 毫秒（启动预热 + 前端 SWR 缓存 + 时区修正）（2026-10-27）</b></summary>
+
+- **问题描述**：每次打开「数据看板」都要等很久；实测冷启动首次请求 `/api/dashboard/data` 耗时 **84.6 秒**，`/api/dashboard/dates` 26.3 秒，之后 8ms；切页面时前端还会重复请求
+- **根因**：
+  1. 后端其实有 3 层缓存（主表全量 2 分钟、看板数据今天 2 分钟/历史 24 小时、批次详情 5 分钟/24 小时、日期列表 5 分钟），但**冷启动第一次必须真算**：主表 6000+ 条 + 当天 CSV，约 85 秒
+  2. 前端没有任何缓存：`mounted()` 就 `loadDates() + loadDashboard()`，组件重新挂载/切页就再拉一遍
+  3. `isToday` 和默认日期用 `new Date().toISOString()`（UTC），东八区**每天 0~8 点会把“今天”算成昨天**，导致自动刷新失效、默认打开错日期
+- **解决方案**：
+  1. 服务启动后延迟 8 秒在后台线程预热 `dashboard_data(今天)` 与 `dashboard_dates()`，把 85 秒摊到启动期
+  2. 新增 `frontend/src/composables/apiCache.ts`：内存缓存 + 同 URL 并发去重 + 可选 sessionStorage，`cachedApi(url, {ttl, force})`
+  3. 看板接入缓存：日期列表 5 分钟、看板数据今天 60 秒/历史 6 小时；有缓存时不显示 loading；手动刷新/生成报告后 `invalidateCache('/api/dashboard/')` 强制重取；预热范围改为滚动最近 3 个月（原来写死 2026-08~10）
+  4. 日期相关统一改本地时区 `todayLocal()`，修复 0~8 点日期错误
+- **验证结果**：加预热后同一台机器冷启动首次请求 **66 毫秒**（原 84,627 毫秒），第二次 8 毫秒；前端构建通过（`index-rovceCTY.js`）
+- **实现文件**：`src/api/app.py`（启动预热）、`frontend/src/composables/apiCache.ts`（新增）、`frontend/src/panels/DataDashboardPanel.vue`（缓存接入 + 时区修正）
+
+</details>

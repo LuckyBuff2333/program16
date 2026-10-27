@@ -170,6 +170,21 @@
 // @ts-nocheck
 import { ElMessage } from 'element-plus';
 import { api } from '../composables/utils';
+import { cachedApi, peekCached, invalidateCache } from '../composables/apiCache';
+
+function todayLocal() {
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+}
+
+function monthRange(monthsBack = 2) {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() - monthsBack, 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return { start: fmt(start), end: fmt(end) };
+}
 
 const REFRESH_INTERVAL = 30 * 60 * 1000;
 
@@ -177,7 +192,7 @@ export default {
   name: 'DataDashboardPanel',
   data() {
     return {
-      selectedDate: new Date().toISOString().slice(0, 10),
+      selectedDate: todayLocal(),
       dateList: [],
       datesLoading: false,
       dataLoading: false,
@@ -192,7 +207,7 @@ export default {
     };
   },
   computed: {
-    isToday() { return this.selectedDate === new Date().toISOString().slice(0, 10); },
+    isToday() { return this.selectedDate === todayLocal(); },
     filteredBatches() {
       let list = this.batches;
       if (this.sourceFilter) list = list.filter(b => b.source === this.sourceFilter);
@@ -216,8 +231,9 @@ export default {
       return `${s}s`;
     },
     async handleManualRefresh() {
-      await this.loadDashboard();
-      this.loadDates();
+      invalidateCache('/api/dashboard/');
+      await this.loadDashboard(true);
+      this.loadDates(true);
       this.prefetchMonths();
     },
     async genBatchReport() {
@@ -256,14 +272,21 @@ export default {
       } catch (e) { ElMessage.error('生成月报失败: ' + (e.message || e)); }
       finally { this.genLoading.monthly = false; }
     },
-    async loadDates() {
-      this.datesLoading = true;
-      try { const r = await api('/api/dashboard/dates'); this.dateList = r.data || []; } catch (_) {} finally { this.datesLoading = false; }
-    },
-    async loadDashboard() {
-      this.dataLoading = true;
+    async loadDates(force = false) {
+      const hit = !force && peekCached('/api/dashboard/dates', 300000);
+      if (!hit) this.datesLoading = true;
       try {
-        const r = await api(`/api/dashboard/data?date=${this.selectedDate}`);
+        const r = await cachedApi('/api/dashboard/dates', { ttl: 300000, force });
+        this.dateList = r.data || [];
+      } catch (_) {} finally { this.datesLoading = false; }
+    },
+    async loadDashboard(force = false) {
+      const ttl = this.isToday ? 60000 : 6 * 3600 * 1000;
+      const url = `/api/dashboard/data?date=${this.selectedDate}`;
+      const hit = !force && peekCached(url, ttl);
+      if (!hit) this.dataLoading = true;
+      try {
+        const r = await cachedApi(url, { ttl, force });
         this.summary = r.data.summary || { total_batches: 0, total_submit: 0, total_ok: 0, total_fail: 0, pc_batches: 0, online_batches: 0, submit_rate: 0, has_daily_report: false };
         this.batches = (r.data.batches || []).map(b => ({ ...b, _detail: b._detail || null, _detailLoading: false, _genLoading: false }));
         this.dashDetail = { bt_match: 0, bt_ok: 0, bt_fail: 0 };
@@ -305,7 +328,7 @@ export default {
       this.stopAutoRefresh();
       this.refreshTimer = setInterval(() => {
         // 今天的数据每 30 分钟刷新（可能有新批次在跑）
-        if (this.isToday) { this.loadDashboard(); this.loadDates(); }
+        if (this.isToday) { this.loadDashboard(true); this.loadDates(true); }
         // 预热只在首次加载时执行，后续不再重复（历史数据不会变）
       }, REFRESH_INTERVAL);
     },
@@ -313,7 +336,8 @@ export default {
     async prefetchMonths() {
       // 预热 8/9/10 月份的云端缓存，只拉取未缓存的日期
       try {
-        const r = await api('/api/dashboard/prefetch_range?start_date=2026-08-01&end_date=2026-10-31');
+        const range = monthRange(2);
+        const r = await api(`/api/dashboard/prefetch_range?start_date=${range.start}&end_date=${range.end}`);
         const d = r.data;
         if (d && d.fetched > 0) {
           console.log(`看板预热: 新拉取 ${d.fetched} 天, 缓存命中 ${d.cached} 天`);
