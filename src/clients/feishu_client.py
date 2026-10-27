@@ -379,7 +379,9 @@ def _paginate_get(url: str, headers: dict, params: dict,
                     _data_not_ready_count += 1
                     if _data_not_ready_count <= 5:
                         wait = 5 * _data_not_ready_count
-                        logger.info("%s: 数据未就绪(code=1254607)，第 %d 次重试，等待 %ds", log_msg, _data_not_ready_count, wait)
+                        # 前 2 次重试用 debug 减少日志噪音（大表索引重建是正常行为）
+                        _log = logger.debug if _data_not_ready_count <= 2 else logger.info
+                        _log("%s: 数据未就绪(code=1254607)，第 %d 次重试，等待 %ds", log_msg, _data_not_ready_count, wait)
                         time.sleep(wait)
                         continue
                     # 重试耗尽，抛出明确错误
