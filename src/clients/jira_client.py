@@ -909,7 +909,7 @@ def _extract_times_from_text(text: str, year: str = "", date_str: str = "") -> l
     return times
 
 
-def extract_trigger_time_from_issue(issue: dict, return_source: bool = False, skip_attachment: bool = False):
+def _extract_trigger_time_from_issue_impl(issue: dict, return_source: bool = False, skip_attachment: bool = False):
     """从 issue 中提取触发时间，按优先级逐级回退
 
     提取顺序：
@@ -1020,6 +1020,92 @@ def extract_trigger_time_from_issue(issue: dict, return_source: bool = False, sk
             logger.info("从附件文件名中提取到时间: %s", att_time)
             return _ret(_supplement_from_gmlogger(issue, att_time), "附件名")
     return _ret("", "")
+
+
+LOG_NAME_HINTS = ("gmlog", "logcat", "dltlog", "bllog", "logger", "pataclogger", "log_")
+LOG_ARCHIVE_SUFFIXES = (".7z", ".rar", ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".zst")
+VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv")
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif")
+
+
+def parse_log_filename_time(filename: str):
+    """从日志包文件名解析抓包时间，返回 (时间字符串, datetime) 或 None
+
+    兼容 gmlogger_2026_10_27_17_15_0.tar.gz、GMLog_20261027_152355.7z、
+    pataclogger_2026_10_27_17_15_0.part01.rar、784da062_20261027_173855.7z 等。
+    """
+    t = _parse_filename_time(filename, "gmlogger")
+    if t:
+        return t
+    m = _COMPACT_RE.search(filename)
+    if not m:
+        return None
+    try:
+        from datetime import datetime as _dt
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        h, mi = int(m.group(4)), int(m.group(5))
+        s = int(m.group(6)) if m.group(6) else 0
+        ts = _dt(y, mo, d, h, mi, s)
+        return (ts.strftime("%Y-%m-%d %H:%M:%S"), ts)
+    except (ValueError, IndexError):
+        return None
+
+
+def get_log_capture_time(issue: dict):
+    """从 issue 的日志附件文件名取抓包时间（datetime），没有则 None"""
+    fields = issue.get("fields") or {}
+    for att in fields.get("attachment") or []:
+        fname = att.get("filename", "") or ""
+        if not fname:
+            continue
+        lower = fname.lower()
+        if lower.endswith(VIDEO_SUFFIXES) or lower.endswith(IMAGE_SUFFIXES):
+            continue
+        is_logish = (any(h in lower for h in LOG_NAME_HINTS)
+                     or lower.endswith(".log") or lower.endswith(".txt")
+                     or lower.endswith(LOG_ARCHIVE_SUFFIXES))
+        if not is_logish:
+            continue
+        t = parse_log_filename_time(fname)
+        if t:
+            return t[1]
+    return None
+
+
+def extract_trigger_time_from_issue(issue: dict, return_source: bool = False, skip_attachment: bool = False):
+    """提取触发时间（在原有文本/字段/附件逻辑外增加方向校验）
+
+    事件必然发生在日志抓包之前，所以文本/字段提取到的时间如果**晚于抓包时间 5 分钟以上**，
+    说明抓到的是别的时间（隔天、隔小时），改为用日志附件名时间兜底；兜底不可用时返回空。
+    """
+    def _ret(time_str, source_label):
+        return (time_str, source_label) if return_source else time_str
+
+    if return_source:
+        time_str, source = _extract_trigger_time_from_issue_impl(issue, return_source=True,
+                                                                  skip_attachment=skip_attachment)
+    else:
+        time_str, source = _extract_trigger_time_from_issue_impl(issue,
+                                                                 skip_attachment=skip_attachment), ""
+    if not time_str:
+        return _ret("", source)
+    cap = get_log_capture_time(issue)
+    if cap is None:
+        return _ret(time_str, source)
+    parsed = _parse_datetime_string(str(time_str))
+    if not parsed:
+        return _ret(time_str, source)
+    if (parsed[1] - cap).total_seconds() <= 300:
+        return _ret(time_str, source)
+    logger.warning("提取时间 %s 晚于日志抓包时间 %s，判定不可信", time_str, cap)
+    if skip_attachment:
+        return _ret("", "rejected_after_capture")
+    fallback = extract_attachment_time(issue)
+    fb = _parse_datetime_string(str(fallback)) if fallback else None
+    if fb and (fb[1] - cap).total_seconds() <= 300:
+        logger.info("改用日志附件名时间兜底: %s", fallback)
+        return _ret(fallback, "附件名(抓包时间兜底)")
+    return _ret("", "rejected_after_capture")
 
 
 def extract_attachment_time(issue: dict) -> str:

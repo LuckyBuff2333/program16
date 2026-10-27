@@ -495,3 +495,26 @@ flowchart TD
 - **实现文件**：`src/services/trigger_ops.py`、`src/api/routes/trigger.py`、`src/api/routes/testing.py`、`src/api/routes/flow.py`、`src/pipeline.py`、`src/services/server_legacy.py`、`tests/test_trigger_meta_paths.py`（新增）
 
 </details>
+
+<details>
+<summary><b>37. 按来源族统计准确率 + 文本提取增加“不能晚于抓包”校验（2026-10-27）</b></summary>
+
+- **问题描述**：139 条按来源族统计：视频 100 条（正常 85、待确认 5、不可用 1、无参考 9）；文本/字段 35 条（正常 23、待确认 5、**不可用 7**）；图片 OCR 4 条全部无参考。**7 条不可用全部来自文本提取**，其中 4 条是“晚于日志抓包时间”（VCU-561394 晚 24 小时、VCU-561359 晚 7.7 小时、VCU-561358 晚 17.5 分钟、VCU-561093 晚 6.3 天），逻辑上不可能
+- **相关Bug号**：VCU-561394、VCU-561359、VCU-561358、VCU-561093（晚于抓包已修正）；VCU-561518、VCU-561493、VCU-561439（文本本身写的就是别的时间，需人工）
+- **根因**：
+  1. 视频提取有 ref_pool 校验，准确率明显更高（85% 正常，异常都是画面时钟与抓包时钟差 1~5 分钟）
+  2. 文本提取（标题/字段/评论/描述）直接返回第一个“看起来像时间”的值，没有方向约束：评论里写的时间可能是隔天、隔小时、甚至别的故障时间
+  3. 日志包抓包时间的解析能力之前只服务视频链路，文本链路拿不到
+- **解决方案**：
+  1. `jira_client` 新增 `parse_log_filename_time` / `get_log_capture_time`，识别 gmlogger/GMLog_/pataclogger/哈希名 等命名，`server_legacy._parse_any_log_filename_time` 改为复用
+  2. `extract_trigger_time_from_issue` 外包一层方向校验：提取时间晚于抓包时间 5 分钟以上 → 判为不可信，改用日志附件名时间兜底；`skip_attachment=True` 时直接返回空并标记 `rejected_after_capture`
+  3. 视频链路不变（已有 ref_pool 校验）
+- **验证结果**：
+  - 文本族 35 条重跑：4 条晚于抓包的记录被修正（VCU-561394 10-27 16:03→10-26 16:04:42、VCU-561359 →10-26 18:36:06、VCU-561358 →02:29:20、VCU-561093 →10-13 06:49:16），全部变成“正常”
+  - 139 条总量：正常 108→**112**，待确认 10，不可用 8→**4**，无参考 13
+  - 各族正常率：视频 85%、文本/字段 77%、图片 OCR 0%（无参考）
+  - 新增 6 个单测（晚于抓包兜底/早于抓包保留/轻微晚于保留/无日志附件不校验/skip_attachment 直接拒绝/日志包名解析），全量 **86 passed**
+- **遗留**：文本仍有 3 条不可用——VCU-561518（描述早 2.8 小时）、VCU-561493（字段早 1 小时）、VCU-561439（评论是 2 天前的时间），这类是业务描述本身写的时间与本次事件不一致，只能人工确认
+- **实现文件**：`src/clients/jira_client.py`（方向校验 + 抓包时间解析）、`src/services/server_legacy.py`（复用解析）、`tests/test_text_time_guard.py`（新增 6 个用例）
+
+</details>

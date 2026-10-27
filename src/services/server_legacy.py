@@ -3416,23 +3416,9 @@ _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif")
 
 
 def _parse_any_log_filename_time(fname: str):
-    """从任意日志包文件名解析时间（gmlogger/GMLog_/pataclogger/哈希名 等）"""
-    from src.clients.jira_client import _parse_filename_time, _COMPACT_RE
-    t = _parse_filename_time(fname, "gmlogger")
-    if t:
-        return t
-    m = _COMPACT_RE.search(fname)
-    if not m:
-        return None
-    try:
-        from datetime import datetime
-        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        h, mi = int(m.group(4)), int(m.group(5))
-        s = int(m.group(6)) if m.group(6) else 0
-        ts = datetime(y, mo, d, h, mi, s)
-        return (ts.strftime("%Y-%m-%d %H:%M:%S"), ts)
-    except (ValueError, IndexError):
-        return None
+    """从日志包文件名解析抓包时间（复用 jira_client 的实现）"""
+    from src.clients.jira_client import parse_log_filename_time
+    return parse_log_filename_time(fname)
 
 
 def _diag_gmlogger_times(attachments: list) -> list:
