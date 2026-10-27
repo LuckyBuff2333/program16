@@ -869,6 +869,16 @@ async def test_batch_ai_extract_times(request: Request):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@router.get("/api/test/video_ocr_stats", response_model=ApiResponse)
+def video_ocr_stats():
+    """视频 OCR 统计（进程内累计）：整帧/ROI/跳帧/投票命中
+
+    用于观察几天真实数据后，判断 ROI 兜底是否值得保留。
+    """
+    from src.services.server_legacy import _VIDEO_OCR_STATS
+    return _ok(dict(_VIDEO_OCR_STATS), "视频 OCR 统计（服务重启后清零）")
+
+
 @router.post("/api/test/batch_ai_filter", response_model=ApiResponse)
 async def test_batch_ai_filter(request: Request):
     """步骤3：过滤候选记录。顺序：多维表格去重 → AI初步分析过滤"""

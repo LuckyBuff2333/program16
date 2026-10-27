@@ -658,3 +658,16 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`（整帧优先、`_vote_from_texts`、`_frame_signature`/`_same_frame`、`_VIDEO_OCR_STATS`）
 
 </details>
+
+<details>
+<summary><b>46. 视频 OCR 统计可观测化：每视频日志 + 查询接口（2026-10-27）</b></summary>
+
+- **问题描述**：上一版新增的 `_VIDEO_OCR_STATS` 只存在进程内存里、没有任何输出，无法用“几天真实数据”判断 ROI 兜底是否值得保留
+- **解决方案**：
+  1. 每个视频处理结束（`finally`，含早退/失败）打一行 INFO：`视频 OCR 统计(<文件名>): 整帧帧=N ROI帧=M 跳过帧=K 投票命中=V`
+  2. 新增只读接口 `GET /api/test/video_ocr_stats`，返回进程内累计的 `videos/roi_frames/full_frames/skipped_frames/vote_hits`
+- **使用方式**：跑几天批量提取后看日志里的 `视频 OCR 统计` 行，或直接请求接口；若连续多天 `ROI帧=0`，即可删掉 ROI 兜底代码
+- **验证结果**：编译通过、全量 86 passed；接口与日志均在现有流程内，不影响提取结果
+- **实现文件**：`src/services/server_legacy.py`（每视频统计日志）、`src/api/routes/testing.py`（统计接口）
+
+</details>

@@ -4933,6 +4933,10 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
         video_name = video_att.get("filename", "")
         if not video_url:
             continue
+        _full_start = _VIDEO_OCR_STATS["full_frames"]
+        _roi_start = _VIDEO_OCR_STATS["roi_frames"]
+        _skip_start = _VIDEO_OCR_STATS["skipped_frames"]
+        _vote_start = _VIDEO_OCR_STATS["vote_hits"]
         ts = None  # 初始化：避免 OCR/文件名解析均未命中时 UnboundLocalError
         video_label = f"{bugid} [{vi+1}/{len(ranked_videos)}] {video_name}"
         # 为当前视频找到最接近的 gmlogger（按接近度排序 ref_pool）
@@ -5640,6 +5644,13 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
         except Exception as e:
             logger.warning("视频帧提取：处理视频 %s 时异常: %s", video_label, e)
         finally:
+            # 每视频统计：便于观察 ROI/投票是否真的有价值（连续几天 roi_frames 恒为 0 就可以删 ROI）
+            logger.info("视频 OCR 统计(%s): 整帧帧=%d ROI帧=%d 跳过帧=%d 投票命中=%d",
+                        video_name,
+                        max(0, _VIDEO_OCR_STATS["full_frames"] - _full_start),
+                        max(0, _VIDEO_OCR_STATS["roi_frames"] - _roi_start),
+                        max(0, _VIDEO_OCR_STATS["skipped_frames"] - _skip_start),
+                        max(0, _VIDEO_OCR_STATS["vote_hits"] - _vote_start))
             # 统一清理临时目录：无论成功、失败、命中返回还是 continue，都删除下载的视频文件
             if tmp_dir:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
