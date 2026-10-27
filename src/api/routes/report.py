@@ -26,6 +26,55 @@ _cloud_dates_cache = {"ts": 0, "data": None}  # 云端日期列表缓存，5 分
 _CLOUD_DATES_TTL = 300  # 5 分钟
 _cloud_data_hash = {}  # {key: hash} 记录上次保存的数据哈希，未变化时跳过上传
 
+# ── 主表全量记录缓存（避免 5 处重复拉取 6000+ 条）──
+_main_table_cache = {}  # {"ts": float, "data": list, "app_table": str}
+_main_table_lock = threading.Lock()
+_MAIN_TABLE_TTL = 120  # 2 分钟
+
+
+def _get_main_table_records(force: bool = False) -> list:
+    """获取主表全量记录（共享缓存 + 请求合并，防止并发重复拉取）
+
+    :param force: 强制刷新缓存
+    :return: 记录列表，失败返回 []
+    """
+    from src.clients import feishu_client
+    cfg = load_config().get("feishu_bitable", {})
+    app_token = cfg.get("app_token", "")
+    table_id = cfg.get("table_id", "")
+    if not app_token or not table_id:
+        return []
+    cache_key = f"{app_token}:{table_id}"
+    # 快速路径：缓存命中且未过期
+    if not force:
+        cached = _main_table_cache.get(cache_key)
+        if cached and time.time() - cached["ts"] < _MAIN_TABLE_TTL:
+            return cached["data"]
+    # 慢路径：加锁，防止并发请求同时拉取
+    with _main_table_lock:
+        # 双重检查：可能在等锁期间已被其他线程刷新
+        if not force:
+            cached = _main_table_cache.get(cache_key)
+            if cached and time.time() - cached["ts"] < _MAIN_TABLE_TTL:
+                return cached["data"]
+        try:
+            records = feishu_client.list_bitable_records(app_token, table_id, timeout=60)
+            _main_table_cache[cache_key] = {
+                "ts": time.time(), "data": records, "app_table": cache_key,
+            }
+            logger.info("主表全量缓存已刷新: %d 条", len(records))
+            return records
+        except Exception as e:
+            logger.warning("主表全量拉取失败: %s，尝试使用过期缓存", e)
+            # 回退到过期缓存（有总比没有好）
+            stale = _main_table_cache.get(cache_key)
+            if stale:
+                logger.info("使用过期缓存: %d 条（%ds 前）",
+                            len(stale["data"]), int(time.time() - stale["ts"]))
+                return stale["data"]
+            return []
+
+
 # ── 批次详情缓存（内存 + 云端 JSON）──
 _batch_detail_cache = {}  # {(date, batch): {"ts": float, "data": dict}}
 _BATCH_DETAIL_TTL_TODAY = 300  # 今天: 5 分钟
@@ -265,17 +314,14 @@ def report_daily_refresh(date: str = Query(default=None, description="日期 YYY
     report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
     jira_set = set(jira_exec.keys())
     bt_map = {}
-    if app_token and table_id:
-        try:
-            records = feishu_client.list_bitable_records(app_token, table_id)
-            for rec in records:
-                fields = rec.get("fields", {})
-                jira_key = _bitable_text(fields.get(bugid_field, ""))
-                if jira_key and jira_key in jira_set:
-                    bt_map.setdefault(jira_key, []).append(
-                        _flatten_bitable_record_all(fields, report_field))
-        except Exception as e:
-            logger.warning("今日报表刷新：多维表格查询失败: %s", e)
+    records = _get_main_table_records()
+    if records:
+        for rec in records:
+            fields = rec.get("fields", {})
+            jira_key = _bitable_text(fields.get(bugid_field, ""))
+            if jira_key and jira_key in jira_set:
+                bt_map.setdefault(jira_key, []).append(
+                    _flatten_bitable_record_all(fields, report_field))
     BATCH_COLS = ["jira号", "执行结果", "触发时间", "执行时间", "备注"]
     rows = []
     for jira_no, exec_info in jira_exec.items():
@@ -378,17 +424,14 @@ def report_daily_summary(date: str = Query(default=None, description="日期 YYY
     report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
     jira_set = set(jira_exec.keys())
     bt_map = {}
-    if app_token and table_id:
-        try:
-            records = feishu_client.list_bitable_records(app_token, table_id)
-            for rec in records:
-                fields = rec.get("fields", {})
-                jira_key = _bitable_text(fields.get(bugid_field, ""))
-                if jira_key and jira_key in jira_set:
-                    bt_map.setdefault(jira_key, []).append(
-                        _flatten_bitable_record_all(fields, report_field))
-        except Exception as e:
-            logger.warning("今日汇总：多维表格查询失败: %s", e)
+    records = _get_main_table_records()
+    if records:
+        for rec in records:
+            fields = rec.get("fields", {})
+            jira_key = _bitable_text(fields.get(bugid_field, ""))
+            if jira_key and jira_key in jira_set:
+                bt_map.setdefault(jira_key, []).append(
+                    _flatten_bitable_record_all(fields, report_field))
     success_count = fail_count = pending_count = 0
     durations, analysis_durations = [], []
     too_long_count = 0
@@ -697,8 +740,8 @@ def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-D
                 jid = (r.get("jira号") or "").strip()
                 if jid:
                     all_jira_set.add(jid)
-        if app_token and table_id and all_jira_set:
-            records = feishu_client.list_bitable_records(app_token, table_id)
+        if all_jira_set:
+            records = _get_main_table_records()
             bt_all_map = {}  # {jira: [records]}
             for rec in records:
                 fields = rec.get("fields", {})
@@ -829,20 +872,19 @@ def dashboard_task_overview(
             app_token = cfg.get("app_token", "")
             table_id = cfg.get("table_id", "")
             bugid_field = cfg.get("bugid_field", "jira号")
-            if app_token and table_id:
-                records = feishu_client.list_bitable_records(app_token, table_id)
-                id_set = set(all_ids)
-                for rec in records:
-                    fields = rec.get("fields", {})
-                    jk = _bt(fields.get(bugid_field, ""))
-                    if jk and jk in id_set:
-                        bt_map.setdefault(jk, []).append({
-                            "result": _bt(fields.get("分析结果", "")).strip(),
-                            "done_time": _bt(fields.get("分析完成时间", "")).strip(),
-                            "duration": _bt(fields.get("分析耗时", "")).strip(),
-                            "error_info": (_bt(fields.get("错误信息", "")) or "")[:120],
-                            "human_review": _bt(fields.get("人工审核结果", "")).strip(),
-                        })
+            records = _get_main_table_records()
+            id_set = set(all_ids)
+            for rec in records:
+                fields = rec.get("fields", {})
+                jk = _bt(fields.get(bugid_field, ""))
+                if jk and jk in id_set:
+                    bt_map.setdefault(jk, []).append({
+                        "result": _bt(fields.get("分析结果", "")).strip(),
+                        "done_time": _bt(fields.get("分析完成时间", "")).strip(),
+                        "duration": _bt(fields.get("分析耗时", "")).strip(),
+                        "error_info": (_bt(fields.get("错误信息", "")) or "")[:120],
+                        "human_review": _bt(fields.get("人工审核结果", "")).strip(),
+                    })
         except Exception as e:
             logger.warning("任务总览-多维表格查询失败: %s", e)
     # ── 3. 分类统计（时间匹配：只取本次执行后的分析记录） ──
@@ -1081,8 +1123,8 @@ def dashboard_batch_detail(
         table_id = cfg.get("table_id", "")
         bugid_field = cfg.get("bugid_field", "jira号")
         report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
-        if app_token and table_id and jira_ids_set:
-            records = feishu_client.list_bitable_records(app_token, table_id)
+        if jira_ids_set:
+            records = _get_main_table_records()
             from src.api.routes.shared import bitable_text as _bt
             for rec in records:
                 fields = rec.get("fields", {})

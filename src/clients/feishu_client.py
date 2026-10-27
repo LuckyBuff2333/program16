@@ -313,7 +313,8 @@ def _bitable_headers() -> dict:
 
 
 def _paginate_get(url: str, headers: dict, params: dict,
-                   log_msg: str = "", retry_on_token_expire: bool = False) -> list:
+                   log_msg: str = "", retry_on_token_expire: bool = False,
+                   timeout: int = 30) -> list:
     """飞书 API 分页拉取通用辅助：自动翻页直到 has_more=False
 
     :param url: API 地址
@@ -321,6 +322,7 @@ def _paginate_get(url: str, headers: dict, params: dict,
     :param params: 查询参数（page_token 由内部自动管理）
     :param log_msg: 日志描述
     :param retry_on_token_expire: 遇到 token 过期错误码时自动刷新重试一次
+    :param timeout: 单页请求超时秒数（默认 30，大表可调大）
     :return: 所有页的 items 列表
     """
     all_items = []
@@ -341,7 +343,7 @@ def _paginate_get(url: str, headers: dict, params: dict,
         if page_token:
             params["page_token"] = page_token
         try:
-            resp = httpx.get(url, headers=headers, params=params, timeout=30, verify=False)
+            resp = httpx.get(url, headers=headers, params=params, timeout=timeout, verify=False)
         except (httpx.ReadTimeout, httpx.ConnectTimeout) as _te:
             _timeout_retry += 1
             if _timeout_retry <= 2:
@@ -598,7 +600,7 @@ def get_wiki_node_app_token(wiki_token: str) -> str:
 
 def list_bitable_records(app_token: str, table_id: str,
                          view_id: str = None, page_size: int = 500,
-                         filter_expr: str = None) -> list:
+                         filter_expr: str = None, timeout: int = 30) -> list:
     """获取多维表格记录（自动分页，支持 Token/Cookie 两种模式）
 
     :param app_token: 多维表格 app_token
@@ -606,6 +608,7 @@ def list_bitable_records(app_token: str, table_id: str,
     :param view_id: 可选的视图 ID
     :param page_size: 每页记录数（最大 500）
     :param filter_expr: 可选的过滤表达式，如 'CurrentValue.[jira号] = "VCU-xxx"'
+    :param timeout: 单页请求超时秒数（默认 30，大表可调大）
     :return: 记录列表，每条为 {"record_id": str, "fields": dict}
     """
     # Cookie 模式：使用内部 API
@@ -620,7 +623,7 @@ def list_bitable_records(app_token: str, table_id: str,
         params["filter"] = filter_expr
     log_msg = "Bitable 过滤查询" if filter_expr else "获取 Bitable 记录失败"
     all_records = _paginate_get(url, _bitable_headers(), params, log_msg,
-                                retry_on_token_expire=True)
+                                retry_on_token_expire=True, timeout=timeout)
     logger.info("Bitable 记录获取完成: app=%s, table=%s, 共 %d 条%s",
                 app_token, table_id, len(all_records),
                 f" (filter)" if filter_expr else "")
