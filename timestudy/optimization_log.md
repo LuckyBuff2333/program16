@@ -643,3 +643,18 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`（净删除约 1.1 万字符）
 
 </details>
+
+<details>
+<summary><b>45. 视频 OCR：多帧投票 + 静帧跳过 + ROI 兜底顺序调整（2026-10-27）</b></summary>
+
+- **问题描述**：单帧 OCR 不稳定（相邻帧时有时无、偶发误读）；静态画面会重复 OCR 浪费时间；上一轮把 ROI 放在整帧之前，实测 3 个视频 ROI 一次都没命中，反而每帧多一次 OCR
+- **实测数据**（3 个视频）：整帧 OCR 全部命中（0s/2s/5s），ROI 命中 0 次；顺序调整后 VCU-561533 从 18.1s 降到 7.8s
+- **解决方案**：
+  1. **整帧优先、ROI 兜底**：每帧先整帧 OCR，整帧文本里没有时间才裁状态栏/任务栏放大 2.5x 再 OCR（实测 ROI 很少需要，但保留兜底）
+  2. **多帧投票**：把每帧已 OCR 的文本收集起来，循环结束仍未命中时，对“同一 HH:MM 出现 ≥2 次”的候选投票，且必须通过参考池校验才采用（复用文本，不重复识别）
+  3. **静帧跳过**：相邻帧做 32x18 灰度签名比对，差异 ≤1.5 视为相同，跳过 OCR（静态画面常见）
+  4. 新增 `_VIDEO_OCR_STATS` 统计（videos/roi_frames/full_frames/skipped_frames/vote_hits），便于后续调参
+- **验证结果**：VCU-561531 → 2026-10-19 21:05:00（第 3 秒）、VCU-561519 → 2026-10-27 13:53:00（第 6 秒）、VCU-561533 → 2026-10-27 17:50:00（第 1 秒）；全量 86 passed；统计显示 10 帧中整帧命中 10、ROI 0、投票 0（投票是兜底路径）
+- **实现文件**：`src/services/server_legacy.py`（整帧优先、`_vote_from_texts`、`_frame_signature`/`_same_frame`、`_VIDEO_OCR_STATS`）
+
+</details>

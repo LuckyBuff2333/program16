@@ -3974,6 +3974,53 @@ def _get_ocr_reader():
     return _easyocr_reader
 
 
+# 视频 OCR 统计（ROI 命中 / 整帧 / 静帧跳过 / 投票命中），用于后续调参
+_VIDEO_OCR_STATS = {"videos": 0, "roi_frames": 0, "full_frames": 0, "skipped_frames": 0, "vote_hits": 0}
+
+
+def _frame_signature(frame):
+    """帧缩略签名（32x18 灰度），用于判断相邻帧是否相同"""
+    import cv2
+    small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (32, 18), interpolation=cv2.INTER_AREA)
+    return small.astype("float32")
+
+
+def _same_frame(a, b, tol: float = 1.5) -> bool:
+    try:
+        import numpy as np
+        return float(np.mean(np.abs(a - b))) <= tol
+    except Exception:
+        return False
+
+
+def _vote_from_texts(texts, ref_pool, gm_ref_dt, tol):
+    """多帧投票（复用已 OCR 文本）：同一 HH:MM 出现 ≥2 次且通过参考池校验才采用"""
+    from collections import Counter
+    votes = Counter()
+    for _sec, text in texts:
+        if not text:
+            continue
+        fixed = _fix_ocr_char_confusion(_fix_ocr_missing_colon(text))
+        m = _OCR_TIME_ONLY_RE.search(fixed)
+        if m:
+            votes[_normalize_ocr_time(m.group(1))] += 1
+    if not votes:
+        return "", 0
+    hm, n = votes.most_common(1)[0]
+    if n < 2:
+        return "", 0
+    date = ref_pool[0] if ref_pool else gm_ref_dt
+    if date is None:
+        return "", 0
+    cand = f"{date.year:04d}-{date.month:02d}-{date.day:02d} {hm}"
+    parsed = _parse_datetime_string(cand)
+    if not parsed:
+        return "", 0
+    if ref_pool and not any(abs((dt - parsed[1]).total_seconds()) <= tol for dt in ref_pool):
+        return "", 0
+    return cand, n
+
+
 def _ocr_frame_regions(frame) -> str:
     """对状态栏/任务栏等小区域做高倍 OCR
 
@@ -4971,27 +5018,43 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
                 continue
             first_full = ""
             first_partial = ""
+            _VIDEO_OCR_STATS["videos"] += 1
+            _collected_texts = []  # [(sec, text)] 供循环结束后投票（复用已 OCR 文本）
             for _phase in [0]:
                 if True:
                     logger.info("视频兜底提取(%s)：截取 %d 帧（0~8s 每秒 + 10/15s 兜底）",
                                 video_label, len(frames))
                 
+                _prev_sig = None
                 for sec, frame in frames:
-                    # ROI 优先：状态栏/任务栏放大 OCR；若已读到时间就不再做整帧 OCR
+                    # 静帧跳过：与上一帧几乎相同就不重复 OCR（静态画面常见）
+                    _sig = _frame_signature(frame)
+                    if _prev_sig is not None and _same_frame(_sig, _prev_sig):
+                        _VIDEO_OCR_STATS["skipped_frames"] += 1
+                        logger.debug("视频兜底提取(%s)：第%d秒与上一帧相同，跳过 OCR", video_label, sec + 1)
+                        continue
+                    _prev_sig = _sig
+                    # 整帧 OCR 优先；整帧没读到时间时再用状态栏/任务栏 ROI 兜底
                     try:
-                        _roi_text = _ocr_frame_regions(frame)
-                    except Exception:
-                        _roi_text = ""
-                    _roi_has_time = bool(_roi_text) and bool(
-                        _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
-                    try:
-                        results = [] if _roi_has_time else (_ocr_readtext(None, frame) or [])
+                        results = _ocr_readtext(None, frame) or []
                     except Exception as e:
                         logger.warning("视频兜底提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
                         continue
                     all_text = " ".join(r[1] for r in results)
-                    if _roi_text:
-                        all_text = f"{_roi_text} {all_text}"
+                    _has_time = bool(all_text) and bool(
+                        _OCR_TIME_FULL_RE.search(all_text) or _OCR_TIME_ONLY_RE.search(all_text))
+                    _roi_has_time = False
+                    if not _has_time:
+                        try:
+                            _roi_text = _ocr_frame_regions(frame) or ""
+                        except Exception:
+                            _roi_text = ""
+                        if _roi_text:
+                            all_text = f"{_roi_text} {all_text}"
+                            _roi_has_time = bool(
+                                _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
+                    _VIDEO_OCR_STATS["roi_frames" if _roi_has_time else "full_frames"] += 1
+                    _collected_texts.append((sec, all_text))
                     # 诊断日志：打印 OCR 实际读到的原文
                     logger.info("视频兜底提取(%s)：第%d秒 OCR 原文: %s", video_label, sec + 1, (all_text[:120] or "(空)"))
                     if all_text.strip():
@@ -5124,6 +5187,20 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
                                         best_12h_cand = (ts, ext_dt)
                                 if ts and not first_partial:
                                     first_partial = ts
+            # 循环结束仍未命中：用已 OCR 文本做多帧投票（同一时间 ≥2 次且通过校验才采用）
+            if not first_full and not first_partial and _collected_texts:
+                try:
+                    _vote_ts, _vote_n = _vote_from_texts(_collected_texts, video_ref_pool, gm_ref_dt, _match_tolerance)
+                except Exception:
+                    _vote_ts, _vote_n = "", 0
+                if _vote_ts:
+                    logger.info("视频兜底命中(%s, 多帧投票%d票): %s", video_label, _vote_n, _vote_ts)
+                    cache[cache_key] = {"time": _vote_ts, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                    _save_video_time_cache()
+                    _timestudy_trace(bugid, "vote:hit")
+                    _VIDEO_OCR_STATS["vote_hits"] += 1
+                    return _vote_ts
+
             # OCR 完全失败时，尝试从视频文件名提取时间（回退方案）
             if not first_full and not first_partial:
                 _timestudy_trace(bugid, "fn:try")
