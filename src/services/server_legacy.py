@@ -3919,7 +3919,7 @@ def _rapid_ocr_readtext(image, _already_enhanced: bool = False):
         return []
     try:
         h, w = image.shape[:2]
-        # 仅对小尺寸原始帧放大，已二值化/锐化的图像跳过（帧差法 ROI 已 3x 放大）
+        # 仅对小尺寸原始帧放大，已二值化/锐化的图像跳过（ROI 已放大，跳过二次放大）
         if not _already_enhanced and w < 1280:
             mag_ratio = 1.5
             enlarged = cv2.resize(image, (int(w * mag_ratio), int(h * mag_ratio)),
@@ -3974,10 +3974,6 @@ def _get_ocr_reader():
     return _easyocr_reader
 
 
-# 帧差法开关：实测收益为 0（55 次尝试 0 成功），默认关闭；需要时改 True 再观察
-_VIDEO_FRAME_DIFF_ENABLED = False
-
-
 def _ocr_frame_regions(frame) -> str:
     """对状态栏/任务栏等小区域做高倍 OCR
 
@@ -4016,7 +4012,7 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
     流程：RapidOCR → 失败/不可用时回退 EasyOCR
     返回 readtext 结果列表（每项 [bbox, text, conf]）。
 
-    _already_enhanced=True 时跳过图像放大（用于帧差法已二值化+锐化的 ROI）。
+    _already_enhanced=True 时跳过图像放大（用于已放大/增强过的 ROI 图像）。
 
     过滤规则：
     1. 置信度过低的时间类文本（数字/冒号/斜杠）会被过滤掉
@@ -4551,118 +4547,6 @@ def _extract_video_frames_gpu(video_path: str, positions: list = None, num_frame
     cap.release()
     logger.info("视频帧提取：OpenCV CPU 解码，截取 %d 帧", len(frames))
     return frames
-
-
-def _frame_diff_clock_ocr(reader, frames):
-    """帧差法自动定位时钟变化区域并 OCR（不依赖固定位置）
-
-    原理：视频里只有时钟数字在变化，其他 UI 元素不动。
-    1. 取前 N 帧（≥2），计算相邻帧像素差（高阈值过滤压缩噪点）
-    2. 形态学清理 + 连通域分析定位最大变化簇 = 时钟位置
-    3. 对最佳帧（最后一帧，避免关键帧解码问题）裁剪 + 放大 3x + 二值化 + 锐化
-    4. 对增强区域单独 OCR，合并原始帧结果返回
-
-    返回 all_text（可直接用于时间正则匹配），失败返回空字符串。
-    """
-    import numpy as np
-    import cv2
-    if len(frames) < 2:
-        return ""
-    sorted_frames = sorted(frames, key=lambda x: x[0])
-    h, w = sorted_frames[0][1].shape[:2]
-    logger.info("帧差法时钟定位：开始分析 %d 帧（%dx%d）", len(sorted_frames), w, h)
-    # 计算相邻帧灰度差值并累积（高阈值过滤压缩噪点）
-    diff_accum = np.zeros((h, w), dtype=np.float32)
-    pair_count = 0
-    for i in range(len(sorted_frames) - 1):
-        gray1 = cv2.cvtColor(sorted_frames[i][1], cv2.COLOR_BGR2GRAY).astype(np.float32)
-        gray2 = cv2.cvtColor(sorted_frames[i + 1][1], cv2.COLOR_BGR2GRAY).astype(np.float32)
-        diff = cv2.absdiff(gray1, gray2)
-        _, mask = cv2.threshold(diff, 50, 255, cv2.THRESH_BINARY)
-        diff_accum += mask.astype(np.float32)
-        pair_count += 1
-    if pair_count == 0:
-        return ""
-    diff_accum /= pair_count
-    if diff_accum.max() < 10:
-        logger.info("帧差法：画面几乎无变化（max=%.1f），跳过", diff_accum.max())
-        return ""
-    # 二值化 + 形态学清理（去除散点噪点，保留连续变化区域）
-    change_thresh = max(50.0, diff_accum.max() * 0.5)
-    _, binary_mask = cv2.threshold(diff_accum, change_thresh, 255, cv2.THRESH_BINARY)
-    binary_mask = binary_mask.astype(np.uint8)
-    kernel_clean = np.ones((5, 5), np.uint8)
-    binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel_clean)
-    binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel_clean)
-    # 连通域分析：找面积最大的变化簇（时钟数字变化区域）
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_mask)
-    x1, y1, x2, y2 = 0, 0, 0, 0
-    if num_labels > 1:
-        # 跳过背景（label 0），取面积最大的连通域
-        areas = stats[1:, cv2.CC_STAT_AREA]
-        best_label = int(np.argmax(areas)) + 1
-        best_area = int(stats[best_label, cv2.CC_STAT_AREA])
-        if best_area > 50:  # 至少 50 像素
-            x1 = int(stats[best_label, cv2.CC_STAT_LEFT])
-            y1 = int(stats[best_label, cv2.CC_STAT_TOP])
-            bw = int(stats[best_label, cv2.CC_STAT_WIDTH])
-            bh = int(stats[best_label, cv2.CC_STAT_HEIGHT])
-            x2 = x1 + bw
-            y2 = y1 + bh
-            logger.info("帧差法：最大连通域 label=%d area=%d bbox=[%d,%d,%d,%d]",
-                        best_label, best_area, x1, y1, x2, y2)
-    # 连通域失败时回退投影法
-    if x2 - x1 < 10 or y2 - y1 < 10:
-        row_sum = np.sum(diff_accum, axis=1)
-        col_sum = np.sum(diff_accum, axis=0)
-        if row_sum.max() < 1 or col_sum.max() < 1:
-            logger.info("帧差法：未找到显著变化区域")
-            return ""
-        rows_active = np.where(row_sum > max(row_sum) * 0.3)[0]
-        cols_active = np.where(col_sum > max(col_sum) * 0.3)[0]
-        if len(rows_active) == 0 or len(cols_active) == 0:
-            logger.info("帧差法：投影未找到变化区域")
-            return ""
-        y1, y2 = int(rows_active[0]), int(rows_active[-1])
-        x1, x2 = int(cols_active[0]), int(cols_active[-1])
-    # 紧凑 padding（不强制正方形化，保留原始矩形形状）
-    pad = 15
-    x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
-    x2, y2 = min(w, x2 + pad), min(h, y2 + pad)
-    crop_w, crop_h = x2 - x1, y2 - y1
-    if crop_w < 20 or crop_h < 10:
-        logger.info("帧差法：候选区域太小（%dx%d），跳过", crop_w, crop_h)
-        return ""
-    logger.info("帧差法：时钟候选区域 x=[%d,%d] y=[%d,%d]（%dx%d）", x1, x2, y1, y2, crop_w, crop_h)
-    # 使用最后一帧做 OCR（避免第一帧关键帧解码不完整的问题）
-    ref_frame = sorted_frames[-1][1]
-    ref_sec = sorted_frames[-1][0]
-    clock_roi = ref_frame[y1:y2, x1:x2]
-    # 增强：灰度 → 放大 3x → 自适应二值化 → 锐化
-    gray_roi = cv2.cvtColor(clock_roi, cv2.COLOR_BGR2GRAY)
-    scale = 3
-    enlarged = cv2.resize(gray_roi, (crop_w * scale, crop_h * scale), interpolation=cv2.INTER_CUBIC)
-    binary = cv2.adaptiveThreshold(enlarged, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                    cv2.THRESH_BINARY, 15, 5)
-    kernel_sharp = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]], dtype=np.float32)
-    sharpened = cv2.filter2D(binary, -1, kernel_sharp)
-    # OCR 增强区域（已二值化+锐化，跳过放大）
-    try:
-        roi_results = _ocr_readtext(reader, sharpened, _already_enhanced=True)
-    except Exception as e:
-        logger.warning("帧差法 OCR 失败: %s", e)
-        roi_results = []
-    # 合并：参考帧全帧 OCR + 差值区域 OCR（去重）
-    combined = list(_ocr_readtext(reader, ref_frame))
-    seen = set(r[1] for r in combined if len(r) > 1)
-    for r in roi_results:
-        text = r[1] if len(r) > 1 else ""
-        if text and text not in seen:
-            combined.append(r)
-            seen.add(text)
-    all_text = " ".join(r[1] for r in combined if len(r) > 1)
-    logger.info("帧差法 OCR 结果: %s", all_text[:200] if all_text else "(空)")
-    return all_text
 
 
 def _clean_video_time_cache_locked():
@@ -5240,95 +5124,6 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
                                         best_12h_cand = (ts, ext_dt)
                                 if ts and not first_partial:
                                     first_partial = ts
-            # 帧差法回退：默认关闭（2026-10-27 实测 55 次尝试 0 成功，且每次多花 2~3 秒）
-            if _VIDEO_FRAME_DIFF_ENABLED and not first_full and not first_partial:
-                all_frames = list(frames)
-                if len(all_frames) >= 2:
-                    logger.info("视频兜底提取(%s)：标准帧OCR未识别到时间，尝试帧差法", video_label)
-                    diff_text = _frame_diff_clock_ocr(None, all_frames)
-                    if diff_text:
-                        diff_text = _fix_ocr_missing_colon(diff_text)
-                        diff_text = _fix_ocr_char_confusion(diff_text)
-                        diff_text = _preprocess_ocr_datetime(diff_text)
-                        _timestudy_update_ctx(bugid, ocr_text=diff_text[:200])
-                        m = _OCR_TIME_FULL_RE.search(diff_text)
-                        if m:
-                            parsed = _parse_datetime_string(_normalize_ocr_time(m.group(1)))
-                            if parsed:
-                                ts, ext_dt = parsed
-                                if any(abs((dt - ext_dt).total_seconds()) <= _match_tolerance for dt in video_ref_pool):
-                                    logger.info("视频兜底命中(%s, 帧差法+时间戳重合): %s", video_label, ts)
-                                    cache[cache_key] = {"time": ts, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
-                                    _save_video_time_cache()
-                                    _timestudy_trace(bugid, "diff:hit")
-                                    return ts
-                                if not first_full:
-                                    first_full = ts
-                                if video_ref_pool and not first_full:
-                                    d_orig = min(abs((dt - ext_dt).total_seconds()) for dt in video_ref_pool)
-                                    if ext_dt.hour < 12:
-                                        dt_alt = ext_dt + timedelta(hours=12)
-                                    else:
-                                        dt_alt = ext_dt - timedelta(hours=12)
-                                    ts_alt = dt_alt.strftime("%Y-%m-%d %H:%M:%S")
-                                    d_alt = min(abs((dt - dt_alt).total_seconds()) for dt in video_ref_pool)
-                                    if d_alt < d_orig and d_alt < best_12h_diff:
-                                        best_12h_diff = d_alt
-                                        best_12h_cand = (ts_alt, dt_alt)
-                                    elif d_orig < best_12h_diff:
-                                        best_12h_diff = d_orig
-                                        best_12h_cand = (ts, ext_dt)
-                        m = _OCR_TIME_ONLY_RE.search(diff_text)
-                        # 日期补充：只能用日志包日期（gmlogger），禁止用视频上传时间
-                        closest_date = None
-                        if not closest_date and closest_gm and closest_gm[0]["filename_time"]:
-                            closest_date = (closest_gm[0]["filename_time"].year,
-                                            closest_gm[0]["filename_time"].month,
-                                            closest_gm[0]["filename_time"].day)
-                        if not closest_date and gm_dates:
-                            closest_date = gm_dates[0]
-                        if m and closest_date:
-                            time_str = _normalize_ocr_time(m.group(1))
-                            _corr_ref = (closest_gm[0]["filename_time"] if closest_gm and closest_gm[0]["filename_time"] else gm_ref_dt)
-                            if _corr_ref:
-                                time_str = _correct_ocr_by_reference(time_str, _corr_ref)
-                            y, mo, d = closest_date
-                            full_orig = f"{y:04d}-{mo:02d}-{d:02d} {time_str}"
-                            parsed_orig = _parse_datetime_string(full_orig)
-                            if parsed_orig:
-                                ts, ext_dt = parsed_orig
-                                orig_match = any(abs((dt - ext_dt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
-                                if ext_dt.hour < 12:
-                                    dt_alt = ext_dt + timedelta(hours=12)
-                                else:
-                                    dt_alt = ext_dt - timedelta(hours=12)
-                                ts_alt = dt_alt.strftime("%Y-%m-%d %H:%M:%S")
-                                alt_match = any(abs((dt - dt_alt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
-                                if orig_match and not alt_match:
-                                    logger.info("视频兜底命中(%s, 帧差法+日期补充): %s", video_label, ts)
-                                    cache[cache_key] = {"time": ts, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
-                                    _save_video_time_cache()
-                                    _timestudy_trace(bugid, "diff:hit")
-                                    return ts
-                                if alt_match and not orig_match:
-                                    logger.info("视频兜底命中(%s, 帧差法+12h): %s", video_label, ts_alt)
-                                    cache[cache_key] = {"time": ts_alt, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
-                                    _save_video_time_cache()
-                                    _timestudy_trace(bugid, "diff:hit")
-                                    return ts
-                                if not orig_match and not alt_match and video_ref_pool:
-                                    d_orig = min(abs((dt - ext_dt).total_seconds()) for dt in video_ref_pool)
-                                    d_alt = min(abs((dt - dt_alt).total_seconds()) for dt in video_ref_pool)
-                                    if d_alt < d_orig and d_alt < best_12h_diff:
-                                        best_12h_diff = d_alt
-                                        best_12h_cand = (ts_alt, dt_alt)
-                                    elif d_orig < best_12h_diff:
-                                        best_12h_diff = d_orig
-                                        best_12h_cand = (ts, ext_dt)
-                                if not first_partial:
-                                    first_partial = ts
-                    if not first_full and not first_partial:
-                        logger.info("视频兜底提取(%s)：帧差法未识别到时钟", video_label)
             # OCR 完全失败时，尝试从视频文件名提取时间（回退方案）
             if not first_full and not first_partial:
                 _timestudy_trace(bugid, "fn:try")
