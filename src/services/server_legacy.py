@@ -3928,7 +3928,7 @@ def _rapid_ocr_readtext(image, _already_enhanced: bool = False):
             mag_ratio = 1.0
             enlarged = image
         scale = enlarged.shape[0] / h if enlarged is not image else 1.0
-        result, elapse = engine(enlarged, box_thresh=0.3, text_score=0.15)
+        result, elapse = engine(enlarged, box_thresh=0.3, text_score=0.15, use_cls=False)
         if not result:
             return []
         items = []
@@ -3938,7 +3938,7 @@ def _rapid_ocr_readtext(image, _already_enhanced: bool = False):
                 bbox = [[p[0] / scale, p[1] / scale] for p in bbox]
             # RapidOCR bbox 是 [[x1,y1],[x2,y1],[x2,y2],[x1,y2]] 格式，与 EasyOCR 兼容
             items.append([bbox, text, conf])
-        logger.info("RapidOCR 识别完成: %d 条文本 (放大%.1fx), 耗时 det=%.2fs rec=%.2fs cls=%.2fs",
+        logger.info("RapidOCR 识别完成: %d 条文本 (放大%.1fx), 耗时 det=%.2fs cls=%.2fs rec=%.2fs",
                     len(items), mag_ratio if scale != 1.0 else 1.0,
                     elapse[0] if len(elapse) > 0 else 0,
                     elapse[1] if len(elapse) > 1 else 0,
@@ -3972,6 +3972,38 @@ def _get_ocr_reader():
             _easyocr_reader = _OCR_UNAVAILABLE
             return None
     return _easyocr_reader
+
+
+# 帧差法开关：实测收益为 0（55 次尝试 0 成功），默认关闭；需要时改 True 再观察
+_VIDEO_FRAME_DIFF_ENABLED = False
+
+
+def _ocr_frame_regions(frame) -> str:
+    """对状态栏/任务栏等小区域做高倍 OCR
+
+    录屏时间通常出现在：手机顶部状态栏、Windows 右下角任务栏。
+    先裁这两块放大 2.5x 再识别，区域小、速度快、抗内容干扰。
+    """
+    import cv2
+    parts = []
+    try:
+        h, w = frame.shape[:2]
+        regions = [
+            (0, 0, w, max(1, int(h * 0.10))),                 # 顶部状态栏
+            (int(w * 0.55), int(h * 0.94), w, h),             # 右下任务栏
+        ]
+        for (x1, y1, x2, y2) in regions:
+            if x2 - x1 < 40 or y2 - y1 < 12:
+                continue
+            crop = frame[y1:y2, x1:x2]
+            crop = cv2.resize(crop, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+            res = _ocr_readtext(None, crop, _already_enhanced=True) or []
+            txt = " ".join(str(r[1]) for r in res if len(r) > 1)
+            if txt.strip():
+                parts.append(txt)
+    except Exception:
+        return ""
+    return " ".join(parts)
 
 
 def _ocr_readtext(reader, image, _already_enhanced: bool = False):
@@ -5045,36 +5077,37 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
             logger.warning("视频兜底提取：视频文件不存在 %s", video_label)
             continue
         try:
-            # 步骤1：提取封面帧
-            cover_frames = _extract_video_frames_gpu(video_path, positions=[0], use_gpu=True) or []
-            if not cover_frames:
-                logger.warning("视频兜底提取：无法提取封面帧 %s，尝试下一个", video_label)
+            # 步骤1：一次性截帧：0~8 秒每秒 1 帧 + 10/15 秒兜底帧
+            # 依据 2026-10-27 实测：时钟最晚在第 5 秒出现，且单帧 OCR 不稳定（相邻帧时有时无）
+            video_positions = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 15]
+            frames = _extract_video_frames_gpu(video_path, positions=video_positions, use_gpu=True) or []
+            if not frames:
+                logger.warning("视频兜底提取：无法提取视频帧 %s，尝试下一个", video_label)
                 _timestudy_trace(bugid, "frame:fail")
                 continue
-            
-            # 步骤2：OCR封面帧，如未识别到时间再提取第2~6秒
             first_full = ""
             first_partial = ""
-            for _phase in [0, 1]:
-                if _phase == 0:
-                    frames = cover_frames
-                    logger.info("视频兜底提取(%s)：截取 1 帧（封面）", video_label)
-                else:
-                    if first_full or first_partial:
-                        break
-                    other_frames = _extract_video_frames_gpu(video_path, positions=[1, 2, 3, 4, 5], use_gpu=True) or []
-                    if not other_frames:
-                        break
-                    frames = other_frames
-                    logger.info("视频兜底提取(%s)：封面未识别到时间，继续截取前6帧", video_label)
+            for _phase in [0]:
+                if True:
+                    logger.info("视频兜底提取(%s)：截取 %d 帧（0~8s 每秒 + 10/15s 兜底）",
+                                video_label, len(frames))
                 
                 for sec, frame in frames:
+                    # ROI 优先：状态栏/任务栏放大 OCR；若已读到时间就不再做整帧 OCR
                     try:
-                        results = _ocr_readtext(None, frame)
+                        _roi_text = _ocr_frame_regions(frame)
+                    except Exception:
+                        _roi_text = ""
+                    _roi_has_time = bool(_roi_text) and bool(
+                        _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
+                    try:
+                        results = [] if _roi_has_time else (_ocr_readtext(None, frame) or [])
                     except Exception as e:
                         logger.warning("视频兜底提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
                         continue
                     all_text = " ".join(r[1] for r in results)
+                    if _roi_text:
+                        all_text = f"{_roi_text} {all_text}"
                     # 诊断日志：打印 OCR 实际读到的原文
                     logger.info("视频兜底提取(%s)：第%d秒 OCR 原文: %s", video_label, sec + 1, (all_text[:120] or "(空)"))
                     if all_text.strip():
@@ -5207,13 +5240,9 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
                                         best_12h_cand = (ts, ext_dt)
                                 if ts and not first_partial:
                                     first_partial = ts
-            # 帧差法回退：标准帧OCR未提取到时间时，用帧差法自动定位时钟区域
-            if not first_full and not first_partial:
-                all_frames = list(cover_frames)
-                extra_pos = [s for s in [1, 2, 3, 4, 5] if s not in [f[0] for f in all_frames]]
-                if extra_pos:
-                    extra_frames = _extract_video_frames_gpu(video_path, positions=extra_pos, use_gpu=True) or []
-                    all_frames.extend(extra_frames)
+            # 帧差法回退：默认关闭（2026-10-27 实测 55 次尝试 0 成功，且每次多花 2~3 秒）
+            if _VIDEO_FRAME_DIFF_ENABLED and not first_full and not first_partial:
+                all_frames = list(frames)
                 if len(all_frames) >= 2:
                     logger.info("视频兜底提取(%s)：标准帧OCR未识别到时间，尝试帧差法", video_label)
                     diff_text = _frame_diff_clock_ocr(None, all_frames)

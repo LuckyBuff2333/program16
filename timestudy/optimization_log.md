@@ -609,3 +609,22 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`（current/change_sec）、`frontend/src/panels/TroubleshootPanel.vue`（两列 + 变化量展示）
 
 </details>
+
+<details>
+<summary><b>43. 视频 OCR 优化：关帧差法、扩帧窗口、ROI 优先、修正耗时日志（2026-10-27）</b></summary>
+
+- **问题描述**：视频时间提取靠“前 6 帧 OCR”，存在三个问题：① 帧差法回退几乎不生效却要额外耗时；② 时钟偶尔第 5 秒才出现，窗口没有余量；③ 单帧 OCR 不稳定（相邻帧时有时无）
+- **实测数据**：
+  - 帧差法：10-27 共尝试 **55 次，成功 0 次**（OCR 结果为“西助中心 #林物有容 A”这类垃圾文本），每次多花 2~3 秒
+  - 6 个真实视频抽样：5 个在 0~5 秒内命中，1 个第 5 秒才命中；单帧存在“空/有”抖动（如 3 秒空、4 秒有）
+  - OCR 耗时日志标签写错：rapidocr `elapse` 顺序是 det/cls/rec，原日志把 cls 和 rec 标反，误以为 cls 占 1 秒
+- **解决方案**：
+  1. 帧差法加开关 `_VIDEO_FRAME_DIFF_ENABLED=False`（默认关闭，保留代码）
+  2. 截帧窗口 0~5s 改为 **0~8s 每秒 1 帧 + 10/15s 兜底帧**（命中即停，多数视频只跑 1~3 帧）
+  3. 新增 `_ocr_frame_regions()`：先裁**顶部状态栏**与**右下任务栏**放大 2.5x 做 ROI OCR；ROI 已读到时间就跳过整帧 OCR（省一半调用），否则再整帧兜底
+  4. `_rapid_ocr_readtext` 关闭角度分类 `use_cls=False`（实测 cls 仅 0.0~0.04s，收益小但无副作用）
+  5. 修正 OCR 耗时日志标签为 det/cls/rec 正确顺序
+- **验证结果**：VCU-561531 仍命中 2026-10-19 21:05:00（第 3 秒），VCU-561519 仍命中 2026-10-27 13:53:00（第 6 秒），全量 86 passed
+- **实现文件**：`src/services/server_legacy.py`（截帧窗口、ROI OCR、帧差法开关、cls 关闭、日志标签）
+
+</details>
