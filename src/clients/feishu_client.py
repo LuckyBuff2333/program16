@@ -343,11 +343,11 @@ def _paginate_get(url: str, headers: dict, params: dict,
         if page_token:
             params["page_token"] = page_token
         try:
-            resp = httpx.get(url, headers=headers, params=params, timeout=timeout, verify=False)
-        except (httpx.ReadTimeout, httpx.ConnectTimeout) as _te:
+            resp = httpx.get(url, headers=headers, params=params, timeout=30, verify=False)
+        except httpx.TransportError as _te:
             _timeout_retry += 1
-            if _timeout_retry <= 2:
-                logger.info("%s: 请求超时(%s)，第 %d 次重试", log_msg, type(_te).__name__, _timeout_retry)
+            if _timeout_retry <= 3:
+                logger.info("%s: 网络错误(%s)，第 %d 次重试", log_msg, type(_te).__name__, _timeout_retry)
                 time.sleep(_timeout_retry)
                 continue
             raise

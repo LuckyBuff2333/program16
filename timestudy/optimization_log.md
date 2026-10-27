@@ -386,3 +386,17 @@ flowchart TD
 - **实现文件**：`src/services/trigger_ops.py`（扩展列、自检、参考时间登记、安全写入）、`src/api/routes/testing.py`（参考时间登记 + 自学习记录）、`src/api/routes/trigger.py`（参考时间登记）、`src/pipeline.py`（分析前自检）、`config/config.yaml`（自检阈值）、`tests/test_time_check.py`
 
 </details>
+
+<details>
+<summary><b>31. Initial Setting 字段短格式与时间-only 格式提取支持（2026-10-27）</b></summary>
+
+- **问题描述**：VCU-561149 的 Initial Setting 字段含 `10/26 13；43`（短格式），VCU-561124 含 `13；42`（仅有时间），均未被提取到，导致时间被错误 fallback 到 issue 创建日期或附件名时间
+- **相关Bug号**：VCU-561149、VCU-561124、VCU-561120、VCU-561145
+- **根因**：`_extract_from_custom_fields` 中 Initial Setting 字段只匹配完整格式（`YYYY-MM-DD HH:MM:SS` / `YYYY/MM/DD HH:MM:SS`），不支持 `MM/DD HH:MM` 短格式，也没有仅有时间 `HH:MM` 的匹配逻辑；分号分隔符也未被识别
+- **解决方案**：
+  1. 新增短格式正则 `_SHORT_DATE_RE` 匹配 `MM/DD HH:MM`（支持分号 `;`），无年份时从 issue 创建日期推断年份
+  2. 新增时间-only 正则 `_TIME_ONLY_RE` 匹配 `HH:MM`（支持分号 `;` 和可选秒数），无日期时从 issue 创建日期推断日期
+  3. 在 `_normalize_datetime_text` 中已支持分号 → 冒号标准化，两种新格式都放在 Initial Setting 字段全量扫描之后、操作顺序字段之前
+- **实现文件**：`src/clients/jira_client.py`
+
+</details>

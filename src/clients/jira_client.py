@@ -463,9 +463,45 @@ def _extract_from_custom_fields(issue: dict) -> str:
                             return ts.strftime(fmt)
                     except ValueError:
                         continue
+        # 短格式 MM/DD HH:MM（无年份，从 issue 创建日期推断年份，支持分号分隔符）
+        _SHORT_DATE_RE = re.compile(r"(\d{1,2})/(\d{1,2})\s+(\d{1,2})[:;]\s*(\d{2})(?::(\d{2}))?")
+        for m in _SHORT_DATE_RE.finditer(text):
+            try:
+                mo, d, hh, mm = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+                ss = int(m.group(5)) if m.group(5) else 0
+                if not (1 <= mo <= 12 and 1 <= d <= 31 and 0 <= hh <= 23 and 0 <= mm <= 59):
+                    continue
+                # 从 Jira issue 创建时间推断年份
+                created_yr = ((issue.get("fields") or {}).get("created") or "")[:4]
+                fallback_year = int(created_yr) if created_yr.isdigit() else datetime.now().year
+                ts = datetime(fallback_year, mo, d, hh, mm, ss)
+                result = ts.strftime("%Y-%m-%d %H:%M:%S")
+                logger.info("从字段[%s/%s] Initial Setting 短格式提取到时间: %s", fid, name, result)
+                return result
+            except (ValueError, TypeError):
+                continue
+        # 仅有时间 HH:MM（无日期，从 issue 创建日期推断日期，支持分号分隔符）
+        _TIME_ONLY_RE = re.compile(r"(?<!\d)(\d{1,2})[:;]\s*(\d{2})(?::(\d{2}))?(?!\d)")
+        for m in _TIME_ONLY_RE.finditer(text):
+            try:
+                hh, mm = int(m.group(1)), int(m.group(2))
+                ss = int(m.group(3)) if m.group(3) else 0
+                if not (0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59):
+                    continue
+                # 从 Jira issue 创建时间推断日期
+                created_date = ((issue.get("fields") or {}).get("created") or "")[:10]
+                if created_date and len(created_date) == 10:
+                    yr, mo, d = int(created_date[:4]), int(created_date[5:7]), int(created_date[8:10])
+                    if _is_valid_date(yr, mo, d):
+                        ts = datetime(yr, mo, d, hh, mm, ss)
+                        result = ts.strftime("%Y-%m-%d %H:%M:%S")
+                        logger.info("从字段[%s/%s] Initial Setting 时间-only提取到时间: %s", fid, name, result)
+                        return result
+            except (ValueError, TypeError):
+                continue
     # 兆底：操作顺序 / 执行结果字段中的时间
-    # 支持短格式 M/D HH:MM（无年份，从 issue 创建日期推断年份）
-    _SHORT_TIME_RE = re.compile(r'(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?')
+    # 支持短格式 M/D HH:MM（无年份，从 issue 创建日期推断年份），支持分号分隔符
+    _SHORT_TIME_RE = re.compile(r"(\d{1,2})/(\d{1,2})\s+(\d{1,2})[:;]\s*(\d{2})(?::(\d{2}))?")
     created = ((issue.get("fields") or {}).get("created") or "")[:4]
     fallback_year = int(created) if created.isdigit() else datetime.now().year
     for fid, value, name in operation_fields:

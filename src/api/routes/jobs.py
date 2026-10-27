@@ -1,5 +1,6 @@
 """跑批作业状态查询与停止：GET /api/jobs、GET /api/jobs/{job_id}、POST /api/jobs/{job_id}/stop"""
 import asyncio
+import inspect
 import threading
 
 from fastapi import APIRouter
@@ -30,8 +31,13 @@ def job_stream(job, gen_factory, flow_stop_event=None):
     async def _wrapped():
         err = ""
         try:
-            async for chunk in gen_factory():
-                yield chunk
+            gen = gen_factory()
+            if inspect.isasyncgen(gen):
+                async for chunk in gen:
+                    yield chunk
+            else:
+                for chunk in gen:
+                    yield chunk
         except asyncio.CancelledError:      # 客户端断开
             JOBS.finish(job.id, "cancelled", "客户端断开")
             raise
