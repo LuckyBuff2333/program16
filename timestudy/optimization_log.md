@@ -461,3 +461,21 @@ flowchart TD
 - **实现文件**：`src/services/troubleshoot_service.py`、`config/config.yaml`（本地修复）、`tests/test_troubleshoot_field.py`（新增）
 
 </details>
+
+<details>
+<summary><b>35. 时间自检改为方向敏感 + 放宽日志包命名识别（2026-10-27）</b></summary>
+
+- **问题描述**：139 条提取结果复查发现三类判定逻辑问题：① 118 条可对比记录里 107 条“提取时间早于抓包时间”（中位早 156 秒），这是正常现象，但旧规则按对称偏差判定，把大量正确结果标成待确认/不可用；② 21 条“无参考”里有 8 条其实日志包文件名带时间（GMLog_20261027_152355.7z、pataclogger_2026_10_27_17_15_0.part01.rar、784da062_20261027_173855.7z），只是识别规则只认 gmlogger/.log/.txt；③ 4 条文本时间晚于抓包数小时到 6 天（VCU-561093 +6.3 天、VCU-561394 +24 小时、VCU-561359 +7.7 小时、VCU-561358 +17.5 分钟），逻辑上不可能
+- **相关Bug号**：VCU-561093、VCU-561394、VCU-561359、VCU-561358、VCU-561518、VCU-561493、VCU-561480、VCU-561439
+- **根因**：
+  1. `self_check_trigger_time` 用 `abs(提取-参考)` 对称比较，而参考时间是日志包“抓包时间”，事件必然发生在其之前
+  2. `_diag_gmlogger_times` 只识别文件名含 gmlogger 或 .log/.txt 的附件，其他日志包命名（GMLog_/pataclogger/哈希_日期）解析不出时间
+  3. 文本提取（评论/字段/描述）没有“不能晚于抓包”的约束，评论里的时间可能是别的日期或误写
+- **解决方案**：
+  1. 自检改为方向敏感：晚于抓包 >300s → 不可用；30~300s → 待确认；早于抓包 ≤15 分钟 → 正常；15~60 分钟 → 待确认；>60 分钟 → 不可用
+  2. 新增 `_parse_any_log_filename_time` 并用 `_LOG_NAME_HINTS`/`_LOG_ARCHIVE_SUFFIXES` 放宽日志包识别，视频/图片排除；`_has_gmlogger_logs` 同步放宽 logcat/dltlog/bllog/logger/pataclogger
+  3. 对 139 条刷新自检列（参考时间/差秒/窗口命中/状态），对 12 条真正可疑重跑提取
+- **验证结果**：139 条状态由「正常 3 / 待确认 65 / 不可用 50 / 无参考 21」变为「正常 108 / 待确认 10 / 不可用 8 / 无参考 13」；有参考从 118 升到 126；重跑修正 4 条（VCU-561526 21:12→15:23:55、VCU-561460 20:50→17:00:59、VCU-561497 12:00→17:38:55、VCU-561433 14:27→16:57:35）；剩余 8 条保留不可用待人工确认（如 VCU-561394 文本时间晚 24 小时）
+- **实现文件**：`src/services/trigger_ops.py`（自检方向敏感）、`src/services/server_legacy.py`（日志包命名识别）、`tests/test_time_check.py`（更新分级用例）、`tests/test_log_name_parse.py`（新增 6 个用例）
+
+</details>

@@ -479,7 +479,9 @@ def _lookup_ref(bugid: str, ref_times: dict = None) -> str:
 # AI 侧实际日志过滤窗口中位约 6 秒、P90 约 30 秒，因此以 30 秒作为“窗口命中”阈值
 _TIME_WINDOW_SEC = 30
 _TIME_WARN_SEC = 30      # 超过即标记「待确认」
-_TIME_REJECT_SEC = 300   # 超过即标记「不可用」（建议不发起分析）
+_TIME_REJECT_SEC = 300   # 晚于抓包超过该值即「不可用」（抓包后不可能触发）
+_TIME_EARLY_OK_SEC = 900     # 早于抓包 ≤15 分钟：正常（事件本就发生在抓包前）
+_TIME_EARLY_WARN_SEC = 3600  # 早于抓包 15~60 分钟：待确认
 
 
 def _parse_time_text(text) -> "datetime | None":
@@ -498,25 +500,41 @@ def _parse_time_text(text) -> "datetime | None":
 
 
 def self_check_trigger_time(trigger_time, ref_time="", warn_sec: int = None,
-                            reject_sec: int = None) -> dict:
-    """触发时间自检（P0-2）：与日志包参考时间比对
+                            reject_sec: int = None, early_ok_sec: int = None,
+                            early_warn_sec: int = None) -> dict:
+    """触发时间自检：与日志包“抓包时间”比对（方向敏感）
 
-    :return: {"diff_sec": int|None, "window_hit": "是/否/无参考", "status": "正常/待确认/不可用/无参考"}
+    关键语义：参考时间是 gmlogger 的抓包时间，事件一定发生在抓包**之前**，
+    所以“提取时间早于抓包”是正常现象（实测 139 条里中位早 156 秒），
+    不能按对称偏差判错，否则会把大量正确结果标成待确认/不可用。
+    - 晚于抓包 > reject_sec(300s)：不可用（逻辑上不可能）
+    - 晚于抓包 warn_sec~reject_sec：待确认（时钟抖动）
+    - 早于抓包 ≤ early_ok_sec(15min)：正常
+    - 早于抓包 15~60min：待确认
+    - 早于抓包 > 60min：不可用（可能是日期/时钟错）
     """
     warn_sec = _TIME_WARN_SEC if warn_sec is None else int(warn_sec)
     reject_sec = _TIME_REJECT_SEC if reject_sec is None else int(reject_sec)
+    early_ok = _TIME_EARLY_OK_SEC if early_ok_sec is None else int(early_ok_sec)
+    early_warn = _TIME_EARLY_WARN_SEC if early_warn_sec is None else int(early_warn_sec)
     tt = _parse_time_text(trigger_time)
     ref = _parse_time_text(ref_time)
-    if tt is None:
+    if tt is None or ref is None:
         return {"diff_sec": None, "window_hit": "无参考", "status": "无参考"}
-    if ref is None:
-        return {"diff_sec": None, "window_hit": "无参考", "status": "无参考"}
-    diff = int(abs((tt - ref).total_seconds()))
-    if diff <= min(_TIME_WINDOW_SEC, warn_sec):
-        return {"diff_sec": diff, "window_hit": "是", "status": "正常"}
-    if diff <= reject_sec:
-        return {"diff_sec": diff, "window_hit": "否", "status": "待确认"}
-    return {"diff_sec": diff, "window_hit": "否", "status": "不可用"}
+    delta = int((tt - ref).total_seconds())  # >0 表示晚于抓包
+    diff = abs(delta)
+    window_hit = "是" if diff <= min(_TIME_WINDOW_SEC, warn_sec) else "否"
+    if delta > reject_sec:
+        status = "不可用"
+    elif delta > warn_sec:
+        status = "待确认"
+    elif -delta <= early_ok:
+        status = "正常"
+    elif -delta <= early_warn:
+        status = "待确认"
+    else:
+        status = "不可用"
+    return {"diff_sec": diff, "window_hit": window_hit, "status": status}
 
 
 def _trigger_time_meta(trigger_time, source: str = "", ref_time: str = "") -> dict:

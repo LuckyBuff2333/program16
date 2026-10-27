@@ -3158,7 +3158,8 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
     """
     names = [(a.get("filename", "") or "").lower() for a in attachments]
     # 有直接的 gmlogger/gmlog 文件、main.log 或任意 .log/.txt 文件就算有，不需要解压
-    if any("gmlogger" in n or "gmlog" in n or "main.log" in n or n.endswith(".log") or n.endswith(".txt") for n in names):
+    if any("gmlogger" in n or "gmlog" in n or "logcat" in n or "dltlog" in n or "bllog" in n
+           or "logger" in n or "main.log" in n or n.endswith(".log") or n.endswith(".txt") for n in names):
         return True
     headers, timeout = _jira_att_auth()
     for att in attachments:
@@ -3409,32 +3410,57 @@ def _diag_archive_read_heads(path: str, names: list, size: int = 65536) -> dict:
     return result
 
 
-def _diag_gmlogger_times(attachments: list) -> list:
-    """识别日志附件（gmlogger/.log/.txt）并解析文件名时间，返回 [(时间字符串, datetime)]"""
+_LOG_NAME_HINTS = ("gmlog", "logcat", "dltlog", "bllog", "logger", "pataclogger", "log_")
+_LOG_ARCHIVE_SUFFIXES = (".7z", ".rar", ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".zst")
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif")
+
+
+def _parse_any_log_filename_time(fname: str):
+    """从任意日志包文件名解析时间（gmlogger/GMLog_/pataclogger/哈希名 等）"""
     from src.clients.jira_client import _parse_filename_time, _COMPACT_RE
+    t = _parse_filename_time(fname, "gmlogger")
+    if t:
+        return t
+    m = _COMPACT_RE.search(fname)
+    if not m:
+        return None
+    try:
+        from datetime import datetime
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        h, mi = int(m.group(4)), int(m.group(5))
+        s = int(m.group(6)) if m.group(6) else 0
+        ts = datetime(y, mo, d, h, mi, s)
+        return (ts.strftime("%Y-%m-%d %H:%M:%S"), ts)
+    except (ValueError, IndexError):
+        return None
+
+
+def _diag_gmlogger_times(attachments: list) -> list:
+    """识别日志附件并解析文件名时间，返回 [(时间字符串, datetime)]
+
+    之前只认文件名含 "gmlogger" 或 .log/.txt 的附件，导致
+    GMLog_20261027_152355.7z / pataclogger_2026_10_27_17_15_0.part01.rar /
+    784da062_20261027_173855.7z 这类明明带时间的日志包被判成“无参考”。
+    """
     times = []
     for att in attachments:
         fname = att.get("filename", "") or ""
         if not fname:
             continue
         fn_lower = fname.lower()
-        if "gmlogger" in fn_lower:
-            t = _parse_filename_time(fname, "gmlogger")
-            if t:
-                times.append(t)
-        elif fn_lower.endswith(".log") or fn_lower.endswith(".txt"):
-            # .log/.txt 文件用通用时间正则解析文件名
-            m = _COMPACT_RE.search(fname)
-            if m:
-                try:
-                    from datetime import datetime
-                    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                    h, mi = int(m.group(4)), int(m.group(5))
-                    s = int(m.group(6)) if m.group(6) else 0
-                    ts = datetime(y, mo, d, h, mi, s)
-                    times.append((ts.strftime("%Y-%m-%d %H:%M:%S"), ts))
-                except (ValueError, IndexError):
-                    pass
+        # 视频/图片不是日志包
+        if fn_lower.endswith(_VIDEO_SUFFIXES) or fn_lower.endswith(_IMAGE_SUFFIXES):
+            continue
+        is_logish = (
+            any(h in fn_lower for h in _LOG_NAME_HINTS)
+            or fn_lower.endswith(".log") or fn_lower.endswith(".txt")
+            or fn_lower.endswith(_LOG_ARCHIVE_SUFFIXES)
+        )
+        if not is_logish:
+            continue
+        t = _parse_any_log_filename_time(fname)
+        if t:
+            times.append(t)
     return times
 
 
