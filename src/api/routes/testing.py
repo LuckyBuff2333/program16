@@ -5316,6 +5316,7 @@ async def test_adp_lookup(request: Request):
 
     async def event_generator():
         import time as _time
+        _t0 = _time.time()  # 批量执行起始时间
         loop = asyncio.get_event_loop()
         from src.clients import feishu_client, jira_client as _jc
         from src.services.adp_ops import run_adp_single, _get_adp_cfg, classify_adp_failure
@@ -5591,7 +5592,7 @@ async def test_adp_lookup(request: Request):
 
             # 本组完成后检查停止信号
             if _stop_event.is_set():
-                yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'fail': total_fail, 'message': '已停止'}, ensure_ascii=False)}\n\n"
+                yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'fail': total_fail, 'message': '已停止', 'total_elapsed': round(_time.time() - _t0, 1)}, ensure_ascii=False)}\n\n"
                 return
 
             # 本组完成统计
@@ -5605,7 +5606,7 @@ async def test_adp_lookup(request: Request):
 
             yield f"data: {_json.dumps({'type': 'batch_done', 'batch': group_idx, 'success': batch_ok, 'fail': batch_fail, 'skip': batch_skip}, ensure_ascii=False)}\n\n"
 
-        yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'fail': max(0, total_fail)}, ensure_ascii=False)}\n\n"
+        yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'fail': max(0, total_fail), 'total_elapsed': round(_time.time() - _t0, 1)}, ensure_ascii=False)}\n\n"
 
     # 注册作业：/api/jobs 可查进度，/api/jobs/{id}/stop 可单独停止本作业
     from src.core.job_registry import JOBS as _JOBS

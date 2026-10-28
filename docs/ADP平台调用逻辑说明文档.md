@@ -55,6 +55,123 @@ flowchart LR
 
 调用的是腾讯混元大模型知识引擎（LKE）的 ADP 平台接口，**不是本项目封装的接口**。
 
+### 凭据与配置参数（config.yaml adp 段）
+
+本项目使用两套独立的凭据体系：
+
+| 参数 | 值 | 用途 | 鉴权方式 |
+|---|---|---|---|
+| `app_key` | `skOjTaUWsqWhWYamAtTTaQpRXiqgGirNGEoJmwRlEptJQTDduXplKpFHcTwapQYOVxhbXKmTxuzKjtWuYSJCyPYLptOCLkGuvhQBwkXYXOHjvZtPPLiTdPuffyzorKKQ` | SSE 聊天接口 | Body 内携带 |
+| `app_id` | `2107062858696560449` | ADP 应用 ID（SGM-Log-Analysis） | MCP 管理接口参数 |
+| `space_id` | `default_space` | MCP 空间 ID（`describe_app_summary_list` 必填） | MCP 工具入参 |
+| `mcp_api_key` | `11IgBMeaQ15GQGUn6R9x92pghT38yMFANLy4vC75kaFUDJoxwWmyJpPDDMSQS1dI8` | MCP 管理接口 | Header Bearer Token |
+| `mcp_url` | `https://adp.cloud.tencent.com/plugin/mcp/921ad3a1-0def-4b8a-aaa6-4e5be898f511/mcp` | MCP 服务端点 | - |
+| `attach_api_key` | `c2e9188021fe686418627992aace130062e663940bc27629ba191672ba91547f` | dpportal 附件查询 | Header Bearer Token |
+
+**端点汇总：**
+
+| 服务 | 端点 | 协议 |
+|---|---|---|
+| SSE 聊天 | `https://wss.lke.cloud.tencent.com/adp/v2/chat` | HTTPS + SSE |
+| MCP 管理 | `https://adp.cloud.tencent.com/plugin/mcp/{plugin_id}/mcp` | HTTPS + JSON-RPC 2.0 |
+| 附件查询 | `https://dpportal.apps.saic-gm.com/api/logAnalysis/attachments` | HTTPS POST |
+| 沙箱文件 | `https://sandbox.adp.cloud.tencent.com/files?path=...` | HTTPS GET |
+
+**MCP 白名单工具及参数（`*` 为必填）：**
+
+| 工具名 | 用途 |
+|---|---|
+| `describe_app_summary_list` | 按应用名查找 app_id |
+| `describe_msg_record_list` | 消息记录列表（分页+多维过滤） |
+| `describe_record_trace_info` | 单条记录执行链路（trace_id 查询） |
+| `describe_conversation_message_list` | 会话上下文消息 |
+| `describe_unsatisfied_reply_list` | 不满意回复列表 |
+| `describe_msg_record_category_list` | 消息记录分类树 |
+
+> MCP 服务端共暴露 102 个工具（含写操作），本 skill 仅白名单上述 6 个只读 `describe_*` 工具。
+
+**各工具入参详解：**
+
+#### `describe_app_summary_list` — 应用列表
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `space_id` | string | ✅ | 空间 ID，本项目固定 `default_space` |
+| `page_number` | int | ❌ | 页码，从 0 开始，默认 0 |
+| `page_size` | int | ❌ | 每页数量，默认 15 |
+| `query` | string | ❌ | 模糊查询关键词（按应用名） |
+
+#### `describe_msg_record_list` — 消息记录列表
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `app_id` | string | ✅ | 应用 ID（本项目：`2107062858696560449`） |
+| `start_time` | int | ✅ | 起始时间，秒时间戳 |
+| `end_time` | int | ✅ | 结束时间，秒时间戳 |
+| `page_number` | int | ❌ | 页码，从 0 开始，默认 0 |
+| `page_size` | int | ❌ | 每页数量，默认 20（建议 ≤50） |
+| `query` | string | ❌ | 检索文本（对问题/答案做模糊匹配） |
+| `query_type` | string | ❌ | 检索类型：`SessionId` / `Question` / `Answer` |
+| `channel_type` | int | ❌ | 渠道类型：0=全部 2=体验页面 5=对话端API 6=应用API |
+| `call_result` | int | ❌ | 调用结果：0=全部 1=成功 2=失败 3=用户取消 |
+| `reply_method` | int | ❌ | 回复类型：0=全部 1=拒答 2=直接回复 3=审核失败 4=知识润色 6=工作流 |
+| `feedback_type` | int | ❌ | 反馈类型：-1=全部 0=未评价 1=点赞 2=点踩 |
+| `fail_reason` | string | ❌ | 失败原因：0=全部 1=审核失败 2=QPM上限 3=TPM上限 4=并发上限 5=系统异常 |
+| `category_id` | string | ❌ | 分类 ID |
+| `intent` | string | ❌ | 意图 |
+| `cursor` | string | ❌ | 分页游标（上一页取 `prev_cursor`，下一页取 `next_cursor`） |
+| `direction` | string | ❌ | 游标方向：`next` / `prev` |
+| `sort_order` | string | ❌ | 按创建时间排序：`asc` / `desc`，缺省不排序 |
+
+#### `describe_record_trace_info` — Trace 执行链路
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `app_id` | string | ✅ | 应用 ID |
+| `conversation_id` | string | ✅ | 会话 ID（SSE 返回的 `ConversationId`） |
+| `record_id` | string | ✅ | 聊天记录 ID（从 `describe_msg_record_list` 获取） |
+| `request_id` | string | ❌ | 请求 ID，用于关联本次查询 |
+
+#### `describe_conversation_message_list` — 会话消息列表
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `conversation_id` | string | ✅ | 会话 ID |
+| `app_id` | string | ❌ | 应用 ID（API 类型会话必填） |
+| `record_id` | string | ❌ | 查询锚点记录 ID |
+| `limit` | int | ❌ | 返回数量，默认 10，最大 50 |
+| `record_query_direction` | int | ❌ | 查询方向：1=向前（更早） 2=向后（更新） 3=双向 |
+
+#### `describe_unsatisfied_reply_list` — 不满意回复
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `app_id` | string | ✅ | 应用 ID |
+| `page_number` | int | ❌ | 页码，从 0 开始，默认 0 |
+| `page_size` | int | ❌ | 每页数量，最大 100 |
+
+#### `describe_msg_record_category_list` — 分类树
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `app_id` | string | ✅ | 应用 ID |
+
+**MCP 调用流程：**
+```
+1. POST initialize (protocolVersion: "2024-11-05")  → 获取 Mcp-Session-Id
+2. POST notifications/initialized (无需 body)
+3. POST tools/call {name: "<tool_name>", arguments: {...}}  → 解析 SSE/JSON 响应
+```
+
+**MCP 鉴权模式（skill mcp.json）：**
+
+| 模式 | 环境变量 | 用途 |
+|---|---|---|
+| `self_serve`（本项目使用） | `ADP_API_KEY` → config `mcp_api_key` | 自有应用管理 |
+| `platform/delegate` | `ADP_DELEGATE_API_KEY` | 代管其他企业应用（本项目不用） |
+
+> 安全约束：Authorization 头仅发往 `https://adp.cloud.tencent.com/` 前缀白名单内的 URL；白名单工具全为只读 `describe_*`，无写操作。
+
 ### 协议与端点
 
 | 项 | 值 |
