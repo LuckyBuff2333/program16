@@ -5379,6 +5379,11 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
         # 下载视频（流式下载，避免一次性加载到内存）
         video_path = None
         tmp_dir = None
+        # 记录当前视频开始时的 OCR 统计基线（用于 finally 中计算本视频增量）
+        _full_start = _VIDEO_OCR_STATS["full_frames"]
+        _roi_start = _VIDEO_OCR_STATS["roi_frames"]
+        _skip_start = _VIDEO_OCR_STATS["skipped_frames"]
+        _vote_start = _VIDEO_OCR_STATS["vote_hits"]
         try:
             # 下载子块：单独捕获下载异常，失败则跳过当前视频（临时目录由外层 finally 统一清理）
             try:
