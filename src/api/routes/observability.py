@@ -281,7 +281,7 @@ _LOCAL_DOC_SET_TTL = 300  # 5 分钟
 
 
 def _get_local_doc_set() -> set:
-    """扫描 case_reports/ 目录，返回所有已有 MD 文件的 case_id 集合（带缓存）"""
+    """扫描 case_reports/ + docs/ 目录，返回所有已有 MD 文件的 case_id 集合（带缓存）"""
     import time as _time
     global _local_doc_set, _local_doc_set_time
     now = _time.time()
@@ -289,21 +289,33 @@ def _get_local_doc_set() -> set:
         return _local_doc_set
 
     from src.config import PROJECT_ROOT
-    doc_dir = os.path.join(PROJECT_ROOT, _REPORTS_DIR_NAME)
     doc_set = set()
+
+    # 1. 扫描 case_reports/ 目录（含 pc/online 子目录）
+    doc_dir = os.path.join(PROJECT_ROOT, _REPORTS_DIR_NAME)
     if os.path.isdir(doc_dir):
         for entry in os.listdir(doc_dir):
             entry_path = os.path.join(doc_dir, entry)
             if os.path.isfile(entry_path) and entry.endswith(".md"):
-                doc_set.add(entry[:-3])  # case_reports/{case_id}.md
+                doc_set.add(entry[:-3])
             elif os.path.isdir(entry_path):
-                # case_reports/pc/ 或 case_reports/online/ 子目录
                 for fn in os.listdir(entry_path):
                     if fn.endswith(".md"):
                         doc_set.add(fn[:-3])
+
+    # 2. 扫描 docs/ 子目录（日期文件夹下的 {case_id}.md）
+    docs_dir = os.path.join(PROJECT_ROOT, "docs")
+    if os.path.isdir(docs_dir):
+        for entry in os.listdir(docs_dir):
+            entry_path = os.path.join(docs_dir, entry)
+            if os.path.isdir(entry_path):
+                for fn in os.listdir(entry_path):
+                    if fn.endswith(".md"):
+                        doc_set.add(fn[:-3])
+
     _local_doc_set = doc_set
     _local_doc_set_time = now
-    logger.info("本地报告集合已缓存: %d 个 (case_reports/)", len(doc_set))
+    logger.info("本地报告集合已缓存: %d 个 (case_reports/ + docs/)", len(doc_set))
     return doc_set
 
 
@@ -477,7 +489,9 @@ async def batch_fetch_reports(limit: int = 20, source: str = ""):
             skip_count = sum(1 for r in results if r["status"] == "skip")
             fail_count = sum(1 for r in results if r["status"] == "fail")
 
-            remaining_after = remaining_total - success_count
+            # 本批实际已处理的总数（下载后不再出现在 pending 中）
+            processed_count = success_count + skip_count + fail_count
+            remaining_after = remaining_total - processed_count
 
             # 刷新本地文档缓存，让下次点击立刻识别到新下载的文档
             global _local_doc_set, _local_doc_set_time
@@ -485,7 +499,7 @@ async def batch_fetch_reports(limit: int = 20, source: str = ""):
             _local_doc_set_time = 0
 
             return {"total": len(batch), "success": success_count, "skip": skip_count, "fail": fail_count,
-                    "fetched": fetched_total + success_count, "remaining": max(0, remaining_after), "details": results}
+                    "fetched": fetched_total + processed_count, "remaining": max(0, remaining_after), "details": results}
         finally:
             session.close()
 

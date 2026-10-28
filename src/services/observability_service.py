@@ -519,7 +519,7 @@ def _case_to_front_dict(row) -> dict:
         "vcu_number": row.vcu_number,
         "finish_time": row.finish_time,
         "duration": row.duration,
-        "conf": row.conf,
+        "conf": None,  # 暂时留空，后续再引用数值
         "converged": row.converged,
         "case_type": row.case_status or "",
         "reflow_status": row.backflow_status or "",
