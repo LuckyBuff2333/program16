@@ -279,12 +279,13 @@ async def _on_startup():
     # 提前算好，用户打开「数据看板」时直接命中缓存
     def _warm_dashboard_cache():
         import time as _time
+        from datetime import datetime
         _time.sleep(8)
         try:
-            from src.api.routes.report import dashboard_data as _dash_data, dashboard_dates as _dash_dates
-            _dash_data(date=None)
+            from src.api.routes.report import _dashboard_data_sync, _dashboard_dates_sync
+            _dashboard_data_sync(datetime.now().strftime("%Y-%m-%d"))
             try:
-                _dash_dates()
+                _dashboard_dates_sync()
             except Exception as _e2:
                 _logger.warning("看板日期列表预热失败: %s", _e2)
             _logger.info("看板缓存预热完成（今天 + 日期列表）")
