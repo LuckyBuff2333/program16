@@ -1,3 +1,14 @@
+import os as _os
+import pytest as _pytest
+
+_HAS_REAL_CONFIG = _os.path.exists(
+    _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "config", "config.yaml")
+) and _os.environ.get("DSH_SIMULATE_NO_CONFIG") != "1"
+requires_config = _pytest.mark.skipif(not _HAS_REAL_CONFIG,
+                                      reason="缺少 config/config.yaml（CI 环境），跳过依赖真实配置的用例")
+
+pytestmark = requires_config
+
 """随机抽查复核模块测试：抽样、排除已抽查、对比审核表格生成"""
 import os
 

@@ -7,8 +7,52 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from src import db
+import io
+
 from src import config as cfg_module
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_FILE = os.path.join(PROJECT_ROOT, "config", "config.yaml")
+# 模拟 CI：DSH_SIMULATE_NO_CONFIG=1 时按“无 config.yaml”运行，用于本地验证跳过逻辑
+_SIMULATE_NO_CONFIG = os.environ.get("DSH_SIMULATE_NO_CONFIG") == "1"
+CONFIG_AVAILABLE = os.path.exists(CONFIG_FILE) and not _SIMULATE_NO_CONFIG
+
+# 依赖真实 config.yaml 的用例（CI 里没有该文件）自动跳过
+requires_config = pytest.mark.skipif(
+    not CONFIG_AVAILABLE,
+    reason="缺少 config/config.yaml（CI 环境），跳过依赖真实配置的用例",
+)
+
+def _load_example_config():
+    """CI/新环境无 config.yaml 时，使用仓库内的脱敏示例配置（避免污染真实配置）"""
+    example = os.path.join(PROJECT_ROOT, "config", "config.example.yaml")
+    import yaml
+    with open(example, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    # 兜底：数据库指向进程内临时库，避免 CI 里 sqlite 路径为空
+    cfg.setdefault("database", {})["url"] = "sqlite:///:memory:"
+    cfg["database"].setdefault("table_name", "ai_analysis")
+    if not cfg["database"].get("table_name"):
+        cfg["database"]["table_name"] = "ai_analysis"
+    # 兜底：kb_analysis 表结构字段（示例配置里这些字段是空字符串，会拼出非法 SQL）
+    audit = cfg.setdefault("audit", {})
+    audit.update({"kb_table": "kb_analysis", "bugid_column": "bugid",
+                  "trigger_time_column": "trigger_time",
+                  "root_cause_column": "root_cause", "process_column": "process"})
+    # 兜底：确保 mock 开关为真，CI 里不会误发真实请求
+    for sec in ("jira_api", "ai_log_api", "diana", "prod_ai", "llm_filter"):
+        if isinstance(cfg.get(sec), dict) and "mock" in cfg[sec]:
+            cfg[sec]["mock"] = True
+    return cfg
+
+
+if not CONFIG_AVAILABLE:
+    # 无配置文件时加载示例配置，保证 conftest 与测试可运行
+    cfg_module._CONFIG = _load_example_config()
+
+
+# db 模块在 import 时会读取配置（表名等），必须在配置就绪后再导入
+from src import db
 
 
 # ── 全局 mock：在任何测试模块导入前生效 ──

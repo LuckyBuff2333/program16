@@ -1,0 +1,125 @@
+# 示例配置（脱敏）：CI / 新环境可直接复制为 config/config.yaml 后填真实值
+ai_log_api:
+  bugid_field: ''
+  mock: true
+  time_check_enabled: true
+  time_warn_offset_sec: 30
+  time_reject_offset_sec: 300
+  timeout: ''
+  trigger_time_field: ''
+  url: ''
+  custom_header: ''
+adp:
+  app_key: ''
+  url: ''
+  sandbox_base: ''
+  attach_api: ''
+  attach_api_key: ''
+  timeout: 3600
+  bitable_app_token: ''
+  bitable_table_id: ''
+  jira_field: ''
+  save_dir: ''
+app_log_server:
+  online:
+    debug_endpoint: ''
+    endpoint: ''
+    host: ''
+    port: 8001
+  pc:
+    debug_endpoint: ''
+    endpoint: ''
+    host: ''
+    port: 8001
+audit:
+  audited_file: ''
+  bugid_column: ''
+  kb_table: ''
+  process_column: ''
+  report_file: ''
+  root_cause_column: ''
+  sample_count: 30
+  trigger_time_column: ''
+database:
+  table_name: ''
+  url: ''
+diana:
+  api_key: ''
+  client_id: ''
+  client_secret: ''
+  env: ''
+  mock: true
+  model: ''
+  prod_client_id: ''
+  prod_client_secret: ''
+  prod_model: ''
+  prod_token_url: ''
+  prod_url: ''
+  token_url: ''
+  url: ''
+feishu_bitable:
+  app_id: ''
+  app_secret: ''
+  app_token: ''
+  batch_folder_token: ''
+  bugid_field: ''
+  cookie: ''
+  domain: ''
+  poll_interval: 30
+  report_field: ''
+  table_id: ''
+  trigger_time_app_token: ''
+  trigger_time_table_ids: []
+  user_access_token: ''
+  user_refresh_token: ''
+  view_id: ''
+  wiki_token: ''
+feishu_bot:
+  app_id: ''
+  app_secret: ''
+  enabled: true
+  jqls: []
+jira_api:
+  auth_type: ''
+  bugid_field: ''
+  mock: true
+  root_cause_field: ''
+  timeout: 30
+  token: ''
+  url: ''
+  username: ''
+knowledge_base_api:
+  bugid_field: ''
+  content_field: ''
+  mock: true
+  timeout: 30
+  url: ''
+output:
+  doc_dir: docs
+  report_dir: reports
+  log_dir: logs
+params:
+  diag_concurrency: 3
+  analysis_concurrency: 5
+  download_concurrency: 2
+  logagent_version: ''
+  model: ''
+  ocr_parallel: 2
+  project_name: ''
+  trigger_parallel: 8
+  trigger_source: ''
+  version: ''
+pc:
+  analysis_concurrency: 10
+  download_concurrency: 4
+prod_ai:
+  mock: true
+  timeout: 30
+  url: ''
+similarity:
+  root_cause_hit_ratio: 0.8
+  threshold: 0.7
+web:
+  browser: ''
+batch_env:
+  software_version: ''

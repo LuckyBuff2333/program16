@@ -1,3 +1,12 @@
+import os as _os
+import pytest as _pytest
+
+_HAS_REAL_CONFIG = _os.path.exists(
+    _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "config", "config.yaml")
+) and _os.environ.get("DSH_SIMULATE_NO_CONFIG") != "1"
+requires_config = _pytest.mark.skipif(not _HAS_REAL_CONFIG,
+                                      reason="缺少 config/config.yaml（CI 环境），跳过依赖真实配置的用例")
+
 """Web API 测试：使用 FastAPI TestClient 验证页面、配置读写与流程执行接口"""
 import allure
 import pytest
@@ -26,6 +35,7 @@ def temp_config(tmp_path, monkeypatch):
 
 @allure.feature("Web 接口")
 @allure.story("页面与概览")
+@requires_config
 def test_index_and_overview(client):
     """首页可访问，概览接口返回统计与 mock 状态"""
     resp = client.get("/")
@@ -77,6 +87,7 @@ def test_analyze_api(client):
 
 @allure.feature("Web 接口")
 @allure.story("报表查询")
+@requires_config
 def test_report_api(client):
     """每日报表与抽查报表查询接口正常"""
     rows = [{"jira号": "WEB-10", "分析问题时间": "", "AI分析结果(飞书链接)": "",

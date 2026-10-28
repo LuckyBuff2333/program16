@@ -671,3 +671,19 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`（每视频统计日志）、`src/api/routes/testing.py`（统计接口）
 
 </details>
+
+<details>
+<summary><b>47. CI 无配置导致后端测试失败：示例配置 + 依赖用例跳过（2026-10-28）</b></summary>
+
+- **问题描述**：GitHub Actions 的 `backend-tests` 失败（4 分 54 秒），本地却是 86 passed
+- **根因**：`config/config.yaml` 被 gitignore，CI 里没有该文件；而 `tests/conftest.py` 的 session fixture、`db.init_db()`（建 `kb_analysis` 表用 `audit` 段的列名）都直接依赖它，缺文件时在收集/初始化阶段就报错
+- **解决方案**（按“跳过依赖真实配置的用例”方案）：
+  1. 新增 `config/config.example.yaml`：保留全部配置段与字段名，字符串值脱敏为空，mock 开关置真；作为 CI/新环境的配置模板
+  2. `tests/conftest.py`：无 `config.yaml` 时自动加载示例配置，并补 `database.url/table_name`、`audit` 表结构字段兜底，避免拼出非法 SQL；新增 `DSH_SIMULATE_NO_CONFIG=1` 便于本地模拟 CI
+  3. `tests/test_audit.py` 整模块、`tests/test_web.py` 的两个用例（`test_index_and_overview`、`test_report_api`）加 `requires_config` 标记，无配置时自动跳过
+- **验证结果**：
+  - 模拟 CI（`DSH_SIMULATE_NO_CONFIG=1`）：**80 passed, 6 skipped**
+  - 本地（有 config.yaml）：**86 passed**
+- **实现文件**：`config/config.example.yaml`（新增）、`tests/conftest.py`、`tests/test_audit.py`、`tests/test_web.py`
+
+</details>
