@@ -62,3 +62,6 @@ docs/adp_results/
 # ── 运行时生成的报告 / 大文件依赖：不入库（2026-10-28）──
 reports/
 tools/jdk-*/
+
+# 案件报告（远程备份在其他机器，本地不入库、不检出）
+case_reports/
