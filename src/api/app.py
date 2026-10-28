@@ -34,6 +34,7 @@ from src.api.routes import feishu as feishu_router
 from src.api.routes import troubleshoot as troubleshoot_router
 from src.api.routes import misc as misc_router
 from src.api.routes import testing as testing_router
+from src.api.routes import observability as observability_router
 from src.config import setup_logger
 
 _logger = setup_logger("app")
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
         tuning_router, report_router, data_router, trigger_router,
         docs_router, bitable_router, feishu_router,
         troubleshoot_router, misc_router, testing_router,
+        observability_router,
     ]
     for r in _ROUTERS:
         application.include_router(r.router)
