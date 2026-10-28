@@ -5352,6 +5352,8 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     # 12h 制兜底候选（延迟决策：所有视频处理完后统一判定）
     best_12h_cand = None   # (extracted_time, ext_dt, is_time_only)
     best_12h_diff = float("inf")
+    # OCR 统计基线初始化（避免 finally 中引用未定义变量）
+    _full_start = _roi_start = _skip_start = _vote_start = 0
     for vi, video_att in enumerate(ranked_videos):
         video_url = video_att.get("content", "")
         video_name = video_att.get("filename", "")

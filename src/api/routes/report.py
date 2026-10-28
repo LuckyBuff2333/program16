@@ -717,11 +717,11 @@ async def dashboard_data(date: str = Query(default=None, description="日期 YYY
     """获取指定日期的看板数据：优先云端批次，本地 CSV 作补充"""
     import asyncio
     date_str = date or datetime.now().strftime("%Y-%m-%d")
-    result = await asyncio.to_thread(_dashboard_data_sync, date_str)
+    result = await asyncio.to_thread(_dashboard_data_sync, date_str, force)
     return result
 
 
-def _dashboard_data_sync(date_str: str):
+def _dashboard_data_sync(date_str: str, force: bool = False):
     """看板数据的同步实现（在线程池中执行，避免阻塞事件循环）"""
     import re as _re
     import csv as _csv
