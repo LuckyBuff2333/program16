@@ -702,3 +702,21 @@ flowchart TD
 - **实现文件**：`allure-serve.bat`
 
 </details>
+
+<details>
+<summary><b>49. 事故记录：拉取远端时误删 config/data/dist，已恢复（2026-10-28）</b></summary>
+
+- **背景**：远端比本地多 3 个提交（可观测性模块 + trigger 表格提取增强），共 **1133 个文件**（其中 `case_reports/` 800 个）；GitHub 网络极不稳定（反复 `Connection reset` / `Timeout`）
+- **事故经过**：为减少下载量启用了 `git sparse-checkout` 并尝试 merge；合并过程中网络中断，之后发现以下本地文件丢失：
+  - `config/config.yaml`（8.5KB，真实配置，含 Jira token / 飞书 app_token 等）
+  - `data/` 下内容（`video_time_cache.json` 等，`daily_broadcast_config.json` 被跟踪）
+  - `frontend/dist/`（前端构建产物）与 `frontend/node_modules/`
+- **恢复过程**：
+  1. `config.yaml`：从 pytest 临时目录 `pytest-of-Administrator/pytest-72/test_config_save_and_reload0/config.yaml` 找到真实配置副本（真实 Jira 地址 / 44 位 token / 飞书 table id），还原后关闭 mock、输出目录改回 `docs/reports/logs`
+  2. `data/daily_broadcast_config.json`：从 git 恢复；`video_time_cache.json` 为缓存，后续重新提取时自动重建
+  3. 前端：`npm ci` + `npm run build` 重建 `frontend/dist`
+  4. 验证：全量 **86 passed**；真实调用 Jira `VCU-561531` 成功（0.4 秒），确认 token 有效
+- **未完成**：远端合并（网络下载卡在约 18MB 后超时）；本地 3 个提交待推送；timestudy 48 条完好
+- **教训**：`sparse-checkout` / merge / 大批量拉取前，先备份 `config/` 与 `data/`（均为 gitignore，git 无法恢复）
+
+</details>
