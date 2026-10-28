@@ -4797,7 +4797,103 @@ def _image_fallback_time(issue: dict, headers: dict, timeout: int, bugid: str, r
     return combined.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _fix_video_time_against_created(issue: dict, ts: str) -> str:
+    """用 Jira 创建时间/日志包/视频文件名给提取结果纠偏（v3）
+
+    参照优先级：日志包抓包时间（≤创建时间，取最接近创建时间） > 视频文件名完整日期时间 > 视频文件名时分+创建日
+    """
+    from datetime import timedelta
+    created = _issue_created_dt(issue)
+    attachments = (issue.get("fields") or {}).get("attachment") or []
+    refs_all = [d for _, d in _diag_gmlogger_times(attachments) if d]
+    if created:
+        refs = sorted([r for r in refs_all if r <= created])
+    else:
+        refs = sorted(refs_all)
+    ref_anchor = min(refs, key=lambda r: abs((r - created).total_seconds())) if (refs and created) else (refs[0] if refs else None)
+
+    video_dts, time_only = [], []
+    for a in attachments:
+        fn = a.get("filename", "") or ""
+        if not fn.lower().endswith((".mp4", ".mov", ".avi", ".mkv")):
+            continue
+        try:
+            e = _diag_parse_entry_time(fn)
+            if e:
+                video_dts.append(e[1])
+                continue
+            vt = _parse_video_filename_time(fn)
+            if vt:
+                import re as _re
+                mm = _re.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", str(vt).strip())
+                if mm:
+                    from datetime import datetime as _dtm
+                    time_only.append(_dtm(1900, 1, 1, int(mm.group(1)), int(mm.group(2)), int(mm.group(3) or 0)))
+        except Exception:
+            pass
+    if created:
+        video_dts = [v for v in video_dts if v <= created + timedelta(minutes=5)]
+
+    if not ts:
+        if ref_anchor:
+            logger.info("视频时间纠偏(提取为空,用日志包): %s", ref_anchor)
+            return ref_anchor.strftime("%Y-%m-%d %H:%M:%S")
+        if video_dts:
+            vt = min(video_dts, key=lambda v: abs((v - created).total_seconds())) if created else video_dts[0]
+            logger.info("视频时间纠偏(提取为空,用视频录制时间): %s", vt)
+            return vt.strftime("%Y-%m-%d %H:%M:%S")
+        if created and time_only:
+            hm = min(time_only, key=lambda t: abs((t.hour * 60 + t.minute) - (created.hour * 60 + created.minute)))
+            cand = created.replace(hour=hm.hour, minute=hm.minute, second=0)
+            if cand <= created + timedelta(minutes=1):
+                logger.info("视频时间纠偏(提取为空,用视频时分+创建日): %s", cand)
+                return cand.strftime("%Y-%m-%d %H:%M:%S")
+        return ""
+
+    dt = _ts_parse_datetime(ts)
+    if not dt or not created:
+        return ts
+
+    if dt > created + timedelta(minutes=1):
+        if ref_anchor:
+            cand = dt.replace(year=ref_anchor.year, month=ref_anchor.month, day=ref_anchor.day)
+            if cand <= created + timedelta(minutes=1) and abs((cand - ref_anchor).total_seconds()) <= 7200:
+                logger.info("视频时间纠偏(晚于创建,对齐日志包日期): %s -> %s", ts, cand)
+                return cand.strftime("%Y-%m-%d %H:%M:%S")
+            logger.info("视频时间纠偏(晚于创建,改用日志包时间): %s -> %s", ts, ref_anchor)
+            return ref_anchor.strftime("%Y-%m-%d %H:%M:%S")
+        if video_dts:
+            vt = min(video_dts, key=lambda v: abs((v - created).total_seconds()))
+            logger.info("视频时间纠偏(晚于创建,改用视频录制时间): %s -> %s", ts, vt)
+            return vt.strftime("%Y-%m-%d %H:%M:%S")
+        return ts
+
+    # 与视频录制时间相差 >2 小时：以录制时间为准（OCR 读到的可能是界面里的旧时钟）
+    if video_dts:
+        vt = min(video_dts, key=lambda v: abs((v - dt).total_seconds()))
+        if abs((vt - dt).total_seconds()) > 3600 and vt <= created + timedelta(minutes=1):
+            logger.info("视频时间纠偏(与录制时间差>2h): %s -> %s", ts, vt)
+            return vt.strftime("%Y-%m-%d %H:%M:%S")
+
+    if (not refs) and (not video_dts) and dt.date() != created.date() and abs(created - dt) <= timedelta(days=3):
+        cand = dt.replace(year=created.year, month=created.month, day=created.day)
+        if cand <= created + timedelta(minutes=1):
+            logger.info("视频时间纠偏(无日期参照,改用创建日): %s -> %s", ts, cand)
+            return cand.strftime("%Y-%m-%d %H:%M:%S")
+    return ts
+
+
 def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
+    """视频提取入口（带创建时间纠偏）"""
+    ts = _diag_extract_time_from_video_simple_impl(issue, stop_event=stop_event)
+    try:
+        return _fix_video_time_against_created(issue, ts)
+    except Exception as e:
+        logger.warning("视频时间纠偏失败: %s", e)
+        return ts
+
+
+def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> str:
     """视频帧 OCR 提取触发时间，多视频按优先级逐个尝试，命中即停。
 
     支持本地缓存：每个视频提取结果保存到 data/video_time_cache.json，

@@ -286,3 +286,16 @@ flowchart LR
 | 抓包时间参考 | `src/api/routes/trigger.py` | `_ref_capture_time()` |
 | 多视频排序（按创建时间） | `src/services/server_legacy.py` | `_rank_videos(..., created_dt=)` |
 | 前端判定列 | `frontend/src/panels/TimeExtractPanel.vue` | `judgeTagType()` |
+
+## 提取结果纠偏（2026-10-28 新增）
+
+`_diag_extract_time_from_video_simple()` 在返回前会调用 `_fix_video_time_against_created()`，以 **Jira 创建时间** 为硬上限做纠偏：
+
+| 情况 | 处理 |
+|---|---|
+| 提取为空 | 最近日志包抓包时间 → 视频录制时间 → 视频文件名时分 + 创建日 |
+| 提取时间晚于创建时间 | 日期对齐“最接近创建时间且不晚于创建时间”的日志包；若与日志包时间差 >2h，直接用日志包时间 |
+| 无日期参照且日期与创建日不同（≤3 天） | 改用创建日期 |
+| 与视频录制时间相差 >1 小时 | 以录制时间为准 |
+
+对应实现：`src/services/server_legacy.py` → `_fix_video_time_against_created()`
