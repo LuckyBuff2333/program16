@@ -658,7 +658,6 @@ def extract_adp_results(full_text: str, closeout_data: dict, start_ts: int, end_
     # 问题模块 + root cause
     problem_module = _extract_problem_module(full_text)
     result["agent分析的问题模块"] = problem_module
-    result["问题所在模块"] = problem_module
     result["agent分析的root cause"] = _extract_root_cause(full_text)
     # 额外返回报告直链（供前端展示，不写入飞书）
     result["_report_url"] = report_url
@@ -806,7 +805,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             return {"ok": False, "record_id": "", "message": "无法获取 record_id"}
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
-                    "问题所在模块", "agent分析的问题模块", "agent分析的root cause",
+                    "agent分析的问题模块", "agent分析的root cause",
                     "置信度", "分析失败归因", "traceid"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         # 附件字段"报告链接"处理：file_token 为附件格式，沙箱 URL 不写入附件字段（链接已追加到 root cause）
@@ -953,7 +952,6 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             html_module = _extract_module_from_html(local_path)
             if html_module:
                 results["agent分析的问题模块"] = html_module
-                results["问题所在模块"] = html_module
             _progress("download_report", "done" if file_token else "fail")
         elif is_sandbox:
             # 沙箱 URL 不可下载（401），保持完成状态，链接追加到 root cause 文本末尾
