@@ -687,3 +687,18 @@ flowchart TD
 - **实现文件**：`config/config.example.yaml`（新增）、`tests/conftest.py`、`tests/test_audit.py`、`tests/test_web.py`
 
 </details>
+
+<details>
+<summary><b>48. Allure 启动器改为自动探测 Java，JRE 不再入库（2026-10-28）</b></summary>
+
+- **问题描述**：仓库里跟踪着 `tools/jdk-17.0.20+8-jre`（33.8 MB，316 个文件），但本地实际是 0.1KB 的占位文件（旧的 LFS 指针残留），`allure-serve.bat` 又写死了 `d:\program16` 路径，换机器/换目录就失效
+- **分析结论**：项目**运行时不依赖 Java**（`src/` 无 java 调用）；只有 `allure-serve.bat` 为了看 pytest 的 Allure 报告才需要 JRE，属于可选工具
+- **解决方案**：
+  1. `allure-serve.bat` 重写：按 `JAVA_HOME` → PATH 的 `java` → `tools\jdk-*`（自动跳过小于 10KB 的占位文件）顺序探测；路径全部改为 `%~dp0` 相对路径
+  2. 新增 `check` 模式：只检查 Java/allure/测试结果，不启动服务
+  3. 新增 `--download`：无 Java 时可自动下载 Temurin JRE 17 到 `tools\`（约 40MB），下载解压后继续；失败给出明确提示
+  4. JRE 保持不入库（已在 `.gitignore` 中 `tools/jdk-*/`），各机器按需下载
+- **验证结果**：`allure-serve.bat check` 在本机（无系统 Java、JRE 为占位文件）正确提示“未检测到可用的 Java”，退出码 1，不再出现“文件不存在”式的莫名报错
+- **实现文件**：`allure-serve.bat`
+
+</details>
