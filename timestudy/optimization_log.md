@@ -794,3 +794,19 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`（`_fix_video_time_against_created`、`_rank_videos`）
 
 </details>
+
+<details>
+<summary><b>54. ADP 表格查找：抽取数量上限 50→500，并修复 jira_field 乱码导致读不到 Jira 号（2026-10-28）</b></summary>
+
+- **问题描述**：
+  1. ADP 测试 → 表格查找执行，抽取数量输入超过 50 会被自动改回 50
+  2. 同一页面“多维表格 175 / 无报告 0”：配置 `adp.jira_field` 是乱码 `Jira閾炬帴`，代码按该字段名取不到 Jira 号，所有记录都被当成“无 Jira 号”
+- **根因**：前端 `el-input-number` 写死 `:max="50"`；配置文件里的字段名被早期写坏（与之前 `bugid_field` 同类问题）
+- **解决方案**：
+  1. 抽取数量上限改为 **500**（`:max="500"`，仍限制 1~500 防止误输入）
+  2. `config.yaml`：`adp.jira_field` 改为 `Jira链接`
+  3. `_get_adp_cfg()` 增加乱码兜底：字段名包含 `閾/鏈/锛/�` 等乱码字符时自动回退为 `Jira链接`，避免其他机器再踩
+- **验证结果**：`_get_adp_cfg()["jira_field"]` = `Jira链接`；ADP 表 175 条记录**全部能读出 Jira 号**（修复前为 0）；前端构建通过；全量 94 passed
+- **实现文件**：`frontend/src/panels/AdpTestPanel.vue`、`src/services/adp_ops.py`、`config/config.yaml`（本地，未入库）
+
+</details>

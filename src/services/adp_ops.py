@@ -60,6 +60,12 @@ COMPLETE_SECTION_MARKERS = ["归因", "根因", "修复建议", "决策点", "�
 def _get_adp_cfg() -> dict:
     """读取 adp 配置段，带默认值"""
     cfg = load_config().get("adp") or {}
+    # jira_field 乱码兜底：历史配置被写坏（如 "Jira閾炬帴"）时回退到正确字段名
+    _jf = cfg.get("jira_field") or ""
+    if _jf and any(ch in _jf for ch in ("閾", "鏈", "锛", "�")):
+        logger.warning("adp.jira_field 配置疑似乱码（%s），回退为 Jira链接", _jf)
+        cfg = dict(cfg)
+        cfg["jira_field"] = "Jira链接"
     return {
         "app_key": cfg.get("app_key", ""),
         "url": cfg.get("url", "https://wss.lke.cloud.tencent.com/adp/v2/chat"),
