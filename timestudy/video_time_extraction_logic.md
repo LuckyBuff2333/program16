@@ -264,3 +264,25 @@ flowchart LR
 | 图片 OCR 兜底 | `src/services/server_legacy.py` | `_image_fallback_time()` |
 | gmlogger 智能检测 | `src/services/server_legacy.py` | `_has_gmlogger_logs()` / `_jira_att_auth()` |
 | 视频缓存 | `data/video_time_cache.json` | `_load_video_time_cache()` / `_save_video_time_cache()` |
+
+## 表格对比的时间判定（2026-10-28 新增）
+
+「表格提取」页在提取后，会用 **日志包抓包时间** 与 **Jira 创建时间** 做双重参照，给出判定：
+
+| 判定 | 规则 |
+|---|---|
+| 正常 | 提取时间与表格时间差 ≤5 分钟 |
+| 表格错误 | 表格时间晚于 Jira 创建时间（或与抓包时间明显不符） |
+| 提取错误 | 提取时间晚于抓包时间 5 分钟以上，或早于抓包时间 60 分钟以上 |
+| 两边都错 | 提取与表格都偏离参照时间 |
+| 日期待确认 | 两者相差整天（±2 分钟内），多半是日期取错 |
+| 提取失败 | 未提取到时间，或只有 `00:00:00`（无时分） |
+
+相关实现：
+
+| 功能 | 文件 | 函数 |
+|---|---|---|
+| 判定逻辑 | `src/api/routes/trigger.py` | `_judge_compare_time()` |
+| 抓包时间参考 | `src/api/routes/trigger.py` | `_ref_capture_time()` |
+| 多视频排序（按创建时间） | `src/services/server_legacy.py` | `_rank_videos(..., created_dt=)` |
+| 前端判定列 | `frontend/src/panels/TimeExtractPanel.vue` | `judgeTagType()` |

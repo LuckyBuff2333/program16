@@ -569,6 +569,79 @@ def stop_batch_extract_time():
     return ok(None, "停止信号已发送，当前提取完成后停止")
 
 
+from datetime import datetime as _datetime, timedelta as _timedelta
+
+
+def _parse_any_time(s):
+    """宽松解析多种时间格式（表格里常见格式）"""
+    if not s:
+        return None
+    s = str(s).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S",
+                "%Y/%m/%d %H:%M", "%Y.%m.%d %H:%M:%S", "%Y.%m.%d %H:%M"):
+        try:
+            return _datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _ref_capture_time(attachments):
+    """取日志包（gmlogger 等）文件名里的抓包时间，作为事件时间上限参考"""
+    from src.clients import jira_client as _jira
+    for a in attachments:
+        fn = a.get("filename", "") or ""
+        low = fn.lower()
+        if any(h in low for h in ("gmlog", "logcat", "dltlog", "bllog", "pataclogger", "log_")):
+            try:
+                parsed = _jira.parse_log_filename_time(fn)
+                if parsed:
+                    return parsed[1]
+            except Exception:
+                continue
+    return None
+
+
+def _judge_compare_time(ext_time, table_time_str, ref_dt, created_dt):
+    """判定提取时间/表格时间谁更可信
+
+    返回 (判定, 说明)：正常 / 表格错误 / 提取错误 / 两边都错 / 日期待确认 / 待确认 / 提取失败
+    - ref_dt：日志包抓包时间（事件不晚于它，通常在其前 15 分钟内）
+    - created_dt：Jira 创建时间（事件不晚于它）
+    """
+    if not ext_time:
+        return "提取失败", "未提取到时间"
+    ext_dt = _parse_any_time(ext_time)
+    tbl_dt = _parse_any_time(table_time_str)
+    if ext_dt is None:
+        return "提取错误", "提取时间无法解析"
+    if str(ext_time).strip().endswith("00:00:00"):
+        return "提取错误", "只有日期没有时分"
+    ext_sane = None
+    if ref_dt:
+        ext_sane = (ext_dt <= ref_dt + _timedelta(minutes=5)
+                    and (ref_dt - ext_dt) <= _timedelta(minutes=60))
+    elif created_dt:
+        ext_sane = ext_dt <= created_dt + _timedelta(minutes=1)
+    tbl_sane = None
+    if created_dt and tbl_dt:
+        tbl_sane = tbl_dt <= created_dt + _timedelta(minutes=1)
+    if tbl_dt is None:
+        return ("正常" if ext_sane else "提取错误"), "表格时间无法解析"
+    diff = abs((ext_dt - tbl_dt).total_seconds())
+    if diff > 3600 and diff % 86400 <= 120:
+        return "日期待确认", f"相差约 {int(round(diff / 86400))} 天（日期可能取错）"
+    if diff <= 300:
+        return "正常", ""
+    if ext_sane is False and tbl_sane is False:
+        return "两边都错", f"差值 {int(diff)}s，且都偏离参考时间"
+    if ext_sane is False:
+        return "提取错误", f"差值 {int(diff)}s，提取时间偏离抓包/创建时间"
+    if tbl_sane is False:
+        return "表格错误", f"差值 {int(diff)}s，表格时间晚于 Jira 创建时间"
+    return "待确认", f"差值 {int(diff)}s"
+
+
 @router.post("/api/trigger/compare_extract_time")
 async def compare_extract_time(file: UploadFile = File(...), filter_statuses: str = Form(default="")):
     """表格时间对比提取：上传 Excel/CSV，提取触发时间并与表格中的时间对比（SSE 流式）
@@ -737,13 +810,22 @@ async def compare_extract_time(file: UploadFile = File(...), filter_statuses: st
                     if img_tt:
                         tt = img_tt
                         source = "图片OCR"
+                _created = None
+                try:
+                    _c = fields.get("created")
+                    if _c:
+                        _created = _jc._parse_datetime_string(str(_c).replace("T", " ")[:19])
+                        _created = _created[1] if _created else None
+                except Exception:
+                    _created = None
+                _ref = _ref_capture_time(attachments)
                 if tt:
                     if not isinstance(tt, str):
                         tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
-                    return bugid, tt, source, desc, None
-                return bugid, "", "failed", desc, "未提取到时间"
+                    return bugid, tt, source, desc, None, _ref, _created
+                return bugid, "", "failed", desc, "未提取到时间", _ref, _created
             except Exception as e:
-                return bugid, "", "error", "", str(e)
+                return bugid, "", "error", "", str(e), None, None
 
         def _parse_time(s: str):
             """尝试多种格式解析时间字符串"""
@@ -783,50 +865,63 @@ async def compare_extract_time(file: UploadFile = File(...), filter_statuses: st
                 table_desc = item.get("desc", "")
                 table_status = item.get("status", "")
                 try:
-                    _, ext_time, source, ext_desc, error = future.result()
+                    _, ext_time, source, ext_desc, error, ref_dt, created_dt = future.result()
                 except Exception as e:
-                    ext_time, source, ext_desc, error = "", "error", "", str(e)
+                    ext_time, source, ext_desc, error, ref_dt, created_dt = "", "error", "", str(e), None, None
 
                 done_count += 1
                 # 对比逻辑
                 match_result = ""
                 remark = ""
-                if not ext_time:
+                judge = ""
+                # 只有日期没有时分：直接判失败
+                _only_date = bool(ext_time) and ext_time.strip().endswith("00:00:00")
+                if not ext_time or _only_date:
                     match_result = "失败"
-                    remark = error or "未提取到时间"
+                    remark = "只有日期没有时分" if _only_date else (error or "未提取到时间")
+                    judge = "提取错误" if _only_date else "提取失败"
                     failed += 1
                 else:
                     ext_dt = _parse_time(ext_time)
                     tbl_dt = _parse_time(table_time_str)
                     if ext_dt and tbl_dt:
                         diff = abs((ext_dt - tbl_dt).total_seconds())
+                        judge, judge_reason = _judge_compare_time(ext_time, table_time_str, ref_dt, created_dt)
                         if diff <= 300:  # 5 分钟内视为一致
                             match_result = "成功"
                             matched += 1
                         else:
                             match_result = "不一致"
-                            remark = f"差值 {int(diff)}s"
+                            remark = judge_reason or f"差值 {int(diff)}s"
                             unmatched += 1
+                        if judge_reason and match_result == "不一致":
+                            remark = judge_reason
                     elif not tbl_dt:
                         match_result = "无法对比"
+                        judge = "表格错误"
                         remark = "表格时间解析失败"
                         unmatched += 1
                     else:
                         match_result = "无法对比"
+                        judge = "提取错误"
                         remark = "提取时间解析失败"
                         unmatched += 1
 
                 results_rows.append({
                     "bugid": bugid, "table_time": table_time_str,
                     "extracted_time": ext_time, "match": match_result,
-                    "source": source, "remark": remark,
+                    "source": source, "remark": remark, "judge": judge,
+                    "ref_time": ref_dt.strftime("%Y-%m-%d %H:%M:%S") if ref_dt else "",
+                    "created": created_dt.strftime("%Y-%m-%d %H:%M:%S") if created_dt else "",
                     "desc": table_desc or ext_desc, "status": table_status,
                 })
                 evt = {
                     'type': 'progress', 'current': done_count, 'total': len(items),
                     'bugid': bugid, 'table_time': table_time_str,
                     'extracted_time': ext_time, 'match': match_result,
-                    'source': source, 'remark': remark,
+                    'source': source, 'remark': remark, 'judge': judge,
+                    'ref_time': results_rows[-1]["ref_time"],
+                    'created': results_rows[-1]["created"],
                     'desc': table_desc or ext_desc, 'status': table_status,
                 }
                 yield f"data: {_json.dumps(evt, ensure_ascii=False)}\n\n"
@@ -841,10 +936,11 @@ async def compare_extract_time(file: UploadFile = File(...), filter_statuses: st
         try:
             with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["Jira号", "问题描述", "完成状态", "表格时间", "提取时间", "对比结果", "提取来源", "备注"])
+                writer.writerow(["Jira号", "问题描述", "完成状态", "表格时间", "提取时间", "对比结果", "时间判定", "提取来源", "抓包时间", "创建时间", "备注"])
                 for r in results_rows:
                     writer.writerow([r["bugid"], r.get("desc", ""), r.get("status", ""), r["table_time"], r["extracted_time"],
-                                     r["match"], r["source"], r["remark"]])
+                                     r["match"], r.get("judge", ""), r["source"], r.get("ref_time", ""),
+                                     r.get("created", ""), r["remark"]])
         except Exception as e:
             logger.error("保存对比 CSV 失败: %s", e)
             csv_name = ""

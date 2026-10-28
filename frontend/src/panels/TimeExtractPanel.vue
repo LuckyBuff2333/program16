@@ -171,6 +171,14 @@
                 <el-tag v-else type="info" size="small">{{ row.match || '—' }}</el-tag>
               </template>
             </el-table-column>
+            <el-table-column label="时间判定" width="110" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.judge" :type="judgeTagType(row.judge)" size="small" effect="light">
+                  {{ row.judge }}
+                </el-tag>
+                <span v-else style="color:#bbb">—</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="source" label="提取来源" width="110" align="center">
               <template #default="{ row }">
                 <el-tag v-if="row.source === '标准提取'" type="success" size="small">标准提取</el-tag>
@@ -254,6 +262,18 @@ export default {
     },
   },
   methods: {
+    judgeTagType(judge: string) {
+      const map: Record<string, string> = {
+        '正常': 'success',
+        '表格错误': 'warning',
+        '提取错误': 'danger',
+        '两边都错': 'danger',
+        '日期待确认': 'warning',
+        '待确认': 'info',
+        '提取失败': 'danger',
+      };
+      return map[judge] || 'info';
+    },
     setJql(key: string) { this.jql = JQL_PRESETS[key] || ''; },
     async startExtract() {
       if (!this.jql && !this.manualBugids) return ElMessage.warning('请输入 JQL 或 Jira 号');

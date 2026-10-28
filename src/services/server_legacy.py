@@ -4458,10 +4458,22 @@ def _resolve_12h_ambiguity(time_str: str, date_tuple: tuple, ref_pool: list,
     return parsed
 
 
-def _rank_videos(videos: list, attachments: list) -> list:
-    """按与 gmlogger 相关性对视频排序，返回排序后的列表（最相关的在前）。
+def _issue_created_dt(issue: dict):
+    """取 Jira 创建时间（用于多视频时优先选最接近创建时间的那份）"""
+    try:
+        _c = (issue.get("fields") or {}).get("created")
+        if _c:
+            return _ts_parse_datetime(str(_c).replace("T", " ")[:19])
+    except Exception:
+        return None
+    return None
+
+
+def _rank_videos(videos: list, attachments: list, created_dt=None) -> list:
+    """按与参考时间的相关性对视频排序，返回排序后的列表（最相关的在前）。
 
     排序策略（按优先级）：
+    0. 有 Jira 创建时间（多次复现）→ 视频文件名时间最接近创建时间的优先
     1. 视频文件名含日期时间且gmlogger文件名有时间 → 按与 gmlogger 时间差升序
     2. gmlogger文件名无时间 → 按与gmlogger上传时间差升序
     3. 完全无 gmlogger 参考 → 按视频上传时间升序
@@ -4479,12 +4491,14 @@ def _rank_videos(videos: list, attachments: list) -> list:
     def _sort_key(v):
         fname = v.get("filename", "") or ""
         parsed = _diag_parse_entry_time(fname)
+        if parsed and created_dt:
+            return (0, abs((parsed[1] - created_dt).total_seconds()), "")
         if parsed and gm_ref_dt:
-            return (0, abs((parsed[1] - gm_ref_dt).total_seconds()), "")
+            return (1, abs((parsed[1] - gm_ref_dt).total_seconds()), "")
         v_upload_dt = _ts_parse_datetime(v.get("created", ""))
         if v_upload_dt and gm_upload_dt:
-            return (1, abs((v_upload_dt - gm_upload_dt).total_seconds()), v.get("created", ""))
-        return (2, 0, v.get("created", ""))
+            return (2, abs((v_upload_dt - gm_upload_dt).total_seconds()), v.get("created", ""))
+        return (3, 0, v.get("created", ""))
     ranked = sorted(videos, key=_sort_key)
     return ranked
 
@@ -4913,7 +4927,7 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
     # 注意：gmlogger 上传时间 ≠ 事件时间，禁止写入 ref_pool。
     # 否则“日期取上传日”的候选会被当成验证通过（曾把 10-19 的事件算成 10-27）。
     # 按优先级排序视频
-    ranked_videos = _rank_videos(videos, attachments)
+    ranked_videos = _rank_videos(videos, attachments, created_dt=_issue_created_dt(issue))
     single_video = len(ranked_videos) == 1
     # 匹配容差：内层日期（main文件）可用时 5 分钟，仅外层文件名日期时 10 分钟
     if not ref_pool:
@@ -5339,7 +5353,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     cache = _load_video_time_cache()
     cache_updated = False
     # 按优先级排序，逐个尝试
-    ranked_videos = _rank_videos(videos, attachments)
+    ranked_videos = _rank_videos(videos, attachments, created_dt=_issue_created_dt(issue))
     single_video = len(ranked_videos) == 1
     from src.clients.jira_client import _parse_datetime_string
     best_full = ""      # 全局兜底：第一个完整日期时间
