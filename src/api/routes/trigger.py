@@ -2,7 +2,7 @@
 import asyncio
 import os
 
-from fastapi import APIRouter, Request, UploadFile, File
+from fastapi import APIRouter, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
 from src.config import PROJECT_ROOT, load_config, setup_logger
