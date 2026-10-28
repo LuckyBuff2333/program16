@@ -58,3 +58,7 @@ tests/dedup_verify_result.txt
 docs/adp_results/
 
 # 触发时间自学习（运行时生成，已迁移到 data/timestudy + reports/timestudy）
+
+# ── 运行时生成的报告 / 大文件依赖：不入库（2026-10-28）──
+reports/
+tools/jdk-*/
