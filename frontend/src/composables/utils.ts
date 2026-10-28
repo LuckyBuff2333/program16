@@ -7,7 +7,7 @@ import { ElMessage } from 'element-plus';
 // ─── API 请求封装 ───
 export async function api<T = Record<string, unknown>>(url: string, options: RequestInit = {}): Promise<{ ok: boolean; message: string; data: T; [k: string]: unknown }> {
   if (!options.signal) {
-    try { options.signal = AbortSignal.timeout(120000); } catch { /* 兼容旧浏览器 */ }
+    try { options.signal = AbortSignal.timeout(180000); } catch { /* 兼容旧浏览器 */ }
   }
   const resp = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
   const body = await resp.json() as Record<string, unknown>;

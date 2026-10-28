@@ -15,6 +15,8 @@ _cfg = load_config()
 # 延迟初始化占位
 Base = None
 BugRecord = None
+CaseInfo = None
+UploadAudit = None
 _engine = None
 _Session = None
 text = None
@@ -22,10 +24,10 @@ text = None
 
 def _ensure_models():
     """延迟导入 SQLAlchemy 并初始化模型（首次调用时执行）"""
-    global Base, BugRecord, _cfg, text
+    global Base, BugRecord, CaseInfo, UploadAudit, _cfg, text
     if Base is not None:
         return
-    from sqlalchemy import Boolean, Column, DateTime, Float, String, text as _text
+    from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, text as _text
     from sqlalchemy.orm import declarative_base
     text = _text
     Base = declarative_base()
@@ -46,6 +48,59 @@ def _ensure_models():
         updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     BugRecord = _BugRecord
+
+    class _CaseInfo(Base):
+        """Case 信息表：存储 AI 分析 Case 的完整数据（含 decision_chain/hypothesis_table JSON 字段）"""
+        __tablename__ = "case_info"
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        case_id = Column(String(128), nullable=True, index=True)
+        vcu_number = Column(String(64), nullable=True)
+        finish_time = Column(String(32), nullable=True)
+        duration = Column(String(32), nullable=True)
+        conf = Column(Float, nullable=True)
+        converged = Column(Boolean, nullable=True)
+        case_status = Column(String(32), nullable=True)
+        backflow_status = Column(String(32), nullable=True)
+        problem_desc = Column(Text, nullable=True)
+        root_cause_summary = Column(Text, nullable=True)
+        decision_chain = Column(Text, nullable=True)
+        hypothesis_table = Column(Text, nullable=True)
+        created_at = Column(DateTime, default=datetime.now)
+        updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+        is_deleted = Column(Boolean, default=False)
+        log_path = Column(String(512), nullable=True)
+        analysis_result = Column(String(16), nullable=True)
+        trigger_source = Column(String(32), nullable=True)
+        version = Column(String(64), nullable=True)
+        problem_time = Column(String(32), nullable=True)
+        error_type = Column(String(64), nullable=True)
+        error_message = Column(Text, nullable=True)
+        retry_count = Column(Integer, nullable=True)
+        total_seconds = Column(Float, nullable=True)
+        analysis_seconds = Column(Float, nullable=True)
+        rootcause = Column(Text, nullable=True)
+        ai_module = Column(String(128), nullable=True)
+        actual_module = Column(String(128), nullable=True)
+        analysis_date = Column(String(16), nullable=True)
+        extra_data = Column(Text, nullable=True)
+        manual_review = Column(String(64), nullable=True)
+
+    CaseInfo = _CaseInfo
+
+    class _UploadAudit(Base):
+        """上传审计表：跟踪文件上传状态"""
+        __tablename__ = "upload_audit"
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        doc_id = Column(String(64), nullable=True)
+        file_name = Column(String(256), nullable=True)
+        cos_hash = Column(String(128), nullable=True)
+        upload_status = Column(String(16), nullable=True)
+        upload_time = Column(DateTime, nullable=True)
+        created_at = Column(DateTime, default=datetime.now)
+        updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+        is_deleted = Column(Boolean, default=False)
+
+    UploadAudit = _UploadAudit
 
 
 def init_db(db_url: str = None):

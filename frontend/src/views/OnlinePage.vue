@@ -104,13 +104,13 @@
                 <span style="font-weight:600">{{ item.title }}</span>
                 <div style="display:flex;align-items:center;gap:8px">
                   <el-button size="small" type="primary" link @click="openAddField(item.key)">+ 添加字段</el-button>
-                  <el-switch v-if="config[item.key].mock !== undefined" v-model="config[item.key].mock" :active-text="'Mock'" inline-prompt></el-switch>
+                  <el-switch v-if="config[item.key] && config[item.key].mock !== undefined" v-model="config[item.key].mock" :active-text="'Mock'" inline-prompt></el-switch>
                 </div>
               </div>
             </template>
             <div style="overflow-x:auto">
             <el-form label-width="90px" size="small" style="min-width:260px">
-              <template v-for="(val, field) in config[item.key]">
+              <template v-for="(val, field) in (config[item.key] || {})">
                 <template v-if="field !== 'mock'">
                   <!-- 共用凭证：页面只读，后端同样拒绝修改与删除 -->
                   <el-form-item v-if="isLocked(item.key, s(field))">

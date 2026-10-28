@@ -643,8 +643,15 @@ def report_batch(date: str = Query(default=None, description="日期 YYYY-MM-DD"
 # ──────────────────────────────────────────────
 
 @router.get("/api/dashboard/dates", response_model=ApiResponse)
-def dashboard_dates():
+async def dashboard_dates():
     """列出所有有批次数据的日期（本地 + 云端，按倒序）"""
+    import asyncio
+    result = await asyncio.to_thread(_dashboard_dates_sync)
+    return result
+
+
+def _dashboard_dates_sync():
+    """日期列表的同步实现"""
     import re as _re
     docs_dir = os.path.join(PROJECT_ROOT, "docs")
     reports_dir = os.path.join(PROJECT_ROOT, "reports")
@@ -705,12 +712,19 @@ def dashboard_dates():
 
 
 @router.get("/api/dashboard/data", response_model=ApiResponse)
-def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-DD，默认今天"),
-                   force: bool = Query(default=False, description="强制刷新（忽略缓存）")):
+async def dashboard_data(date: str = Query(default=None, description="日期 YYYY-MM-DD，默认今天"),
+                         force: bool = Query(default=False, description="强制刷新（忽略缓存）")):
     """获取指定日期的看板数据：优先云端批次，本地 CSV 作补充"""
+    import asyncio
+    date_str = date or datetime.now().strftime("%Y-%m-%d")
+    result = await asyncio.to_thread(_dashboard_data_sync, date_str, force)
+    return result
+
+
+def _dashboard_data_sync(date_str: str, force: bool = False):
+    """看板数据的同步实现（在线程池中执行，避免阻塞事件循环）"""
     import re as _re
     import csv as _csv
-    date_str = date or datetime.now().strftime("%Y-%m-%d")
     reports_dir = os.path.join(PROJECT_ROOT, "reports", date_str)
 
     is_today = _is_today(date_str)

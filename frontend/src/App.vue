@@ -83,6 +83,9 @@
             <TestPage v-else-if="page === 'testpage'" :test-panel="testPanel" />
             <SmokePage v-else-if="page === 'smoke'" />
             <RegressionPage v-else-if="page === 'regression'" />
+            <ObservabilityHome v-else-if="page === 'obs_home'" @navigate="handleObsNavigate" />
+            <ObservabilityDashboard v-else-if="page === 'obs_dashboard'" @navigate="handleObsNavigate" />
+            <CaseDetail v-else-if="page === 'obs_case'" :case-id="obsCaseId" @navigate="handleObsNavigate" />
           </keep-alive>
         </div>
       </main>
@@ -98,15 +101,20 @@ import TestPage from './views/TestPage.vue';
 import SmokePage from './views/SmokePage.vue';
 import RegressionPage from './views/RegressionPage.vue';
 import PlaceholderPage from './components/PlaceholderPage.vue';
+import ObservabilityHome from './views/observability/ObservabilityHome.vue';
+import ObservabilityDashboard from './views/observability/ObservabilityDashboard.vue';
+import CaseDetail from './views/observability/CaseDetail.vue';
 
 export default {
-  components: { OnlinePage, TestPage, SmokePage, RegressionPage, PlaceholderPage },
+  components: { OnlinePage, TestPage, SmokePage, RegressionPage, ObservabilityHome, ObservabilityDashboard, CaseDetail, PlaceholderPage },
   data() {
     return {
       page: 'online',
       tab: 'flow',
       testPanel: 'batch_ai',
       sidebarCollapsed: false,
+      obsCaseId: '',
+      _obsScrollPos: null,
       navigationEntries: [
         {
           key: 'overview', label: '任务总览', glyph: '总',
@@ -127,6 +135,12 @@ export default {
           items: [
             { key: 'troubleshoot', label: '问题排查', glyph: '查', page: 'testpage', panel: 'troubleshoot', title: '问题排查', description: '筛选失败任务、查看诊断结果并批量处理问题记录。' },
             { key: 'ai_log_visual', label: '数据可观测分析', glyph: '图', page: 'testpage', panel: 'ai_log_visual', title: '数据可观测分析', description: '以可视化方式查看分析数据与结果。' },
+          ],
+        },
+        {
+          key: 'observability', label: '可观测', glyph: '观',
+          items: [
+            { key: 'obs_dashboard', label: 'Case汇总列表', glyph: '台', page: 'obs_dashboard', title: 'Case汇总列表', description: '查看所有Case的汇总列表，支持分页、搜索与状态筛选。' },
           ],
         },
         {
@@ -185,10 +199,38 @@ export default {
     },
   },
   methods: {
+    handleObsNavigate(nav) {
+      // 保存离开 dashboard 时的滚动位置
+      if (this.page === 'obs_dashboard') {
+        const ws = this.$el?.querySelector('.workspace');
+        if (ws) this._obsScrollPos = ws.scrollTop;
+      }
+      this.page = nav.page;
+      if (nav.caseId) this.obsCaseId = nav.caseId;
+      // 返回 dashboard 时恢复滚动位置（null 表示未保存，0 也需恢复）
+      if (nav.page === 'obs_dashboard' && this._obsScrollPos != null) {
+        this.$nextTick(() => {
+          const ws = this.$el?.querySelector('.workspace');
+          if (ws) ws.scrollTop = this._obsScrollPos;
+        });
+      }
+    },
     navigateTo(item) {
+      // 保存离开 dashboard 时的滚动位置
+      if (this.page === 'obs_dashboard') {
+        const ws = this.$el?.querySelector('.workspace');
+        if (ws) this._obsScrollPos = ws.scrollTop;
+      }
       this.page = item.page;
       if (item.tab) this.tab = item.tab;
       if (item.panel) this.testPanel = item.panel;
+      // 返回 dashboard 时恢复滚动位置
+      if (item.page === 'obs_dashboard' && this._obsScrollPos != null) {
+        this.$nextTick(() => {
+          const ws = this.$el?.querySelector('.workspace');
+          if (ws) ws.scrollTop = this._obsScrollPos;
+        });
+      }
       if (window.matchMedia('(max-width: 680px)').matches) {
         this.sidebarCollapsed = true;
         localStorage.setItem('app_sidebar_collapsed', 'true');

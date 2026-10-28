@@ -282,6 +282,9 @@
             <template v-if="lookup.progress.skip">
               | 跳过 <span style="color:#909399;font-weight:600">{{ lookup.progress.skip }}</span>
             </template>
+            <template v-if="lookup.progress.totalElapsed">
+              | 总耗时 <span style="color:#409eff;font-weight:600">{{ formatDuration(lookup.progress.totalElapsed) }}</span>
+            </template>
           </span>
         </div>
         <el-progress v-if="lookup.progress && lookup.progress.total"
@@ -395,6 +398,17 @@ export default {
     },
   },
   methods: {
+    /** 格式化耗时（秒 → 可读字符串） */
+    formatDuration(sec) {
+      if (!sec || sec < 0) return '-';
+      if (sec < 60) return `${Math.round(sec)}秒`;
+      const m = Math.floor(sec / 60);
+      const s = Math.round(sec % 60);
+      if (m < 60) return s > 0 ? `${m}分${s}秒` : `${m}分钟`;
+      const h = Math.floor(m / 60);
+      const rm = m % 60;
+      return rm > 0 ? `${h}小时${rm}分` : `${h}小时`;
+    },
     /** 打开某条 ADP 分析报告的完整文本（后端按 jira_key 读取落盘 md） */
     adpReportUrl(key) {
       return `/api/test/adp_report?jira_key=${encodeURIComponent(key || '')}`;
@@ -570,7 +584,7 @@ export default {
       this.lookup.currentBatch = null;
       this.lookup.error = '';
       this.lookup.abortCtrl = new AbortController();
-      this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, skip: 0, noReportTotal: null };
+      this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, skip: 0, noReportTotal: null, totalElapsed: 0 };
       try {
         const body = isAuto
           ? { mode: 'auto', limit: this.lookup.limit }
@@ -618,7 +632,8 @@ export default {
               } else if (d.type === 'batch_done') {
                 this.lookup.currentBatch = null;
               } else if (d.type === 'done') {
-                // 完成
+                // 完成：记录总耗时
+                if (d.total_elapsed) this.lookup.progress.totalElapsed = d.total_elapsed;
               }
             } catch { /* skip */ }
           }

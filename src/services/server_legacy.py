@@ -5352,6 +5352,8 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     # 12h 制兜底候选（延迟决策：所有视频处理完后统一判定）
     best_12h_cand = None   # (extracted_time, ext_dt, is_time_only)
     best_12h_diff = float("inf")
+    # OCR 统计基线初始化（避免 finally 中引用未定义变量）
+    _full_start = _roi_start = _skip_start = _vote_start = 0
     for vi, video_att in enumerate(ranked_videos):
         video_url = video_att.get("content", "")
         video_name = video_att.get("filename", "")
@@ -5379,6 +5381,11 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
         # 下载视频（流式下载，避免一次性加载到内存）
         video_path = None
         tmp_dir = None
+        # 记录当前视频开始时的 OCR 统计基线（用于 finally 中计算本视频增量）
+        _full_start = _VIDEO_OCR_STATS["full_frames"]
+        _roi_start = _VIDEO_OCR_STATS["roi_frames"]
+        _skip_start = _VIDEO_OCR_STATS["skipped_frames"]
+        _vote_start = _VIDEO_OCR_STATS["vote_hits"]
         try:
             # 下载子块：单独捕获下载异常，失败则跳过当前视频（临时目录由外层 finally 统一清理）
             try:
