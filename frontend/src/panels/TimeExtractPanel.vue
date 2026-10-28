@@ -98,8 +98,20 @@
             </el-upload>
             <div v-if="tableExtract.fileName" style="font-size:12px;color:#909399">
               {{ tableExtract.fileName }}
-              <template v-if="tableExtract.colInfo"> — 识别: Jira列="{{ tableExtract.colInfo.jiraCol }}"，时间列="{{ tableExtract.colInfo.timeCol || '未识别' }}"，{{ tableExtract.total }} 条</template>
+              <template v-if="tableExtract.colInfo"> — 识别: Jira列="{{ tableExtract.colInfo.jiraCol }}"，时间列="{{ tableExtract.colInfo.timeCol || '未识别' }}"，描述列="{{ tableExtract.colInfo.descCol || '未识别' }}"，状态列="{{ tableExtract.colInfo.statusCol || '未识别' }}"，共 {{ tableExtract.total }} 条<template v-if="tableExtract.filtered > 0">（已筛选 {{ tableExtract.filtered }} 条）</template></template>
             </div>
+          </div>
+        </el-card>
+
+        <!-- 筛选条件 -->
+        <el-card v-if="tableExtract.fileName" shadow="never" style="margin-top:12px">
+          <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+            <span style="font-size:13px;font-weight:600;color:#303133">状态筛选：</span>
+            <el-input v-model="tableExtract.statusFilter" placeholder="输入状态，逗号分隔，如：完成,分析失败" size="small" style="width:300px"
+              @keydown.enter="startTableExtract"
+              :disabled="tableExtract.running"></el-input>
+            <el-tag v-if="tableExtract.statusFilter" type="primary" size="small">{{ tableExtract.statusFilter }}</el-tag>
+            <span style="font-size:12px;color:#909399">为空则处理全部</span>
           </div>
         </el-card>
 
@@ -130,6 +142,19 @@
             <el-table-column prop="bugid" label="Jira号" width="140">
               <template #default="{ row }">
                 <span style="font-weight:600;color:#409eff">{{ row.bugid }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="desc" label="问题描述" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span style="font-size:12px;">{{ row.desc || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="status" label="完成状态" width="90" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.status === '完成'" type="success" size="small">{{ row.status }}</el-tag>
+                <el-tag v-else-if="row.status === '分析失败'" type="danger" size="small">{{ row.status }}</el-tag>
+                <el-tag v-else-if="row.status" type="info" size="small">{{ row.status }}</el-tag>
+                <span v-else style="color:#c0c4cc">—</span>
               </template>
             </el-table-column>
             <el-table-column prop="table_time" label="表格时间" width="170" show-overflow-tooltip></el-table-column>
@@ -207,10 +232,12 @@ export default {
         matched: 0,
         unmatched: 0,
         failed: 0,
+        filtered: 0,
         statusMsg: '',
         rows: [] as any[],
         colInfo: null as any,
         savedPath: '',
+        statusFilter: '',
       },
     };
   },
@@ -340,6 +367,9 @@ export default {
 
       const formData = new FormData();
       formData.append('file', this.tableExtract.file);
+      if (this.tableExtract.statusFilter) {
+        formData.append('filter_statuses', this.tableExtract.statusFilter);
+      }
 
       try {
         const resp = await fetch('/api/trigger/compare_extract_time', {
@@ -376,8 +406,9 @@ export default {
     handleTableSSE(evt: any) {
       if (evt.type === 'start') {
         this.tableExtract.total = evt.total;
-        this.tableExtract.colInfo = { jiraCol: evt.jira_col, timeCol: evt.time_col };
-        this.tableExtract.statusMsg = `共 ${evt.total} 条待对比，并行 2 个...`;
+        this.tableExtract.colInfo = { jiraCol: evt.jira_col, timeCol: evt.time_col, descCol: evt.desc_col, statusCol: evt.status_col };
+        this.tableExtract.filtered = evt.filtered || 0;
+        this.tableExtract.statusMsg = `共 ${evt.total} 条待对比` + (this.tableExtract.filtered ? `（已筛选 ${this.tableExtract.filtered} 条）` : '') + `，并行 2 个...`;
       } else if (evt.type === 'progress') {
         this.tableExtract.doneCount = evt.current;
         if (evt.match === '成功') this.tableExtract.matched++;
@@ -388,6 +419,7 @@ export default {
           bugid: evt.bugid, table_time: evt.table_time,
           extracted_time: evt.extracted_time, match: evt.match,
           source: evt.source, remark: evt.remark || '',
+          desc: evt.desc || '', status: evt.status || '',
         });
       } else if (evt.type === 'done') {
         this.tableExtract.savedPath = evt.saved_path || '';

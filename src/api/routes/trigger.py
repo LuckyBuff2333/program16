@@ -570,9 +570,11 @@ def stop_batch_extract_time():
 
 
 @router.post("/api/trigger/compare_extract_time")
-async def compare_extract_time(file: UploadFile = File(...)):
+async def compare_extract_time(file: UploadFile = File(...), filter_statuses: str = Form(default="")):
     """表格时间对比提取：上传 Excel/CSV，提取触发时间并与表格中的时间对比（SSE 流式）
 
+    支持自动识别列：Jira号、问题描述、发生时间、完成状态
+    filter_statuses: 逗号分隔的状态筛选，为空则全部处理
     不写入云端，仅保存本地 CSV。
     """
     import json as _json
@@ -626,12 +628,16 @@ async def compare_extract_time(file: UploadFile = File(...)):
             yield f"data: {_json.dumps({'type': 'error', 'message': f'文件解析失败: {e}'}, ensure_ascii=False)}\n\n"
             return
 
-        # ── Step 2: 识别 Jira 号列和时间列 ──
+        # ── Step 2: 识别列 ──
         jira_col_idx = -1
         time_col_idx = -1
+        desc_col_idx = -1   # 问题描述列
+        status_col_idx = -1  # 完成状态列
         jira_re = re.compile(r'[A-Z]+-\d+')
         time_keywords = ['问题发生时间', '触发时间', '时间锚点', '发生时间']
         jira_keywords = ['jira', 'Jira', 'JIRA', 'jira链接', 'Jira链接']
+        desc_keywords = ['问题描述', '描述', 'summary', 'Summary']
+        status_keywords = ['完成状态', '状态', 'status', 'Status']
 
         # 按列名匹配
         for i, name in enumerate(col_names):
@@ -639,6 +645,10 @@ async def compare_extract_time(file: UploadFile = File(...)):
                 jira_col_idx = i
             if time_col_idx < 0 and any(kw in name for kw in time_keywords):
                 time_col_idx = i
+            if desc_col_idx < 0 and any(kw in name for kw in desc_keywords):
+                desc_col_idx = i
+            if status_col_idx < 0 and any(kw in name for kw in status_keywords):
+                status_col_idx = i
 
         # 按内容匹配 Jira 列（兑底）
         if jira_col_idx < 0 and rows_data:
@@ -651,7 +661,10 @@ async def compare_extract_time(file: UploadFile = File(...)):
             yield f"data: {_json.dumps({'type': 'error', 'message': '未识别到 Jira 号列，请确保表格包含 Jira 链接列'}, ensure_ascii=False)}\n\n"
             return
 
-        # 提取所有 bugid + 表格时间
+        # 解析筛选条件
+        filter_set = set(s.strip() for s in filter_statuses.split(',') if s.strip()) if filter_statuses else None
+
+        # 提取所有 bugid + 表格时间 + 描述 + 状态
         items = []
         for row in rows_data:
             if jira_col_idx >= len(row):
@@ -662,13 +675,25 @@ async def compare_extract_time(file: UploadFile = File(...)):
                 continue
             bugid = m.group(0)
             table_time = ""
+            desc = ""
+            status = ""
             if time_col_idx >= 0 and time_col_idx < len(row):
                 table_time = str(row[time_col_idx]).strip()
-            items.append({"bugid": bugid, "table_time": table_time})
+            if desc_col_idx >= 0 and desc_col_idx < len(row):
+                desc = str(row[desc_col_idx]).strip()
+            if status_col_idx >= 0 and status_col_idx < len(row):
+                status = str(row[status_col_idx]).strip()
+            items.append({"bugid": bugid, "table_time": table_time, "desc": desc, "status": status})
 
         if not items:
             yield f"data: {_json.dumps({'type': 'error', 'message': '未从表格中解析到有效 Jira 号'}, ensure_ascii=False)}\n\n"
             return
+
+        # 按状态筛选
+        if filter_set:
+            items = [it for it in items if it["status"] in filter_set]
+        filtered_info = f" (已按状态筛选: {filter_statuses})" if filter_set and filter_statuses else ""
+        skipped_count = len(rows_data) - len(items) if filter_set else 0
 
         cfg = load_config().get("jira_api", {})
         img_tok = cfg.get("token", "")
@@ -677,14 +702,18 @@ async def compare_extract_time(file: UploadFile = File(...)):
         if img_tok:
             _img_headers["Authorization"] = f"Bearer {img_tok}"
 
-        yield f"data: {_json.dumps({'type': 'start', 'total': len(items), 'jira_col': col_names[jira_col_idx] if jira_col_idx < len(col_names) else '', 'time_col': col_names[time_col_idx] if 0 <= time_col_idx < len(col_names) else ''}, ensure_ascii=False)}\n\n"
+        yield f"data: {_json.dumps({'type': 'start', 'total': len(items), 'jira_col': col_names[jira_col_idx] if jira_col_idx < len(col_names) else '', 'time_col': col_names[time_col_idx] if 0 <= time_col_idx < len(col_names) else '', 'desc_col': col_names[desc_col_idx] if 0 <= desc_col_idx < len(col_names) else '', 'status_col': col_names[status_col_idx] if 0 <= status_col_idx < len(col_names) else '', 'filtered': skipped_count}, ensure_ascii=False)}\n\n"
 
         # ── Step 3: 并行提取时间并对比 ──
         def extract_one(bugid: str):
-            """提取单个 bugid 的触发时间"""
+            """提取单个 bugid 的触发时间 + 问题描述"""
             try:
                 issue = _jc.fetch_issue(bugid)
                 fields = issue.get("fields") or {}
+                # 提取问题描述（summary → description 兜底）
+                desc = fields.get("summary", "")
+                if not desc:
+                    desc = (fields.get("description") or "")[:200]
                 attachments = fields.get("attachment") or []
                 try:
                     _gmt = _gm_times_of(attachments) or []
@@ -711,10 +740,10 @@ async def compare_extract_time(file: UploadFile = File(...)):
                 if tt:
                     if not isinstance(tt, str):
                         tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
-                    return bugid, tt, source, None
-                return bugid, "", "failed", "未提取到时间"
+                    return bugid, tt, source, desc, None
+                return bugid, "", "failed", desc, "未提取到时间"
             except Exception as e:
-                return bugid, "", "error", str(e)
+                return bugid, "", "error", "", str(e)
 
         def _parse_time(s: str):
             """尝试多种格式解析时间字符串"""
@@ -751,10 +780,12 @@ async def compare_extract_time(file: UploadFile = File(...)):
                 item = futures[future]
                 bugid = item["bugid"]
                 table_time_str = item["table_time"]
+                table_desc = item.get("desc", "")
+                table_status = item.get("status", "")
                 try:
-                    _, ext_time, source, error = future.result()
+                    _, ext_time, source, ext_desc, error = future.result()
                 except Exception as e:
-                    ext_time, source, error = "", "error", str(e)
+                    ext_time, source, ext_desc, error = "", "error", "", str(e)
 
                 done_count += 1
                 # 对比逻辑
@@ -789,12 +820,14 @@ async def compare_extract_time(file: UploadFile = File(...)):
                     "bugid": bugid, "table_time": table_time_str,
                     "extracted_time": ext_time, "match": match_result,
                     "source": source, "remark": remark,
+                    "desc": table_desc or ext_desc, "status": table_status,
                 })
                 evt = {
                     'type': 'progress', 'current': done_count, 'total': len(items),
                     'bugid': bugid, 'table_time': table_time_str,
                     'extracted_time': ext_time, 'match': match_result,
                     'source': source, 'remark': remark,
+                    'desc': table_desc or ext_desc, 'status': table_status,
                 }
                 yield f"data: {_json.dumps(evt, ensure_ascii=False)}\n\n"
         finally:
@@ -808,16 +841,18 @@ async def compare_extract_time(file: UploadFile = File(...)):
         try:
             with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["Jira号", "表格时间", "提取时间", "对比结果", "提取来源", "备注"])
+                writer.writerow(["Jira号", "问题描述", "完成状态", "表格时间", "提取时间", "对比结果", "提取来源", "备注"])
                 for r in results_rows:
-                    writer.writerow([r["bugid"], r["table_time"], r["extracted_time"],
+                    writer.writerow([r["bugid"], r.get("desc", ""), r.get("status", ""), r["table_time"], r["extracted_time"],
                                      r["match"], r["source"], r["remark"]])
         except Exception as e:
             logger.error("保存对比 CSV 失败: %s", e)
             csv_name = ""
-
+        
         done_msg = f"对比完成: {matched} 成功, {unmatched} 不一致, {failed} 提取失败"
-        yield f"data: {_json.dumps({'type': 'done', 'total': len(items), 'matched': matched, 'unmatched': unmatched, 'failed': failed, 'saved_path': csv_name, 'message': done_msg}, ensure_ascii=False)}\n\n"
+        if skipped_count:
+            done_msg += f" (跳过 {skipped_count} 条)"
+        yield f"data: {_json.dumps({'type': 'done', 'total': len(items), 'matched': matched, 'unmatched': unmatched, 'failed': failed, 'skipped': skipped_count, 'saved_path': csv_name, 'message': done_msg}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
