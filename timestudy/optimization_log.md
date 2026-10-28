@@ -720,3 +720,19 @@ flowchart TD
 - **教训**：`sparse-checkout` / merge / 大批量拉取前，先备份 `config/` 与 `data/`（均为 gitignore，git 无法恢复）
 
 </details>
+
+<details>
+<summary><b>50. 网络受限下完成远端合并：只拉代码文件 + 本地构造 merge 提交（2026-10-28）</b></summary>
+
+- **问题描述**：GitHub 主站 HTTPS 完全超时，`git fetch/merge` 拉取 1133 个文件的包反复在 ~18MB 处中断；远端分叉包含可观测性模块、trigger 提取增强，以及 `case_reports/`（800 个）和 `docs/2026-10-27/`（290 个）等数据文件
+- **排查与方案**：
+  1. 测速发现 `github.com` 不通，但 **`codeload.github.com`（1.9s）与 `api.github.com`（0.3s）可用**
+  2. 按目录统计变更：代码文件仅 **34 个**，其余 1100+ 是数据文件
+  3. 用 GitHub API `contents?ref=a6748e25` 逐个下载 34 个代码文件（2 个大文件用 `Range` 分段补齐），并用 `git hash-object --no-filters` 校验与远端 blob 完全一致
+  4. 本地构造合并提交：`read-tree HEAD` → 用远端 blob 覆盖 34 个代码文件 → `write-tree` → `commit-tree -p HEAD -p a6748e25`
+  5. 合并并推送后，修复远端遗漏的 `trigger.py` 缺失 `Form` 导入（远端代码本身跑不起来），重建前端
+- **结果**：合并提交 `4f5c8620`，修复提交 `3775acfe`；**86 passed**；推送成功（`a6748e25..3775acfe master -> master`），本地/远端 0/0
+- **未拉取（本地忽略）**：`case_reports/`（远程有备份）、`docs/2026-10-27/`、`reports/`、`tools/jdk-*`
+- **经验**：网络封锁时不要硬拉整包，先按目录统计变更规模，只取代码文件再本地构造 merge；`codeload` 与 `api.github.com` 常比 `github.com` 更易访问
+
+</details>
