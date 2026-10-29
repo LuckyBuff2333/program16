@@ -1013,7 +1013,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause",
-                    "置信度", "分析失败归因", "traceid", "traceid排查报告"]
+                    "置信度", "分析失败归因", "traceid", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         # 附件字段"报告链接"处理：file_token 为附件格式，沙箱 URL 不写入附件字段（链接已追加到 root cause）
         file_token = fields_dict.get("_report_file_token", "")
@@ -1148,7 +1148,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         # traceid 排查报告：优先 ADP 报告链接，其次沙箱链接，最后本地报告路径
         _report_url_for_trace = results.get("_report_url", "")
         _sandbox_for_trace = out.get("_sandbox_url", "")
-        results["traceid排查报告"] = _report_url_for_trace or _sandbox_for_trace or ""
+        results["traceid排查"] = _report_url_for_trace or _sandbox_for_trace or ""
 
         # Step 3.3: 续接机制（截断/完整无报告时发"继续"；限流/首轮未开工时重发原始消息）
         max_continues = 2
@@ -1249,8 +1249,8 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             results.pop("报告链接（分析报告、可观测报告）", None)
 
         # 补充 traceid 排查报告（沙箱 URL 在报告下载阶段才可用）
-        if not results.get("traceid排查报告") and out.get("_sandbox_url"):
-            results["traceid排查报告"] = out["_sandbox_url"]
+        if not results.get("traceid排查") and out.get("_sandbox_url"):
+            results["traceid排查"] = out["_sandbox_url"]
 
         # 失败归因：分析失败但没有明确原因时，按 ADP 返回内容自动归类（失败类型）
         if results.get("完成状态") == "分析失败" and not results.get("分析失败归因"):
@@ -1356,7 +1356,7 @@ def save_adp_batch_log(results: list) -> dict:
     """ADP 每次执行完成后，将批次记录写入本地 CSV
 
     云端表格（回归测试第一批次）的写入已由 write_adp_to_feishu / _write_back 负责，
-    本函数只做本地 CSV 批次留痕（含 traceid、traceid排查报告）。
+    本函数只做本地 CSV 批次留痕（含 traceid、traceid排查）。
 
     :param results: 执行结果列表，每条包含:
         - jira_key: Jira 号
@@ -1364,7 +1364,7 @@ def save_adp_batch_log(results: list) -> dict:
         - error: 错误信息
         - fail_type: 失败类型
         - traceid: trace ID
-        - traceid排查报告: 排查报告链接
+        - traceid排查: 排查报告链接
     :return: {"batch_no": int, "csv_path": str}
     """
     if not results:
@@ -1383,7 +1383,7 @@ def _save_adp_batch_log_inner(results: list) -> dict:
 
     # 字段定义
     fieldnames = ["Jira号", "执行结果", "执行完成时间", "执行报错",
-                  "错误分类", "traceid", "traceid排查报告"]
+                  "错误分类", "traceid", "traceid排查"]
 
     # 构建行数据
     rows = []
@@ -1395,7 +1395,7 @@ def _save_adp_batch_log_inner(results: list) -> dict:
             "执行报错": (r.get("error") or "")[:500],
             "错误分类": r.get("fail_type") or "",
             "traceid": r.get("traceid") or "",
-            "traceid排查报告": r.get("traceid排查报告") or "",
+            "traceid排查": r.get("traceid排查") or "",
         })
 
     # ── 本地 CSV ──

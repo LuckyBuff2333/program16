@@ -5097,7 +5097,7 @@ async def test_adp_single(request: Request):
                               "error": result.get("error", ""),
                               "fail_type": _adp_fail_type(result),
                               "traceid": (result.get("results") or {}).get("traceid", ""),
-                              "traceid排查报告": (result.get("results") or {}).get("traceid排查报告", "")}])
+                              "traceid排查": (result.get("results") or {}).get("traceid排查", "")}])
         except Exception:
             logger.warning("ADP 单条执行批次记录保存失败", exc_info=True)
         # 推送附件数 + 飞书状态等补充信息
@@ -5268,7 +5268,7 @@ async def test_adp_batch(request: Request):
             _save_batch_log([{"jira_key": r.get('jira_key', ''), 'ok': r.get('ok', False),
                               'error': r.get('error', ''), 'fail_type': _adp_fail_type(r),
                               'traceid': (r.get('results') or {}).get('traceid', ''),
-                              'traceid排查报告': (r.get('results') or {}).get('traceid排查报告', '')}
+                              'traceid排查': (r.get('results') or {}).get('traceid排查', '')}
                              for r in all_results])
         except Exception:
             logger.warning("ADP 批量执行批次记录保存失败", exc_info=True)
@@ -5586,8 +5586,9 @@ async def test_adp_lookup(request: Request):
                             if fail_md and not result.get("report_path"):
                                 result["report_path"] = fail_md
 
-                        # 写回多维表格
-                        feishu_ok = await _write_back(bugid, result, info["rec"])
+                        # 写回多维表格（改为批量写入，分析阶段暂不做逐条写回）
+                        # feishu_ok = await _write_back(bugid, result, info["rec"])
+                        feishu_ok = True
                         ok = result.get("ok", False) and has_html and feishu_ok
 
                         item = {
@@ -5627,16 +5628,47 @@ async def test_adp_lookup(request: Request):
 
             yield f"data: {_json.dumps({'type': 'batch_done', 'batch': group_idx, 'success': batch_ok, 'fail': batch_fail, 'skip': batch_skip}, ensure_ascii=False)}\n\n"
 
-        # ADP 执行批次记录（本地CSV + 云端多维表格）
+        # ADP 执行批次记录（本地CSV）
         try:
             from src.services.adp_ops import save_adp_batch_log as _save_batch_log
             _save_batch_log([{"jira_key": r.get("jira_key", ""), "ok": r.get("ok", False),
                               "error": r.get("error", ""), "fail_type": r.get("fail_type", ""),
                               "traceid": (r.get("results") or {}).get("traceid", ""),
-                              "traceid排查报告": (r.get("results") or {}).get("traceid排查报告", "")}
+                              "traceid排查": (r.get("results") or {}).get("traceid排查", "")}
                              for r in all_results])
         except Exception:
             logger.warning("ADP 查找执行批次记录保存失败", exc_info=True)
+
+        # 批量写回飞书多维表格（执行完成后统一写入）
+        try:
+            update_records = []
+            for r in all_results:
+                bugid = r.get("jira_key", "")
+                rec = bt_map.get(bugid)
+                if not rec:
+                    continue
+                results_dict = r.get("results") or {}
+                status = results_dict.get("完成状态", "")
+                # 只写入有结果或状态为"无法分析"/"分析失败"的记录
+                if not r.get("ok") and status not in ("无法分析", "分析失败"):
+                    continue
+                write_fields = {k: v for k, v in results_dict.items()
+                                if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
+                file_token = results_dict.get("_report_file_token", "")
+                if file_token:
+                    write_fields["报告链接（分析报告、可观测报告）"] = [{"file_token": file_token}]
+                else:
+                    write_fields.pop("报告链接（分析报告、可观测报告）", None)
+                record_id = rec.get("record_id", "")
+                if record_id and write_fields:
+                    update_records.append({"record_id": record_id, "fields": write_fields})
+            if update_records:
+                await loop.run_in_executor(
+                    None, lambda: feishu_client.update_bitable_records(app_token, table_id, update_records))
+                logger.info("ADP lookup 批量写回成功: %d 条", len(update_records))
+        except Exception as e:
+            logger.error("ADP lookup 批量写回失败: %s", e)
+
         yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'fail': max(0, total_fail), 'total_elapsed': round(_time.time() - _t0, 1)}, ensure_ascii=False)}\n\n"
 
     # 注册作业：/api/jobs 可查进度，/api/jobs/{id}/stop 可单独停止本作业
