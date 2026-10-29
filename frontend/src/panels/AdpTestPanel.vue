@@ -301,9 +301,9 @@
           :status="lookup.running ? '' : (lookup.progress.fail === 0 ? 'success' : 'warning')"
           style="margin-top:8px"></el-progress>
         <!-- 当前并发组 -->
-        <div v-if="lookup.currentBatch && lookup.running" class="running-strip" style="margin-top:8px">
-          <span style="font-size:12px;color:#606266;margin-right:8px">当前组 #{{ lookup.currentBatch.batch }}：</span>
-          <el-tag v-for="key in (lookup.currentBatch.running || [])" :key="key" type="warning" effect="plain" size="small" class="running-tag">
+        <div v-if="lookup.running && lookup.runningItems.length" class="running-strip" style="margin-top:8px">
+          <span style="font-size:12px;color:#606266;margin-right:8px">正在分析：</span>
+          <el-tag v-for="key in lookup.runningItems" :key="key" type="warning" effect="plain" size="small" class="running-tag">
             <span class="running-dot"></span>{{ key }}
           </el-tag>
         </div>
@@ -395,7 +395,7 @@ export default {
         colMap: { jira: '', trigger_time: '', description: '', summary: '' },
       },
       lookup: {
-        input: '', running: false, progress: null, results: [], currentBatch: null,
+        input: '', running: false, progress: null, results: [], currentBatch: null, runningItems: [],
         mode: 'manual', limit: 10, abortCtrl: null, error: '', tableName: '',
       },
     };
@@ -597,6 +597,7 @@ export default {
       this.lookup.running = true;
       this.lookup.results = [];
       this.lookup.currentBatch = null;
+      this.lookup.runningItems = [];
       this.lookup.error = '';
       this.lookup.abortCtrl = new AbortController();
       this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, skip: 0, noReportTotal: null, totalElapsed: 0, tableName: '' };
@@ -634,30 +635,20 @@ export default {
                 } else if (d.status === 'fail') {
                   this.lookup.error = `多维表格读取失败: ${d.error || '未知错误'}（请检查 adp 配置段）`;
                 }
-              } else if (d.type === 'batch_start') {
-                this.lookup.currentBatch = { batch: d.batch, items: d.items };
+              } else if (d.type === 'item_start') {
+                if (!this.lookup.runningItems.includes(d.jira_key)) this.lookup.runningItems.push(d.jira_key);
               } else if (d.type === 'item_done') {
                 this.lookup.results.push(d);
-                if (this.lookup.currentBatch && this.lookup.currentBatch.running) {
-                  this.lookup.currentBatch.running = this.lookup.currentBatch.running.filter(k => k !== d.jira_key);
-                }
+                this.lookup.runningItems = this.lookup.runningItems.filter(k => k !== d.jira_key);
                 if (d.skipped) this.lookup.progress.skip++;
                 else if (d.has_html) this.lookup.progress.success++;
                 else this.lookup.progress.fail++;
               } else if (d.type === 'keepalive') {
-                if (this.lookup.currentBatch) {
-                  this.lookup.currentBatch.running = d.running || [];
-                }
-              } else if (d.type === 'item_start') {
-                if (this.lookup.currentBatch && !this.lookup.currentBatch.running) {
-                  this.lookup.currentBatch.running = [];
-                }
-                if (this.lookup.currentBatch) this.lookup.currentBatch.running.push(d.jira_key);
-              } else if (d.type === 'batch_done') {
-                this.lookup.currentBatch = null;
+                this.lookup.runningItems = d.running || [];
               } else if (d.type === 'done') {
                 // 完成：记录总耗时
                 if (d.total_elapsed) this.lookup.progress.totalElapsed = d.total_elapsed;
+                this.lookup.runningItems = [];
               }
             } catch { /* skip */ }
           }
@@ -674,7 +665,7 @@ export default {
         this.lookup.error = 'SSE 连接已关闭但未收到数据，请检查后端日志和 adp 配置段是否完整';
       }
       this.lookup.running = false;
-      this.lookup.currentBatch = null;
+      this.lookup.runningItems = [];
       this.lookup.abortCtrl = null;
     },
     stopLookup() {
