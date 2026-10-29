@@ -90,8 +90,11 @@
           :percentage="Math.round((batch.progress.current / batch.progress.total) * 100)"
           :status="batch.running ? '' : (batch.progress.fail === 0 ? 'success' : 'warning')"
           style="margin-top:8px"></el-progress>
-        <div v-if="batch.running && batch.runningItems && batch.runningItems.length" style="margin-top:6px;font-size:12px;color:#909399">
-          分析中: <span style="color:#e6a23c">{{ batch.runningItems.join(', ') }}</span>
+        <div v-if="batch.running && batch.runningItems && batch.runningItems.length" class="running-strip" style="margin-top:8px">
+          <span style="font-size:12px;color:#606266;margin-right:8px">正在分析：</span>
+          <el-tag v-for="key in batch.runningItems" :key="key" type="warning" effect="plain" size="small" class="running-tag">
+            <span class="running-dot"></span>{{ key }}
+          </el-tag>
         </div>
 
         <!-- 批量结果 -->
@@ -122,7 +125,7 @@
           </el-table-column>
           <el-table-column label="失败类型" width="160" show-overflow-tooltip>
             <template #default="{ row }">
-              <span v-if="row.fail_type" style="color:#f56c6c">{{ row.fail_type }}</span>
+              <span v-if="row.fail_type" :style="{ color: row.fail_type.includes('超时') ? '#e6a23c' : '#f56c6c' }">{{ row.fail_type }}</span>
               <span v-else style="color:#c0c4cc">-</span>
             </template>
           </el-table-column>
@@ -298,11 +301,11 @@
           :status="lookup.running ? '' : (lookup.progress.fail === 0 ? 'success' : 'warning')"
           style="margin-top:8px"></el-progress>
         <!-- 当前并发组 -->
-        <div v-if="lookup.currentBatch && lookup.running" style="margin-top:6px;font-size:12px;color:#909399">
-          当前组 #{{ lookup.currentBatch.batch }}：{{ (lookup.currentBatch.items || []).join(', ') }}
-          <span v-if="lookup.currentBatch.running && lookup.currentBatch.running.length" style="color:#e6a23c">
-            （分析中: {{ lookup.currentBatch.running.join(', ') }}）
-          </span>
+        <div v-if="lookup.currentBatch && lookup.running" class="running-strip" style="margin-top:8px">
+          <span style="font-size:12px;color:#606266;margin-right:8px">当前组 #{{ lookup.currentBatch.batch }}：</span>
+          <el-tag v-for="key in (lookup.currentBatch.running || [])" :key="key" type="warning" effect="plain" size="small" class="running-tag">
+            <span class="running-dot"></span>{{ key }}
+          </el-tag>
         </div>
 
         <!-- 结果表格 -->
@@ -334,7 +337,7 @@
           </el-table-column>
           <el-table-column label="失败类型" width="160" show-overflow-tooltip>
             <template #default="{ row }">
-              <span v-if="row.fail_type" style="color:#f56c6c">{{ row.fail_type }}</span>
+              <span v-if="row.fail_type" :style="{ color: row.fail_type.includes('超时') ? '#e6a23c' : '#f56c6c' }">{{ row.fail_type }}</span>
               <span v-else style="color:#c0c4cc">-</span>
             </template>
           </el-table-column>
@@ -635,6 +638,9 @@ export default {
                 this.lookup.currentBatch = { batch: d.batch, items: d.items };
               } else if (d.type === 'item_done') {
                 this.lookup.results.push(d);
+                if (this.lookup.currentBatch && this.lookup.currentBatch.running) {
+                  this.lookup.currentBatch.running = this.lookup.currentBatch.running.filter(k => k !== d.jira_key);
+                }
                 if (d.skipped) this.lookup.progress.skip++;
                 else if (d.has_html) this.lookup.progress.success++;
                 else this.lookup.progress.fail++;
@@ -642,6 +648,11 @@ export default {
                 if (this.lookup.currentBatch) {
                   this.lookup.currentBatch.running = d.running || [];
                 }
+              } else if (d.type === 'item_start') {
+                if (this.lookup.currentBatch && !this.lookup.currentBatch.running) {
+                  this.lookup.currentBatch.running = [];
+                }
+                if (this.lookup.currentBatch) this.lookup.currentBatch.running.push(d.jira_key);
               } else if (d.type === 'batch_done') {
                 this.lookup.currentBatch = null;
               } else if (d.type === 'done') {
@@ -706,12 +717,17 @@ export default {
                 this.batch.results.push(d);
                 const row = this.batch.items.find(it => it.bugid === d.jira_key);
                 if (row) row._status = d.ok ? 'done' : 'fail';
+                this.batch.runningItems = this.batch.runningItems.filter(k => k !== d.jira_key);
                 if (d.ok) this.batch.progress.success++;
                 else this.batch.progress.fail++;
               } else if (d.type === 'done') {
                 this.batch.progress.current = this.batch.progress.total;
               } else if (d.type === 'keepalive') {
                 this.batch.runningItems = d.running || [];
+              } else if (d.type === 'item_start') {
+                if (!this.batch.runningItems.includes(d.jira_key)) this.batch.runningItems.push(d.jira_key);
+                const row = this.batch.items.find(it => it.bugid === d.jira_key);
+                if (row) row._status = 'running';
               }
             } catch { /* skip */ }
           }
@@ -731,4 +747,25 @@ export default {
 .section-title { font-size: 16px; font-weight: 600; margin-bottom: 10px; color: #303133; }
 .adp-tabs { border-radius: 8px; }
 .adp-tabs :deep(.el-tabs__content) { padding: 16px; overflow: visible; }
+/* 执行中动画条 */
+.running-strip {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 8px 12px; background: #fdf6ec; border-radius: 6px; border: 1px solid #faecd8;
+}
+.running-tag {
+  animation: running-pulse 1.8s ease-in-out infinite;
+}
+.running-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: #e6a23c; margin-right: 5px; vertical-align: middle;
+  animation: dot-blink 1s ease-in-out infinite;
+}
+@keyframes running-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+@keyframes dot-blink {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(0.7); }
+}
 </style>

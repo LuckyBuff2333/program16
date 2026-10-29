@@ -5239,10 +5239,18 @@ async def test_adp_batch(request: Request):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as pool:
             futures = {}
-            for it in todo[:batch_size]:
+            next_idx = 0
+            _ITEM_TIMEOUT = 90 * 60  # 每条任务总超时 90 分钟（累计，暂停续接不重置）
+            _item_start_times = {}  # bugid -> {"start": float, "accumulated": float}
+            # 初始提交 batch_size 个，并立即通知前端开始执行
+            for _ in range(min(batch_size, len(todo))):
+                it = todo[next_idx]
                 f = pool.submit(_run_one, it)
                 futures[f] = it
-            next_idx = batch_size
+                _item_start_times[it.get("bugid", "")] = {"start": _time.time(), "accumulated": 0}
+                next_idx += 1
+            for f in futures:
+                yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': futures[f].get('bugid', '')}, ensure_ascii=False)}\n\n"
             batch_deadline = _time.time() + 600
             while futures:
                 if _batch_stop.is_set():
@@ -5258,13 +5266,34 @@ async def test_adp_batch(request: Request):
                         batch_results.append(r)
                         yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': r['jira_key'], 'ok': False, 'results': {}, 'error': r['error'], 'fail_type': _adp_fail_type(r), **_adp_text_payload({}), 'file_urls': []}, ensure_ascii=False)}\n\n"
                     break
+                # 检查每条任务的累计超时（90分钟，暂停/续接不重置）
+                for f in list(futures):
+                    if f.done():
+                        continue
+                    bugid = futures[f].get('bugid', '')
+                    if bugid not in _item_start_times:
+                        continue
+                    elapsed = _item_start_times[bugid]["accumulated"] + (_time.time() - _item_start_times[bugid]["start"])
+                    if elapsed > _ITEM_TIMEOUT:
+                        f.cancel()
+                        it = futures.pop(f)
+                        _item_start_times[bugid]["accumulated"] = elapsed
+                        r = {"ok": False, "jira_key": bugid, "error": f"单条任务超时自动取消（累计 {int(elapsed // 60)} 分钟）",
+                             "results": {"完成状态": "分析失败", "分析失败归因": "单条任务超时（90分钟）"},
+                             "fail_type": "单条任务超时自动取消"}
+                        batch_results.append(r)
+                        yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': bugid, 'ok': False, 'results': r['results'], 'error': r['error'], 'fail_type': r['fail_type'], **_adp_text_payload({}), 'file_urls': []}, ensure_ascii=False)}\n\n"
                 done_now = [f for f in futures if f.done()]
                 for future in done_now:
                     it = futures.pop(future)
+                    bugid = it.get('bugid', '')
+                    # 累计执行时间（暂停续接不重置）
+                    if bugid in _item_start_times:
+                        _item_start_times[bugid]["accumulated"] += _time.time() - _item_start_times[bugid]["start"]
                     try:
                         r = future.result()
                     except Exception as e:
-                        r = {"ok": False, "jira_key": it.get("bugid", ""), "error": str(e)[:100]}
+                        r = {"ok": False, "jira_key": bugid, "error": str(e)[:100]}
                     batch_results.append(r)
                     yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': r.get('jira_key', ''), 'ok': r.get('ok', False), 'results': r.get('results', {}), 'error': r.get('error', ''), 'fail_type': _adp_fail_type(r), **_adp_text_payload(r), 'file_urls': r.get('file_urls', [])}, ensure_ascii=False)}\n\n"
                     # 动态补位：只要完成一个，立即从 todo 取下一个
@@ -5272,7 +5301,9 @@ async def test_adp_batch(request: Request):
                         next_item = todo[next_idx]
                         nf = pool.submit(_run_one, next_item)
                         futures[nf] = next_item
+                        _item_start_times[next_item.get('bugid', '')] = {"start": _time.time(), "accumulated": 0}
                         next_idx += 1
+                        yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': next_item.get('bugid', '')}, ensure_ascii=False)}\n\n"
                 if futures and not done_now:
                     running_keys = [futures[f].get('bugid', '') for f in futures]
                     yield f"data: {_json.dumps({'type': 'keepalive', 'running': running_keys}, ensure_ascii=False)}\n\n"
@@ -5543,13 +5574,18 @@ async def test_adp_lookup(request: Request):
         with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as pool:
             futures = {}
             next_idx = 0
-            # 初始提交 batch_size 个
+            _ITEM_TIMEOUT = 90 * 60  # 每条任务总超时 90 分钟（累计，暂停续接不重置）
+            _item_start_times = {}  # bugid -> {"start": float, "accumulated": float}
+            # 初始提交 batch_size 个，并立即通知前端开始执行
             for _ in range(min(batch_size, len(effective_bugids))):
                 bugid = effective_bugids[next_idx]
                 f = pool.submit(_run_one_adp, bugid)
                 futures[f] = {"bugid": bugid}
+                _item_start_times[bugid] = {"start": _time.time(), "accumulated": 0}
                 next_idx += 1
-            
+            for f in futures:
+                yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': futures[f]['bugid']}, ensure_ascii=False)}\n\n"
+
             batch_deadline = _time.time() + adp_cfg["timeout"] + 120
             while futures:
                 if _stop_event.is_set():
@@ -5557,7 +5593,32 @@ async def test_adp_lookup(request: Request):
                         f.cancel()
                     pool.shutdown(wait=False, cancel_futures=True)
                     break
-                # 检查超时的 future
+                # 检查每条任务的累计超时（90分钟，暂停/续接不重置）
+                for f in list(futures):
+                    if f.done():
+                        continue
+                    bugid = futures[f]["bugid"]
+                    if bugid not in _item_start_times:
+                        continue
+                    elapsed = _item_start_times[bugid]["accumulated"] + (_time.time() - _item_start_times[bugid]["start"])
+                    if elapsed > _ITEM_TIMEOUT:
+                        f.cancel()
+                        futures.pop(f)
+                        _item_start_times[bugid]["accumulated"] = elapsed
+                        rec = bt_map.get(bugid)
+                        item = {
+                            "jira_key": bugid, "ok": False, "has_html": False, "skipped": False,
+                            "results": {"完成状态": "分析失败", "分析失败归因": "单条任务超时（90分钟）"},
+                            "error": f"单条任务超时自动取消（累计 {int(elapsed // 60)} 分钟）",
+                            "bt_found": rec is not None,
+                            "desc_source": "bitable" if rec else "none",
+                            "time_source": "bitable" if rec else "none",
+                            "text_len": 0, "text_preview": "", "report_path": "",
+                            "fail_type": "单条任务超时自动取消", "file_urls": [],
+                        }
+                        batch_results.append(item)
+                        yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
+                # 检查全局超时的 future
                 if _time.time() > batch_deadline:
                     for f in list(futures):
                         f.cancel()
@@ -5580,6 +5641,9 @@ async def test_adp_lookup(request: Request):
                 done_now = [f for f in futures if f.done()]
                 for future in done_now:
                     bugid = futures.pop(future)["bugid"]
+                    # 累计执行时间（暂停续接不重置）
+                    if bugid in _item_start_times:
+                        _item_start_times[bugid]["accumulated"] += _time.time() - _item_start_times[bugid]["start"]
                     try:
                         r = future.result()
                     except Exception as e:
@@ -5631,7 +5695,9 @@ async def test_adp_lookup(request: Request):
                         next_bugid = effective_bugids[next_idx]
                         nf = pool.submit(_run_one_adp, next_bugid)
                         futures[nf] = {"bugid": next_bugid}
+                        _item_start_times[next_bugid] = {"start": _time.time(), "accumulated": 0}
                         next_idx += 1
+                        yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': next_bugid}, ensure_ascii=False)}\n\n"
                 # 还有未完成的，发心跳并等待
                 if futures and not done_now:
                     running_keys = [futures[f]["bugid"] for f in futures]
