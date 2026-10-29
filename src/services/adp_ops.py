@@ -1014,8 +1014,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause",
-                    "置信度", "分析失败归因", "traceid", "traceid排查",
-                    "附件下载耗时(秒)", "报告下载耗时(秒)"]
+                    "置信度", "分析失败归因", "traceid", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
         tid_check = write_fields.get("traceid排查", "")
@@ -1095,10 +1094,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
 
     # Step 1: 查附件
     _progress("attachments", "running")
-    _att_start = time.time()
     attachments = query_attachments(jira_key)
-    _att_elapsed = round(time.time() - _att_start, 2)
-    out["attachment_download_time"] = _att_elapsed
     out["attachment_count"] = len(attachments)
     if not attachments:
         out["error"] = "无附件"
@@ -1229,10 +1225,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         is_sandbox = bool(report_url and "sandbox.adp" in report_url)
         if report_url and not is_sandbox:
             _progress("download_report", "running")
-            _dl_start = time.time()
             dl_result = download_adp_report(jira_key, report_url, html_file)
-            _dl_elapsed = round(time.time() - _dl_start, 2)
-            out["report_download_time"] = _dl_elapsed
             file_token = dl_result.get("file_token", "")
             local_path = dl_result.get("local_path", "")
             if file_token:
@@ -1271,12 +1264,6 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             results["分析失败归因"] = classify_adp_failure(
                 error=out.get("error", ""), full_text=full_text,
                 attachment_count=len(attachments), signal_info=signal_info)
-
-        # 补充下载耗时到 results（供飞书写回和本地 CSV 记录）
-        if "attachment_download_time" in out:
-            results["附件下载耗时(秒)"] = out["attachment_download_time"]
-        if "report_download_time" in out:
-            results["报告下载耗时(秒)"] = out["report_download_time"]
 
         # Step 4: 保存本地
         _progress("save_local", "running")
@@ -1411,8 +1398,7 @@ def _save_adp_batch_log_inner(results: list, total_elapsed: float = 0) -> dict:
 
     # 字段定义
     fieldnames = ["Jira号", "执行结果", "执行完成时间", "执行报错",
-                  "错误分类", "traceid", "traceid排查", "附件下载耗时(秒)",
-                  "报告下载耗时(秒)", "总执行时间"]
+                  "错误分类", "traceid", "traceid排查", "总执行时间"]
 
     # 构建行数据
     rows = []
@@ -1425,8 +1411,6 @@ def _save_adp_batch_log_inner(results: list, total_elapsed: float = 0) -> dict:
             "错误分类": r.get("fail_type") or "",
             "traceid": r.get("traceid") or "",
             "traceid排查": r.get("traceid排查") or "",
-            "附件下载耗时(秒)": r.get("attachment_download_time", 0),
-            "报告下载耗时(秒)": r.get("report_download_time", 0),
             "总执行时间": elapsed_str,
         })
 
