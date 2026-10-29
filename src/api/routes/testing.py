@@ -5501,6 +5501,12 @@ async def test_adp_lookup(request: Request):
             try:
                 write_fields = {k: v for k, v in results_dict.items()
                                 if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
+                # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
+                tid_check = write_fields.get("traceid排查", "")
+                if tid_check and isinstance(tid_check, str) and tid_check.startswith("http"):
+                    write_fields["traceid排查"] = {"link": tid_check, "text": tid_check}
+                else:
+                    write_fields.pop("traceid排查", None)
                 file_token = results_dict.get("_report_file_token", "")
                 if file_token:
                     write_fields["报告链接（分析报告、可观测报告）"] = [{"file_token": file_token}]
@@ -5666,13 +5672,19 @@ async def test_adp_lookup(request: Request):
                     continue
                 write_fields = {k: v for k, v in results_dict.items()
                                 if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
+                # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
+                tid_check = write_fields.get("traceid排查", "")
+                if tid_check and isinstance(tid_check, str) and tid_check.startswith("http"):
+                    write_fields["traceid排查"] = {"link": tid_check, "text": tid_check}
+                else:
+                    write_fields.pop("traceid排查", None)
                 file_token = results_dict.get("_report_file_token", "")
                 if file_token:
                     write_fields["报告链接（分析报告、可观测报告）"] = [{"file_token": file_token}]
                 else:
                     write_fields.pop("报告链接（分析报告、可观测报告）", None)
-                # 写入本批次总执行时间
-                write_fields["总执行时间"] = _elapsed_str
+                # 总执行时间字段（飞书表格可能没有该列，先不写入）
+                write_fields.pop("总执行时间", None)
                 record_id = rec.get("record_id", "")
                 if record_id and write_fields:
                     update_records.append({"record_id": record_id, "fields": write_fields})

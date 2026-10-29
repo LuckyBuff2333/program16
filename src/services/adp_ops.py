@@ -1013,8 +1013,14 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause",
-                    "置信度", "分析失败归因", "traceid", "traceid排查", "总执行时间"]
+                    "置信度", "分析失败归因", "traceid", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
+        # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
+        tid_check = write_fields.get("traceid排查", "")
+        if tid_check and isinstance(tid_check, str) and tid_check.startswith("http"):
+            write_fields["traceid排查"] = {"link": tid_check, "text": tid_check}
+        else:
+            write_fields.pop("traceid排查", None)
         # 附件字段"报告链接"处理：file_token 为附件格式，沙箱 URL 不写入附件字段（链接已追加到 root cause）
         file_token = fields_dict.get("_report_file_token", "")
         report_url = fields_dict.get("_report_url", "")
