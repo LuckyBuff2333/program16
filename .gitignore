@@ -63,6 +63,9 @@ docs/adp_results/
 reports/
 tools/jdk-*/
 
+# 每日报告 / 批次执行 CSV（数据沉淀表格已有完整记录，CSV 不再入库）
+docs/**/*.csv
+
 # 案件报告（远程备份在其他机器，本地不入库、不检出）
 case_reports/
 
