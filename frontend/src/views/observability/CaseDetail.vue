@@ -172,6 +172,7 @@ interface CaseDetailData {
   analysis_seconds: number | null; ai_module: string; actual_module: string
   manual_review: string; analysis_panel: any; rootcause: string
   reasoning_rounds: any[]; log_path: string
+  debug_files: { reasoning_rounds: string; adjudication_result: any; reporting_final: string }
   jira_summary: string; jira_description: string
 
 }
@@ -185,6 +186,7 @@ const emptyDetail: CaseDetailData = {
   total_seconds: null, analysis_seconds: null, ai_module: '', actual_module: '',
   manual_review: '', analysis_panel: null, rootcause: '',
   reasoning_rounds: [], log_path: '',
+  debug_files: { reasoning_rounds: '', adjudication_result: null, reporting_final: '' },
   jira_summary: '', jira_description: '',
 }
 

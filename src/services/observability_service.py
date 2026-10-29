@@ -582,6 +582,31 @@ def _case_to_front_full_dict(row) -> dict:
     # ── 完整推理轮次（从 MD 日志解析，前端可折叠展示）──
     case_id = (getattr(row, "case_id", None) or "").strip()
     d["reasoning_rounds"] = _parse_full_reasoning_rounds(d.get("log_path", ""), case_id=case_id)
+    # ── debug 文件（推理/裁决/最终报告）──
+    debug_files = _load_debug_files(case_id)
+    # 不足 3 个文件视为不完整（旧数据残留），删除后重新拉取
+    _df_count = sum(1 for v in debug_files.values() if v)
+    if case_id and _df_count < 3:
+        if _df_count > 0:
+            # 删除不完整的旧文件
+            import re as _re2
+            from src.config import PROJECT_ROOT as _PROOT
+            for sub in ("", "pc", "online"):
+                base = os.path.join(_PROOT, "case_reports", sub) if sub else os.path.join(_PROOT, "case_reports")
+                if not os.path.isdir(base):
+                    continue
+                for f in os.listdir(base):
+                    if f.startswith(f"{case_id}_") and ("reasoning_rounds" in f or "adjudication_result" in f or "reporting_final" in f):
+                        try:
+                            os.unlink(os.path.join(base, f))
+                            logger.info("[debug_files] 删除不完整旧文件: %s", f)
+                        except Exception:
+                            pass
+        try:
+            debug_files = _fetch_remote_debug_files(case_id)
+        except Exception as _e:
+            logger.debug("[debug_files] 远程获取失败: %s", _e)
+    d["debug_files"] = debug_files
     # ── description 优化：生成简洁问题概述 ──
     root_cause = (row.root_cause_summary or "").strip()
     d["description"] = _generate_description(row, root_cause, d["reasoning_rounds"], desc)
@@ -968,6 +993,102 @@ def _fetch_jira_info(case_id: str) -> dict:
     except Exception as e:
         logger.warning("Jira 信息获取失败: %s - %s", case_id, e)
         return {"summary": "", "description": "", "attachments": []}
+
+
+def _load_debug_files(case_id: str) -> dict:
+    """加载 debug 压缩包解压后的三个文件内容
+
+    查找顺序：case_reports/{source}/{case_id}_*.md/.json
+    :return: {reasoning_rounds: str, adjudication_result: dict|None, reporting_final: str}
+    """
+    if not case_id:
+        return {"reasoning_rounds": "", "adjudication_result": None, "reporting_final": ""}
+    from src.config import PROJECT_ROOT
+    import json as _json
+    result = {"reasoning_rounds": "", "adjudication_result": None, "reporting_final": ""}
+    reports_dir = os.path.join(PROJECT_ROOT, "case_reports")
+    # 查找顺序：根目录 → pc → online
+    for sub in ("", "pc", "online"):
+        base = os.path.join(reports_dir, sub) if sub else reports_dir
+        if not os.path.isdir(base):
+            continue
+        # reasoning_rounds
+        rr_path = os.path.join(base, f"{case_id}_reasoning_rounds.md")
+        if os.path.isfile(rr_path) and not result["reasoning_rounds"]:
+            try:
+                with open(rr_path, "r", encoding="utf-8") as f:
+                    result["reasoning_rounds"] = f.read()
+            except Exception:
+                pass
+        # adjudication_result
+        aj_path = os.path.join(base, f"{case_id}_adjudication_result.json")
+        if os.path.isfile(aj_path) and result["adjudication_result"] is None:
+            try:
+                with open(aj_path, "r", encoding="utf-8") as f:
+                    result["adjudication_result"] = _json.load(f)
+            except Exception:
+                pass
+        # reporting_final
+        rf_path = os.path.join(base, f"{case_id}_reporting_final.md")
+        if os.path.isfile(rf_path) and not result["reporting_final"]:
+            try:
+                with open(rf_path, "r", encoding="utf-8") as f:
+                    result["reporting_final"] = f.read()
+            except Exception:
+                pass
+    return result
+
+
+def _fetch_remote_debug_files(case_id: str) -> dict:
+    """从远程调试服务器下载 ZIP 压缩包并解压，返回三个文件内容
+
+    :return: {reasoning_rounds: str, adjudication_result: dict|None, reporting_final: str}
+    """
+    import httpx
+    from src.config import load_config, PROJECT_ROOT
+    if not case_id:
+        return {"reasoning_rounds": "", "adjudication_result": None, "reporting_final": ""}
+    cfg_all = load_config().get("app_log_server", {})
+    for source in ("pc", "online"):
+        cfg = cfg_all if (source not in cfg_all and "host" in cfg_all) else cfg_all.get(source, {})
+        host, port = cfg.get("host", ""), cfg.get("port", 8001)
+        if not host:
+            continue
+        endpoint = cfg.get("debug_endpoint", "/api/logs/debug")
+        url = f"http://{host}:{port}{endpoint}/{case_id}"
+        try:
+            with httpx.Client(timeout=30) as client:
+                resp = client.get(url)
+            if resp.status_code != 200 or not resp.content:
+                continue
+            raw = resp.content
+            is_archive = (raw[:4] == b'PK\x03\x04' or
+                          raw[:7] in (b'Rar!\x1a\x07\x00', b'Rar!\x1a\x07\x01'))
+            if not is_archive:
+                continue
+            save_dir = os.path.join(PROJECT_ROOT, "case_reports", source)
+            files = _extract_debug_archive(raw, save_dir, case_id)
+            if files:
+                logger.info("[fetch_debug_files] 远程下载成功(%s): %s, %d 个文件", source, case_id, len(files))
+                # 转为 _load_debug_files 相同的返回格式
+                result = {"reasoning_rounds": "", "adjudication_result": None, "reporting_final": ""}
+                import json as _json
+                rr = files.get("02_reasoning_rounds.md", "")
+                if rr:
+                    result["reasoning_rounds"] = rr
+                aj = files.get("03_adjudication_result.json", "")
+                if aj:
+                    try:
+                        result["adjudication_result"] = _json.loads(aj)
+                    except Exception:
+                        result["adjudication_result"] = aj
+                rf = files.get("04_reporting_final.md", "")
+                if rf:
+                    result["reporting_final"] = rf
+                return result
+        except Exception as e:
+            logger.debug("[fetch_debug_files] 策略2失败(%s): %s", source, e)
+    raise ValueError(f"远程获取 debug 文件失败: case_id={case_id}")
 
 
 def _parse_full_reasoning_rounds(log_path: str, case_id: str = "") -> list:
@@ -1936,6 +2057,92 @@ def _audit_to_front_dict(row) -> dict:
 # ══════════════════════════════════════════════════════════════
 
 
+def _extract_debug_archive(data: bytes, save_dir: str, case_id: str) -> dict:
+    """解压 debug 接口返回的压缩包（ZIP/RAR），提取三个目标文件并保存到本地
+
+    按关键词模糊匹配文件名：reasoning_rounds / adjudication_result / reporting_final
+    :return: {标准名: content_str}
+    """
+    import io
+    import zipfile
+    # 关键词 → 标准文件名映射
+    _KEYWORDS = {
+        "reasoning_rounds": "02_reasoning_rounds.md",
+        "adjudication_result": "03_adjudication_result.json",
+        "reporting_final": "04_reporting_final.md",
+    }
+    def _match_target(filename: str) -> str:
+        """根据关键词匹配目标文件，返回标准名或空串"""
+        base = os.path.basename(filename).lower()
+        for kw, std_name in _KEYWORDS.items():
+            if kw in base:
+                return std_name
+        return ""
+    extracted = {}
+    all_names = []
+    # ── ZIP 格式（PK 魔数）──
+    if data[:4] == b'PK\x03\x04':
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            all_names = zf.namelist()
+            for name in all_names:
+                std = _match_target(name)
+                if std:
+                    extracted[std] = zf.read(name)
+    # ── RAR 格式（Rar! 魔数）──
+    elif data[:7] == b'Rar!\x1a\x07\x00' or data[:7] == b'Rar!\x1a\x07\x01':
+        import tempfile
+        import rarfile
+        with tempfile.NamedTemporaryFile(suffix=".rar", delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        try:
+            with rarfile.RarFile(tmp_path) as rf:
+                all_names = rf.namelist()
+                for name in all_names:
+                    std = _match_target(name)
+                    if std:
+                        extracted[std] = rf.read(name)
+        finally:
+            os.unlink(tmp_path)
+    else:
+        raise ValueError(f"无法识别的压缩包格式（前 4 字节: {data[:4].hex()}）")
+    logger.info("[extract_debug] ZIP 内容: %s | 匹配: %s", all_names, list(extracted.keys()))
+    # ── 兆底：关键词未匹配时，按扩展名推测分类 ──
+    if not extracted and all_names:
+        _md_files = [n for n in all_names if n.lower().endswith('.md')]
+        _json_files = [n for n in all_names if n.lower().endswith('.json')]
+        logger.warning("[extract_debug] 关键词未匹配，启用扩展名兆底: md=%s, json=%s", _md_files, _json_files)
+        # 重新解压
+        if data[:4] == b'PK\x03\x04':
+            import io as _io2
+            import zipfile as _zf2
+            with _zf2.ZipFile(_io2.BytesIO(data)) as zf:
+                if len(_md_files) >= 2:
+                    extracted["02_reasoning_rounds.md"] = zf.read(_md_files[0])
+                    extracted["04_reporting_final.md"] = zf.read(_md_files[-1])
+                elif len(_md_files) == 1:
+                    extracted["02_reasoning_rounds.md"] = zf.read(_md_files[0])
+                for jf in _json_files:
+                    extracted["03_adjudication_result.json"] = zf.read(jf)
+                    break
+    # ── 保存到本地（文件名前缀数字替换为 Jira 号）──
+    import re as _re
+    saved_files = {}
+    if extracted:
+        os.makedirs(save_dir, exist_ok=True)
+        for fname, raw in extracted.items():
+            # 02_reasoning_rounds.md → VCU-561045_reasoning_rounds.md
+            new_name = _re.sub(r'^\d+_', f'{case_id}_', fname)
+            path = os.path.join(save_dir, new_name)
+            mode = "wb" if isinstance(raw, bytes) else "w"
+            with open(path, mode) as f:
+                f.write(raw)
+            saved_files[fname] = new_name
+        logger.info("[extract_debug] 解压完成: %s → %s", case_id, saved_files)
+    return {k: v.decode("utf-8", errors="replace") if isinstance(v, bytes) else v
+            for k, v in extracted.items()}
+
+
 def fetch_remote_report(case_id: str) -> str:
     """代理获取：从旧模块的底层能力拉取 AI 分析报告原文
 
@@ -1977,7 +2184,7 @@ def fetch_remote_report(case_id: str) -> str:
     except Exception as e:
         logger.warning("[fetch_remote] 策略1失败(本地+飞书): %s", e)
 
-    # ── 策略 2：远程调试服务器 HTTP GET ──
+    # ── 策略 2：远程调试服务器 HTTP GET（支持 ZIP/RAR 压缩包）──
     import httpx
     cfg_all = load_config().get("app_log_server", {})
     for source in ("pc", "online"):
@@ -1994,10 +2201,29 @@ def fetch_remote_report(case_id: str) -> str:
         try:
             with httpx.Client(timeout=30) as client:
                 resp = client.get(url)
-            if resp.status_code == 200 and resp.text.strip():
-                content = resp.text
-                # 保存到 case_reports/ 目录（供下次策略0直接读取）
-                save_dir = os.path.join(PROJECT_ROOT, "case_reports", source)
+            if resp.status_code != 200:
+                continue
+            raw = resp.content
+            if not raw or not raw.strip() if isinstance(raw, str) else not raw:
+                continue
+            save_dir = os.path.join(PROJECT_ROOT, "case_reports", source)
+            # 判断是否为压缩包（ZIP/RAR 魔数检测）
+            is_archive = (raw[:4] == b'PK\x03\x04' or
+                          raw[:7] in (b'Rar!\x1a\x07\x00', b'Rar!\x1a\x07\x01'))
+            if is_archive:
+                files = _extract_debug_archive(raw, save_dir, case_id)
+                content = files.get("02_reasoning_rounds.md", "")
+                if not content:
+                    logger.warning("[fetch_remote] 压缩包中无匹配文件: %s, 已解压: %s", case_id, list(files.keys()))
+                    continue
+                logger.info("[fetch_remote] 策略2命中(%s, 压缩包): case_id=%s, %d 字符, 文件=%s",
+                            source, case_id, len(content), list(files.keys()))
+                return content
+            else:
+                # 兼容旧接口：返回纯文本 Markdown
+                content = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+                if not content.strip():
+                    continue
                 os.makedirs(save_dir, exist_ok=True)
                 local_path = os.path.join(save_dir, f"{case_id}.md")
                 if not os.path.exists(local_path):
