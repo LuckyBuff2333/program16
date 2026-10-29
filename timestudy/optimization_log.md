@@ -921,3 +921,30 @@ flowchart TD
 
 </details>
 
+<details>
+<summary><b>62. ADP 超时/续接/错误分类/飞书归档与 traceid 排查技能（2026-10-29）</b></summary>
+
+- **问题描述**：
+  1. 批次级 62 分钟总截止把还在正常跑的任务误杀，剩余 14 条不再启动；
+  2. 续接用了空会话 ID（新开会话），"继续"只拿到 435 字通用回复；
+  3. 智能体追问（questionnaire）仍发"继续"；无报告时误判"续接成功"；
+  4. `traceid排查` 直接写 ADP 报告 HTML 链接，没有调用 trace 排查技能；
+  5. 报告/批次记录散落，服务关闭后本地链接失效。
+
+- **改动内容**：
+  1. **超时**：删除 lookup / batch 两处批次截止，仅保留单条 90 分钟；超时移出并发池并立即补位，孤儿线程继续收尾，结果仍收集；
+  2. **续接**：从 `response.created` 捕获 `ConversationId`，续接/重发复用原会话；fatal 不续接；questionnaire/has_cards 不续接并归因"需要澄清"；续接成功必须以 `_report_url` 为准；
+  3. **traceid**：每次响应覆盖，取最后一次；失败不写 `traceid`；
+  4. **字段**：失败时 `traceid排查` 只放"返回内容"的报告链接；
+  5. **错误分类**：保留原有归类，具体原因写明细（如"需要澄清（ADP智能体追问）"）；
+  6. **日志**："流异常结束"改为"正常收口但无报告"；`response.created` 改结构化日志，不再截断；
+  7. **飞书归档**：trace 报告 → `Gia7…`；完整报告/失败快照 → `SeCw…`；批次 CSV → `Mhh…`；前端"查看完整报告"优先飞书文档链接；
+  8. **技能接入**：`tools/skills/log-review-pan-scan`，`_run_trace_skill()` 反查 trace、导出取证包、生成 md 并发布飞书文档；修复 page-size 50、session_id 匹配、UTF-8 解码；
+  9. **附件**：全分卷过滤；附件接口异常与无日志附件区分；长连接退避。
+
+- **验证结果**：全量 **116 passed**；3 条成功记录已回填 trace 报告；批次 CSV 已上传云端。
+
+- **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`frontend/src/panels/AdpTestPanel.vue`、`tools/skills/log-review-pan-scan/`、`docs/ADP技能使用说明.md`
+
+</details>
+
