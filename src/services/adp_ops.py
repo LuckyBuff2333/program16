@@ -38,8 +38,15 @@ CAPACITY_LIMIT_CODES = {
     "460721", "460722", "460723",   # 应用级
 }
 
+# 可重试错误码（模型超时等，发"继续"即可恢复）
+RETRYABLE_ERROR_CODES = {"460020", "460030"}
+
+# 需换会话ID重试的错误码（会话级冲突，新ID可解决）
+SESSION_CONFLICT_CODES = {"460919"}
+
 # 拒答/澄清 ReplyMethod（response.completed 里的 ExtraInfo.ReplyMethod）
 NO_REPORT_REPLY_METHODS = {"3", "15"}  # 3=拒答, 15=澄清确认
+CONCURRENT_LIMIT_REPLY = "7"  # ReplyMethod=7 表示并发超限
 
 # 澄清/索取信息话术关键词（仅短篇回复 < 4000 字时生效）
 CLARIFY_KEYWORDS = [
@@ -309,6 +316,14 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
                         # 限流错误也终止本轮（由上层决策是否重发）
                         if error_code in RATE_LIMIT_CODES or error_code in CAPACITY_LIMIT_CODES:
                             logger.warning("ADP 限流错误 %s，终止本轮", error_code)
+                            break
+                        # 可重试错误终止本轮（上层发"继续"续接）
+                        if error_code in RETRYABLE_ERROR_CODES:
+                            logger.warning("ADP 可重试错误 %s（模型超时等），终止本轮", error_code)
+                            break
+                        # 会话冲突终止本轮（上层换新ID重试）
+                        if error_code in SESSION_CONFLICT_CODES:
+                            logger.warning("ADP 会话冲突 %s，需换新ID重试", error_code)
                             break
                     # ---- 新增：response.completed 事件（本轮响应完成）----
                     if et == "response.completed":
@@ -671,32 +686,52 @@ def _validate_confidence(raw: str) -> str:
 
 def _extract_report_url(text: str, file_urls: list) -> tuple:
     """从文本或 file_urls 中提取报告链接（兼容三种域名 + lke 短链 + 沙箱路径）
-    优先级：
-      1) reply 文本中 agent.adp-cos.com 的直签 CDN URL（最可靠）
-      2) reply 文本中 lke.cloud.tencent.com/s/xxx 分享短链（302 → COS 签名 URL）
-      3) file_urls 里的 .html 文件（content.added 事件）
-      4) 文本中的沙箱报告路径（sandbox.adp，401 不可下载，仅作链接展示）
+    优先级（签名 URL 始终优先于无签名 URL，避免 403 Forbidden）：
+      1a) reply 文本中 agent.adp-cos.com 的直签 CDN URL（含 q-signature）
+      1b) reply 文本中 agent.adp-cos.com 无签名 URL（降级，可能 403）
+      2)  reply 文本中 lke.cloud.tencent.com/s/xxx 分享短链（302 → COS 签名 URL）
+      3)  file_urls 中带签名的 .html 文件（content.added 事件）
+      3b) file_urls 中无签名的 .html 文件（降级兜底）
+      4)  文本中的沙箱报告路径（sandbox.adp，401 不可下载，仅作链接展示）
     返回: (html_filename, direct_url)
     """
-    # 1. agent.adp-cos.com CDN 直链（带签名，可直接下载）
-    m = re.search(r'(https?://agent\.adp-cos\.com/[^\s)"\']*(?:report_|out/)[^\s)"\']*\.html[^\s)"\']*)', text)
-    if m:
+    # 1. agent.adp-cos.com CDN URL（区分签名/无签名）
+    signed_url, signed_name = "", ""
+    unsigned_url, unsigned_name = "", ""
+    for m in re.finditer(r'(https?://agent\.adp-cos\.com/[^\s)"\']*(?:report_|out/)[^\s)"\']*\.html[^\s)"\']*)', text):
         url = m.group(1)
-        name = re.search(r'(report_[^\s)"\'/?]*\.html)', url)
-        return (name.group(1) if name else url.split("/")[-1].split("?")[0]), url
+        name_m = re.search(r'(report_[^\s)"\'/?]*\.html)', url)
+        name = name_m.group(1) if name_m else url.split("/")[-1].split("?")[0]
+        if "q-sign" in url and not signed_url:
+            signed_url, signed_name = url, name
+        elif "q-sign" not in url and not unsigned_url:
+            unsigned_url, unsigned_name = url, name
+    # 签名 URL 优先（无签名的裸路径会被 COS 拒绝返回 403）
+    if signed_url:
+        return signed_name, signed_url
     # 2. lke.cloud.tencent.com/s/xxx 分享短链（302 跳转到 COS 签名 URL）
     m = re.search(r'(https?://lke\.cloud\.tencent\.com/s/[A-Za-z0-9]+)', text)
     if m:
         url = m.group(1)
-        # 从文本中就近提取 html 文件名（通常在链接前面的 markdown 文本里）
         name = re.search(r'(report_[A-Za-z0-9_\-]+\.html)', text[max(0, m.start() - 500):m.end() + 200])
         return (name.group(1) if name else "adp_report.html"), url
-    # 3. file_urls（content.added 事件中的文件），只匹配 .html 报告文件
+    # 3. file_urls（content.added 事件），同样签名优先
+    signed_fu, unsigned_fu = None, None
     for f in (file_urls or []):
         name = f.get("name", "")
         url = f.get("url", "")
-        if name.endswith(".html") and "meta" not in name.lower():
-            return name, url
+        if name.endswith(".html") and "meta" not in name.lower() and url:
+            if "q-sign" in url and not signed_fu:
+                signed_fu = (name, url)
+            elif not unsigned_fu:
+                unsigned_fu = (name, url)
+    if signed_fu:
+        return signed_fu
+    if unsigned_fu:
+        return unsigned_fu
+    # 1b 降级：文本中无签名的 agent.adp-cos.com URL（可能 403）
+    if unsigned_url:
+        return unsigned_name, unsigned_url
     # 4. 沙箱报告路径（sandbox.adp，401 不可下载，仅作为链接展示）
     # 4a. 已有完整 sandbox URL
     m = re.search(r'(https?://sandbox\.adp\.cloud\.tencent\.com/files\?path=[^\s)"\']*report_[^\s)"\']*\.html)', text)
@@ -779,11 +814,21 @@ def classify_adp_failure(error: str = "", full_text: str = "", attachment_count:
     if error_code in CAPACITY_LIMIT_CODES:
         return "ADP容量限流(%s)" % error_code
 
+    # ---- 2b. 可重试错误（模型超时等）----
+    if error_code in RETRYABLE_ERROR_CODES:
+        return "ADP模型超时(%s)" % error_code
+
+    # ---- 2c. 会话冲突（需换ID重试）----
+    if error_code in SESSION_CONFLICT_CODES:
+        return "ADP会话冲突(%s)" % error_code
+
     # ---- 3. 追问卡片（智能体在等用户作答）----
     if has_cards:
         return "ADP智能体追问（需人工作答）"
 
-    # ---- 4. ReplyMethod 判断（拒答/澄清）----
+    # ---- 4. ReplyMethod 判断（拒答/澄清/并发超限）----
+    if reply_method == CONCURRENT_LIMIT_REPLY:
+        return "ADP并发超限(ReplyMethod=7)"
     if reply_method in NO_REPORT_REPLY_METHODS and full_text:
         is_cr, reason = _looks_like_clarify_or_refusal(full_text, reply_method)
         if is_cr:
@@ -847,6 +892,10 @@ def extract_adp_results(full_text: str, closeout_data: dict, start_ts: int, end_
     # 报告链接（多来源提取）
     html_file, report_url = _extract_report_url(full_text, file_urls or [])
     if report_url:
+        _has_sig = "q-sign" in report_url
+        logger.info("ADP 报告URL提取: %s (签名=%s, 来源=%s)", html_file, _has_sig,
+                     "file_urls签名" if _has_sig and "agent-file" in report_url else
+                     "reply文本签名" if _has_sig else "无签名降级")
         result["报告链接（分析报告、可观测报告）"] = report_url
     elif html_file:
         result["报告链接（分析报告、可观测报告）"] = html_file
@@ -1170,15 +1219,24 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                     "分析完成但未产出HTML报告",
                 )
                 or _looks_truncated(full_text)
+                or err_code in RETRYABLE_ERROR_CODES
             )
             need_resend = (
                 err_code in RATE_LIMIT_CODES
                 or (not full_text and signal_info.get("request_ack")
                     and not signal_info.get("stream_exc"))
             )
-            if not need_continue and not need_resend:
+            need_new_session = err_code in SESSION_CONFLICT_CODES
+            if not need_continue and not need_resend and not need_new_session:
                 break
-            if need_continue:
+            if need_new_session:
+                # 会话冲突：换新会话ID重发原始消息
+                new_conv_id = uuid.uuid4().hex[:32]
+                _progress("adp_continue", "running", f"会话冲突({err_code})，换新ID重试")
+                logger.warning("ADP 会话冲突 %s，换新会话ID %s 重试", err_code, new_conv_id[:12])
+                cont_text, cont_urls, cont_close, _, _, cont_tid, cont_sig = call_adp_sse_stream(
+                    message, keepalive_cb=keepalive_cb, stop_event=stop_event, conversation_id=new_conv_id)
+            elif need_continue:
                 _progress("adp_continue", "running", f"第{cont_idx+1}轮续接（发'继续'）")
                 logger.info("ADP 分析疑似截断或完整无报告，第%d次续接（conv=%s）", cont_idx + 1, trace_id[:12])
                 cont_text, cont_urls, cont_close, _, _, cont_tid, cont_sig = call_adp_sse_stream(
