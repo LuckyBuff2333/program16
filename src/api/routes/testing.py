@@ -5377,6 +5377,10 @@ async def test_adp_lookup(request: Request):
         except Exception as e:
             yield f"data: {_json.dumps({'type': 'step', 'step': 'read_bitable', 'status': 'fail', 'error': str(e)[:100]}, ensure_ascii=False)}\n\n"
             return
+        # ── 校验日志：确认读取到的表格与配置一致 ──
+        logger.info("ADP lookup 读取多维表格: config_name='%s' table_id=%s 记录数=%d", table_name, table_id, len(records))
+        if table_name and len(records) > 100 and "回归测试" in table_name:
+            logger.warning("ADP lookup 读取到 %d 条记录，但配置表格 '%s' 预期记录数较少，请确认 table_id 是否正确", len(records), table_name)
         import re as _re
         bt_map = {}
         # auto 模式：收集未完成记录（完成状态为空），按表格顺序取前 limit 条

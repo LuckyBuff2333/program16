@@ -75,6 +75,7 @@ def _get_adp_cfg() -> dict:
         "timeout": int(cfg.get("timeout", 3600)),
         "bitable_app_token": cfg.get("bitable_app_token", ""),
         "bitable_table_id": cfg.get("bitable_table_id", ""),
+        "bitable_table_name": cfg.get("bitable_table_name", ""),
         "bitable_view_id": cfg.get("bitable_view_id", ""),
         "jira_field": cfg.get("jira_field", "Jira链接"),
         "save_dir": cfg.get("save_dir", "docs/adp_results"),
