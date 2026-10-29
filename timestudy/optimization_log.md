@@ -810,3 +810,17 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/AdpTestPanel.vue`、`src/services/adp_ops.py`、`config/config.yaml`（本地，未入库）
 
 </details>
+
+<details>
+<summary><b>55. 清理 ADP 表格查找死代码并修正文档描述（2026-10-29）</b></summary>
+
+- **问题描述**：`test_adp_lookup`（ADP 表格查找执行）里有两个与实现不符的地方：
+  1. 定义了 `async def _write_back()`，但全文件**没有任何调用**（真正写回是执行完成后末尾的统一批量写回）
+  2. 接口 docstring 写“失败重试一次”，实际代码没有逐条重试逻辑（只有超时/限流/续接那套机制）
+- **解决方案**：
+  1. 删除未使用的 `_write_back` 函数（1817 字符），内部注释改为“执行完成后由 Step 2 末尾统一批量写回”
+  2. docstring 改为“2 个并发动态补位 → 失败自动归因 → 统一批量写回”
+- **验证结果**：编译通过、全文无 `_write_back` 残留、全量 **94 passed**
+- **实现文件**：`src/api/routes/testing.py`
+
+</details>

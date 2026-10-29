@@ -5368,7 +5368,7 @@ async def test_adp_enrich(request: Request):
 
 @router.post("/api/test/adp_lookup")
 async def test_adp_lookup(request: Request):
-    """ADP 按 Jira 号查找：多维表格读记录 → 补全字段 → 2个并发执行 → 失败重试一次 → 写回
+    """ADP 按 Jira 号查找：多维表格读记录 → 补全字段 → 2 个并发动态补位 → 失败自动归因 → 统一批量写回
     mode=manual: 使用传入的 bugids
     mode=auto:   自动从多维表格中查找无报告记录，按顺序取前 limit 条执行
     """
@@ -5490,7 +5490,7 @@ async def test_adp_lookup(request: Request):
         # ── 单条 ADP 执行（线程内调用）──
         def _run_one_adp(bugid):
             """在子线程中执行字段补全 + ADP 分析，返回结果 dict
-            跳过内部飞书写回，由 _write_back 统一使用已知 record_id 写回，避免重复查询全部记录
+            跳过内部飞书写回，执行完成后由 Step 2 末尾统一批量写回（复用已读的 record_id）
             """
             try:
                 info = _prepare_fields(bugid)
@@ -5523,42 +5523,6 @@ async def test_adp_lookup(request: Request):
                 logger.warning("ADP 保存失败MD失败 %s: %s", bugid, e)
                 return ""
             return path
-
-        # ── 写回多维表格 ──
-        async def _write_back(bugid, result, rec):
-            if not rec:
-                return False
-            results_dict = result.get("results") or {}
-            # 无 ok 且状态不是"无法分析"/"分析失败"时跳过写回
-            status = results_dict.get("完成状态", "")
-            if not result.get("ok") and status not in ("无法分析", "分析失败"):
-                return False
-            try:
-                write_fields = {k: v for k, v in results_dict.items()
-                                if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
-                # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
-                tid_check = write_fields.get("traceid排查", "")
-                if tid_check and isinstance(tid_check, str) and tid_check.startswith("http"):
-                    write_fields["traceid排查"] = {"link": tid_check, "text": tid_check}
-                else:
-                    write_fields.pop("traceid排查", None)
-                file_token = results_dict.get("_report_file_token", "")
-                if file_token:
-                    write_fields["报告链接（分析报告、可观测报告）"] = [{"file_token": file_token}]
-                else:
-                    # 无 file_token 时移除报告链接字段，避免 URL 字符串写入附件类型字段
-                    write_fields.pop("报告链接（分析报告、可观测报告）", None)
-                record_id = rec.get("record_id", "")
-                if record_id:
-                    await loop.run_in_executor(
-                        None, lambda: feishu_client.update_bitable_records(
-                            app_token, table_id,
-                            [{"record_id": record_id, "fields": write_fields}]))
-                    return True
-            except Exception as e:
-                logger.error("ADP lookup 写回失败 %s: %s", bugid, e)
-                result["error"] = f"写回失败: {e}"
-            return False
 
         # ── Step 2: 队列式并发执行 ──
         yield f"data: {_json.dumps({'type': 'start', 'total': len(effective_bugids), 'batch_size': batch_size}, ensure_ascii=False)}\n\n"
