@@ -145,6 +145,31 @@
         <span class="cic-log-text" :title="logPath">{{ logPath }}</span>
       </div>
     </div>
+
+    <!-- ═══ Debug 文件查看器（三个文件分标签展示）═══ -->
+    <div class="cic-section cic-debug-section" v-if="hasDebugFiles">
+      <div class="cic-section-label">
+        AI 分析原始文件
+        <el-tag size="small" type="info" effect="plain">{{ debugFileCount }} 个文件</el-tag>
+      </div>
+      <el-tabs v-model="activeDebugTab" type="card" class="cic-debug-tabs">
+        <el-tab-pane label="推理过程" name="reasoning" v-if="debugFiles.reasoning_rounds">
+          <div class="cic-debug-content">
+            <pre class="cic-debug-pre">{{ debugFiles.reasoning_rounds }}</pre>
+          </div>
+        </el-tab-pane>
+        <el-tab-pane label="裁决结果" name="adjudication" v-if="debugFiles.adjudication_result">
+          <div class="cic-debug-content">
+            <pre class="cic-debug-pre">{{ formatJson(debugFiles.adjudication_result) }}</pre>
+          </div>
+        </el-tab-pane>
+        <el-tab-pane label="最终报告" name="reporting" v-if="debugFiles.reporting_final">
+          <div class="cic-debug-content">
+            <pre class="cic-debug-pre">{{ debugFiles.reporting_final }}</pre>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </div>
   </div>
 </template>
 
@@ -284,6 +309,25 @@ export default {
 
       return result
     },
+    /** debug 文件数据 */
+    debugFiles(): { reasoning_rounds: string; adjudication_result: any; reporting_final: string } {
+      return (this.detail as any).debug_files || { reasoning_rounds: '', adjudication_result: null, reporting_final: '' }
+    },
+    /** 是否有 debug 文件 */
+    hasDebugFiles(): boolean {
+      const df = this.debugFiles
+      return !!(df.reasoning_rounds || df.adjudication_result || df.reporting_final)
+    },
+    /** debug 文件数量 */
+    debugFileCount(): number {
+      const df = this.debugFiles
+      return (df.reasoning_rounds ? 1 : 0) + (df.adjudication_result ? 1 : 0) + (df.reporting_final ? 1 : 0)
+    },
+  },
+  data() {
+    return {
+      activeDebugTab: 'reasoning',
+    }
   },
   methods: {
     formatDuration(sec: number): string {
@@ -325,6 +369,9 @@ export default {
       // 工具结果最多显示 2000 字符
       if (text.length > 2000) return text.slice(0, 2000) + '\n... (截断 ' + (text.length - 2000) + ' 字符)'
       return text
+    },
+    formatJson(obj: any): string {
+      try { return JSON.stringify(obj, null, 2) } catch { return String(obj) }
     },
     roundSummary(round: any): string {
       // 优先用结论，否则用 LLM 推理文本的第一句话
@@ -643,5 +690,33 @@ export default {
     flex-direction: column;
     gap: 4px;
   }
+}
+
+/* ── Debug 文件查看器 ── */
+.cic-debug-tabs :deep(.el-tabs__header) {
+  margin-bottom: 0;
+}
+.cic-debug-tabs :deep(.el-tabs__item) {
+  font-size: 13px;
+  height: 34px;
+  line-height: 34px;
+}
+.cic-debug-content {
+  max-height: 500px;
+  overflow: auto;
+  border: 1px solid #e4e7ed;
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+  background: #fafafa;
+}
+.cic-debug-pre {
+  margin: 0;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #303133;
+  font-family: 'Menlo', 'Consolas', monospace;
 }
 </style>

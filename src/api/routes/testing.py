@@ -4662,17 +4662,40 @@ async def get_ai_report(bugid: str, source: str = "pc"):
             resp = await client.get(url)
         if resp.status_code != 200:
             return _fail(f"接口返回 status={resp.status_code}")
-        content = resp.text
-        if not content.strip():
+        raw = resp.content
+        if not raw:
             return _fail("报告内容为空")
-        # 保存到本地
-        os.makedirs(docs_dir, exist_ok=True)
-        with open(local_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return _ok({
-            "content": content, "bugid": bugid,
-            "file_path": local_path, "dir_path": docs_dir, "source": "remote",
-        }, f"已从 {source} 下载并保存到本地")
+        # 判断是否为压缩包（ZIP/RAR 魔数检测）
+        is_archive = (raw[:4] == b'PK\x03\x04' or
+                      raw[:7] in (b'Rar!\x1a\x07\x00', b'Rar!\x1a\x07\x01'))
+        if is_archive:
+            from src.services.observability_service import _extract_debug_archive
+            os.makedirs(docs_dir, exist_ok=True)
+            files = _extract_debug_archive(raw, docs_dir, bugid)
+            content = files.get("02_reasoning_rounds.md", "")
+            if not content:
+                return _fail(f"压缩包中无匹配文件，实际文件列表: {list(files.keys())}")
+            # 保存的文件名（带 case_id 前缀）
+            import re as _re
+            saved_rr = _re.sub(r'^\d+_', f'{bugid}_', "02_reasoning_rounds.md")
+            return _ok({
+                "content": content, "bugid": bugid,
+                "file_path": os.path.join(docs_dir, saved_rr),
+                "dir_path": docs_dir, "source": "remote",
+                "archive_files": list(files.keys()),
+            }, f"已从 {source} 下载压缩包并解压（{len(files)} 个文件）")
+        else:
+            # 兼容旧接口：返回纯文本 Markdown
+            content = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+            if not content.strip():
+                return _fail("报告内容为空")
+            os.makedirs(docs_dir, exist_ok=True)
+            with open(local_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return _ok({
+                "content": content, "bugid": bugid,
+                "file_path": local_path, "dir_path": docs_dir, "source": "remote",
+            }, f"已从 {source} 下载并保存到本地")
     except httpx.ConnectTimeout:
         return _fail(f"连接超时，AI日志分析服务({source}: {host}:{port})不可达，请检查网络连接或VPN")
     except httpx.ConnectError:
