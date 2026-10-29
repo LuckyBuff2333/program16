@@ -390,7 +390,7 @@ export default {
         textPreview: '', textLen: 0, reportPath: '', failType: '', fileUrls: [],
       },
       batch: {
-        items: [], fileName: '', batchSize: 3, continuous: false,
+        items: [], fileName: '', batchSize: 2, continuous: false,
         running: false, enriching: false, progress: null, results: [], runningItems: [],
         colMap: { jira: '', trigger_time: '', description: '', summary: '' },
       },

@@ -5173,7 +5173,7 @@ async def test_adp_batch(request: Request):
     import concurrent.futures
     body = await request.json() or {}
     items = body.get("items") or []  # [{bugid, description, trigger_time}]
-    batch_size = int(body.get("batch_size") or 3)
+    batch_size = int(body.get("batch_size") or 2)
     continuous = body.get("continuous", False)
     if not items:
         return _fail("无待执行项")
@@ -5382,7 +5382,7 @@ async def test_adp_lookup(request: Request):
     mode = body.get("mode") or "manual"
     bugids = body.get("bugids") or []
     limit = int(body.get("limit") or 10)
-    batch_size = int(body.get("batch_size") or 3)
+    batch_size = int(body.get("batch_size") or 2)
     if mode == "manual" and not bugids:
         return _fail("bugids 不能为空")
     _stop_event.clear()
