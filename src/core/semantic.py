@@ -31,9 +31,12 @@ def _get_model():
         cache_dir = cfg.get("cache_dir") or os.path.join(PROJECT_ROOT, "tools", "models")
         _MODEL = SentenceTransformer(cfg.get("model", "BAAI/bge-small-zh-v1.5"), cache_folder=cache_dir)
         logger.info("语义模型加载成功: %s", cfg.get("model", "BAAI/bge-small-zh-v1.5"))
+    except ImportError:
+        _MODEL_FAILED = True
+        logger.warning("未安装 sentence-transformers，语义相似度回退 TF-IDF（如需启用：pip install sentence-transformers）")
     except Exception as e:
         _MODEL_FAILED = True
-        logger.error("语义模型加载失败，已回退 TF-IDF 词面对比: %s", e)
+        logger.warning("语义模型加载失败，已回退 TF-IDF 词面对比: %s", e)
     return _MODEL
 
 

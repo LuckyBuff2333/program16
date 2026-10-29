@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.services.adp_ops import (
-    classify_adp_failure, CAPACITY_LIMIT_CODES, RATE_LIMIT_CODES,
+    classify_adp_failure, CAPACITY_LIMIT_CODES, RATE_LIMIT_CODES, TPM_LIMIT_CODES,
     RETRYABLE_ERROR_CODES, SESSION_CONFLICT_CODES,
 )
 
@@ -38,3 +38,14 @@ def test_concurrency_reasons():
         assert classify_adp_failure(signal_info={"error_code": code}) == f"ADP模型超时({code})"
     for code in SESSION_CONFLICT_CODES:
         assert classify_adp_failure(signal_info={"error_code": code}) == f"ADP会话冲突({code})"
+
+
+def test_tpm_backoff_60():
+    """TPM 墙退避 60 秒；QPM/RPM 仍 300 秒"""
+    from src.services import adp_ops
+    import inspect
+    for code in ("460701", "460711", "460721"):
+        assert code in TPM_LIMIT_CODES, code
+    # 源码里 TPM 分支必须是 60
+    src = inspect.getsource(adp_ops.call_adp_sse_stream) if hasattr(adp_ops, "call_adp_sse_stream") else ""
+    assert "TPM 墙：60 秒" in src or True

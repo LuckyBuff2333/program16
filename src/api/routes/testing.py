@@ -3,6 +3,8 @@ from fastapi import APIRouter, Request, Body, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from datetime import datetime, timedelta
 import io
+import os
+import asyncio
 import random
 import threading
 
@@ -61,6 +63,7 @@ def _adp_text_payload(result: dict) -> dict:
         "text_len": result.get("text_len") or len(full),
         "text_preview": result.get("text_preview") or full[:2000],
         "report_path": result.get("report_path", ""),
+        "report_doc_url": result.get("report_doc_url", ""),
     }
 
 
@@ -1036,6 +1039,7 @@ async def test_batch_ai_sample(request: Request):
 
     去重规则：docs/ 全量 CSV 已测试 排除，候选 keys 已由步骤3过滤
     """
+    from src.services.server_legacy import _diag_gmlogger_times
     import os, re, json
     from src.services.trigger_ops import (
         _load_cloud_trigger_cache, _save_trigger_time_to_csv,
@@ -3162,6 +3166,7 @@ async def test_internal_api(request: Request):
 @router.post("/api/test/diana_flow", response_model=ApiResponse)
 async def test_diana_flow(request: Request):
     """Diana 接口自动化流程：分步执行 Token 获取 → 对话接口调用 → 返回值提取，每步展示完整结果"""
+    from src.clients import diana_client as _diana_client
     import os, re, json
     import time as _time
     import httpx as _httpx
@@ -5165,6 +5170,21 @@ def adp_report_file(jira_key: str = ""):
     return FileResponse(path, media_type="text/markdown; charset=utf-8")
 
 
+@router.get("/api/test/adp_trace_report")
+def adp_trace_report_file(jira_key: str = ""):
+    """读取 traceid 排查报告（由 log-review-pan-scan 技能生成）"""
+    import os
+    import re as _re
+    key = (jira_key or "").strip()
+    if not key or not _re.fullmatch(r"[A-Za-z0-9_\-]+", key):
+        return _fail("jira_key 不合法")
+    from src.config import get_path
+    path = os.path.join(get_path("doc_dir"), "adp_results", key, f"{key}_traceid_report.md")
+    if not os.path.isfile(path):
+        return _fail(f"traceid 排查报告不存在: {key}")
+    return FileResponse(path, media_type="text/markdown; charset=utf-8")
+
+
 @router.post("/api/test/adp_batch")
 async def test_adp_batch(request: Request):
     """ADP 批量分析：Excel 导入 → 分批执行(2个/批) → 写入飞书，支持连续/单次模式"""
@@ -5251,20 +5271,12 @@ async def test_adp_batch(request: Request):
                 next_idx += 1
             for f in futures:
                 yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': futures[f].get('bugid', '')}, ensure_ascii=False)}\n\n"
-            batch_deadline = _time.time() + 600
+            # 不做批次级总截止（只保留单条 90 分钟超时）
             while futures:
                 if _batch_stop.is_set():
                     for f in futures:
                         f.cancel()
                     pool.shutdown(wait=False, cancel_futures=True)
-                    break
-                if _time.time() > batch_deadline:
-                    for f in list(futures):
-                        f.cancel()
-                        it = futures.pop(f)
-                        r = {"ok": False, "jira_key": it.get("bugid", ""), "error": "ADP 分析超时"}
-                        batch_results.append(r)
-                        yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': r['jira_key'], 'ok': False, 'results': {}, 'error': r['error'], 'fail_type': _adp_fail_type(r), **_adp_text_payload({}), 'file_urls': []}, ensure_ascii=False)}\n\n"
                     break
                 # 检查每条任务的累计超时（90分钟，暂停/续接不重置）
                 for f in list(futures):
@@ -5283,6 +5295,14 @@ async def test_adp_batch(request: Request):
                              "fail_type": "单条任务超时自动取消"}
                         batch_results.append(r)
                         yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': bugid, 'ok': False, 'results': r['results'], 'error': r['error'], 'fail_type': r['fail_type'], **_adp_text_payload({}), 'file_urls': []}, ensure_ascii=False)}\n\n"
+                        # 单条截止后立即补位，继续执行下一条（不做批次截止）
+                        if next_idx < len(todo):
+                            next_item = todo[next_idx]
+                            nf = pool.submit(_run_one, next_item)
+                            futures[nf] = next_item
+                            _item_start_times[next_item.get('bugid', '')] = {"start": _time.time(), "accumulated": 0}
+                            next_idx += 1
+                            yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': next_item.get('bugid', '')}, ensure_ascii=False)}\n\n"
                 done_now = [f for f in futures if f.done()]
                 for future in done_now:
                     it = futures.pop(future)
@@ -5540,6 +5560,7 @@ async def test_adp_lookup(request: Request):
             next_idx = 0
             _ITEM_TIMEOUT = 90 * 60  # 每条任务总超时 90 分钟（累计，暂停续接不重置）
             _item_start_times = {}  # bugid -> {"start": float, "accumulated": float}
+            orphans = {}  # 超时后移出并发池、但线程仍在跑的任务：f -> bugid
             # 初始提交 batch_size 个，并立即通知前端开始执行
             for _ in range(min(batch_size, len(effective_bugids))):
                 bugid = effective_bugids[next_idx]
@@ -5550,7 +5571,7 @@ async def test_adp_lookup(request: Request):
             for f in futures:
                 yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': futures[f]['bugid']}, ensure_ascii=False)}\n\n"
 
-            batch_deadline = _time.time() + adp_cfg["timeout"] + 120
+            # 不做批次级总截止：只保留单条 90 分钟超时，避免长队列被整体截断
             while futures:
                 if _stop_event.is_set():
                     for f in futures:
@@ -5565,46 +5586,29 @@ async def test_adp_lookup(request: Request):
                     if bugid not in _item_start_times:
                         continue
                     elapsed = _item_start_times[bugid]["accumulated"] + (_time.time() - _item_start_times[bugid]["start"])
-                    if elapsed > _ITEM_TIMEOUT:
-                        f.cancel()
-                        futures.pop(f)
-                        _item_start_times[bugid]["accumulated"] = elapsed
-                        rec = bt_map.get(bugid)
-                        item = {
-                            "jira_key": bugid, "ok": False, "has_html": False, "skipped": False,
-                            "results": {"完成状态": "分析失败", "分析失败归因": "单条任务超时（90分钟）"},
-                            "error": f"单条任务超时自动取消（累计 {int(elapsed // 60)} 分钟）",
-                            "bt_found": rec is not None,
-                            "desc_source": "bitable" if rec else "none",
-                            "time_source": "bitable" if rec else "none",
-                            "text_len": 0, "text_preview": "", "report_path": "",
-                            "fail_type": "单条任务超时自动取消", "file_urls": [],
-                        }
-                        batch_results.append(item)
-                        yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
-                # 检查全局超时的 future
-                if _time.time() > batch_deadline:
-                    for f in list(futures):
-                        f.cancel()
-                        bugid = futures.pop(f)["bugid"]
-                        rec = bt_map.get(bugid)
-                        item = {
-                            "jira_key": bugid, "ok": False, "has_html": False,
-                            "skipped": False,
-                            "results": {"完成状态": "分析失败"}, "error": "ADP 分析超时",
-                            "bt_found": rec is not None,
-                            "desc_source": "bitable" if rec else "none",
-                            "time_source": "bitable" if rec else "none",
-                            "text_len": 0, "text_preview": "", "report_path": "",
-                            "fail_type": "ADP 分析超时", "file_urls": [],
-                        }
-                        batch_results.append(item)
-                        yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
-                    break
-                # 收集已完成的 future
-                done_now = [f for f in futures if f.done()]
+                    if elapsed > _ITEM_TIMEOUT and not _item_start_times[bugid].get("timed_out"):
+                        # 单条截止：移出并发池、立即补位下一条；线程作为孤儿继续跑，完成后仍收结果
+                        _item_start_times[bugid]["timed_out"] = True
+                        futures.pop(f, None)
+                        orphans[f] = bugid
+                        logger.warning("ADP lookup 单条超时（%d 分钟），移出队列并继续下一条: %s",
+                                       int(elapsed // 60), bugid)
+                        yield f"data: {_json.dumps({'type': 'item_timeout', 'jira_key': bugid, 'elapsed_min': int(elapsed // 60)}, ensure_ascii=False)}\n\n"
+                        if next_idx < len(effective_bugids):
+                            next_bugid = effective_bugids[next_idx]
+                            nf = pool.submit(_run_one_adp, next_bugid)
+                            futures[nf] = {"bugid": next_bugid}
+                            _item_start_times[next_bugid] = {"start": _time.time(), "accumulated": 0}
+                            next_idx += 1
+                            yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': next_bugid}, ensure_ascii=False)}\n\n"
+                # 收集已完成的 future（含超时后仍在后台跑的孤儿任务）
+                done_now = [f for f in list(futures) if f.done()] + [f for f in list(orphans) if f.done()]
                 for future in done_now:
-                    bugid = futures.pop(future)["bugid"]
+                    _from_orphan = future not in futures
+                    if _from_orphan:
+                        bugid = orphans.pop(future, "") or ""
+                    else:
+                        bugid = futures.pop(future)["bugid"]
                     # 累计执行时间（暂停续接不重置）
                     if bugid in _item_start_times:
                         _item_start_times[bugid]["accumulated"] += _time.time() - _item_start_times[bugid]["start"]
@@ -5639,23 +5643,28 @@ async def test_adp_lookup(request: Request):
 
                     feishu_ok = True
                     ok = result.get("ok", False) and has_html and feishu_ok
+                    _timed_out = bool(_item_start_times.get(bugid, {}).get("timed_out"))
+                    if _timed_out and not has_html:
+                        results_dict["完成状态"] = "超时未完成"
+                        results_dict["分析失败归因"] = "单条任务超时（90分钟）"
 
                     item = {
                         "jira_key": bugid, "ok": ok, "has_html": has_html,
-                        "skipped": is_skipped,
+                        "skipped": is_skipped, "timed_out": _timed_out,
                         "results": results_dict,
                         "error": result.get("error", ""),
                         "bt_found": info["rec"] is not None,
                         "desc_source": "bitable" if info["bt_desc"] else ("api" if info["desc"] else "none"),
                         "time_source": "bitable" if info["bt_time"] else ("api" if info["tt"] else "none"),
                         "fail_type": _adp_fail_type(result),
+                        "report_doc_url": result.get("report_doc_url", ""),
                         **_adp_text_payload(result),
                         "file_urls": result.get("file_urls", []),
                     }
                     batch_results.append(item)
                     yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
-                    # 动态补位：只要完成一个，立即从队列取下一个
-                    if next_idx < len(effective_bugids):
+                    # 动态补位：只要完成一个，立即从队列取下一个（孤儿完成不占补位）
+                    if not _from_orphan and next_idx < len(effective_bugids):
                         next_bugid = effective_bugids[next_idx]
                         nf = pool.submit(_run_one_adp, next_bugid)
                         futures[nf] = {"bugid": next_bugid}
@@ -5669,10 +5678,60 @@ async def test_adp_lookup(request: Request):
                 if futures:
                     await asyncio.sleep(5)
 
+        # 主队列结束后，给超时孤儿任务最多 2 分钟收尾；收到结果仍计入并写回
+        if orphans:
+            _orphan_deadline = _time.time() + 120
+            while orphans and _time.time() < _orphan_deadline:
+                for f in list(orphans):
+                    if not f.done():
+                        continue
+                    bugid = orphans.pop(f, "") or ""
+                    try:
+                        r = f.result()
+                    except Exception:
+                        r = {}
+                    has_html = bool(r.get("has_html"))
+                    results_dict = (r.get("result") or {}).get("results") or {}
+                    if not has_html:
+                        results_dict["完成状态"] = "超时未完成"
+                        results_dict["分析失败归因"] = "单条任务超时（90分钟）"
+                    item = {
+                        "jira_key": bugid, "ok": has_html, "has_html": has_html,
+                        "skipped": False, "timed_out": True,
+                        "results": results_dict, "error": "",
+                        "bt_found": bugid in bt_map,
+                        "desc_source": "bitable" if bugid in bt_map else "none",
+                        "time_source": "bitable" if bugid in bt_map else "none",
+                        "fail_type": "" if has_html else "单条任务超时（90分钟）",
+                        "text_len": len(((r.get("result") or {}).get("full_text") or "")),
+                        "text_preview": "", "report_path": "", "file_urls": [],
+                    }
+                    batch_results.append(item)
+                    yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
+                if orphans:
+                    await asyncio.sleep(5)
+            for f, bugid in list(orphans.items()):
+                item = {
+                    "jira_key": bugid, "ok": False, "has_html": False,
+                    "skipped": False, "timed_out": True,
+                    "results": {"完成状态": "超时未完成", "分析失败归因": "单条任务超时（90分钟）"},
+                    "error": "", "bt_found": bugid in bt_map,
+                    "desc_source": "bitable" if bugid in bt_map else "none",
+                    "time_source": "bitable" if bugid in bt_map else "none",
+                    "fail_type": "单条任务超时（90分钟）",
+                    "text_len": 0, "text_preview": "", "report_path": "", "file_urls": [],
+                }
+                batch_results.append(item)
+                yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
+            orphans.clear()
+
         all_results.extend(batch_results)
         total_success = sum(1 for r in batch_results if r["has_html"])
-        total_fail = len(batch_results) - total_success
+        total_timeout = sum(1 for r in batch_results if r.get("timed_out") and not r["has_html"])
         total_skip = sum(1 for r in batch_results if r.get("skipped"))
+        # 超时未完成单独计数，不计入“失败”
+        total_fail = sum(1 for r in batch_results
+                         if not r["has_html"] and not r.get("skipped") and not r.get("timed_out"))
 
         # ADP 执行批次记录（本地CSV）
         try:
@@ -5701,8 +5760,8 @@ async def test_adp_lookup(request: Request):
                     continue
                 results_dict = r.get("results") or {}
                 status = results_dict.get("完成状态", "")
-                # 只写入有结果或状态为"无法分析"/"分析失败"的记录
-                if not r.get("ok") and status not in ("无法分析", "分析失败"):
+                # 只写入有结果或状态为"无法分析"/"分析失败"/"超时未完成"的记录
+                if not r.get("ok") and status not in ("无法分析", "分析失败", "超时未完成"):
                     continue
                 write_fields = {k: v for k, v in results_dict.items()
                                 if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
@@ -5729,7 +5788,7 @@ async def test_adp_lookup(request: Request):
         except Exception as e:
             logger.error("ADP lookup 批量写回失败: %s", e)
 
-        yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'fail': max(0, total_fail), 'total_elapsed': round(_time.time() - _t0, 1)}, ensure_ascii=False)}\n\n"
+        yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'timeout': total_timeout, 'fail': max(0, total_fail), 'total_elapsed': round(_time.time() - _t0, 1)}, ensure_ascii=False)}\n\n"
 
     # 注册作业：/api/jobs 可查进度，/api/jobs/{id}/stop 可单独停止本作业
     from src.core.job_registry import JOBS as _JOBS

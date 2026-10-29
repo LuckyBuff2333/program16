@@ -80,7 +80,7 @@ def create_app() -> FastAPI:
         from src.api.routes import jobs as _jobs_module
         application.include_router(_jobs_module.router)
     except Exception as _e:  # noqa: BLE001
-        logger.warning("作业状态路由注册失败: %s", _e)
+        _logger.warning("作业状态路由注册失败: %s", _e)
 
     # ── 挂载前端构建产物 ──
     misc_router.mount_frontend_assets(application)

@@ -224,6 +224,37 @@ def send_bot_message(chat_id: str, text: str) -> bool:
         return False
 
 
+_WS_DEFAULT_DOMAIN = "https://open.feishu.cn"
+
+
+def _ws_domain() -> str:
+    """长连接使用的开放平台域名（可在 feishu_bot.ws_domain 覆盖）"""
+    cfg = load_config().get("feishu_bot", {}) or {}
+    return str(cfg.get("ws_domain") or _WS_DEFAULT_DOMAIN).rstrip("/")
+
+
+def _ws_host(domain: str) -> str:
+    from urllib.parse import urlparse
+    return urlparse(domain).hostname or "open.feishu.cn"
+
+
+def _dns_ok(host: str) -> bool:
+    """DNS 是否能解析（临时 DNS 故障时返回 False，避免 SDK 打出连接错误）"""
+    import socket
+    try:
+        socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+        return True
+    except Exception:
+        return False
+
+
+def _next_backoff(cur: int) -> int:
+    """重连退避：5 → 10 → 20 → 40 → 60（封顶 60 秒）"""
+    if not cur or cur < 5:
+        return 5
+    return min(60, cur * 2)
+
+
 def start_feishu_ws_client(event_handler):
     """启动飞书长连接 WebSocket 客户端（官方 lark-oapi SDK 推荐模式，守护线程+断线自动重连）
 
@@ -241,19 +272,31 @@ def start_feishu_ws_client(event_handler):
 
     def _run():
         import lark_oapi as lark
+        backoff = 5
         while True:
+            domain = _ws_domain()
+            host = _ws_host(domain)
+            # DNS 预检：解析失败时不发起连接，避免 SDK 抛出大段 error，静默退避重试
+            if not _dns_ok(host):
+                logger.warning("飞书长连接：DNS 解析失败（%s），%d 秒后重试（不影响主服务）", host, backoff)
+                time.sleep(backoff)
+                backoff = _next_backoff(backoff)
+                continue
             try:
                 handler = (lark.EventDispatcherHandler.builder("", "")
                            .register_p2_im_message_receive_v1(event_handler)
                            .build())
                 cli = lark.ws.Client(bot_cfg["app_id"], bot_cfg["app_secret"],
-                                     event_handler=handler, log_level=lark.LogLevel.ERROR)
-                logger.info("飞书长连接客户端启动 (app_id=%s...)", bot_cfg["app_id"][:8])
+                                     event_handler=handler, domain=domain,
+                                     log_level=lark.LogLevel.ERROR)
+                logger.info("飞书长连接客户端启动 (app_id=%s..., domain=%s)",
+                            bot_cfg["app_id"][:8], domain)
                 cli.start()  # 阻塞，断开后返回进入重连循环
-                logger.warning("飞书长连接断开，5秒后重连...")
+                logger.warning("飞书长连接断开，%d 秒后重连...", backoff)
             except Exception as e:
-                logger.error("飞书长连接客户端异常: %s，5秒后重连", e)
-            time.sleep(5)
+                logger.warning("飞书长连接客户端异常: %s，%d 秒后重连", str(e)[:150], backoff)
+            time.sleep(backoff)
+            backoff = _next_backoff(backoff)
 
     threading.Thread(target=_run, name="feishu-ws", daemon=True).start()
 

@@ -139,7 +139,7 @@ def batch_update_trigger_time(req: BatchUpdateRequest):
 
 
 @router.post("/api/trigger_time/re_extract_scan", response_model=ApiResponse)
-async def re_extract_scan(req: ReExtractScanRequest):
+async def re_extract_scan(req: ReExtractScanRequest, request: Request):
     """扫描云端触发时间记录，找出触发时间为空的候选项"""
     from src.api.routes.shared import (
         bitable_text as _bitable_text,
@@ -180,7 +180,7 @@ async def re_extract_scan(req: ReExtractScanRequest):
 
 
 @router.post("/api/trigger_time/re_extract", response_model=ApiResponse)
-async def re_extract(req: BugidListRequest):
+async def re_extract(req: BugidListRequest, request: Request):
     """对指定的 bugid 列表重新提取触发时间（视频优先）"""
     from src.services.server_legacy import _diag_extract_time_from_video_simple, _diag_extract_time_from_images
     from src.services.trigger_ops import _save_trigger_time_to_cloud

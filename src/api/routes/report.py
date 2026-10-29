@@ -1,5 +1,6 @@
 """报表查询路由：日报/周报/抽查/批量执行等报表端点"""
 import os
+import sys
 import time
 import threading
 from datetime import datetime

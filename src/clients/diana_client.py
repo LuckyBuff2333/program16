@@ -189,6 +189,9 @@ def diana_post(payload: dict, timeout: int = 60) -> dict:
     return http_post(get_url(), payload, timeout=timeout, headers=headers)
 
 
+_LAST_CONN_ERR = {"ts": 0.0, "msg": ""}
+
+
 def _llm_chat(prompt: str, max_tokens: int = 200, timeout: int = 30) -> str:
     """通用 Diana LLM 调用，返回模型回复文本，失败时返回空字符串"""
     payload = {
@@ -197,11 +200,22 @@ def _llm_chat(prompt: str, max_tokens: int = 200, timeout: int = 30) -> str:
         "temperature": 0,
         "max_tokens": max_tokens,
     }
+    global _LAST_CONN_ERR
+    import time as _time
+    # 连接类错误 60 秒内不再重复请求/刷日志（DNS 抖动时常见）
+    if _LAST_CONN_ERR["ts"] and (_time.time() - _LAST_CONN_ERR["ts"]) < 60:
+        return ""
     try:
         result = diana_post(payload, timeout=timeout)
+        _LAST_CONN_ERR = {"ts": 0.0, "msg": ""}
         return result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
     except Exception as e:
-        logger.warning("Diana LLM 调用失败: %s", e)
+        msg = str(e)
+        if "getaddrinfo" in msg or "Connect" in type(e).__name__ or "11001" in msg:
+            _LAST_CONN_ERR = {"ts": _time.time(), "msg": msg}
+            logger.warning("Diana LLM 不可达（DNS/连接失败，60 秒内不再重试）: %s", msg[:120])
+        else:
+            logger.warning("Diana LLM 调用失败: %s", msg[:120])
         return ""
 
 

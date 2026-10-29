@@ -105,7 +105,7 @@
               <div v-if="row.text_preview || row.report_path" style="padding:12px 20px">
                 <div style="font-size:12px;color:#606266;margin-bottom:6px">
                   分析文本预览<span v-if="row.text_len">（共 {{ row.text_len }} 字符）</span>
-                  <a v-if="row.report_path" :href="adpReportUrl(row.jira_key)" target="_blank"
+                  <a v-if="row.report_path" :href="reportHref(row)" target="_blank"
                      style="color:#409eff;margin-left:8px">查看完整报告</a>
                 </div>
                 <pre style="max-height:300px;overflow:auto;background:#f5f7fa;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all">{{ row.text_preview }}</pre>
@@ -222,7 +222,7 @@
             <div v-if="single.textLen || single.reportPath" style="margin-top:10px">
               <div style="font-size:12px;color:#606266;margin-bottom:4px">
                 分析文本预览<span v-if="single.textLen">（共 {{ single.textLen }} 字符，此处仅显示前 2000 字）</span><span v-else>（无返回内容）</span>
-                <a v-if="single.reportPath" :href="adpReportUrl(single.bugid)" target="_blank"
+                <a v-if="single.reportPath" :href="single.reportDocUrl || adpReportUrl(single.bugid)" target="_blank"
                    style="color:#409eff;margin-left:8px">查看完整报告</a>
               </div>
               <pre v-if="single.textPreview" style="max-height:300px;overflow:auto;background:#f5f7fa;padding:12px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all">{{ single.textPreview }}</pre>
@@ -288,6 +288,9 @@
             已处理 {{ lookup.results.length }}/{{ lookup.progress.total }}
             | 成功 <span style="color:#67c23a;font-weight:600">{{ lookup.progress.success }}</span>
             | 失败 <span style="color:#f56c6c;font-weight:600">{{ lookup.progress.fail }}</span>
+            <template v-if="lookup.progress.timeout">
+              | 超时 <span style="color:#e6a23c;font-weight:600">{{ lookup.progress.timeout }}</span>
+            </template>
             <template v-if="lookup.progress.skip">
               | 跳过 <span style="color:#909399;font-weight:600">{{ lookup.progress.skip }}</span>
             </template>
@@ -316,7 +319,7 @@
               <div v-if="row.text_preview || row.report_path" style="padding:12px 20px">
                 <div style="font-size:12px;color:#606266;margin-bottom:6px">
                   分析文本预览<span v-if="row.text_len">（共 {{ row.text_len }} 字符）</span>
-                  <a v-if="row.report_path" :href="adpReportUrl(row.jira_key)" target="_blank"
+                  <a v-if="row.report_path" :href="reportHref(row)" target="_blank"
                      style="color:#409eff;margin-left:8px">查看完整报告</a>
                 </div>
                 <pre style="max-height:300px;overflow:auto;background:#f5f7fa;padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-all">{{ row.text_preview }}</pre>
@@ -332,7 +335,9 @@
           <el-table-column label="状态" width="70" align="center">
             <template #default="{ row }">
               <el-tag v-if="row.skipped" type="info" size="small">跳过</el-tag>
-              <el-tag v-else :type="row.has_html ? 'success' : 'danger'" size="small">{{ row.has_html ? '成功' : '失败' }}</el-tag>
+              <el-tag v-else-if="row.has_html" type="success" size="small">成功</el-tag>
+              <el-tag v-else-if="row.timed_out" type="warning" size="small">超时</el-tag>
+              <el-tag v-else type="danger" size="small">失败</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="失败类型" width="160" show-overflow-tooltip>
@@ -387,7 +392,7 @@ export default {
       single: {
         bugid: '', running: false, steps: [], jiraInfo: null,
         result: null, error: '', elapsed: 0, feishuOk: false, attachmentCount: 0,
-        textPreview: '', textLen: 0, reportPath: '', failType: '', fileUrls: [],
+        textPreview: '', textLen: 0, reportPath: '', reportDocUrl: '', failType: '', fileUrls: [],
       },
       batch: {
         items: [], fileName: '', batchSize: 2, continuous: false,
@@ -424,9 +429,12 @@ export default {
       const rm = m % 60;
       return rm > 0 ? `${h}小时${rm}分` : `${h}小时`;
     },
-    /** 打开某条 ADP 分析报告的完整文本（后端按 jira_key 读取落盘 md） */
+    /** 打开某条 ADP 分析报告的完整文本（优先飞书长期链接，服务关闭也可访问） */
     adpReportUrl(key) {
       return `/api/test/adp_report?jira_key=${encodeURIComponent(key || '')}`;
+    },
+    reportHref(row) {
+      return (row && row.report_doc_url) || this.adpReportUrl(row && row.jira_key);
     },
     stepStatus(s) {
       if (s.status === 'done') return 'success';
@@ -438,7 +446,7 @@ export default {
       Object.assign(this.single, {
         steps: [], jiraInfo: null, result: null, error: '', elapsed: 0,
         feishuOk: false, attachmentCount: 0,
-        textPreview: '', textLen: 0, reportPath: '', failType: '', fileUrls: [],
+        textPreview: '', textLen: 0, reportPath: '', reportDocUrl: '', failType: '', fileUrls: [],
       });
     },
 
@@ -493,6 +501,7 @@ export default {
                 this.single.textPreview = d.text_preview || '';
       this.single.textLen = d.text_len || 0;
       this.single.reportPath = d.report_path || '';
+      this.single.reportDocUrl = d.report_doc_url || '';
       this.single.failType = d.fail_type || '';
                 this.single.fileUrls = d.file_urls || [];
               }
@@ -600,7 +609,7 @@ export default {
       this.lookup.runningItems = [];
       this.lookup.error = '';
       this.lookup.abortCtrl = new AbortController();
-      this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, skip: 0, noReportTotal: null, totalElapsed: 0, tableName: '' };
+      this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, timeout: 0, skip: 0, noReportTotal: null, totalElapsed: 0, tableName: '' };
       try {
         const body = isAuto
           ? { mode: 'auto', limit: this.lookup.limit }
@@ -642,12 +651,16 @@ export default {
                 this.lookup.runningItems = this.lookup.runningItems.filter(k => k !== d.jira_key);
                 if (d.skipped) this.lookup.progress.skip++;
                 else if (d.has_html) this.lookup.progress.success++;
+                else if (d.timed_out) this.lookup.progress.timeout++;
                 else this.lookup.progress.fail++;
+              } else if (d.type === 'item_timeout') {
+                // 单条超时（等待其自然收尾，不立即计入失败）
               } else if (d.type === 'keepalive') {
                 this.lookup.runningItems = d.running || [];
               } else if (d.type === 'done') {
-                // 完成：记录总耗时
+                // 完成：记录总耗时与超时数
                 if (d.total_elapsed) this.lookup.progress.totalElapsed = d.total_elapsed;
+                if (typeof d.timeout === 'number') this.lookup.progress.timeout = d.timeout;
                 this.lookup.runningItems = [];
               }
             } catch { /* skip */ }

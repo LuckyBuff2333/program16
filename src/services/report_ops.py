@@ -38,6 +38,22 @@ from src.api.routes.shared import (
 
 logger = setup_logger("services.report_ops")
 
+
+def _is_cancelled(chat_id: str) -> bool:
+    """检查该会话的汇总任务是否被用户取消（复用共享的 bot_cancel_events）"""
+    try:
+        from src.api.routes.shared import bot_cancel_events
+        ev = bot_cancel_events.get(chat_id)
+        return bool(ev and ev.is_set())
+    except Exception:
+        return False
+
+
+def _is_default_trigger_table(name: str) -> bool:
+    """是否为系统自动创建的触发时间子表（触发时间_N）"""
+    import re as _re
+    return bool(_re.match(r"^触发时间_\d+$", (name or "").strip()))
+
 # 云端批次记录缓存：{日期: {"ts": 缓存时间, "data": {jira号: 执行信息}}}
 _cloud_batch_cache = {}
 _CLOUD_CACHE_TTL = 300  # 缓存有效期 5 分钟
@@ -1709,7 +1725,7 @@ def _delete_default_bitable_table(app_token: str, keep_table_id: str, keep_table
             if tname.startswith("触发时间"):
                 logger.info("跳过自定义触发时间表: %s (%s)", tname, tid)
                 continue
-            if tname not in _DEFAULT_TABLE_NAMES:
+            if not _is_default_trigger_table(tname):
                 logger.info("跳过非默认表（可能是用户手动创建）: %s (%s)", tname, tid)
                 continue
             del_url = f"{_FEISHU_API}/bitable/v1/apps/{app_token}/tables/{tid}"

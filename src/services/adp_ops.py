@@ -6,6 +6,8 @@ import os
 import re
 import json
 import uuid
+import subprocess
+import sys
 from datetime import datetime
 
 import httpx
@@ -32,7 +34,14 @@ FATAL_ERROR_CODES = {
 # 并发限流码：原样重发原始请求（会话是空的）
 RATE_LIMIT_CODES = {"460011", "460031"}
 
-# 容量类限流码（TPM/QPM，分钟级窗口，退避 300s）
+# TPM 限流码（Token 级限流，退避 60s）
+TPM_LIMIT_CODES = {
+    "460701",   # 企业级 TPM
+    "460711",   # 空间级 TPM
+    "460721",   # 应用级 TPM
+}
+
+# 容量类限流码（QPM/RPM，分钟级窗口，退避 300s）
 CAPACITY_LIMIT_CODES = {
     "460701",                       # 企业级 TPM（实测日志出现过）
     "460711", "460712", "460713",   # 空间级
@@ -87,6 +96,14 @@ def _get_adp_cfg() -> dict:
         "bitable_view_id": cfg.get("bitable_view_id", ""),
         "jira_field": cfg.get("jira_field", "Jira链接"),
         "save_dir": cfg.get("save_dir", "docs/adp_results"),
+        "app_id": str(cfg.get("app_id", "") or ""),
+        "space_id": str(cfg.get("space_id", "") or ""),
+        "mcp_api_key": cfg.get("mcp_api_key", "") or "",
+        "trace_report_base": cfg.get("trace_report_base", "http://127.0.0.1:8060"),
+        "trace_report_folder": cfg.get("trace_report_folder", ""),
+        "sse_read_timeout": int(cfg.get("sse_read_timeout", 180)),
+        "report_folder": cfg.get("report_folder", ""),
+        "batch_report_folder": cfg.get("batch_report_folder", ""),
     }
 
 
@@ -98,6 +115,121 @@ def _fix_encoding(text: str) -> str:
         return text.encode("latin-1").decode("utf-8")
     except (UnicodeDecodeError, UnicodeEncodeError):
         return text
+
+
+# ===== traceid 排查技能（log-review-pan-scan）=====
+
+_TRACE_SKILL_SUBDIR = os.path.join("tools", "skills", "log-review-pan-scan")
+
+
+def _trace_skill_dir() -> str:
+    from src.config import PROJECT_ROOT as _root
+    return os.path.join(_root, _TRACE_SKILL_SUBDIR)
+
+
+def _publish_md_to_feishu(title: str, md_content: str, folder_token: str = "") -> str:
+    """把 Markdown 发布成飞书在线文档（可指定文件夹），返回长期链接（失败返回空串）"""
+    try:
+        from src.clients import feishu_client
+        res = feishu_client.create_docx_document(title, md_content, folder_token=folder_token or "")
+        url = (res or {}).get("url", "")
+        if url:
+            logger.info("已发布飞书文档: %s", url)
+        return url
+    except Exception as e:
+        logger.warning("发布飞书文档失败: %s", str(e)[:150])
+        return ""
+
+
+def _run_trace_skill(jira_key: str, trace_id: str):
+    """调用 log-review-pan-scan 技能导出 traceid 取证包，汇总为 md 报告。
+
+    返回 (report_path, error)：成功 error 为空；失败 report_path 为空。
+    """
+    if not trace_id:
+        return "", "无 trace_id"
+    skill_dir = _trace_skill_dir()
+    script = os.path.join(skill_dir, "scripts", "record_lookup.py")
+    if not os.path.isfile(script):
+        return "", "技能未安装（tools/skills/log-review-pan-scan）"
+    cfg = _get_adp_cfg()
+    evidence_dir = os.path.join(get_path("doc_dir"), "adp_results", jira_key, f"traceid_{trace_id[:8]}")
+    os.makedirs(evidence_dir, exist_ok=True)
+    env = dict(os.environ)
+    env.update({
+        "ADP_API_KEY": str(cfg.get("mcp_api_key") or cfg.get("app_key") or ""),
+        "ADP_APP_ID": str(cfg.get("app_id") or ""),
+        "ADP_SPACE_ID": str(cfg.get("space_id") or ""),
+    })
+    last_err = ""
+    for days in (3, 1):
+        try:
+            proc = subprocess.run(
+                [sys.executable, script, trace_id, "--days", str(days), "--refresh",
+                 "--export", evidence_dir],
+                cwd=skill_dir, env=env, capture_output=True, text=True,
+                encoding="utf-8", errors="ignore", timeout=240)
+        except Exception as e:
+            last_err = f"技能执行异常: {str(e)[:120]}"
+            continue
+        if proc.returncode == 0 and os.path.isfile(os.path.join(evidence_dir, "record.json")):
+            break
+        last_err = ((proc.stderr or "") + (proc.stdout or "")).strip()[:200] or f"exit={proc.returncode}"
+    else:
+        return "", last_err or "技能无输出"
+
+    rec_path = os.path.join(evidence_dir, "record.json")
+    if not os.path.isfile(rec_path):
+        return "", last_err or "未生成 record.json"
+    report_path = os.path.join(get_path("doc_dir"), "adp_results", jira_key, f"{jira_key}_traceid_report.md")
+    try:
+        with open(rec_path, encoding="utf-8") as f:
+            rec = json.load(f)
+        msg_path = os.path.join(evidence_dir, "session_messages.txt")
+        messages = ""
+        if os.path.isfile(msg_path):
+            with open(msg_path, encoding="utf-8", errors="ignore") as f:
+                messages = f.read()
+        lines = [
+            f"# {jira_key} traceid 排查报告",
+            "",
+            f"- traceid: `{trace_id}`",
+            f"- 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "- 来源: log-review-pan-scan 1.0.0（record_lookup --export）",
+            f"- 证据目录: `{evidence_dir}`",
+            "",
+            "## 智能体结论（answer）",
+            "",
+            str(rec.get("answer") or "（空）")[:8000],
+            "",
+            "## 用户问题（question）",
+            "",
+            str(rec.get("question") or "（空）")[:2000],
+            "",
+            "## 指标",
+            "",
+            "```json",
+            json.dumps({k: v for k, v in rec.items() if k not in ("answer", "question")},
+                       ensure_ascii=False, indent=2)[:2000],
+            "```",
+            "",
+            "## 分析过程消息流（session_messages.txt）",
+            "",
+            "```text",
+            messages[:12000] or "（空）",
+            "```",
+            "",
+        ]
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        logger.info("traceid 排查报告已生成: %s", report_path)
+        with open(report_path, encoding="utf-8") as f:
+            _md = f.read()
+        _folder = str(_get_adp_cfg().get("trace_report_folder") or "")
+        _doc_url = _publish_md_to_feishu(f"{jira_key} traceid排查报告", _md, folder_token=_folder)
+        return report_path, "", _doc_url
+    except Exception as e:
+        return "", f"报告生成失败: {str(e)[:120]}", ""
 
 
 # ===== Step 1: dpportal 查询附件 =====
@@ -147,6 +279,38 @@ def query_attachments(jira_key: str):
             logger.error("ADP 附件查询异常（不可重试）: %s -> %s", jira_key, e)
             return None
     return None
+
+
+# ===== Step 2: 构建消息 + 调用 ADP SSE =====
+
+def _build_signal(error_code: str, error_msg: str, reply_method: str,
+                  response_status: str, has_cards: bool, request_ack: bool,
+                  stream_exc: str, conversation_id: str = "") -> dict:
+    """构造信号信息字典（SSE 流中采集的各类判别信号）"""
+    return {
+        "error_code": error_code,
+        "error_msg": error_msg,
+        "reply_method": reply_method,
+        "response_status": response_status,
+        "has_cards": has_cards,
+        "request_ack": request_ack,
+        "stream_exc": stream_exc,
+        "conversation_id": conversation_id,
+    }
+
+
+# 有效附件后缀（压缩包或 txt/log），用于过滤非日志附件
+# 有效附件：压缩包（含任意分卷）/ 日志 / 文本
+# 分卷覆盖：.zip.001 / .7z.001 / .001、.z01、.r00、.part01.rar、.tar.gz.001 等
+_VALID_ATTACH_RE = re.compile(
+    r'(?:\.(?:zipx?|rar|7z|tar|tgz|gz|bz2|xz|zst|lz4|cab|log|txt)'
+    r'(?:\.(?:gz|bz2|xz|zst|lz4))?'
+    r'(?:\.\d{1,4}|\.z\d{1,3}|\.r\d{2,3}|\.part\d{1,3}\.rar)?'
+    r'|\.part\d{1,3}\.rar'
+    r'|\.z\d{1,3}'
+    r'|\.r\d{2,3}'
+    r'|\.\d{3,4})$',
+    re.IGNORECASE)
 
 
 def _is_valid_attachment(att: dict) -> bool:
@@ -220,6 +384,7 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
     event_types_seen = set()
     logged_unknown = set()
     trace_id = ""
+    conv_seen = ""  # response.created 里的 ConversationId（续接必须复用）
     # 信号采集变量（跨尝试累计，不重置）
     error_code = ""
     error_msg = ""
@@ -243,7 +408,7 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
                 "POST", adp_cfg["url"],
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=httpx.Timeout(adp_cfg["timeout"], connect=30, read=60),
+                timeout=httpx.Timeout(adp_cfg["timeout"], connect=30, read=int(adp_cfg.get("sse_read_timeout", 180))),
             ) as resp:
                 if resp.status_code != 200:
                     logger.error("ADP SSE HTTP %d", resp.status_code)
@@ -279,15 +444,27 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
                     if et == "response.created":
                         if ts > 0:
                             start_ts = ts
-                        # 提取 trace_id（可能在多个字段名中）
+                        _resp = data.get("Response") or {}
+                        _conv = str(_resp.get("ConversationId") or "")
+                        if _conv:
+                            conv_seen = _conv
+                        _extra = _resp.get("ExtraInfo") or {}
+                        _tid = str(_extra.get("TraceId") or "").split(" / ")[0].strip()
+                        # 以最后一次 response.created 的 traceid 为准
+                        if _tid:
+                            trace_id = _tid
+                        elif _conv and not trace_id:
+                            trace_id = _conv
+                        # 兼容旧字段名（顶层）
                         for tid_key in ("TraceId", "trace_id", "TraceID", "ConversationId", "conversation_id"):
                             v = data.get(tid_key, "")
                             if v and not trace_id:
                                 trace_id = str(v)
                                 break
-                        # 记录 response.created 完整字段（诊断 trace_id 等）
-                        logger.info("ADP response.created: %s",
-                                    json.dumps(data, ensure_ascii=False)[:500])
+                        # 记录关键字段（不打印整段 JSON，避免日志被截断误读）
+                        logger.info("ADP response.created: conv=%s record=%s trace=%s status=%s",
+                                    _conv, _resp.get("RecordId", ""), trace_id,
+                                    _resp.get("Status", ""))
                     # ---- 新增：request_ack 事件（请求被受理）----
                     if et == "request_ack":
                         request_ack = True
@@ -362,7 +539,7 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
             else:
                 logger.warning("ADP SSE 读超时（60s 无新数据），已收集 %d 字符", len(full_text))
             return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id, _build_signal(
-                error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc)
+                error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen)
         except Exception as e:
             last_err = e
             stream_exc = "%s: %s" % (type(e).__name__, e)
@@ -376,11 +553,11 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
                 if _interruptible_sleep(wait):
                     logger.info("ADP SSE 重试等待中被停止")
                     return "", [], None, 0, 0, trace_id, _build_signal(
-                        error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc)
+                        error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen)
                 continue
             logger.error("ADP SSE 流式读取异常: %s", e)
             return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id, _build_signal(
-                error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc)
+                error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen)
         # 成功完成，跳出重试循环
         break
     else:
@@ -388,7 +565,7 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
         stream_exc = "连接失败，已重试 %d 次: %s" % (max_retries, last_err)
         logger.error("ADP SSE %s", stream_exc)
         return "", [], None, 0, 0, trace_id, _build_signal(
-            error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc)
+            error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen)
     # closeout 兜底
     if closeout_data is None:
         for pattern in [r'\{[^{}]*"ok"\s*:\s*true[^{}]*"html"[^{}]*\}', r'\{[^{}]*"case_id"[^{}]*\}']:
@@ -410,9 +587,9 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
         return False
 
     stream_sec = (end_ts - start_ts) / 1000 if start_ts and end_ts else 0
-    if full_text and len(full_text) > 500 and not _has_downloadable_report():
+    if full_text and len(full_text) > 500 and not _has_downloadable_report() and error_code not in FATAL_ERROR_CODES:
         if stream_sec <= 300:
-            logger.warning("ADP 流异常结束（%.0fs < 5分钟），跳过迟到检测", stream_sec)
+            logger.info("ADP 正常收口但无报告（%.0fs < 5分钟），跳过迟到检测", stream_sec)
         else:
             for round_idx in range(2):  # 最多 2 轮，每轮等 5 分钟，总计最多 10 分钟
                 wait_sec = 300
@@ -504,7 +681,7 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
     logger.info("ADP 分析完成: %d 字符, 耗时 %.0fs, trace_id=%s, SSE 事件类型: %s",
                 len(full_text), elapsed_sec, trace_id, sorted(event_types_seen))
     return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id, _build_signal(
-        error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc)
+        error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen)
 
 
 def call_adp_sse(message: str) -> tuple:
@@ -771,6 +948,50 @@ def _looks_complete_no_report(reply: str) -> bool:
         return False
     hits = [k for k in COMPLETE_SECTION_MARKERS if k in reply]
     return len(hits) >= 2
+
+
+# 过程叙述关键词：出现 ≥2 个且无报告时，判为“还在干活”，值得再发一轮“继续”
+PROCESS_NARRATION_KEYWORDS = [
+    "让我", "我先", "我将", "现在", "接下来", "继续下载", "重新下载", "重试",
+    "manifest", "预热", "report_data", "baseline", "verdict", "schema", "再看",
+]
+
+
+def _looks_like_process_narration(reply: str) -> bool:
+    """疑似“过程叙述”：文本不长不短、带多个进行时关键词"""
+    if not reply or len(reply) < 300:
+        return False
+    hits = [k for k in PROCESS_NARRATION_KEYWORDS if k in reply]
+    return len(hits) >= 2
+
+
+# 错误分类（对外统一写入的短分类，避免长句影响筛选/统计）
+FAILURE_CATEGORIES = ["澄清", "拒答", "分析超时", "分析未完成", "无日志附件",
+                      "附件接口异常", "报告未产出", "平台限流", "平台配置错误",
+                      "会话冲突", "网络异常", "分析失败"]
+
+_CATEGORY_RULES = [
+    (("追问", "澄清"), "澄清"),
+    (("拒答",), "拒答"),
+    (("模型超时", "分析超时", "超时自动取消"), "分析超时"),
+    (("截断", "分析过程未完成", "流异常", "未完成", "收口无报告"), "分析未完成"),
+    (("无日志附件",), "无日志附件"),
+    (("附件接口异常",), "附件接口异常"),
+    (("报告渲染", "未产出HTML", "报告链接", "下载链接失效"), "报告未产出"),
+    (("限流", "并发超限", "容量"), "平台限流"),
+    (("配置错误", "安全拦截", "余额"), "平台配置错误"),
+    (("会话冲突",), "会话冲突"),
+    (("连接超时", "网络异常"), "网络异常"),
+]
+
+
+def short_failure_category(detail: str) -> str:
+    """把详细归因映射成统一短分类（澄清/拒答/分析超时/...）"""
+    text = str(detail or "")
+    for keywords, category in _CATEGORY_RULES:
+        if any(k in text for k in keywords):
+            return category
+    return "分析失败"
 
 
 def classify_adp_failure(error: str = "", full_text: str = "", attachment_count: int = 0,
@@ -1104,13 +1325,13 @@ def _save_adp_fail_snapshot(jira_key: str, full_text: str, description: str = ""
         f.write(f"# {jira_key} ADP 分析失败\n\n> 时间: {ts}\n\n")
         f.write(f"## 错误信息\n\n{error or '-'}\n\n")
         if description:
-            f.write(f"## 问题描述\n\n{description[:500]}\n\n")
+            f.write(f"## 问题描述\n\n{description}\n\n")
         if trigger_time:
             f.write(f"## 触发时间\n\n{trigger_time}\n\n")
         if results:
             clean = {k: v for k, v in results.items() if not str(k).startswith("_")}
             f.write("## 已提取字段\n\n```json\n")
-            f.write(json.dumps(clean, ensure_ascii=False, indent=2, default=str)[:3000])
+            f.write(json.dumps(clean, ensure_ascii=False, indent=2, default=str))
             f.write("\n```\n\n")
         f.write("## ADP 返回内容\n\n")
         f.write(full_text or "（无返回内容）")
@@ -1129,6 +1350,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     import time
     t0 = time.time()
     out = {"ok": False, "jira_key": jira_key, "description": description, "trigger_time": trigger_time}
+    signal_info = {}  # SSE 判别信号（reply_method / response_status 等），失败时写入 error 便于排查
 
     def _progress(step, status, detail=""):
         if progress_cb:
@@ -1207,15 +1429,28 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         _sandbox_for_trace = out.get("_sandbox_url", "")
         results["traceid排查"] = _report_url_for_trace or _sandbox_for_trace or ""
 
-        # Step 3.3: 续接机制（截断/完整无报告时发"继续"；限流/首轮未开工时重发原始消息）
+        # 前置判断：没有任何报告链接 → 标记“可疑未完成”，供续接与失败归因区分
+        if not results.get("_report_url"):
+            results["_suspected_unfinished"] = True
+            logger.info("ADP 无报告链接，进入可疑未完成分支（%d 字）", len(full_text or ""))
+
+        # Step 3.3: 续接机制（截断/无报告/过程叙述 → 发"继续"；限流/首轮未开工 → 重发原始消息）
         max_continues = 2
         for cont_idx in range(max_continues):
+            # 前置判断：没有任何报告链接 → 视为“可疑未完成”，参与续接决策
+            _no_report = not results.get("_report_url")
+            _has_closing = any(k in full_text for k in COMPLETE_SECTION_MARKERS)
+            _clarify, _ = _looks_like_clarify_or_refusal(full_text, signal_info.get("reply_method", ""))
+            _short_no_report = (_no_report and not _clarify
+                                and len(full_text) >= 300 and not _has_closing)
             need_continue = (
                 results.get("完成状态") == "分析失败"
                 and results.get("分析失败归因") in (
-                    "分析完成但未产出HTML报告",
+                    "分析完成但未产出HTML报告", "未完成（疑似流中断）",
                 )
                 or _looks_truncated(full_text)
+                or (not _clarify and _no_report and _looks_like_process_narration(full_text))
+                or _short_no_report
                 or err_code in RETRYABLE_ERROR_CODES
             )
             need_resend = (
@@ -1224,6 +1459,13 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                     and not signal_info.get("stream_exc"))
             )
             need_new_session = err_code in SESSION_CONFLICT_CODES
+            if signal_info.get("has_cards") or signal_info.get("questionnaire"):
+                # 智能体在追问用户（questionnaire/cards）：继续发“继续”没有意义
+                results["完成状态"] = "分析失败"
+                results["分析失败归因"] = "需要澄清（ADP智能体追问，需人工作答）"
+                logger.warning("ADP 智能体追问，停止续接并归因需要澄清: %s", jira_key)
+                _progress("adp_continue", "fail", "智能体追问，需补充信息")
+                break
             if not need_continue and not need_resend and not need_new_session:
                 break
             if need_new_session:
@@ -1234,12 +1476,19 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 cont_text, cont_urls, cont_close, _, _, cont_tid, cont_sig = call_adp_sse_stream(
                     message, keepalive_cb=keepalive_cb, stop_event=stop_event, conversation_id=new_conv_id)
             elif need_continue:
+                # 续接必须复用原会话：优先用 response.created 里的 ConversationId
+                _conv_use = signal_info.get("conversation_id") or trace_id
                 _progress("adp_continue", "running", f"第{cont_idx+1}轮续接（发'继续'）")
-                logger.info("ADP 分析疑似截断或完整无报告，第%d次续接（conv=%s）", cont_idx + 1, trace_id[:12])
+                logger.info("ADP 分析疑似截断或完整无报告，第%d次续接（conv=%s）", cont_idx + 1, (_conv_use or "")[:12])
                 cont_text, cont_urls, cont_close, _, _, cont_tid, cont_sig = call_adp_sse_stream(
-                    "继续", keepalive_cb=keepalive_cb, stop_event=stop_event, conversation_id=trace_id)
+                    "继续", keepalive_cb=keepalive_cb, stop_event=stop_event, conversation_id=_conv_use)
             else:
-                backoff = 300 if err_code in CAPACITY_LIMIT_CODES else 60
+                if err_code in TPM_LIMIT_CODES:
+                    backoff = 60          # TPM 墙：60 秒
+                elif err_code in CAPACITY_LIMIT_CODES:
+                    backoff = 300         # QPM/RPM：300 秒
+                else:
+                    backoff = 60          # 并发限流
                 _progress("adp_continue", "running", f"限流退避{backoff}s后重发")
                 logger.warning("ADP %s（%s），%ds后重发原始消息", err_code, signal_info.get("error_msg", "")[:60], backoff)
                 # 可中断退避：每 0.5s 检查 stop_event
@@ -1250,13 +1499,17 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                         return out
                     time.sleep(min(0.5, backoff - _waited))
                     _waited += 0.5
+                _conv_use = signal_info.get("conversation_id") or trace_id
                 cont_text, cont_urls, cont_close, _, _, cont_tid, cont_sig = call_adp_sse_stream(
-                    message, keepalive_cb=keepalive_cb, stop_event=stop_event, conversation_id=trace_id)
+                    message, keepalive_cb=keepalive_cb, stop_event=stop_event, conversation_id=_conv_use)
             # 合并结果
             full_text += ("\n" + cont_text) if cont_text else ""
             file_urls.extend(cont_urls)
-            if cont_tid and not trace_id:
-                trace_id = cont_tid
+            if cont_tid:
+                trace_id = cont_tid  # 以最后一次续接的 traceid 为准
+            _sig_conv = (cont_sig or {}).get("conversation_id") or ""
+            if _sig_conv:
+                signal_info["conversation_id"] = _sig_conv
             if cont_close:
                 closeout_data = cont_close
             # 重新提取
@@ -1265,8 +1518,11 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 results["traceid"] = trace_id
             out["text_len"] = len(full_text)
             out["text_preview"] = full_text[:2000]
+            out["trace_id"] = trace_id
+            if trace_id:
+                results["traceid"] = trace_id
             out["results"] = results
-            if results.get("_report_url") or results.get("完成状态") == "完成":
+            if results.get("_report_url"):
                 logger.info("ADP 续接第%d次成功（%d字）", cont_idx + 1, len(full_text))
                 _progress("adp_continue", "done", f"续接成功，{len(full_text)}字")
                 break
@@ -1317,14 +1573,33 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             out["_sandbox_url"] = report_url
             _progress("download_report", "done", "沙箱链接（不可下载）")
         else:
-            # 无任何报告链接
+            # 无任何报告链接：区分“未完成（疑似流中断）”与“分析完成但无报告”
             results["完成状态"] = "分析失败"
-            results["分析失败归因"] = "分析完成但未产出HTML报告"
+            _has_closing_text = any(k in full_text for k in COMPLETE_SECTION_MARKERS)
+            _unfinished_hint = (
+                bool(signal_info.get("stream_exc"))
+                or _looks_like_process_narration(full_text)
+                or (len(full_text or "") >= 300 and not _has_closing_text)
+            )
+            results["分析失败归因"] = (
+                "未完成（疑似流中断）" if _unfinished_hint else "分析完成但未产出HTML报告"
+            )
             results.pop("报告链接（分析报告、可观测报告）", None)
 
-        # 补充 traceid 排查报告（沙箱 URL 在报告下载阶段才可用）
-        if not results.get("traceid排查") and out.get("_sandbox_url"):
-            results["traceid排查"] = out["_sandbox_url"]
+        # traceid 排查：仅成功（已拿到报告附件）时调用技能；失败时留空/用返回内容报告
+        _trace_report, _trace_err, _trace_doc = ("", "", "")
+        if results.get("_report_file_token"):
+            _trace_report, _trace_err, _trace_doc = _run_trace_skill(jira_key, trace_id)
+        if _trace_report:
+            _base = str((_get_adp_cfg().get("trace_report_base") or "http://127.0.0.1:8060")).rstrip("/")
+            results["traceid排查"] = _trace_doc or f"{_base}/api/test/adp_trace_report?jira_key={jira_key}"
+            out["traceid_report_path"] = _trace_report
+            out["traceid_report_doc_url"] = _trace_doc
+        else:
+            out["traceid_skill_error"] = _trace_err
+            logger.warning("traceid 排查技能失败 %s: %s（回退 ADP 报告链接）", jira_key, _trace_err)
+            if not results.get("traceid排查") and out.get("_sandbox_url"):
+                results["traceid排查"] = out["_sandbox_url"]
 
         # 失败归因：分析失败但没有明确原因时，按 ADP 返回内容自动归类（失败类型）
         if results.get("完成状态") == "分析失败" and not results.get("分析失败归因"):
@@ -1341,6 +1616,15 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                                     trace_id=out.get("trace_id", ""))
         # 完整文本只落盘、不随响应回传：前端只拿预览 + 报告路径（避免几十 MB 的 SSE/JSON 响应）
         out["report_path"] = os.path.join(report_dir, f"{jira_key}_full_analysis.md") if report_dir else ""
+        # 发布完整分析为飞书文档：服务关闭后仍可访问
+        try:
+            if out.get("report_path") and os.path.isfile(out["report_path"]):
+                with open(out["report_path"], encoding="utf-8") as f:
+                    _full_md = f.read()
+                _rfolder = str(_get_adp_cfg().get("report_folder") or "")
+                out["report_doc_url"] = _publish_md_to_feishu(f"{jira_key} ADP 分析报告", _full_md, folder_token=_rfolder)
+        except Exception as _e:
+            logger.warning("发布完整分析报告失败 %s: %s", jira_key, str(_e)[:120])
         _progress("save_local", "done")
 
         # Step 5: 写入飞书（可跳过，由调用方自行写回）
@@ -1371,6 +1655,28 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         except Exception as save_err:
             logger.warning("保存 ADP 失败快照失败 %s: %s", jira_key, save_err)
 
+    # 失败快照/异常报告也发布到飞书文件夹，保证「查看完整报告」长期可用
+    if out.get("report_path") and not out.get("report_doc_url") and os.path.isfile(out["report_path"]):
+        try:
+            with open(out["report_path"], encoding="utf-8") as f:
+                _fail_md = f.read()
+            _rfolder = str(_get_adp_cfg().get("report_folder") or "")
+            out["report_doc_url"] = _publish_md_to_feishu(
+                f"{jira_key} ADP 分析报告（失败快照）", _fail_md, folder_token=_rfolder)
+        except Exception as _e:
+            logger.warning("发布失败快照失败 %s: %s", jira_key, str(_e)[:120])
+
+    # 失败时不写 traceid；traceid排查 只放“返回内容”的报告链接
+    if not out.get("ok"):
+        _res = out.get("results") or {}
+        _res.pop("traceid", None)
+        _doc = out.get("report_doc_url") or ""
+        if _doc:
+            _res["traceid排查"] = _doc
+        else:
+            _res.pop("traceid排查", None)
+        out["results"] = _res
+
     # 失败类型：成功时为空；失败时优先用已有归因，其次自动归类，保证前端总能拿到明确分类
     if out.get("ok"):
         out["fail_type"] = ""
@@ -1384,9 +1690,17 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 _ft = classify_adp_failure(error=out.get("error", ""), full_text=full_text,
                                            attachment_count=len(attachments), signal_info=signal_info)
         out["fail_type"] = _ft
-        if _ft and not _res.get("分析失败归因"):
+        if not _res.get("分析失败归因"):
             _res["分析失败归因"] = _ft
-            out["results"] = _res
+        out["results"] = _res
+
+    # 失败时记录 SSE 判别信号（reply_method / response_status），便于区分正常收口与异常断开
+    if not out.get("ok"):
+        _sig_dbg = "reply_method=%s; response_status=%s" % (
+            signal_info.get("reply_method", ""), signal_info.get("response_status", ""))
+        out["signal_debug"] = _sig_dbg
+        _prev_err = out.get("error") or ""
+        out["error"] = (f"{_prev_err}（{_sig_dbg}）" if _prev_err else _sig_dbg)
 
     out["total_elapsed"] = round(time.time() - t0, 1)
     return out
@@ -1492,6 +1806,18 @@ def _save_adp_batch_log_inner(results: list, total_elapsed: float = 0) -> dict:
         writer = _csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+    # ── 云端归档：批次 CSV 上传到指定飞书文件夹 ──
+    folder_token = str(_get_adp_cfg().get("batch_report_folder") or "")
+    if folder_token:
+        try:
+            from src.clients import feishu_client
+            up = feishu_client.upload_file_to_drive(
+                csv_path, folder_token=folder_token, content_type="text/csv")
+            logger.info("ADP 批次记录已上传云端: %s -> %s",
+                        os.path.basename(csv_path), (up or {}).get("url") or (up or {}).get("file_token", ""))
+        except Exception as e:
+            logger.warning("ADP 批次记录上传云端失败: %s", str(e)[:150])
 
     # 更新批次计数
     state["batch_count"] = batch_no

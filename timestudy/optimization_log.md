@@ -844,3 +844,80 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`docs/ADP接口问题判别与处理策略.md`（同步 460701 与归因表）
 
 </details>
+
+<details>
+<summary><b>57. TPM 墙退避改为 60 秒（2026-10-29）</b></summary>
+
+- **问题描述**：TPM（Token 级）限流此前按容量限流统一退避 300 秒，等待过长
+- **解决方案**：
+  1. 新增 `TPM_LIMIT_CODES = {"460701", "460711", "460721"}`（企业级/空间级/应用级 TPM）
+  2. 退避计算改为：TPM → **60s**；QPM/RPM（460712/460713/460722/460723）→ 300s；并发限流 → 60s
+  3. `docs/ADP接口问题判别与处理策略.md` 同步更新三处退避时间
+- **验证结果**：编译通过；`TPM_LIMIT_CODES` 三个码均命中 60s 分支；全量 **99 passed**
+- **实现文件**：`src/services/adp_ops.py`、`docs/ADP接口问题判别与处理策略.md`、`tests/test_adp_failure_map.py`
+
+</details>
+
+<details>
+<summary><b>58. 飞书长连接：DNS 预检 + 指数退避 + 域名可配（2026-10-29）</b></summary>
+
+- **现象**：启动时 `[Lark] connect failed ... Failed to resolve 'open.feishu.cn' ([Errno 11001] getaddrinfo failed)`，4 秒后 tenant_access_token 又获取成功
+- **定位**：`open.feishu.cn` 在启动瞬间 DNS 解析失败（与 19:14 的 `getaddrinfo failed` 同属本机 DNS 抖动），SDK 直接抛错；旧代码只固定 5 秒重连，且 domain 写死不可配，SDK 自身还会打印大段 error
+- **解决方案**：
+  1. 连接前做 **DNS 预检**（`socket.getaddrinfo(host, 443)`），解析失败时不发起连接，只打一行 warning 后静默重试，避免 SDK 噪声
+  2. **指数退避**：5 → 10 → 20 → 40 → 60 秒封顶（`_next_backoff`）
+  3. **域名可配**：`feishu_bot.ws_domain`（默认 `https://open.feishu.cn`），传给 `lark.ws.Client(domain=...)`，兼容私有化部署
+  4. 连接异常日志从 `error` 降为 `warning`，截断到 150 字符
+- **验证结果**：新增 `tests/test_feishu_ws_backoff.py`（6 条：host 解析/退避序列/封顶/localhost 可解析/无效域名不可解析/默认域名）；全量 **106 passed**；当前 DNS 可解析 `open.feishu.cn`
+- **实现文件**：`src/clients/feishu_client.py`
+
+</details>
+
+<details>
+<summary><b>59. 日志噪声治理：语义模型缺失降为 WARNING、Diana DNS 失败 60 秒节流（2026-10-29）</b></summary>
+
+- **背景**：19:25-19:30 日志里看似“报错”的 ADP 段落其实全是 INFO（附件查询成功）；真正的 ERROR/WARNING 是另外两类：
+  1. `[ERROR] semantic - 语义模型加载失败... No module named 'sentence_transformers'`（缺可选依赖，已回退 TF-IDF）
+  2. `[WARNING] diana - Diana LLM 调用失败: [Errno 11001] getaddrinfo failed` 连续 7 次（DNS 抖动 + 每次调用都打日志）
+- **解决方案**：
+  1. `semantic.py`：`ImportError` 单独处理，降为**一次性 WARNING** 并给出安装提示（`pip install sentence-transformers`）；其他加载失败仍 WARNING；失败状态已缓存，不会重复加载
+  2. `diana_client._llm_chat`：连接类错误（getaddrinfo / Connect / 11001）后 **60 秒内直接返回空**，不再发请求也不再刷日志；成功后自动重置
+- **说明**：`pipeline - bugid=BUG-OPEN-1 补充失败` 与 `[mock]` 警告来自 pytest 用假 bugid 跑流程，属测试产物，不是线上问题
+- **验证结果**：编译通过；全量 **106 passed**
+- **实现文件**：`src/core/semantic.py`、`src/clients/diana_client.py`
+
+</details>
+
+<details>
+<summary><b>60. 修复合并遗留的未定义符号（_VALID_ATTACH_RE/_build_signal 等 6 处）（2026-10-29）</b></summary>
+
+- **现象**：运行 ADP 时报 `name '_VALID_ATTACH_RE' is not defined`
+- **根因**：此前修改 `query_attachments()` 时，按“函数起点→下一个函数起点”做整段替换，误把夹在中间的 `_build_signal()` 与 `_VALID_ATTACH_RE` 正则一起删掉了；正则还漏了分卷后缀 `(\.\d+)?`
+- **修复**：
+  1. 恢复 `_VALID_ATTACH_RE`（含 `(\.\d+)?`，支持 `.z01` 等分卷）与 `_build_signal()`
+  2. 用 pyflakes 全量扫描 `src`，发现 19 处 undefined name，逐项处理：
+     - `app.py`：`logger` → `_logger`（模块里只有 `_logger`）
+     - `report.py`：补 `import sys`
+     - `testing.py`：补 `import os` / `import asyncio`；函数内补 `_diag_gmlogger_times`、`_diana_client` 导入
+     - `trigger.py`：`re_extract_scan` / `re_extract` 补 `request: Request` 参数（函数体里用到 `request.is_disconnected()`）
+     - `report_ops.py`：补 `_is_cancelled()`（复用 shared.bot_cancel_events）与 `_is_default_trigger_table()`（匹配 `触发时间_N`）
+  3. 剩余 3 处（`troubleshoot_diagnose`、`_parse_datetime_string`）是同一文件后置定义的**前向引用**，运行时无问题，属 pyflakes 误报
+- **验证结果**：编译通过；pyflakes 实际未定义 = 0；全量 **106 passed**
+- **实现文件**：`src/services/adp_ops.py`、`src/api/app.py`、`src/api/routes/report.py`、`src/api/routes/testing.py`、`src/api/routes/trigger.py`、`src/services/report_ops.py`
+
+</details>
+
+<details>
+<summary><b>61. ADP 附件过滤支持全部分卷类型（2026-10-29）</b></summary>
+
+- **问题描述**：`_VALID_ATTACH_RE` 只认 `\.\d+` 一种分卷后缀，像 `.z01`、`.r00`、`.part01.rar`、`.tar.gz.001` 这类分卷会被判为“非日志附件”，进而误标 `无日志附件`
+- **解决方案**：重写 `_VALID_ATTACH_RE`，覆盖：
+  - 基础压缩/日志：`zip/zipx/rar/7z/tar/tgz/gz/bz2/xz/zst/lz4/cab/log/txt`，并支持二级后缀（`tar.gz`、`tar.bz2`、`tar.xz`、`tar.zst`）
+  - 数字分卷：`.001`、`.002`（含 `.7z.001`、`.zip.001`、`.tar.gz.001`）
+  - ZIP 旧式分卷：`.z01`、`.z99`
+  - RAR 分卷：`.part1.rar`、`.part01.rar`、`.r00`、`.r01`
+- **验证结果**：27 个样例全部符合预期（含 3 个反例 png/mp4/md）；新增 `tests/test_adp_attach_filter.py` 6 条用例；全量 **112 passed**
+- **实现文件**：`src/services/adp_ops.py`、`tests/test_adp_attach_filter.py`
+
+</details>
+

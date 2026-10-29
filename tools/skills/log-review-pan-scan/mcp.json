@@ -1,0 +1,44 @@
+{
+  "$comment": "adp-chat-analysis skill MCP 接入配置（机器可读 SSOT，顶层）。运行时由 scripts/adp_chat.py 读取；LLM 不直接读本文件。服务器与 adp-app-builder 共用同一 adp_app_manager 端点（服务器端共 80 工具），本 skill 白名单只登记对话分析所需的只读 describe_* 工具。修改后同步更新 references/api-reference.md。",
+  "server_name": "adp_app_manager",
+  "transport": "sse",
+  "_transport_note": "streamable SSE：Streamable HTTP 协议 + text/event-stream 流式响应（非 legacy GET /sse）。scripts/adp_chat.py 通过 Accept: application/json, text/event-stream 协商并解析 SSE 帧（parse_mcp_body）。",
+  "url": "https://adp.cloud.tencent.com/plugin/mcp/921ad3a1-0def-4b8a-aaa6-4e5be898f511/mcp",
+  "auth": {
+    "$comment": "Bearer 鉴权，凭据由运行环境自动注入。运行模式互斥：检测到 ADP_DELEGATE_API_KEY 即走 delegate 模式；否则走 self-serve 模式读 ADP_API_KEY。两条路径不交叉、不回退。所有变量仅从环境变量读取，不写入文件 / 日志 / 进程参数。",
+    "header": "Authorization",
+    "scheme": "Bearer",
+    "platform": {
+      "api_key_env": "ADP_DELEGATE_API_KEY"
+    },
+    "self_serve": {
+      "api_key_env": "ADP_API_KEY"
+    }
+  },
+  "context": {
+    "$comment": "应用上下文（业务参数，非鉴权）。分析类会话中 app_id 优先取用户消息里显式给出的 appid/app_id；用户未给时按鉴权模式绑定回退——delegate 模式（ADP_DELEGATE_API_KEY 非空）只读 ADP_DELEGATE_APP_ID，self-serve 只读 ADP_APP_ID，不跨模式回退（跨模式会用错企业凭证查另一企业应用，报「企业与应用归属不一致」）。space_id 仅供 describe_app_summary_list（按应用名找 app_id / 列应用）使用，按鉴权模式取 ADP_DELEGATE_SPACE_ID / ADP_SPACE_ID；env 缺失时不默认某空间，报错请用户提供目标空间。所有变量仅从环境变量读取。",
+    "platform": {
+      "app_id_env": "ADP_DELEGATE_APP_ID",
+      "space_id_env": "ADP_DELEGATE_SPACE_ID"
+    },
+    "self_serve": {
+      "app_id_env": "ADP_APP_ID",
+      "space_id_env": "ADP_SPACE_ID"
+    }
+  },
+  "tools": [
+    "describe_app_summary_list",
+    "describe_unsatisfied_reply_list",
+    "describe_msg_record_category_list",
+    "describe_msg_record_list",
+    "describe_record_trace_info",
+    "describe_conversation_message_list"
+  ],
+  "security": {
+    "$comment": "安全契约 SSOT。allowed_url_prefixes 是允许把 Authorization 头发往的 URL 前缀白名单，scripts/adp_mcp.py 解析 MCP URL 后必须按此白名单校验，命中任一前缀才发请求；ADP_PLUGIN_GW_HOST 覆盖的地址由脚本自动追加进白名单。",
+    "allowed_url_prefixes": [
+      "https://adp.cloud.tencent.com/"
+    ],
+    "credentials_usage": "本 skill 仅使用运行环境注入的 ADP_API_KEY / ADP_DELEGATE_API_KEY 作为 Authorization Bearer 头发送到通过 allowed_url_prefixes 校验的 MCP URL；不写入文件 / 日志 / 进程参数，不发往任何其它域名。本 skill 白名单内工具全部为只读 describe_*，无任何写操作。"
+  }
+}
