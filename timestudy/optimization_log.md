@@ -824,3 +824,23 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`
 
 </details>
+
+<details>
+<summary><b>56. ADP 附件异常与 TPM 判别：区分“接口异常/无日志附件”，补 460701 容量限流（2026-10-29）</b></summary>
+
+- **现象**：
+  1. 19:14:08 两条记录报 `ADP 附件查询异常: ... Expecting value: line 1 column 1 (char 0)`
+  2. 19:14:47 SSE 报 `[Errno 11001] getaddrinfo failed`
+- **定位**：
+  - 第 1 条是 dpportal 返回了**非 JSON**（空响应/网关 HTML），旧代码 `resp.json()` 抛错后被 `except Exception` 当成“无附件 → 无法分析”
+  - 第 2 条是 **DNS 解析失败**（WinError 11001），同一时段 19:11:34 还有 7 次 Diana 的 `getaddrinfo failed` → 属本机网络/DNS 抖动，**不是 TPM 墙**
+  - 真正的 TPM 墙在 06:49:55 出现过：`code=460701 触发当前企业的模型TPM上限`，但该码当时**不在** `CAPACITY_LIMIT_CODES`，未按容量限流退避处理
+- **解决方案**：
+  1. `CAPACITY_LIMIT_CODES` 增加 `460701`（企业级 TPM，退避 300s）
+  2. `query_attachments()` 区分返回值：`list`=正常（空列表=确实无附件）、`None`=接口异常（非 JSON/5xx，重试 1 次×3s 后仍失败）
+  3. `run_adp_single()`：`None` → 状态 `分析失败`，归因 `ADP附件接口异常`；空列表/无有效日志 → 状态 `无法分析`，归因统一 **`无日志附件`**，**不重试**，直接执行下一条
+  4. `classify_adp_failure()` 归因映射同步更新（“无附件/没有日志附件” → `无日志附件`）
+- **验证结果**：新增 `tests/test_adp_failure_map.py` 5 条用例；全量 **99 passed**；19:14 那两条 Jira 现复测接口正常（200/code=0/有附件）
+- **实现文件**：`src/services/adp_ops.py`、`docs/ADP接口问题判别与处理策略.md`（同步 460701 与归因表）
+
+</details>

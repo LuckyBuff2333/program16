@@ -34,6 +34,7 @@ RATE_LIMIT_CODES = {"460011", "460031"}
 
 # 容量类限流码（TPM/QPM，分钟级窗口，退避 300s）
 CAPACITY_LIMIT_CODES = {
+    "460701",                       # 企业级 TPM（实测日志出现过）
     "460711", "460712", "460713",   # 空间级
     "460721", "460722", "460723",   # 应用级
 }
@@ -101,13 +102,17 @@ def _fix_encoding(text: str) -> str:
 
 # ===== Step 1: dpportal 查询附件 =====
 
-def query_attachments(jira_key: str) -> list:
-    """查询 JIRA 附件列表，返回附件 dict 列表
-    超时或网络错误时自动重试 1 次（dpportal 后端偶发慢）
+def query_attachments(jira_key: str):
+    """查询 JIRA 附件列表。
+
+    返回:
+      - list: 正常（可能为空列表，表示确实没有附件）
+      - None: 接口异常（非 JSON / 5xx / 重试后仍失败）——与“无附件”区分开，避免误标为无法分析
     """
     adp_cfg = _get_adp_cfg()
     logger.info("ADP 查询附件: %s", jira_key)
     max_attempts = 2
+    import time as _t
     for attempt in range(1, max_attempts + 1):
         try:
             resp = httpx.post(
@@ -116,48 +121,32 @@ def query_attachments(jira_key: str) -> list:
                 json={"jiraKey": jira_key},
                 timeout=60,
             )
-            data = resp.json()
+            # 非 200 / 非 JSON：按传输异常处理（网关 502、空响应等）
+            body_head = (resp.text or "")[:200].replace("\n", " ")
+            if resp.status_code != 200:
+                raise httpx.HTTPError(f"HTTP {resp.status_code}: {body_head}")
+            try:
+                data = resp.json()
+            except Exception:
+                raise httpx.HTTPError(f"响应非 JSON: {body_head!r}")
             if data.get("code") != 0:
-                logger.warning("ADP 附件查询失败: %s -> %s", jira_key, data)
+                logger.warning("ADP 附件查询业务错误: %s -> %s", jira_key, body_head)
                 return []
             attachments = data.get("data", {}).get("attachments", [])
             logger.info("ADP 附件查询: %s 找到 %d 个附件", jira_key, len(attachments))
             return attachments
-        except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as e:
-            # 可重试的网络/超时错误
+        except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError, httpx.HTTPError) as e:
             if attempt < max_attempts:
-                logger.warning("ADP 附件查询超时/网络错误（第 %d/%d 次）: %s -> %s，2s 后重试",
-                               attempt, max_attempts, jira_key, e)
-                import time as _t
-                _t.sleep(2)
+                logger.warning("ADP 附件查询异常（第 %d/%d 次）: %s -> %s，3s 后重试",
+                               attempt, max_attempts, jira_key, str(e)[:120])
+                _t.sleep(3)
                 continue
-            logger.error("ADP 附件查询异常（重试耗尽）: %s -> %s", jira_key, e)
-            return []
+            logger.error("ADP 附件查询异常（重试耗尽）: %s -> %s", jira_key, str(e)[:150])
+            return None
         except Exception as e:
-            # 不可重试（如 JSON 解析错误、业务错误）
-            logger.error("ADP 附件查询异常: %s -> %s", jira_key, e)
-            return []
-
-
-# ===== Step 2: 构建消息 + 调用 ADP SSE =====
-
-def _build_signal(error_code: str, error_msg: str, reply_method: str,
-                  response_status: str, has_cards: bool, request_ack: bool,
-                  stream_exc: str) -> dict:
-    """构造信号信息字典（SSE 流中采集的各类判别信号）"""
-    return {
-        "error_code": error_code,
-        "error_msg": error_msg,
-        "reply_method": reply_method,
-        "response_status": response_status,
-        "has_cards": has_cards,
-        "request_ack": request_ack,
-        "stream_exc": stream_exc,
-    }
-
-# 有效附件格式正则：所有压缩包（含分卷）+ txt/log
-_VALID_ATTACH_RE = re.compile(
-    r'\.(zip|z\d+|rar|7z|tar|gz|bz2|xz|tgz|txt|log)(\.\d+)?$', re.IGNORECASE)
+            logger.error("ADP 附件查询异常（不可重试）: %s -> %s", jira_key, e)
+            return None
+    return None
 
 
 def _is_valid_attachment(att: dict) -> bool:
@@ -835,10 +824,10 @@ def classify_adp_failure(error: str = "", full_text: str = "", attachment_count:
             return "ADP智能体收口无报告(%s)" % reason
 
     # ---- 5. 前置条件不满足 ----
-    if error == "无附件":
-        return "输入质量问题（无附件）"
-    if error.startswith("没有日志附件"):
-        return "输入质量问题（无有效日志文件）"
+    if error in ("无附件", "无日志附件") or error.startswith("没有日志附件"):
+        return "无日志附件"
+    if error == "ADP附件接口异常":
+        return "ADP附件接口异常"
     if error == "ADP 无返回":
         return "ADP连接超时或网络异常"
 
@@ -1148,21 +1137,29 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     # Step 1: 查附件
     _progress("attachments", "running")
     attachments = query_attachments(jira_key)
+    # 接口异常（非 JSON/网关错误）：不是“无附件”，标分析失败，交由人工/下次重跑
+    if attachments is None:
+        out["error"] = "ADP附件接口异常"
+        out["results"] = {"完成状态": "分析失败", "分析失败归因": "ADP附件接口异常"}
+        out["fail_type"] = "ADP附件接口异常"
+        _progress("attachments", "fail", "附件接口异常")
+        return out
     out["attachment_count"] = len(attachments)
+    # 确实没有附件：无法分析，不重试，直接下一条
     if not attachments:
-        out["error"] = "无附件"
-        out["results"] = {"完成状态": "无法分析", "分析失败归因": "输入质量问题（无附件）"}
-        out["fail_type"] = "输入质量问题（无附件）"
-        _progress("attachments", "fail", "无附件")
+        out["error"] = "无日志附件"
+        out["results"] = {"完成状态": "无法分析", "分析失败归因": "无日志附件"}
+        out["fail_type"] = "无日志附件"
+        _progress("attachments", "fail", "无日志附件")
         return out
     # 检查过滤后是否有有效日志附件
     valid_atts = [a for a in attachments if _is_valid_attachment(a)]
     if not valid_atts:
         file_names = [a.get('filename', '?') for a in attachments]
-        out["error"] = f"没有日志附件（已有: {', '.join(file_names[:5])}）"
-        out["results"] = {"完成状态": "无法分析", "分析失败归因": "输入质量问题（无有效日志文件）"}
-        out["fail_type"] = "输入质量问题（无有效日志文件）"
-        _progress("attachments", "fail", out["error"])
+        out["error"] = "无日志附件"
+        out["results"] = {"完成状态": "无法分析", "分析失败归因": "无日志附件"}
+        out["fail_type"] = "无日志附件"
+        _progress("attachments", "fail", f"无日志附件（已有: {', '.join(file_names[:5])}）")
         return out
     _progress("attachments", "done", f"{len(valid_atts)} 个有效附件（共 {len(attachments)} 个）")
 
