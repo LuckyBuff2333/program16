@@ -5209,6 +5209,7 @@ async def test_adp_batch(request: Request):
         batch_results = []
         next_idx = 0
         import time as _time
+        _t0 = _time.time()
 
         def _run_one(item):
             bugid = item.get("bugid", "")
@@ -5288,10 +5289,12 @@ async def test_adp_batch(request: Request):
                               'error': r.get('error', ''), 'fail_type': _adp_fail_type(r),
                               'traceid': (r.get('results') or {}).get('traceid', ''),
                               'traceid排查': (r.get('results') or {}).get('traceid排查', '')}
-                             for r in all_results])
+                             for r in all_results],
+                            total_elapsed=round(_time.time() - _t0, 1))
         except Exception:
             logger.warning("ADP 批量执行批次记录保存失败", exc_info=True)
-        yield f"data: {_json.dumps({'type': 'done', 'total': len(all_results), 'success': total_ok, 'fail': len(all_results) - total_ok}, ensure_ascii=False)}\n\n"
+        _elapsed = round(_time.time() - _t0, 1)
+        yield f"data: {_json.dumps({'type': 'done', 'total': len(all_results), 'success': total_ok, 'fail': len(all_results) - total_ok, 'total_elapsed': _elapsed}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -5638,11 +5641,17 @@ async def test_adp_lookup(request: Request):
                               "error": r.get("error", ""), "fail_type": r.get("fail_type", ""),
                               "traceid": (r.get("results") or {}).get("traceid", ""),
                               "traceid排查": (r.get("results") or {}).get("traceid排查", "")}
-                             for r in all_results])
+                             for r in all_results],
+                            total_elapsed=round(_time.time() - _t0, 1))
         except Exception:
             logger.warning("ADP 查找执行批次记录保存失败", exc_info=True)
 
         # 批量写回飞书多维表格（执行完成后统一写入）
+        _lookup_elapsed = round(_time.time() - _t0, 1)
+        # 格式化总执行时间
+        _elapsed_mins, _elapsed_secs = divmod(int(_lookup_elapsed), 60)
+        _elapsed_hours, _elapsed_mins = divmod(_elapsed_mins, 60)
+        _elapsed_str = f"{_elapsed_hours}时{_elapsed_mins:02d}分{_elapsed_secs:02d}秒" if _elapsed_hours else f"{_elapsed_mins}分{_elapsed_secs:02d}秒"
         try:
             update_records = []
             for r in all_results:
@@ -5662,13 +5671,15 @@ async def test_adp_lookup(request: Request):
                     write_fields["报告链接（分析报告、可观测报告）"] = [{"file_token": file_token}]
                 else:
                     write_fields.pop("报告链接（分析报告、可观测报告）", None)
+                # 写入本批次总执行时间
+                write_fields["总执行时间"] = _elapsed_str
                 record_id = rec.get("record_id", "")
                 if record_id and write_fields:
                     update_records.append({"record_id": record_id, "fields": write_fields})
             if update_records:
                 await loop.run_in_executor(
                     None, lambda: feishu_client.update_bitable_records(app_token, table_id, update_records))
-                logger.info("ADP lookup 批量写回成功: %d 条", len(update_records))
+                logger.info("ADP lookup 批量写回成功: %d 条（总耗时 %s）", len(update_records), _elapsed_str)
         except Exception as e:
             logger.error("ADP lookup 批量写回失败: %s", e)
 

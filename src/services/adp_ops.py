@@ -1013,7 +1013,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause",
-                    "置信度", "分析失败归因", "traceid", "traceid排查"]
+                    "置信度", "分析失败归因", "traceid", "traceid排查", "总执行时间"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         # 附件字段"报告链接"处理：file_token 为附件格式，沙箱 URL 不写入附件字段（链接已追加到 root cause）
         file_token = fields_dict.get("_report_file_token", "")
@@ -1352,7 +1352,7 @@ def _save_adp_batch_state(state: dict):
         logger.warning("ADP 批次记录状态保存失败: %s", e)
 
 
-def save_adp_batch_log(results: list) -> dict:
+def save_adp_batch_log(results: list, total_elapsed: float = 0) -> dict:
     """ADP 每次执行完成后，将批次记录写入本地 CSV
 
     云端表格（回归测试第一批次）的写入已由 write_adp_to_feishu / _write_back 负责，
@@ -1365,15 +1365,16 @@ def save_adp_batch_log(results: list) -> dict:
         - fail_type: 失败类型
         - traceid: trace ID
         - traceid排查: 排查报告链接
+    :param total_elapsed: 本批次总执行耗时（秒），0 表示未统计
     :return: {"batch_no": int, "csv_path": str}
     """
     if not results:
         return {}
     with _ADP_BATCH_LOG_LOCK:
-        return _save_adp_batch_log_inner(results)
+        return _save_adp_batch_log_inner(results, total_elapsed)
 
 
-def _save_adp_batch_log_inner(results: list) -> dict:
+def _save_adp_batch_log_inner(results: list, total_elapsed: float = 0) -> dict:
     """批次记录写入核心逻辑（已在锁内调用，线程安全）"""
     import csv as _csv
 
@@ -1381,9 +1382,16 @@ def _save_adp_batch_log_inner(results: list) -> dict:
     batch_no = state.get("batch_count", 0) + 1
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # 格式化总执行时间
+    elapsed_str = ""
+    if total_elapsed > 0:
+        mins, secs = divmod(int(total_elapsed), 60)
+        hours, mins = divmod(mins, 60)
+        elapsed_str = f"{hours}时{mins:02d}分{secs:02d}秒" if hours else f"{mins}分{secs:02d}秒"
+
     # 字段定义
     fieldnames = ["Jira号", "执行结果", "执行完成时间", "执行报错",
-                  "错误分类", "traceid", "traceid排查"]
+                  "错误分类", "traceid", "traceid排查", "总执行时间"]
 
     # 构建行数据
     rows = []
@@ -1396,6 +1404,7 @@ def _save_adp_batch_log_inner(results: list) -> dict:
             "错误分类": r.get("fail_type") or "",
             "traceid": r.get("traceid") or "",
             "traceid排查": r.get("traceid排查") or "",
+            "总执行时间": elapsed_str,
         })
 
     # ── 本地 CSV ──
