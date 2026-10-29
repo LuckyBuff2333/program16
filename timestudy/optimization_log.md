@@ -948,3 +948,20 @@ flowchart TD
 
 </details>
 
+<details>
+<summary><b>63. dpportal 附件查询：超时/重试/缓存与文案纠正（2026-10-30）</b></summary>
+
+- **问题描述**：`ADP 附件查询异常` 实际是 dpportal 附件接口（`dpportal.apps.saic-gm.com/api/logAnalysis/attachments`）读超时，不是 ADP 对话接口；60s 超时 + 3s 重试在 dpportal 抖动时批量失败，日志文案也容易被误认为 ADP 问题。
+
+- **改动内容**：
+  1. 超时 60s → **120s**（`adp.attach_timeout`）；
+  2. 重试间隔 3s → **10s**（`adp.attach_retry_interval`）；
+  3. 新增**本地短期缓存**（`adp.attach_cache_ttl`，默认 300s），同 Jira 复用成功结果（含空列表），失败不缓存；
+  4. 日志文案 `ADP 附件查询异常` → **`dpportal 附件查询异常`**。
+
+- **验证结果**：首次查询 32s、第二次命中缓存 0.00s；全量 **116 passed**。
+
+- **实现文件**：`src/services/adp_ops.py`
+
+</details>
+

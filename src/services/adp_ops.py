@@ -89,6 +89,9 @@ def _get_adp_cfg() -> dict:
         "sandbox_base": cfg.get("sandbox_base", "https://sandbox.adp.cloud.tencent.com/files?path="),
         "attach_api": cfg.get("attach_api", "https://dpportal.apps.saic-gm.com/api/logAnalysis/attachments"),
         "attach_api_key": cfg.get("attach_api_key", ""),
+        "attach_timeout": int(cfg.get("attach_timeout", 120)),
+        "attach_retry_interval": int(cfg.get("attach_retry_interval", 10)),
+        "attach_cache_ttl": int(cfg.get("attach_cache_ttl", 300)),
         "timeout": int(cfg.get("timeout", 3600)),
         "bitable_app_token": cfg.get("bitable_app_token", ""),
         "bitable_table_id": cfg.get("bitable_table_id", ""),
@@ -234,24 +237,37 @@ def _run_trace_skill(jira_key: str, trace_id: str):
 
 # ===== Step 1: dpportal 查询附件 =====
 
+_ATTACH_CACHE = {}
+_ATTACH_CACHE_LOCK = __import__("threading").Lock()
+
+
 def query_attachments(jira_key: str):
-    """查询 JIRA 附件列表。
+    """查询 JIRA 附件列表（dpportal 接口，带本地短期缓存）。
 
     返回:
       - list: 正常（可能为空列表，表示确实没有附件）
       - None: 接口异常（非 JSON / 5xx / 重试后仍失败）——与“无附件”区分开，避免误标为无法分析
     """
     adp_cfg = _get_adp_cfg()
-    logger.info("ADP 查询附件: %s", jira_key)
-    max_attempts = 2
     import time as _t
+
+    # 本地缓存：同一 Jira 在 TTL 内复用，避免重复慢查询
+    ttl = adp_cfg.get("attach_cache_ttl", 300)
+    with _ATTACH_CACHE_LOCK:
+        hit = _ATTACH_CACHE.get(jira_key)
+        if hit and _t.time() - hit[0] < ttl:
+            logger.info("dpportal 附件查询: %s 命中缓存（%d 个附件）", jira_key, len(hit[1]))
+            return list(hit[1])
+
+    logger.info("dpportal 查询附件: %s", jira_key)
+    max_attempts = 2
     for attempt in range(1, max_attempts + 1):
         try:
             resp = httpx.post(
                 adp_cfg["attach_api"],
                 headers={"Content-Type": "application/json", "X-API-Key": adp_cfg["attach_api_key"]},
                 json={"jiraKey": jira_key},
-                timeout=60,
+                timeout=adp_cfg.get("attach_timeout", 120),
             )
             # 非 200 / 非 JSON：按传输异常处理（网关 502、空响应等）
             body_head = (resp.text or "")[:200].replace("\n", " ")
@@ -262,21 +278,24 @@ def query_attachments(jira_key: str):
             except Exception:
                 raise httpx.HTTPError(f"响应非 JSON: {body_head!r}")
             if data.get("code") != 0:
-                logger.warning("ADP 附件查询业务错误: %s -> %s", jira_key, body_head)
+                logger.warning("dpportal 附件查询业务错误: %s -> %s", jira_key, body_head)
                 return []
             attachments = data.get("data", {}).get("attachments", [])
-            logger.info("ADP 附件查询: %s 找到 %d 个附件", jira_key, len(attachments))
+            logger.info("dpportal 附件查询: %s 找到 %d 个附件", jira_key, len(attachments))
+            with _ATTACH_CACHE_LOCK:
+                _ATTACH_CACHE[jira_key] = (_t.time(), list(attachments))
             return attachments
         except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError, httpx.HTTPError) as e:
             if attempt < max_attempts:
-                logger.warning("ADP 附件查询异常（第 %d/%d 次）: %s -> %s，3s 后重试",
-                               attempt, max_attempts, jira_key, str(e)[:120])
-                _t.sleep(3)
+                wait = adp_cfg.get("attach_retry_interval", 10)
+                logger.warning("dpportal 附件查询异常（第 %d/%d 次）: %s -> %s，%ds 后重试",
+                               attempt, max_attempts, jira_key, str(e)[:120], wait)
+                _t.sleep(wait)
                 continue
-            logger.error("ADP 附件查询异常（重试耗尽）: %s -> %s", jira_key, str(e)[:150])
+            logger.error("dpportal 附件查询异常（重试耗尽）: %s -> %s", jira_key, str(e)[:150])
             return None
         except Exception as e:
-            logger.error("ADP 附件查询异常（不可重试）: %s -> %s", jira_key, e)
+            logger.error("dpportal 附件查询异常（不可重试）: %s -> %s", jira_key, e)
             return None
     return None
 
