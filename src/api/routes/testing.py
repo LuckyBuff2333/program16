@@ -5090,6 +5090,16 @@ async def test_adp_single(request: Request):
             except _queue.Empty:
                 break
         result = _result_ref[0] or {"ok": False, "error": "线程异常"}
+        # ADP 执行批次记录（本地CSV + 云端多维表格）
+        try:
+            from src.services.adp_ops import save_adp_batch_log as _save_batch_log
+            _save_batch_log([{"jira_key": bugid, "ok": result.get("ok", False),
+                              "error": result.get("error", ""),
+                              "fail_type": _adp_fail_type(result),
+                              "traceid": (result.get("results") or {}).get("traceid", ""),
+                              "traceid排查报告": (result.get("results") or {}).get("traceid排查报告", "")}])
+        except Exception:
+            logger.warning("ADP 单条执行批次记录保存失败", exc_info=True)
         # 推送附件数 + 飞书状态等补充信息
         yield f"data: {_json.dumps({'type': 'step', 'step': 'attachments', 'status': 'done' if result.get('attachment_count', 0) > 0 else 'fail', 'count': result.get('attachment_count', 0)}, ensure_ascii=False)}\n\n"
         if not result.get('attachment_count'):
@@ -5252,6 +5262,16 @@ async def test_adp_batch(request: Request):
             yield f"data: {_json.dumps({'type': 'batch_done', 'batch': batch_idx + 1, 'success': batch_ok, 'fail': len(batch_results) - batch_ok}, ensure_ascii=False)}\n\n"
 
         total_ok = sum(1 for r in all_results if r.get('ok'))
+        # ADP 执行批次记录（本地CSV + 云端多维表格）
+        try:
+            from src.services.adp_ops import save_adp_batch_log as _save_batch_log
+            _save_batch_log([{"jira_key": r.get('jira_key', ''), 'ok': r.get('ok', False),
+                              'error': r.get('error', ''), 'fail_type': _adp_fail_type(r),
+                              'traceid': (r.get('results') or {}).get('traceid', ''),
+                              'traceid排查报告': (r.get('results') or {}).get('traceid排查报告', '')}
+                             for r in all_results])
+        except Exception:
+            logger.warning("ADP 批量执行批次记录保存失败", exc_info=True)
         yield f"data: {_json.dumps({'type': 'done', 'total': len(all_results), 'success': total_ok, 'fail': len(all_results) - total_ok}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
@@ -5325,6 +5345,7 @@ async def test_adp_lookup(request: Request):
         table_id = adp_cfg["bitable_table_id"]
         view_id = adp_cfg.get("bitable_view_id", "") or None
         jira_field = adp_cfg["jira_field"]
+        table_name = adp_cfg.get("bitable_table_name", "")
 
         # ── Step 1: 读取多维表格记录，构建 bugid → record 映射 ──
         yield f"data: {_json.dumps({'type': 'step', 'step': 'read_bitable', 'status': 'running'}, ensure_ascii=False)}\n\n"
@@ -5361,13 +5382,13 @@ async def test_adp_lookup(request: Request):
                     no_report_keys.append(key)
         if mode == "auto":
             effective_bugids = no_report_keys[:limit]
-            yield f"data: {_json.dumps({'type': 'step', 'step': 'read_bitable', 'status': 'done', 'total_records': len(records), 'matched': len(effective_bugids), 'no_report_total': len(no_report_keys), 'mode': 'auto', 'limit': limit}, ensure_ascii=False)}\n\n"
+            yield f"data: {_json.dumps({'type': 'step', 'step': 'read_bitable', 'status': 'done', 'table_name': table_name, 'total_records': len(records), 'matched': len(effective_bugids), 'no_report_total': len(no_report_keys), 'mode': 'auto', 'limit': limit}, ensure_ascii=False)}\n\n"
             if not effective_bugids:
                 yield f"data: {_json.dumps({'type': 'done', 'total': 0, 'success': 0, 'fail': 0, 'msg': '无待分析记录'}, ensure_ascii=False)}\n\n"
                 return
         else:
             effective_bugids = list(bugids)
-            yield f"data: {_json.dumps({'type': 'step', 'step': 'read_bitable', 'status': 'done', 'total_records': len(records), 'matched': len([b for b in effective_bugids if b in bt_map])}, ensure_ascii=False)}\n\n"
+            yield f"data: {_json.dumps({'type': 'step', 'step': 'read_bitable', 'status': 'done', 'table_name': table_name, 'total_records': len(records), 'matched': len([b for b in effective_bugids if b in bt_map])}, ensure_ascii=False)}\n\n"
 
         # ── 准备每条的 desc / tt ──
         def _prepare_fields(bugid):
@@ -5606,6 +5627,16 @@ async def test_adp_lookup(request: Request):
 
             yield f"data: {_json.dumps({'type': 'batch_done', 'batch': group_idx, 'success': batch_ok, 'fail': batch_fail, 'skip': batch_skip}, ensure_ascii=False)}\n\n"
 
+        # ADP 执行批次记录（本地CSV + 云端多维表格）
+        try:
+            from src.services.adp_ops import save_adp_batch_log as _save_batch_log
+            _save_batch_log([{"jira_key": r.get("jira_key", ""), "ok": r.get("ok", False),
+                              "error": r.get("error", ""), "fail_type": r.get("fail_type", ""),
+                              "traceid": (r.get("results") or {}).get("traceid", ""),
+                              "traceid排查报告": (r.get("results") or {}).get("traceid排查报告", "")}
+                             for r in all_results])
+        except Exception:
+            logger.warning("ADP 查找执行批次记录保存失败", exc_info=True)
         yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'fail': max(0, total_fail), 'total_elapsed': round(_time.time() - _t0, 1)}, ensure_ascii=False)}\n\n"
 
     # 注册作业：/api/jobs 可查进度，/api/jobs/{id}/stop 可单独停止本作业

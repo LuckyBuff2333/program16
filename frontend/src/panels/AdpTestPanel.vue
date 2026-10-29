@@ -232,6 +232,9 @@
       <!-- ====== Tab 3: 表格查找执行 ====== -->
       <el-tab-pane label="表格查找执行" name="lookup">
         <el-card shadow="never">
+          <div v-if="lookup.tableName" style="margin-bottom:8px">
+            <span style="font-size:13px;color:#606266">当前查找表格：<el-tag size="small" effect="plain" style="font-weight:600">{{ lookup.tableName }}</el-tag></span>
+          </div>
           <el-alert type="info" :closable="false" show-icon
             title="根据 Jira 号从 ADP 多维表格查找记录，读取描述和触发时间（缺失则用 Jira API 补全），调用 ADP 分析后写回该行（跳过一致性判定）。"></el-alert>
           <!-- 模式切换 -->
@@ -270,6 +273,9 @@
           closable style="margin-top:12px" @close="lookup.error = ''"></el-alert>
         <!-- 进度 -->
         <div v-if="lookup.progress" style="margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <el-tag v-if="lookup.progress.tableName" type="" size="small" effect="plain" style="font-weight:600">
+            {{ lookup.progress.tableName }}
+          </el-tag>
           <el-tag type="info" size="small">多维表格: {{ lookup.progress.totalRecords }}</el-tag>
           <el-tag v-if="lookup.mode === 'auto' && lookup.progress.noReportTotal != null" type="warning" size="small">
             无报告: {{ lookup.progress.noReportTotal }}
@@ -387,7 +393,7 @@ export default {
       },
       lookup: {
         input: '', running: false, progress: null, results: [], currentBatch: null,
-        mode: 'manual', limit: 10, abortCtrl: null, error: '',
+        mode: 'manual', limit: 10, abortCtrl: null, error: '', tableName: '',
       },
     };
   },
@@ -396,6 +402,12 @@ export default {
       const done = this.single.steps.filter(s => s.status === 'done').length;
       return Math.min(done, this.single.steps.length);
     },
+  },
+  mounted() {
+    fetch('/api/config').then(r => r.json()).then(d => {
+      const adp = (d.data || {}).adp || {};
+      this.lookup.tableName = adp.bitable_table_name || '';
+    }).catch(() => {});
   },
   methods: {
     /** 格式化耗时（秒 → 可读字符串） */
@@ -584,7 +596,7 @@ export default {
       this.lookup.currentBatch = null;
       this.lookup.error = '';
       this.lookup.abortCtrl = new AbortController();
-      this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, skip: 0, noReportTotal: null, totalElapsed: 0 };
+      this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, skip: 0, noReportTotal: null, totalElapsed: 0, tableName: '' };
       try {
         const body = isAuto
           ? { mode: 'auto', limit: this.lookup.limit }
@@ -611,6 +623,7 @@ export default {
                 if (d.status === 'done') {
                   this.lookup.progress.totalRecords = d.total_records;
                   this.lookup.progress.matched = d.matched;
+                  if (d.table_name) this.lookup.progress.tableName = d.table_name;
                   if (d.mode === 'auto') {
                     this.lookup.progress.noReportTotal = d.no_report_total;
                     this.lookup.progress.total = d.matched;

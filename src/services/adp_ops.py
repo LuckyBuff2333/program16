@@ -1013,7 +1013,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause",
-                    "置信度", "分析失败归因", "traceid"]
+                    "置信度", "分析失败归因", "traceid", "traceid排查报告"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         # 附件字段"报告链接"处理：file_token 为附件格式，沙箱 URL 不写入附件字段（链接已追加到 root cause）
         file_token = fields_dict.get("_report_file_token", "")
@@ -1145,6 +1145,10 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         # 将 trace_id 写入结果（供飞书表格展示）
         if trace_id:
             results["traceid"] = trace_id
+        # traceid 排查报告：优先 ADP 报告链接，其次沙箱链接，最后本地报告路径
+        _report_url_for_trace = results.get("_report_url", "")
+        _sandbox_for_trace = out.get("_sandbox_url", "")
+        results["traceid排查报告"] = _report_url_for_trace or _sandbox_for_trace or ""
 
         # Step 3.3: 续接机制（截断/完整无报告时发"继续"；限流/首轮未开工时重发原始消息）
         max_continues = 2
@@ -1244,6 +1248,10 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             results["分析失败归因"] = "分析完成但未产出HTML报告"
             results.pop("报告链接（分析报告、可观测报告）", None)
 
+        # 补充 traceid 排查报告（沙箱 URL 在报告下载阶段才可用）
+        if not results.get("traceid排查报告") and out.get("_sandbox_url"):
+            results["traceid排查报告"] = out["_sandbox_url"]
+
         # 失败归因：分析失败但没有明确原因时，按 ADP 返回内容自动归类（失败类型）
         if results.get("完成状态") == "分析失败" and not results.get("分析失败归因"):
             results["分析失败归因"] = classify_adp_failure(
@@ -1308,3 +1316,106 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
 
     out["total_elapsed"] = round(time.time() - t0, 1)
     return out
+
+
+# ===== ADP 执行批次记录（本地 CSV + 云端已有表格）=====
+
+import threading as _threading
+
+_ADP_BATCH_LOG_LOCK = _threading.Lock()
+
+# 批次计数器本地持久化文件
+_ADP_BATCH_LOG_STATE_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "adp_batch_log_state.json",
+)
+
+
+def _load_adp_batch_state() -> dict:
+    """读取 ADP 批次记录状态（批次计数）"""
+    try:
+        if os.path.exists(_ADP_BATCH_LOG_STATE_FILE):
+            with open(_ADP_BATCH_LOG_STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning("ADP 批次记录状态读取失败: %s", e)
+    return {"batch_count": 0}
+
+
+def _save_adp_batch_state(state: dict):
+    """持久化 ADP 批次记录状态"""
+    try:
+        os.makedirs(os.path.dirname(_ADP_BATCH_LOG_STATE_FILE), exist_ok=True)
+        with open(_ADP_BATCH_LOG_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning("ADP 批次记录状态保存失败: %s", e)
+
+
+def save_adp_batch_log(results: list) -> dict:
+    """ADP 每次执行完成后，将批次记录写入本地 CSV
+
+    云端表格（回归测试第一批次）的写入已由 write_adp_to_feishu / _write_back 负责，
+    本函数只做本地 CSV 批次留痕（含 traceid、traceid排查报告）。
+
+    :param results: 执行结果列表，每条包含:
+        - jira_key: Jira 号
+        - ok: 是否成功
+        - error: 错误信息
+        - fail_type: 失败类型
+        - traceid: trace ID
+        - traceid排查报告: 排查报告链接
+    :return: {"batch_no": int, "csv_path": str}
+    """
+    if not results:
+        return {}
+    with _ADP_BATCH_LOG_LOCK:
+        return _save_adp_batch_log_inner(results)
+
+
+def _save_adp_batch_log_inner(results: list) -> dict:
+    """批次记录写入核心逻辑（已在锁内调用，线程安全）"""
+    import csv as _csv
+
+    state = _load_adp_batch_state()
+    batch_no = state.get("batch_count", 0) + 1
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 字段定义
+    fieldnames = ["Jira号", "执行结果", "执行完成时间", "执行报错",
+                  "错误分类", "traceid", "traceid排查报告"]
+
+    # 构建行数据
+    rows = []
+    for r in results:
+        rows.append({
+            "Jira号": r.get("jira_key", ""),
+            "执行结果": "成功" if r.get("ok") else "失败",
+            "执行完成时间": now_str,
+            "执行报错": (r.get("error") or "")[:500],
+            "错误分类": r.get("fail_type") or "",
+            "traceid": r.get("traceid") or "",
+            "traceid排查报告": r.get("traceid排查报告") or "",
+        })
+
+    # ── 本地 CSV ──
+    log_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "data", "adp_batch_logs",
+    )
+    os.makedirs(log_dir, exist_ok=True)
+    csv_path = os.path.join(log_dir, f"adp_batch_{batch_no}.csv")
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = _csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    # 更新批次计数
+    state["batch_count"] = batch_no
+    _save_adp_batch_state(state)
+
+    success_count = sum(1 for r in results if r.get("ok"))
+    logger.info("ADP 批次记录已保存: 批次%d（成功 %d/%d），本地: %s",
+                batch_no, success_count, len(results), csv_path)
+
+    return {"batch_no": batch_no, "csv_path": csv_path}
