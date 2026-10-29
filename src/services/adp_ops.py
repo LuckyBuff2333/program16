@@ -951,11 +951,11 @@ def save_adp_local(jira_key: str, full_text: str, closeout_data: dict,
 # ===== 下载 HTML 报告并上传多维表格附件 =====
 
 def download_adp_report(jira_key: str, report_url: str, html_file: str) -> dict:
-    """下载 ADP HTML 报告到本地，再上传为多维表格附件，返回 {file_token, local_path}"""
+    """下载 ADP HTML 报告到本地，再上传为多维表格附件，返回 {file_token, local_path, error_code}"""
     from src.config import PROJECT_ROOT
     from src.clients import feishu_client
     if not report_url:
-        return {"file_token": "", "local_path": ""}
+        return {"file_token": "", "local_path": "", "error_code": ""}
     save_dir = os.path.join(PROJECT_ROOT, "reports", "adp", jira_key)
     os.makedirs(save_dir, exist_ok=True)
     filename = html_file or report_url.split("/")[-1].split("?")[0]
@@ -974,10 +974,14 @@ def download_adp_report(jira_key: str, report_url: str, html_file: str) -> dict:
             adp_cfg["bitable_app_token"], local_path, content_type="text/html")
         if file_token:
             logger.info("ADP 报告附件上传成功: %s -> %s", jira_key, file_token)
-        return {"file_token": file_token, "local_path": local_path}
+        return {"file_token": file_token, "local_path": local_path, "error_code": ""}
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code
+        logger.error("ADP 报告下载失败: %s -> HTTP %d (%s)", jira_key, status_code, e)
+        return {"file_token": "", "local_path": "", "error_code": f"HTTP_{status_code}"}
     except Exception as e:
         logger.error("ADP 报告处理失败: %s -> %s", jira_key, e)
-        return {"file_token": "", "local_path": ""}
+        return {"file_token": "", "local_path": "", "error_code": "OTHER"}
 
 
 # ===== Step 5: 写入飞书多维表格（独立 ADP 表格）=====
@@ -1228,14 +1232,22 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             dl_result = download_adp_report(jira_key, report_url, html_file)
             file_token = dl_result.get("file_token", "")
             local_path = dl_result.get("local_path", "")
+            error_code = dl_result.get("error_code", "")
             if file_token:
                 results["_report_file_token"] = file_token
                 results["报告链接（分析报告、可观测报告）"] = f"附件: {html_file or 'report.html'}"
                 out["_report_file_token"] = file_token
             else:
-                # 下载失败：标记分析失败，但保留已提取的分析字段
+                # 下载失败：根据错误码区分归类
                 results["完成状态"] = "分析失败"
-                results["分析失败归因"] = "分析完成但未产出HTML报告"
+                if error_code == "HTTP_403":
+                    results["分析失败归因"] = "报告下载被拒绝（403 Forbidden，签名URL可能已过期）"
+                elif error_code.startswith("HTTP_4"):
+                    results["分析失败归因"] = f"报告下载失败（{error_code}，链接可能已失效）"
+                elif error_code.startswith("HTTP_5"):
+                    results["分析失败归因"] = f"报告下载服务端错误（{error_code}）"
+                else:
+                    results["分析失败归因"] = "分析完成但未产出HTML报告"
                 results.pop("报告链接（分析报告、可观测报告）", None)
             # HTML 报告中的"断点模块"优先级高于文本提取，覆盖"问题模块"字段
             html_module = _extract_module_from_html(local_path)
