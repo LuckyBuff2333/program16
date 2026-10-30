@@ -5399,6 +5399,22 @@ async def test_adp_enrich(request: Request):
     return _ok(results, f"补全完成: {len(results)} 条")
 
 
+@router.get("/api/test/adp_tables")
+def adp_tables():
+    """列出 ADP 多维表格 base 下的所有数据表（供表格查找下拉选择）"""
+    from src.clients import feishu_client
+    from src.services.adp_ops import _get_adp_cfg
+    cfg = _get_adp_cfg()
+    app_token = cfg.get("bitable_app_token", "")
+    if not app_token:
+        return _fail("未配置 adp.bitable_app_token")
+    try:
+        tables = feishu_client.list_bitable_tables(app_token)
+    except Exception as e:
+        return _fail(f"读取表格列表失败: {str(e)[:120]}")
+    return _ok([{"table_id": t.get("table_id"), "name": t.get("name")} for t in tables])
+
+
 @router.post("/api/test/adp_lookup")
 async def test_adp_lookup(request: Request):
     """ADP 按 Jira 号查找：多维表格读记录 → 补全字段 → 2 个并发动态补位 → 失败自动归因 → 统一批量写回
@@ -5416,6 +5432,8 @@ async def test_adp_lookup(request: Request):
     bugids = body.get("bugids") or []
     limit = int(body.get("limit") or 10)
     batch_size = int(body.get("batch_size") or 2)
+    req_table_id = (body.get("table_id") or "").strip()
+    req_table_name = (body.get("table_name") or "").strip()
     filter_ai_preliminary = bool(body.get("filter_ai_preliminary", False))
     if mode == "manual" and not bugids:
         return _fail("bugids 不能为空")
@@ -5429,10 +5447,10 @@ async def test_adp_lookup(request: Request):
         from src.services.adp_ops import run_adp_single, _get_adp_cfg, classify_adp_failure
         adp_cfg = _get_adp_cfg()
         app_token = adp_cfg["bitable_app_token"]
-        table_id = adp_cfg["bitable_table_id"]
-        view_id = adp_cfg.get("bitable_view_id", "") or None
+        table_id = req_table_id or adp_cfg["bitable_table_id"]
+        view_id = None if req_table_id else (adp_cfg.get("bitable_view_id", "") or None)
         jira_field = adp_cfg["jira_field"]
-        table_name = adp_cfg.get("bitable_table_name", "")
+        table_name = req_table_name or adp_cfg.get("bitable_table_name", "")
 
         # ── Step 1: 读取多维表格记录，构建 bugid → record 映射 ──
         yield f"data: {_json.dumps({'type': 'step', 'step': 'read_bitable', 'status': 'running'}, ensure_ascii=False)}\n\n"

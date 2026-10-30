@@ -235,8 +235,11 @@
       <!-- ====== Tab 3: 表格查找执行 ====== -->
       <el-tab-pane label="表格查找执行" name="lookup">
         <el-card shadow="never">
-          <div v-if="lookup.tableName" style="margin-bottom:8px">
-            <span style="font-size:13px;color:#606266">当前查找表格：<el-tag size="small" effect="plain" style="font-weight:600">{{ lookup.tableName }}</el-tag></span>
+          <div v-if="lookup.tables.length" style="margin-bottom:8px;display:flex;align-items:center;gap:8px">
+            <span style="font-size:13px;color:#606266">当前查找表格：</span>
+            <el-select v-model="lookup.tableId" size="small" style="width:280px" @change="onLookupTableChange">
+              <el-option v-for="t in lookup.tables" :key="t.table_id" :label="t.name" :value="t.table_id"></el-option>
+            </el-select>
           </div>
           <el-alert type="info" :closable="false" show-icon
             title="根据 Jira 号从 ADP 多维表格查找记录，读取描述和触发时间（缺失则用 Jira API 补全），调用 ADP 分析后写回该行（跳过一致性判定）。"></el-alert>
@@ -406,6 +409,7 @@ export default {
       lookup: {
         input: '', running: false, progress: null, results: [], currentBatch: null, runningItems: [],
         mode: 'manual', limit: 10, filterAiPreliminary: false, abortCtrl: null, error: '', tableName: '',
+        tables: [], tableId: '',
       },
     };
   },
@@ -419,6 +423,13 @@ export default {
     fetch('/api/config').then(r => r.json()).then(d => {
       const adp = (d.data || {}).adp || {};
       this.lookup.tableName = adp.bitable_table_name || '';
+      fetch('/api/test/adp_tables').then(r => r.json()).then(res => {
+        this.lookup.tables = (res.data || []);
+        const cfgId = adp.bitable_table_id || '';
+        const hit = this.lookup.tables.find((t) => t.table_id === cfgId);
+        this.lookup.tableId = hit ? cfgId : ((this.lookup.tables[0] || {}).table_id || '');
+        this.onLookupTableChange(this.lookup.tableId);
+      }).catch(() => {});
     }).catch(() => {});
   },
   methods: {
@@ -598,6 +609,10 @@ export default {
     },
 
     // ===== 表格查找执行 =====
+    onLookupTableChange(tid) {
+      const t = (this.lookup.tables || []).find((x) => x.table_id === tid);
+      this.lookup.tableName = t ? t.name : '';
+    },
     async runLookup() {
       const isAuto = this.lookup.mode === 'auto';
       const text = this.lookup.input.trim();
@@ -616,8 +631,9 @@ export default {
       this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, timeout: 0, skip: 0, noReportTotal: null, aiFiltered: 0, totalElapsed: 0, tableName: '' };
       try {
         const body = isAuto
-          ? { mode: 'auto', limit: this.lookup.limit, filter_ai_preliminary: this.lookup.filterAiPreliminary }
-          : { bugids };
+          ? { mode: 'auto', limit: this.lookup.limit, filter_ai_preliminary: this.lookup.filterAiPreliminary,
+              table_id: this.lookup.tableId, table_name: this.lookup.tableName }
+          : { bugids, table_id: this.lookup.tableId, table_name: this.lookup.tableName };
         const resp = await fetch('/api/test/adp_lookup', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),

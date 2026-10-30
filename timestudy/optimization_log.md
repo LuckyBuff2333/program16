@@ -1033,3 +1033,17 @@ flowchart TD
 - **实现文件**：`src/api/routes/trigger.py`、`frontend/src/panels/TimeExtractPanel.vue`
 
 </details>
+
+<details>
+<summary><b>69. ADP 表格查找执行支持下拉选择数据表（2026-10-30）</b></summary>
+
+- **需求**：ADP 测试 → 表格查找执行，按当前链接读取所有表名，下拉选择后读取/写回该表；手动输入与自动查找一致。
+- **改动内容**：
+  1. 新增 `GET /api/test/adp_tables`：列出 ADP base 下所有数据表（表名 + table_id）；
+  2. `POST /api/test/adp_lookup` 支持 `table_id` / `table_name` 入参，缺省回退配置；
+  3. 读表、自动查找未完成记录、统一批量写回均使用所选表；
+  4. 前端「当前查找表格」改为 `el-select`，挂载时加载表列表，默认选中配置表。
+- **验证结果**：接口返回 4 张表；前端构建通过；全量 **116 passed**。
+- **实现文件**：`src/api/routes/testing.py`、`frontend/src/panels/AdpTestPanel.vue`
+
+</details>
