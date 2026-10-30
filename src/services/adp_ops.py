@@ -1295,9 +1295,13 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             return {"ok": False, "record_id": "", "message": "无法获取 record_id"}
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
-                    "agent分析的问题模块", "agent分析的root cause",
+                    "agent分析的问题模块", "agent分析的root cause", "root cause",
                     "置信度", "分析失败归因", "原因", "traceid", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
+        # 确保 root cause 字段也被填充（与 agent分析的root cause 同步）
+        adp_rc = write_fields.get("agent分析的root cause", "")
+        if adp_rc:
+            write_fields["root cause"] = adp_rc
         # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
         tid_check = write_fields.get("traceid排查", "")
         if tid_check and isinstance(tid_check, str) and tid_check.startswith("http"):
@@ -1454,14 +1458,13 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             logger.info("ADP 无报告链接，进入可疑未完成分支（%d 字）", len(full_text or ""))
 
         # Step 3.3: 续接机制（截断/无报告/过程叙述 → 发"继续"；限流/首轮未开工 → 重发原始消息）
-        max_continues = 2
+        max_continues = 6
         for cont_idx in range(max_continues):
-            # 前置判断：没有任何报告链接 → 视为“可疑未完成”，参与续接决策
+            # 前置判断：没有任何报告链接 → 视为"可疑未完成"，参与续接决策
             _no_report = not results.get("_report_url")
             _has_closing = any(k in full_text for k in COMPLETE_SECTION_MARKERS)
             _clarify, _ = _looks_like_clarify_or_refusal(full_text, signal_info.get("reply_method", ""))
-            _short_no_report = (_no_report and not _clarify
-                                and len(full_text) >= 300 and not _has_closing)
+            _short_no_report = (_no_report and not _clarify and not _has_closing)
             need_continue = (
                 results.get("完成状态") == "分析失败"
                 and results.get("分析失败归因") in (
@@ -1547,6 +1550,30 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 break
             logger.warning("ADP 续接第%d次仍未产出报告", cont_idx + 1)
             _progress("adp_continue", "running", f"第{cont_idx+1}次续接仍无报告")
+            # 更新 err_code 为本次续接返回的错误码
+            err_code = (cont_sig or {}).get("error_code", "")
+            # 致命错误（如 460502 内容安全拦截）：续接无意义，立即退出
+            if err_code in FATAL_ERROR_CODES:
+                logger.error("ADP 续接第%d次返回致命错误 %s，停止续接", cont_idx + 1, err_code)
+                _progress("adp_continue", "fail", f"致命错误 {err_code}")
+                break
+            # 限流退避：避免连续请求再次触发限流
+            if err_code in TPM_LIMIT_CODES:
+                _backoff = 60
+            elif err_code in CAPACITY_LIMIT_CODES or err_code in RATE_LIMIT_CODES:
+                _backoff = 120
+            else:
+                _backoff = 0
+            if _backoff > 0:
+                logger.warning("ADP 续接触发限流 %s，退避 %ds 后重试", err_code, _backoff)
+                _progress("adp_continue", "running", f"限流退避{_backoff}s")
+                _waited = 0.0
+                while _waited < _backoff:
+                    if stop_event is not None and stop_event.is_set():
+                        logger.info("ADP 限流退避等待中被停止")
+                        return out
+                    time.sleep(min(0.5, _backoff - _waited))
+                    _waited += 0.5
         # 续接后仍无报告的最终归类
         if results.get("完成状态") == "分析失败" and not results.get("分析失败归因"):
             results["分析失败归因"] = classify_adp_failure(

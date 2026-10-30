@@ -1057,14 +1057,23 @@ def _fetch_remote_debug_files(case_id: str) -> dict:
         endpoint = cfg.get("debug_endpoint", "/api/logs/debug")
         url = f"http://{host}:{port}{endpoint}/{case_id}"
         try:
+            import time as _time
+            _t0 = _time.time()
             with httpx.Client(timeout=30) as client:
                 resp = client.get(url)
+            _elapsed = round(_time.time() - _t0, 2)
             if resp.status_code != 200 or not resp.content:
+                _body = (resp.text or "")[:300]
+                logger.warning("[fetch_debug_files] 接口失败(%s): %s, status=%d, 耗时%.2fs, 响应=%s",
+                               source, url, resp.status_code, _elapsed, _body)
                 continue
             raw = resp.content
             is_archive = (raw[:4] == b'PK\x03\x04' or
                           raw[:7] in (b'Rar!\x1a\x07\x00', b'Rar!\x1a\x07\x01'))
             if not is_archive:
+                _preview = raw[:200].decode("utf-8", errors="replace") if raw else ""
+                logger.warning("[fetch_debug_files] 非压缩包响应(%s): %s, 耗时%.2fs, size=%d, 前200字节=%s",
+                               source, url, _elapsed, len(raw), _preview)
                 continue
             save_dir = os.path.join(PROJECT_ROOT, "case_reports", source)
             files = _extract_debug_archive(raw, save_dir, case_id)
@@ -2199,12 +2208,19 @@ def fetch_remote_report(case_id: str) -> str:
         endpoint = cfg.get("debug_endpoint", "/api/logs/debug")
         url = f"http://{host}:{port}{endpoint}/{case_id}"
         try:
+            import time as _time
+            _t0 = _time.time()
             with httpx.Client(timeout=30) as client:
                 resp = client.get(url)
+            _elapsed = round(_time.time() - _t0, 2)
             if resp.status_code != 200:
+                _body = (resp.text or "")[:300]
+                logger.warning("[fetch_remote] 策略2接口失败(%s): %s, status=%d, 耗时%.2fs, 响应=%s",
+                               source, url, resp.status_code, _elapsed, _body)
                 continue
             raw = resp.content
             if not raw or not raw.strip() if isinstance(raw, str) else not raw:
+                logger.warning("[fetch_remote] 策略2响应为空(%s): %s, 耗时%.2fs", source, url, _elapsed)
                 continue
             save_dir = os.path.join(PROJECT_ROOT, "case_reports", source)
             # 判断是否为压缩包（ZIP/RAR 魔数检测）

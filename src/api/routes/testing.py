@@ -4663,13 +4663,19 @@ async def get_ai_report(bugid: str, source: str = "pc"):
     debug_endpoint = cfg.get("debug_endpoint", "/api/logs/debug")
     url = f"http://{host}:{port}{debug_endpoint}/{bugid}"
     try:
+        import time as _time
+        _t0 = _time.time()
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(url)
+        _elapsed = round(_time.time() - _t0, 2)
         if resp.status_code != 200:
-            return _fail(f"接口返回 status={resp.status_code}")
+            _body = (resp.text or "")[:300]
+            logger.warning("[get_ai_report] 接口失败: %s, status=%d, 耗时%.2fs, 响应=%s", url, resp.status_code, _elapsed, _body)
+            return _fail(f"接口返回 status={resp.status_code}, 耗时{_elapsed}s, 响应: {_body[:100]}")
         raw = resp.content
         if not raw:
-            return _fail("报告内容为空")
+            logger.warning("[get_ai_report] 响应为空: %s, 耗时%.2fs", url, _elapsed)
+            return _fail(f"报告内容为空（耗时{_elapsed}s）")
         # 判断是否为压缩包（ZIP/RAR 魔数检测）
         is_archive = (raw[:4] == b'PK\x03\x04' or
                       raw[:7] in (b'Rar!\x1a\x07\x00', b'Rar!\x1a\x07\x01'))
@@ -5780,6 +5786,10 @@ async def test_adp_lookup(request: Request):
                     continue
                 write_fields = {k: v for k, v in results_dict.items()
                                 if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
+                # 确保 root cause 字段也被填充（与 agent分析的root cause 同步）
+                adp_rc = write_fields.get("agent分析的root cause", "")
+                if adp_rc:
+                    write_fields["root cause"] = adp_rc
                 # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
                 tid_check = write_fields.get("traceid排查", "")
                 if tid_check and isinstance(tid_check, str) and tid_check.startswith("http"):
