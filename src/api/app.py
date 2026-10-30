@@ -234,7 +234,8 @@ async def _on_startup():
                     try:
                         subprocess.Popen(["xdg-open", url],
                                          stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.DEVNULL)
+                                         stderr=subprocess.DEVNULL,
+                                         start_new_session=True)
                         _logger.info("已通过 xdg-open 请求打开页面: %s", url)
                     except Exception as e:
                         _logger.warning("打开浏览器失败: %s，请手动访问 %s", e, url)
