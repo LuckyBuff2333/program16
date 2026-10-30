@@ -3886,7 +3886,7 @@ async def regression_run(request: Request):
     from src.services.trigger_ops import _load_trigger_times_from_cloud
     body = await request.json() or {}
     after_time = str(body.get("after_time", "")).strip()
-    sample_count = max(1, int(body.get("sample_count", 10)))
+    sample_count = int(body.get("sample_count", 10))  # 0=不限制，全量执行
     exec_mode = str(body.get("exec_mode", "pc")).strip()
     interval_min = max(0, int(body.get("interval_min", 0)))
     total_rounds = max(1, int(body.get("total_rounds", 1)))
@@ -3967,7 +3967,7 @@ async def regression_run(request: Request):
             if total_rounds > 1:
                 yield f"data: {_json.dumps({'type': 'round', 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
             # 每轮独立抽样
-            if len(candidates) > sample_count:
+            if 0 < sample_count < len(candidates):
                 round_candidates = random.sample(candidates, sample_count)
             else:
                 round_candidates = list(candidates)
@@ -4820,7 +4820,7 @@ async def form_exec(request: Request):
     body = await request.json() or {}
     keys = body.get("keys") or []
     csv_trigger_times = body.get("csv_trigger_times") or {}
-    sample_count = max(1, int(body.get("sample_count", 10)))
+    sample_count = int(body.get("sample_count", 10))  # 0=不限制，全量执行
     interval_min = max(0, int(body.get("interval_min", 0)))
     total_rounds = max(1, int(body.get("total_rounds", 1)))
     exec_mode = str(body.get("exec_mode", "pc")).strip()
@@ -4877,7 +4877,7 @@ async def form_exec(request: Request):
             if total_rounds > 1:
                 yield f"data: {_json.dumps({'type': 'round', 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
             # 本轮抽样：优先有触发时间的，不够则提取
-            remaining = sample_count
+            remaining = sample_count if sample_count > 0 else len(keys_dedup)  # 0=全量
             round_selected = []
             round_cloud = 0
             round_extracted = 0
@@ -5416,6 +5416,7 @@ async def test_adp_lookup(request: Request):
     bugids = body.get("bugids") or []
     limit = int(body.get("limit") or 10)
     batch_size = int(body.get("batch_size") or 2)
+    filter_ai_preliminary = bool(body.get("filter_ai_preliminary", False))
     if mode == "manual" and not bugids:
         return _fail("bugids 不能为空")
     _stop_event.clear()
@@ -5471,8 +5472,30 @@ async def test_adp_lookup(request: Request):
                 if not is_done:
                     no_report_keys.append(key)
         if mode == "auto":
+            # AI初步分析过滤：查询 Jira customfield_13714，过滤掉已有AI分析结果的记录
+            ai_filtered_count = 0
+            if filter_ai_preliminary and no_report_keys:
+                yield f"data: {_json.dumps({'type': 'step', 'step': 'ai_filter', 'status': 'running', 'total': len(no_report_keys)}, ensure_ascii=False)}\n\n"
+                import concurrent.futures as _cf
+                _AI_FIELD_ID = "customfield_13714"
+                def _check_ai(bid):
+                    try:
+                        iss = _jc.fetch_issue(bid)
+                        f = (iss.get("fields") or {}).get(_AI_FIELD_ID)
+                        if f and str(f).strip() and str(f).strip().lower() not in ("none", "null"):
+                            return bid
+                    except Exception:
+                        pass
+                    return None
+                with _cf.ThreadPoolExecutor(max_workers=10) as pool:
+                    ai_results = list(pool.map(_check_ai, no_report_keys))
+                ai_exclude = {r for r in ai_results if r}
+                ai_filtered_count = len(ai_exclude)
+                if ai_exclude:
+                    no_report_keys = [k for k in no_report_keys if k not in ai_exclude]
+                logger.info("ADP lookup AI初步分析过滤: %d/%d 条已有AI分析结果被排除", ai_filtered_count, ai_filtered_count + len(no_report_keys))
             effective_bugids = no_report_keys[:limit]
-            yield f"data: {_json.dumps({'type': 'step', 'step': 'read_bitable', 'status': 'done', 'table_name': table_name, 'total_records': len(records), 'matched': len(effective_bugids), 'no_report_total': len(no_report_keys), 'mode': 'auto', 'limit': limit}, ensure_ascii=False)}\n\n"
+            yield f"data: {_json.dumps({'type': 'step', 'step': 'read_bitable', 'status': 'done', 'table_name': table_name, 'total_records': len(records), 'matched': len(effective_bugids), 'no_report_total': len(no_report_keys), 'mode': 'auto', 'limit': limit, 'ai_filtered': ai_filtered_count}, ensure_ascii=False)}\n\n"
             if not effective_bugids:
                 yield f"data: {_json.dumps({'type': 'done', 'total': 0, 'success': 0, 'fail': 0, 'msg': '无待分析记录'}, ensure_ascii=False)}\n\n"
                 return

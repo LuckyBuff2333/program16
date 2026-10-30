@@ -249,6 +249,7 @@
             <template v-if="lookup.mode === 'auto'">
               <span style="font-size:13px;color:#606266">抽取数量</span>
               <el-input-number v-model="lookup.limit" :min="1" :max="500" :step="1" step-strictly size="small" style="width:100px"></el-input-number>
+              <el-checkbox v-model="lookup.filterAiPreliminary" size="small" style="margin-left:8px">过滤AI初步分析结果</el-checkbox>
             </template>
           </div>
           <div style="display:flex;gap:10px;align-items:flex-start;margin-top:12px">
@@ -282,6 +283,9 @@
           <el-tag type="info" size="small">多维表格: {{ lookup.progress.totalRecords }}</el-tag>
           <el-tag v-if="lookup.mode === 'auto' && lookup.progress.noReportTotal != null" type="warning" size="small">
             无报告: {{ lookup.progress.noReportTotal }}
+          </el-tag>
+          <el-tag v-if="lookup.progress.aiFiltered > 0" type="info" size="small">
+            AI已分析: {{ lookup.progress.aiFiltered }}
           </el-tag>
           <el-tag type="success" size="small">匹配: {{ lookup.progress.matched }}</el-tag>
           <span style="font-size:13px;color:#606266">
@@ -401,7 +405,7 @@ export default {
       },
       lookup: {
         input: '', running: false, progress: null, results: [], currentBatch: null, runningItems: [],
-        mode: 'manual', limit: 10, abortCtrl: null, error: '', tableName: '',
+        mode: 'manual', limit: 10, filterAiPreliminary: false, abortCtrl: null, error: '', tableName: '',
       },
     };
   },
@@ -609,10 +613,10 @@ export default {
       this.lookup.runningItems = [];
       this.lookup.error = '';
       this.lookup.abortCtrl = new AbortController();
-      this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, timeout: 0, skip: 0, noReportTotal: null, totalElapsed: 0, tableName: '' };
+      this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, timeout: 0, skip: 0, noReportTotal: null, aiFiltered: 0, totalElapsed: 0, tableName: '' };
       try {
         const body = isAuto
-          ? { mode: 'auto', limit: this.lookup.limit }
+          ? { mode: 'auto', limit: this.lookup.limit, filter_ai_preliminary: this.lookup.filterAiPreliminary }
           : { bugids };
         const resp = await fetch('/api/test/adp_lookup', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -641,6 +645,7 @@ export default {
                     this.lookup.progress.noReportTotal = d.no_report_total;
                     this.lookup.progress.total = d.matched;
                   }
+                  if (d.ai_filtered != null) this.lookup.progress.aiFiltered = d.ai_filtered;
                 } else if (d.status === 'fail') {
                   this.lookup.error = `多维表格读取失败: ${d.error || '未知错误'}（请检查 adp 配置段）`;
                 }

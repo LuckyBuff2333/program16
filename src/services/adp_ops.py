@@ -1814,9 +1814,41 @@ def save_adp_batch_log(results: list, total_elapsed: float = 0) -> dict:
 def _save_adp_batch_log_inner(results: list, total_elapsed: float = 0) -> dict:
     """批次记录写入核心逻辑（已在锁内调用，线程安全）"""
     import csv as _csv
+    import re as _re
 
     state = _load_adp_batch_state()
-    batch_no = state.get("batch_count", 0) + 1
+    state_count = state.get("batch_count", 0)
+
+    # 扫描本地已有 CSV 文件，取最大批次号（防止 state 文件丢失导致号冲突）
+    _log_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "data", "adp_batch_logs",
+    )
+    file_max = 0
+    if os.path.isdir(_log_dir):
+        for _fn in os.listdir(_log_dir):
+            _m = _re.match(r"adp_batch_(\d+)\.csv", _fn)
+            if _m:
+                file_max = max(file_max, int(_m.group(1)))
+
+    # 扫描云端文件夹，取最大批次号（防止多台电脑批次号冲突）
+    cloud_max = 0
+    _folder = str(_get_adp_cfg().get("batch_report_folder") or "")
+    if _folder:
+        try:
+            from src.clients import feishu_client as _fc
+            _cloud_files = _fc.list_folder_files(_folder, recursive=False)
+            for _cf in _cloud_files:
+                _cm = _re.match(r"adp_batch_(\d+)\.csv", _cf.get("name", ""))
+                if _cm:
+                    cloud_max = max(cloud_max, int(_cm.group(1)))
+            if cloud_max > 0:
+                logger.info("ADP 批次号: 云端最大=%d, 本地最大=%d", cloud_max, file_max)
+        except Exception as _ce:
+            logger.warning("ADP 扫描云端批次号失败: %s", str(_ce)[:120])
+
+    # 取 state 计数、本地文件和云端文件最大值的较大者 +1，确保不与已有批次冲突
+    batch_no = max(state_count, file_max, cloud_max) + 1
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # 格式化总执行时间
