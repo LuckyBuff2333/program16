@@ -4838,6 +4838,26 @@ def _extract_desc_datetime(issue: dict, created):
     return max(cands)
 
 
+def _closed_comment_dt(issue: dict, created):
+    """Closed 状态的 Jira：取评论区/多源时间并四舍五入到分钟"""
+    from datetime import timedelta as _td
+    f = issue.get("fields") or {}
+    st = ((f.get("status") or {}).get("name") or "").strip().lower()
+    done = ((f.get("status") or {}).get("statusCategory") or {}).get("key") == "done"
+    if not (done or st in ("closed", "done", "resolved", "完成", "已关闭", "关闭")):
+        return None
+    try:
+        from src.clients import jira_client as _jc
+        alt = _jc.extract_trigger_time_from_issue(issue)
+        alt_dt = _ts_parse_datetime(alt) if alt else None
+        if not alt_dt or alt_dt > created + _td(minutes=5):
+            return None
+        alt_dt = alt_dt.replace(second=0, microsecond=0) + (_td(minutes=1) if alt_dt.second >= 30 else _td(0))
+        return alt_dt
+    except Exception:
+        return None
+
+
 def _fix_video_time_against_created(issue: dict, ts: str) -> str:
     """用 Jira 创建时间/日志包/视频文件名给提取结果纠偏（v3）
 
@@ -4876,6 +4896,10 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
         video_dts = [v for v in video_dts if v <= created + timedelta(minutes=5)]
 
     if not ts:
+        _cdt = _closed_comment_dt(issue, created)
+        if _cdt:
+            logger.info("视频时间纠偏(提取为空,Closed 评论区优先): %s", _cdt)
+            return _cdt.strftime("%Y-%m-%d %H:%M:%S")
         if ref_anchor:
             logger.info("视频时间纠偏(提取为空,用日志包): %s", ref_anchor)
             return ref_anchor.strftime("%Y-%m-%d %H:%M:%S")
@@ -4898,6 +4922,12 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
     _key = str(issue.get("key") or "")
     if _key in _MANUAL_TIME_OVERRIDES:
         return _MANUAL_TIME_OVERRIDES[_key]
+
+    # Closed 的 Jira 分析已完成，评论区时间优先（其他状态日志可能未传完，继续以视频为准）
+    _cdt2 = _closed_comment_dt(issue, created)
+    if _cdt2 and abs((_cdt2 - dt).total_seconds()) >= 60:
+        logger.info("视频时间纠偏(Closed 评论区优先): %s -> %s", ts, _cdt2)
+        return _cdt2.strftime("%Y-%m-%d %H:%M:%S")
 
     # 提取结果明显偏离抓包/无抓包时，用评论区/描述多源提取兜底
     if (not refs) or (ref_anchor and abs((dt - ref_anchor).total_seconds()) > 2700):

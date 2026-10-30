@@ -1005,3 +1005,16 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>67. 时间提取优先级：Closed 问题评论区优先（2026-10-30）</b></summary>
+
+- **业务规则**：Closed 的 Jira 分析已完成、评论里通常有明确日志时间 → 评论区优先级最高；其他状态日志可能未传完 → 视频/日志提取优先。
+- **改动内容**：
+  1. 新增 `_closed_comment_dt()`：Closed/done 状态取评论区多源时间并四舍五入到分钟；
+  2. 非空提取：Closed 时若与提取时间差 ≥60 秒，采用评论区时间；
+  3. 空提取：Closed 时优先评论区时间，再回退抓包/视频。
+- **验证结果**：VCU-525625→06:28、VCU-529993→16:29、543222→14:22、541498→18:24、522079→12:04；全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>
