@@ -399,7 +399,7 @@ export default {
       } catch (e) { /* 读取失败不阻断页面 */ }
     },
     async batchAiSearch() {
-      if (!this.batchAi.jql.trim()) return ElMessage.warning('请输入 JQL');
+      if (!this.batchAi.jql.trim()) { ElMessage.warning('请输入 JQL'); return false; }
       this.running.batchSearch = true;
       this.batchAi.searchMsg = ''; this.batchAi.searchError = false;
       this.batchAi.rows = []; this.batchAi.selected = []; this.batchAi.runResults = []; this.batchAi.runDoneMsg = '';
@@ -408,7 +408,8 @@ export default {
         const body = await api('/api/test/batch_ai_search', { method: 'POST', body: JSON.stringify({ jql: this.batchAi.jql }) });
         this.batchAi.rows = body.data.rows;
         this.batchAi.searchMsg = body.message;
-      } catch (e) { this.batchAi.searchMsg = e.message || '搜索失败'; this.batchAi.searchError = true; } finally { this.running.batchSearch = false; }
+        return true;
+      } catch (e) { this.batchAi.searchMsg = e.message || '搜索失败'; this.batchAi.searchError = true; return false; } finally { this.running.batchSearch = false; }
     },
     onFilterAllChange(val) { if (val) { this.batchAi.filterPcOnly = false; this.batchAi.filterOnlineOnly = false; } },
     onFilterSourceChange() { if (this.batchAi.filterPcOnly || this.batchAi.filterOnlineOnly) { this.batchAi.filterAllExisting = false; } },
@@ -575,8 +576,10 @@ export default {
       try {
         if (!this.batchAi.softwareVersion.trim()) throw new Error('请填写软件版本');
         this.persistBatchEnv();   // 执行时顺带写回配置，下次打开自动带出
-        if (!this.batchAi.jql.trim()) throw new Error('请输入 JQL'); await this.batchAiSearch();
-        if (!this.batchAi.rows.length) throw new Error('候选列表为空');
+        if (!this.batchAi.jql.trim()) throw new Error('请输入 JQL');
+        const searchOk = await this.batchAiSearch();
+        if (!searchOk) throw new Error(`搜索失败: ${this.batchAi.searchMsg || '未知错误'}`);
+        if (!this.batchAi.rows.length) throw new Error('候选列表为空（JQL 未匹配到任何 VCU 缺陷）');
         const hasAnyFilter = this.batchAi.filterAllExisting || this.batchAi.filterPcOnly || this.batchAi.filterOnlineOnly || this.batchAi.filterAiPreliminary || this.batchAi.filterExistingSuccess;
         if (hasAnyFilter) { await this.batchAiFilter(false); if (!this.batchAi.filteredKeys.length) throw new Error('已无未执行的内容'); }
         else { this.batchAi.filteredKeys = this.batchAi.rows.map(r => r.key); }
