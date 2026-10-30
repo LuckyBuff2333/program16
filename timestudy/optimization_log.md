@@ -1047,3 +1047,13 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`、`frontend/src/panels/AdpTestPanel.vue`
 
 </details>
+
+<details>
+<summary><b>70. 移除表格查找的“过滤AI初步分析结果”选项（2026-10-30）</b></summary>
+
+- **说明**：该勾选原本会在自动查找时查询 Jira `customfield_13714`（AI初步分析结果），有值则跳过，减少重复分析。
+- **改动**：按需求移除前端勾选框，自动查找不再发送过滤参数；所有“完成状态为空”的行都会参与自动查找。
+- **验证**：前端构建通过；全量 **116 passed**。
+- **实现文件**：`frontend/src/panels/AdpTestPanel.vue`
+
+</details>

@@ -252,7 +252,7 @@
             <template v-if="lookup.mode === 'auto'">
               <span style="font-size:13px;color:#606266">抽取数量</span>
               <el-input-number v-model="lookup.limit" :min="1" :max="500" :step="1" step-strictly size="small" style="width:100px"></el-input-number>
-              <el-checkbox v-model="lookup.filterAiPreliminary" size="small" style="margin-left:8px">过滤AI初步分析结果</el-checkbox>
+              
             </template>
           </div>
           <div style="display:flex;gap:10px;align-items:flex-start;margin-top:12px">
@@ -631,7 +631,7 @@ export default {
       this.lookup.progress = { total: isAuto ? this.lookup.limit : bugids.length, totalRecords: 0, matched: 0, success: 0, fail: 0, timeout: 0, skip: 0, noReportTotal: null, aiFiltered: 0, totalElapsed: 0, tableName: '' };
       try {
         const body = isAuto
-          ? { mode: 'auto', limit: this.lookup.limit, filter_ai_preliminary: this.lookup.filterAiPreliminary,
+          ? { mode: 'auto', limit: this.lookup.limit,
               table_id: this.lookup.tableId, table_name: this.lookup.tableName }
           : { bugids, table_id: this.lookup.tableId, table_name: this.lookup.tableName };
         const resp = await fetch('/api/test/adp_lookup', {
