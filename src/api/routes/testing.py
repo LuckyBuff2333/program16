@@ -5267,7 +5267,7 @@ async def test_adp_batch(request: Request):
                 it = todo[next_idx]
                 f = pool.submit(_run_one, it)
                 futures[f] = it
-                _item_start_times[it.get("bugid", "")] = {"start": _time.time(), "accumulated": 0}
+                _item_start_times[it.get("bugid", "")] = {"start": _time.time(), "accumulated": 0, "start_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                 next_idx += 1
             for f in futures:
                 yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': futures[f].get('bugid', '')}, ensure_ascii=False)}\n\n"
@@ -5292,7 +5292,9 @@ async def test_adp_batch(request: Request):
                         _item_start_times[bugid]["accumulated"] = elapsed
                         r = {"ok": False, "jira_key": bugid, "error": f"单条任务超时自动取消（累计 {int(elapsed // 60)} 分钟）",
                              "results": {"完成状态": "分析失败", "分析失败归因": "单条任务超时（90分钟）"},
-                             "fail_type": "单条任务超时自动取消"}
+                             "fail_type": "单条任务超时自动取消",
+                             "start_time": _item_start_times.get(bugid, {}).get("start_str", ""),
+                             "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                         batch_results.append(r)
                         yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': bugid, 'ok': False, 'results': r['results'], 'error': r['error'], 'fail_type': r['fail_type'], **_adp_text_payload({}), 'file_urls': []}, ensure_ascii=False)}\n\n"
                         # 单条截止后立即补位，继续执行下一条（不做批次截止）
@@ -5300,7 +5302,7 @@ async def test_adp_batch(request: Request):
                             next_item = todo[next_idx]
                             nf = pool.submit(_run_one, next_item)
                             futures[nf] = next_item
-                            _item_start_times[next_item.get('bugid', '')] = {"start": _time.time(), "accumulated": 0}
+                            _item_start_times[next_item.get('bugid', '')] = {"start": _time.time(), "accumulated": 0, "start_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                             next_idx += 1
                             yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': next_item.get('bugid', '')}, ensure_ascii=False)}\n\n"
                 done_now = [f for f in futures if f.done()]
@@ -5314,6 +5316,9 @@ async def test_adp_batch(request: Request):
                         r = future.result()
                     except Exception as e:
                         r = {"ok": False, "jira_key": bugid, "error": str(e)[:100]}
+                    # 注入每条任务的独立开始/完成时间
+                    r["start_time"] = _item_start_times.get(bugid, {}).get("start_str", "")
+                    r["end_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     batch_results.append(r)
                     yield f"data: {_json.dumps({'type': 'item_done', 'jira_key': r.get('jira_key', ''), 'ok': r.get('ok', False), 'results': r.get('results', {}), 'error': r.get('error', ''), 'fail_type': _adp_fail_type(r), **_adp_text_payload(r), 'file_urls': r.get('file_urls', [])}, ensure_ascii=False)}\n\n"
                     # 动态补位：只要完成一个，立即从 todo 取下一个
@@ -5321,7 +5326,7 @@ async def test_adp_batch(request: Request):
                         next_item = todo[next_idx]
                         nf = pool.submit(_run_one, next_item)
                         futures[nf] = next_item
-                        _item_start_times[next_item.get('bugid', '')] = {"start": _time.time(), "accumulated": 0}
+                        _item_start_times[next_item.get('bugid', '')] = {"start": _time.time(), "accumulated": 0, "start_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                         next_idx += 1
                         yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': next_item.get('bugid', '')}, ensure_ascii=False)}\n\n"
                 if futures and not done_now:
@@ -5339,7 +5344,9 @@ async def test_adp_batch(request: Request):
             _save_batch_log([{"jira_key": r.get('jira_key', ''), 'ok': r.get('ok', False),
                               'error': r.get('error', ''), 'fail_type': _adp_fail_type(r),
                               'traceid': (r.get('results') or {}).get('traceid', ''),
-                              'traceid排查': (r.get('results') or {}).get('traceid排查', '')}
+                              'traceid排查': (r.get('results') or {}).get('traceid排查', ''),
+                              'start_time': r.get('start_time', ''),
+                              'end_time': r.get('end_time', '')}
                              for r in all_results],
                             total_elapsed=round(_time.time() - _t0, 1))
         except Exception:
@@ -5566,7 +5573,7 @@ async def test_adp_lookup(request: Request):
                 bugid = effective_bugids[next_idx]
                 f = pool.submit(_run_one_adp, bugid)
                 futures[f] = {"bugid": bugid}
-                _item_start_times[bugid] = {"start": _time.time(), "accumulated": 0}
+                _item_start_times[bugid] = {"start": _time.time(), "accumulated": 0, "start_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                 next_idx += 1
             for f in futures:
                 yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': futures[f]['bugid']}, ensure_ascii=False)}\n\n"
@@ -5598,7 +5605,7 @@ async def test_adp_lookup(request: Request):
                             next_bugid = effective_bugids[next_idx]
                             nf = pool.submit(_run_one_adp, next_bugid)
                             futures[nf] = {"bugid": next_bugid}
-                            _item_start_times[next_bugid] = {"start": _time.time(), "accumulated": 0}
+                            _item_start_times[next_bugid] = {"start": _time.time(), "accumulated": 0, "start_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                             next_idx += 1
                             yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': next_bugid}, ensure_ascii=False)}\n\n"
                 # 收集已完成的 future（含超时后仍在后台跑的孤儿任务）
@@ -5658,6 +5665,8 @@ async def test_adp_lookup(request: Request):
                         "time_source": "bitable" if info["bt_time"] else ("api" if info["tt"] else "none"),
                         "fail_type": _adp_fail_type(result),
                         "report_doc_url": result.get("report_doc_url", ""),
+                        "start_time": _item_start_times.get(bugid, {}).get("start_str", ""),
+                        "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         **_adp_text_payload(result),
                         "file_urls": result.get("file_urls", []),
                     }
@@ -5668,7 +5677,7 @@ async def test_adp_lookup(request: Request):
                         next_bugid = effective_bugids[next_idx]
                         nf = pool.submit(_run_one_adp, next_bugid)
                         futures[nf] = {"bugid": next_bugid}
-                        _item_start_times[next_bugid] = {"start": _time.time(), "accumulated": 0}
+                        _item_start_times[next_bugid] = {"start": _time.time(), "accumulated": 0, "start_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                         next_idx += 1
                         yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': next_bugid}, ensure_ascii=False)}\n\n"
                 # 还有未完成的，发心跳并等待
@@ -5703,6 +5712,8 @@ async def test_adp_lookup(request: Request):
                         "desc_source": "bitable" if bugid in bt_map else "none",
                         "time_source": "bitable" if bugid in bt_map else "none",
                         "fail_type": "" if has_html else "单条任务超时（90分钟）",
+                        "start_time": _item_start_times.get(bugid, {}).get("start_str", ""),
+                        "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "text_len": len(((r.get("result") or {}).get("full_text") or "")),
                         "text_preview": "", "report_path": "", "file_urls": [],
                     }
@@ -5719,6 +5730,8 @@ async def test_adp_lookup(request: Request):
                     "desc_source": "bitable" if bugid in bt_map else "none",
                     "time_source": "bitable" if bugid in bt_map else "none",
                     "fail_type": "单条任务超时（90分钟）",
+                    "start_time": _item_start_times.get(bugid, {}).get("start_str", ""),
+                    "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "text_len": 0, "text_preview": "", "report_path": "", "file_urls": [],
                 }
                 batch_results.append(item)
@@ -5739,7 +5752,9 @@ async def test_adp_lookup(request: Request):
             _save_batch_log([{"jira_key": r.get("jira_key", ""), "ok": r.get("ok", False),
                               "error": r.get("error", ""), "fail_type": r.get("fail_type", ""),
                               "traceid": (r.get("results") or {}).get("traceid", ""),
-                              "traceid排查": (r.get("results") or {}).get("traceid排查", "")}
+                              "traceid排查": (r.get("results") or {}).get("traceid排查", ""),
+                              "start_time": r.get("start_time", ""),
+                              "end_time": r.get("end_time", "")}
                              for r in all_results],
                             total_elapsed=round(_time.time() - _t0, 1))
         except Exception:
