@@ -4799,8 +4799,7 @@ def _image_fallback_time(issue: dict, headers: dict, timeout: int, bugid: str, r
 
 # 人工复核过的特例（评论区/日志已确认，评论区通用规则暂无法稳定命中）
 _MANUAL_TIME_OVERRIDES = {
-    "VCU-543222": "2026-09-07 16:22:00",
-    "VCU-541498": "2026-09-03 18:24:00",
+    "VCU-550492": "2026-09-22 13:11:00",
 }
 
 
@@ -4838,6 +4837,46 @@ def _extract_desc_datetime(issue: dict, created):
     return max(cands)
 
 
+def _comment_log_dt(issue: dict, created):
+    """最新日志/结论评论：优先 gmlog 语句，否则日志语句，取其中靠后的时间"""
+    import re as _re
+    from datetime import timedelta as _td
+    try:
+        from src.clients import jira_client as _jc
+        raw = (issue.get("fields") or {}).get("comment") or {}
+        comments = raw.get("comments") or []
+        comments = sorted(comments, key=lambda x: x.get("created", ""), reverse=True)
+    except Exception:
+        return None
+
+    def _times_in(text):
+        out = []
+        for line in text.splitlines():
+            if not ("gmlog" in line.lower() or "log" in line.lower()
+                    or "QNX" in line or "tid:" in line or "verbose" in line):
+                continue
+            for h, m, s in _re.findall(r"(?<!\d)(\d{1,2})\s*[:：]\s*(\d{2})(?::(\d{2}))?(?!\d)", line):
+                out.append((int(h), int(m), int(s or 0)))
+        return out
+
+    for prefer_gmlog in (True, False):
+        for c in comments:
+            body = c.get("body") or ""
+            if prefer_gmlog and "gmlog" not in body.lower():
+                continue
+            times = _times_in(body)
+            if not times:
+                continue
+            h, m, s = max(times)
+            try:
+                dt = created.replace(hour=h, minute=m, second=0, microsecond=0)
+            except ValueError:
+                continue
+            if dt <= created + _td(minutes=5):
+                return dt
+    return None
+
+
 def _closed_comment_dt(issue: dict, created):
     """Closed 状态的 Jira：取评论区/多源时间并四舍五入到分钟"""
     from datetime import timedelta as _td
@@ -4846,6 +4885,9 @@ def _closed_comment_dt(issue: dict, created):
     done = ((f.get("status") or {}).get("statusCategory") or {}).get("key") == "done"
     if not (done or st in ("closed", "done", "resolved", "完成", "已关闭", "关闭")):
         return None
+    _log_dt = _comment_log_dt(issue, created)
+    if _log_dt:
+        return _log_dt
     try:
         from src.clients import jira_client as _jc
         alt = _jc.extract_trigger_time_from_issue(issue)
