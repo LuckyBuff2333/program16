@@ -1296,7 +1296,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause",
-                    "置信度", "分析失败归因", "traceid", "traceid排查"]
+                    "置信度", "分析失败归因", "原因", "traceid", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
         tid_check = write_fields.get("traceid排查", "")
@@ -1711,6 +1711,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         out["fail_type"] = _ft
         if not _res.get("分析失败归因"):
             _res["分析失败归因"] = _ft
+        # 表格“原因”列同步失败原因（澄清/未完成/网络异常等）
+        if not _res.get("原因"):
+            _res["原因"] = _ft
         out["results"] = _res
 
     # 失败时记录 SSE 判别信号（reply_method / response_status），便于区分正常收口与异常断开
