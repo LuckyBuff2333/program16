@@ -952,3 +952,277 @@ async def compare_extract_time(file: UploadFile = File(...), filter_statuses: st
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+def _parse_time_any(s: str):
+    """宽松解析多种时间字符串（链接提取用）"""
+    if not s:
+        return None
+    s = str(s).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+# ==================== 链接提取（云端多维表格） ====================
+
+def _base_token_from_url(url: str) -> str:
+    import re as _re
+    m = _re.search(r"/base/([A-Za-z0-9]+)", url or "")
+    return m.group(1) if m else ""
+
+
+def _feishu_text(v) -> str:
+    if isinstance(v, list):
+        return " ".join(str((it.get("text") or it.get("link") or "")) if isinstance(it, dict) else str(it) for it in v)
+    if isinstance(v, dict):
+        return str(v.get("text") or v.get("link") or "")
+    return str(v or "")
+
+
+def _anchor_to_dt(v):
+    from datetime import datetime as _dt
+    if isinstance(v, (int, float)) and v > 0:
+        return _dt.fromtimestamp(v / 1000)
+    s = _feishu_text(v).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M"):
+        try:
+            return _dt.strptime(s, fmt)
+        except ValueError:
+            pass
+    return None
+
+
+@router.post("/api/trigger/link_tables")
+async def link_tables(request: Request):
+    from src.api.routes.shared import ok as _ok, fail as _fail
+    from src.clients import feishu_client
+    body = await request.json()
+    app = _base_token_from_url(body.get("url", "")) or (body.get("app_token") or "").strip()
+    if not app:
+        return _fail("链接中未找到 base token（形如 /base/xxxx）")
+    try:
+        tables = feishu_client.list_bitable_tables(app)
+    except Exception as e:
+        return _fail(f"读取表格失败: {str(e)[:120]}")
+    return _ok([{"table_id": t.get("table_id"), "name": t.get("name")} for t in tables])
+
+
+@router.post("/api/trigger/link_compare")
+async def link_compare(request: Request):
+    from src.api.routes.shared import ok as _ok, fail as _fail
+    from src.clients import feishu_client
+    body = await request.json()
+    app = (body.get("app_token") or "").strip()
+    table = (body.get("table_id") or "").strip()
+    filter_statuses = (body.get("status") or "").strip()
+    if not app or not table:
+        return _fail("缺少 app_token 或 table_id")
+
+    def event_generator():
+        from src.clients import jira_client as _jc
+        from src.services.server_legacy import (_diag_extract_time_from_video_simple,
+                                                _diag_extract_time_from_images, _VIDEO_SUFFIXES)
+        filter_set = {s.strip() for s in filter_statuses.split(",") if s.strip()}
+        try:
+            recs = feishu_client.list_bitable_records(app, table)
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'读取表格失败: {str(e)[:120]}'}, ensure_ascii=False)}\n\n"
+            return
+        items = []
+        for r in recs:
+            f = r.get("fields") or {}
+            bugid = _feishu_text(f.get("Jira链接")).strip()
+            if not bugid:
+                continue
+            dt = _anchor_to_dt(f.get("问题发生时间锚点"))
+            status = _feishu_text(f.get("问题状态")).strip() or _feishu_text(f.get("完成状态")).strip()
+            if filter_set and status not in filter_set:
+                continue
+            items.append({
+                "record_id": r.get("record_id", ""), "bugid": bugid,
+                "table_time": dt.strftime("%Y-%m-%d %H:%M") if dt else "",
+                "desc": _feishu_text(f.get("问题描述")).strip(),
+                "status": status,
+            })
+        if not items:
+            yield f"data: {_json.dumps({'type': 'error', 'message': '未读取到有效 Jira 行'}, ensure_ascii=False)}\n\n"
+            return
+        yield f"data: {_json.dumps({'type': 'start', 'total': len(items)}, ensure_ascii=False)}\n\n"
+
+        cfg = load_config().get("jira_api", {})
+        img_tok = cfg.get("token", "")
+        img_to = max(int(cfg.get("timeout", 30)), 120)
+        img_headers = {"Authorization": f"Bearer {img_tok}"} if img_tok else {}
+
+        def extract_one(bugid: str):
+            try:
+                issue = _jc.fetch_issue(bugid)
+                fields = issue.get("fields") or {}
+                desc = fields.get("summary", "") or (fields.get("description") or "")[:200]
+                attachments = fields.get("attachment") or []
+                has_video = any((a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES) for a in attachments)
+                tt, source = "", ""
+                if has_video:
+                    tt = _diag_extract_time_from_video_simple(issue)
+                    if tt:
+                        source = "视频+gmlogger"
+                if not tt:
+                    tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
+                    if tt:
+                        source = "标准提取"
+                if not tt and img_headers:
+                    img_tt, _ = _diag_extract_time_from_images(issue, img_headers, img_to, bugid)
+                    if img_tt:
+                        tt, source = img_tt, "图片OCR"
+                created = None
+                try:
+                    c = fields.get("created")
+                    if c:
+                        parsed = _jc._parse_datetime_string(str(c).replace("T", " ")[:19])
+                        created = parsed[1] if parsed else None
+                except Exception:
+                    created = None
+                ref = _ref_capture_time(attachments)
+                return tt, source, desc, ref, created
+            except Exception as e:
+                return "", "error", "", None, None
+
+        import concurrent.futures
+        matched = unmatched = failed = 0
+        rows = []
+        done = 0
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        try:
+            futures = {pool.submit(extract_one, it["bugid"]): it for it in items}
+            for fut in concurrent.futures.as_completed(futures):
+                it = futures[fut]
+                ext, source, ext_desc, ref_dt, created_dt = fut.result()
+                done += 1
+                match, judge, remark = "", "", ""
+                ext_dt = _parse_time_any(ext) if ext else None
+                tbl_dt = _parse_time_any(it["table_time"]) if it["table_time"] else None
+                if not ext or (ext.strip().endswith("00:00:00")):
+                    match, judge = "失败", "提取错误"
+                    remark = "未提取到时间"
+                    failed += 1
+                elif ext_dt and tbl_dt:
+                    diff = abs((ext_dt - tbl_dt).total_seconds())
+                    judge, jr = _judge_compare_time(ext, it["table_time"], ref_dt, created_dt)
+                    if diff <= 300:
+                        match = "成功"; matched += 1
+                    else:
+                        match = "不一致"; unmatched += 1
+                        remark = jr or f"差值 {int(diff)}s"
+                else:
+                    match, judge = "无法对比", "表格错误"
+                    remark = "表格时间解析失败" if not tbl_dt else "提取时间解析失败"
+                    unmatched += 1
+                row = {
+                    "record_id": it["record_id"], "bugid": it["bugid"],
+                    "table_time": it["table_time"], "extracted_time": ext,
+                    "match": match, "judge": judge, "source": source, "remark": remark,
+                    "ref_time": ref_dt.strftime("%Y-%m-%d %H:%M:%S") if ref_dt else "",
+                    "created": created_dt.strftime("%Y-%m-%d %H:%M:%S") if created_dt else "",
+                    "desc": it["desc"] or ext_desc, "status": it["status"],
+                }
+                rows.append(row)
+                yield f"data: {_json.dumps({'type': 'progress', 'current': done, 'total': len(items), **row}, ensure_ascii=False)}\n\n"
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_name = f"time_compare_{ts_str}.csv"
+        try:
+            csv_path = os.path.join(PROJECT_ROOT, "data", csv_name)
+            with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Jira号", "问题描述", "完成状态", "表格时间", "提取时间", "对比结果", "时间判定", "提取来源", "抓包时间", "创建时间", "备注"])
+                for r in rows:
+                    writer.writerow([r["bugid"], r.get("desc", ""), r.get("status", ""), r["table_time"],
+                                     r["extracted_time"], r["match"], r.get("judge", ""), r["source"],
+                                     r.get("ref_time", ""), r.get("created", ""), r["remark"]])
+        except Exception as e:
+            logger.error("保存链接提取 CSV 失败: %s", e)
+            csv_name = ""
+        yield f"data: {_json.dumps({'type': 'done', 'total': len(items), 'matched': matched, 'unmatched': unmatched, 'failed': failed, 'saved_path': csv_name, 'rows': rows}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/api/trigger/link_writeback")
+async def link_writeback(request: Request):
+    from src.api.routes.shared import ok as _ok, fail as _fail
+    from src.clients import feishu_client
+    body = await request.json()
+    app = (body.get("app_token") or "").strip()
+    table = (body.get("table_id") or "").strip()
+    items = body.get("items") or []
+    if not app or not table or not items:
+        return _fail("缺少参数")
+    updates = []
+    for it in items:
+        t = (it.get("time") or "").strip()
+        if not t or not it.get("record_id"):
+            continue
+        dt = _parse_time_any(t)
+        if not dt:
+            continue
+        updates.append({"record_id": it["record_id"],
+                        "fields": {"问题发生时间锚点": int(dt.timestamp() * 1000)}})
+    if not updates:
+        return _fail("没有可写回的时间")
+    try:
+        resp = feishu_client.update_bitable_records(app, table, updates)
+    except Exception as e:
+        return _fail(f"写回失败: {str(e)[:120]}")
+    return _ok({"count": len(updates), "code": resp.get("code")}, f"已写回 {len(updates)} 条")
+
+
+@router.post("/api/trigger/link_to_trigger")
+async def link_to_trigger(request: Request):
+    from src.api.routes.shared import ok as _ok, fail as _fail
+    from src.clients import feishu_client
+    body = await request.json()
+    items = body.get("items") or []
+    if not items:
+        return _fail("没有可写入的时间")
+    fb = load_config().get("feishu_bitable", {})
+    app = fb.get("trigger_time_app_token", "")
+    if not app:
+        return _fail("未配置 trigger_time_app_token")
+
+    fields_def = [{"field_name": n, "type": 1} for n in
+                  ("jira号", "触发时间", "提取时间", "时间来源", "参考时间", "时间差秒", "窗口命中", "时间状态")]
+    tables = feishu_client.list_bitable_tables(app)
+    numbered = []
+    for t in tables:
+        m = re.match(r"^触发时间_(\d+)$", (t.get("name") or "").strip())
+        if m:
+            numbered.append((int(m.group(1)), t.get("table_id")))
+    numbered.sort()
+    target = ""
+    if numbered:
+        last_n, last_tid = numbered[-1]
+        if len(feishu_client.list_bitable_records(app, last_tid)) < 500:
+            target = last_tid
+        else:
+            target = feishu_client.create_bitable_table(app, f"触发时间_{last_n + 1}", fields_def)
+    else:
+        target = feishu_client.create_bitable_table(app, "触发时间_1", fields_def)
+
+    rows = [{"fields": {
+        "jira号": (it.get("bugid") or "").strip(),
+        "触发时间": (it.get("time") or "").strip(),
+        "提取时间": (it.get("time") or "").strip(),
+        "时间来源": "ADP链接提取", "参考时间": "", "时间差秒": "0",
+        "窗口命中": "是", "时间状态": "已确认"}}
+        for it in items if (it.get("bugid") or "").strip() and (it.get("time") or "").strip()]
+    count = 0
+    for i in range(0, len(rows), 100):
+        resp = feishu_client.batch_create_records(app, target, rows[i:i + 100])
+        count += len(rows[i:i + 100])
+    return _ok({"table_id": target, "count": count}, f"已写入云端触发表 {count} 条")

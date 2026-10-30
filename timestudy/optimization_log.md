@@ -1018,3 +1018,18 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>68. 时间批量提取新增“链接提取”Tab（2026-10-30）</b></summary>
+
+- **需求**：粘贴云端多维表格链接 → 多表时名称下拉选择 → 读取数据 → 时间提取与对比 → 一键写回锚点 / 一键写入云端触发表。
+- **后端**（`src/api/routes/trigger.py`）：
+  1. `POST /api/trigger/link_tables`：解析 base token，返回表名/表 ID；
+  2. `POST /api/trigger/link_compare`：读表 → 逐条提取（视频+gmlogger / 标准 / 图片OCR）→ 对比 → SSE 进度 + CSV；
+  3. `POST /api/trigger/link_writeback`：按 `问题发生时间锚点`（epoch ms）写回不一致项；
+  4. `POST /api/trigger/link_to_trigger`：写云端触发表，单表 ≤500，满则自动新建 `触发时间_N`。
+- **前端**（`TimeExtractPanel.vue`）：新增“链接提取”Tab，含链接输入、表格下拉、开始对比、一键写回、一键写入云端、进度与结果表。
+- **验证**：`link_tables` 接口返回 4 张表；前端构建通过；全量 **116 passed**。
+- **实现文件**：`src/api/routes/trigger.py`、`frontend/src/panels/TimeExtractPanel.vue`
+
+</details>

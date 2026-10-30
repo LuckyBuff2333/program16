@@ -195,6 +195,76 @@
 
         <el-empty v-if="!tableExtract.running && !tableExtract.rows.length" description="上传 Excel/CSV 文件后点击开始对比提取" style="margin-top:30px"></el-empty>
       </el-tab-pane>
+
+      <!-- ====== Tab 3: 链接提取 ====== -->
+      <el-tab-pane label="链接提取" name="link">
+        <el-card shadow="never">
+          <el-alert type="info" :closable="false" show-icon
+            title="粘贴云端多维表格链接，选择表格后提取时间并对比；对比完可一键写回锚点、或批量写入云端触发时间表。"></el-alert>
+          <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
+            <el-input v-model="linkExtract.url" placeholder="https://xxx.feishu.cn/base/xxxx?table=tblxxxx" style="flex:1"
+              @keydown.enter="parseLinkTables"></el-input>
+            <el-button type="primary" plain :loading="linkExtract.parsing" @click="parseLinkTables">解析表格</el-button>
+          </div>
+          <div v-if="linkExtract.tables.length" style="margin-top:10px;display:flex;gap:8px;align-items:center">
+            <span style="font-size:13px;color:#606266">选择表格：</span>
+            <el-select v-model="linkExtract.tableId" style="width:360px" placeholder="请选择表格">
+              <el-option v-for="t in linkExtract.tables" :key="t.table_id" :label="t.name" :value="t.table_id"></el-option>
+            </el-select>
+          </div>
+        </el-card>
+
+        <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <el-button type="primary" :loading="linkExtract.running" :disabled="!linkExtract.tableId" @click="startLinkExtract">开始对比提取</el-button>
+          <el-button @click="clearLinkExtract">清空</el-button>
+          <span v-if="linkExtract.statusMsg" style="font-size:13px;color:#606266">{{ linkExtract.statusMsg }}</span>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <el-button type="warning" :disabled="!linkWriteCount || linkExtract.running" @click="writeBackLink">一键写回</el-button>
+            <el-button type="success" :disabled="!linkWriteCount || linkExtract.running" @click="writeLinkToCloud">一键写入云端</el-button>
+          </div>
+        </div>
+
+        <div v-if="linkExtract.total > 0" style="margin-top:10px">
+          <el-progress :percentage="linkPct" :stroke-width="18" :text-inside="true"></el-progress>
+          <div style="margin-top:6px;font-size:12px;color:#909399;display:flex;gap:16px">
+            <span>完成: {{ linkExtract.doneCount }}/{{ linkExtract.total }}</span>
+            <span style="color:#67c23a">一致: {{ linkExtract.matched }}</span>
+            <span style="color:#e6a23c">不一致: {{ linkExtract.unmatched }}</span>
+            <span style="color:#f56c6c">失败: {{ linkExtract.failed }}</span>
+          </div>
+        </div>
+
+        <el-card v-if="linkExtract.rows.length" shadow="never" style="margin-top:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <span style="font-weight:600">对比结果（共 {{ linkExtract.rows.length }} 条）</span>
+            <el-tag v-if="linkExtract.savedPath" type="success" size="small">已保存: {{ linkExtract.savedPath }}</el-tag>
+          </div>
+          <el-table :data="linkExtract.rows" size="small" stripe border max-height="420">
+            <el-table-column type="index" label="#" width="50" align="center"></el-table-column>
+            <el-table-column prop="bugid" label="Jira号" width="140">
+              <template #default="{ row }"><span style="font-weight:600;color:#409eff">{{ row.bugid }}</span></template>
+            </el-table-column>
+            <el-table-column prop="desc" label="问题描述" min-width="180" show-overflow-tooltip></el-table-column>
+            <el-table-column prop="status" label="状态" width="90" align="center"></el-table-column>
+            <el-table-column prop="table_time" label="表格时间" width="160"></el-table-column>
+            <el-table-column prop="extracted_time" label="提取时间" width="170">
+              <template #default="{ row }"><span :style="row.extracted_time ? 'color:#67c23a' : 'color:#c0c4cc'">{{ row.extracted_time || '—' }}</span></template>
+            </el-table-column>
+            <el-table-column label="对比结果" width="90" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.match === '成功'" type="success" size="small">成功</el-tag>
+                <el-tag v-else-if="row.match === '不一致'" type="warning" size="small">不一致</el-tag>
+                <el-tag v-else-if="row.match === '失败'" type="danger" size="small">失败</el-tag>
+                <el-tag v-else type="info" size="small">{{ row.match || '—' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="judge" label="时间判定" width="110" align="center"></el-table-column>
+            <el-table-column prop="source" label="提取来源" width="110" align="center"></el-table-column>
+            <el-table-column prop="remark" label="备注" min-width="150" show-overflow-tooltip></el-table-column>
+          </el-table>
+        </el-card>
+        <el-empty v-if="!linkExtract.running && !linkExtract.rows.length" description="解析表格并选择后，点击开始对比提取" style="margin-top:30px"></el-empty>
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -247,6 +317,11 @@ export default {
         savedPath: '',
         statusFilter: '',
       },
+      linkExtract: {
+        url: '', parsing: false, tables: [] as any[], tableId: '',
+        running: false, total: 0, doneCount: 0, matched: 0, unmatched: 0, failed: 0,
+        statusMsg: '', rows: [] as any[], savedPath: '',
+      },
     };
   },
   computed: {
@@ -259,6 +334,10 @@ export default {
     tableProgressStatus() {
       if (this.tableExtract.doneCount < this.tableExtract.total) return undefined;
       return this.tableExtract.failed === 0 ? 'success' : 'warning';
+    },
+    linkPct() { return this.linkExtract.total ? Math.round((this.linkExtract.doneCount / this.linkExtract.total) * 100) : 0; },
+    linkWriteCount() {
+      return this.linkExtract.rows.filter(r => r.match === '不一致' && r.extracted_time).length;
     },
   },
   methods: {
@@ -448,6 +527,107 @@ export default {
         this.tableExtract.statusMsg = evt.message || '解析失败';
         ElMessage.error(evt.message || '解析失败');
       }
+    },
+
+    async parseLinkTables() {
+      const url = (this.linkExtract.url || '').trim();
+      if (!url) { ElMessage.warning('请输入云端表格链接'); return; }
+      this.linkExtract.parsing = true;
+      try {
+        const data = await api('/api/trigger/link_tables', { method: 'POST', body: JSON.stringify({ url }) });
+        if (!data.ok) { ElMessage.error(data.message || '解析失败'); return; }
+        this.linkExtract.tables = data.data || [];
+        if (this.linkExtract.tables.length === 1) this.linkExtract.tableId = this.linkExtract.tables[0].table_id;
+        ElMessage.success(`解析到 ${this.linkExtract.tables.length} 个表格`);
+      } catch (e) {
+        ElMessage.error('解析失败: ' + e.message);
+      } finally {
+        this.linkExtract.parsing = false;
+      }
+    },
+    clearLinkExtract() {
+      this.linkExtract.rows = []; this.linkExtract.total = 0; this.linkExtract.doneCount = 0;
+      this.linkExtract.matched = 0; this.linkExtract.unmatched = 0; this.linkExtract.failed = 0;
+      this.linkExtract.statusMsg = ''; this.linkExtract.savedPath = '';
+    },
+    linkAppToken() {
+      const m = (this.linkExtract.url || '').match(/\/base\/([A-Za-z0-9]+)/);
+      return m ? m[1] : '';
+    },
+    async startLinkExtract() {
+      if (!this.linkExtract.tableId) { ElMessage.warning('请先选择表格'); return; }
+      const app = this.linkAppToken();
+      if (!app) { ElMessage.error('链接中未找到 base token'); return; }
+      this.clearLinkExtract();
+      this.linkExtract.running = true;
+      this.linkExtract.statusMsg = '读取表格中...';
+      try {
+        const resp = await fetch('/api/trigger/link_compare', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ app_token: app, table_id: this.linkExtract.tableId }),
+        });
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n'); buffer = parts.pop() || '';
+          for (const part of parts) {
+            const line = part.split('\n').find(l => l.startsWith('data: '));
+            if (!line) continue;
+            let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+            if (evt.type === 'start') {
+              this.linkExtract.total = evt.total;
+              this.linkExtract.statusMsg = `共 ${evt.total} 条待对比...`;
+            } else if (evt.type === 'progress') {
+              this.linkExtract.doneCount = evt.current;
+              if (evt.match === '成功') this.linkExtract.matched++;
+              else if (evt.match === '不一致' || evt.match === '无法对比') this.linkExtract.unmatched++;
+              else this.linkExtract.failed++;
+              this.linkExtract.rows.push(evt);
+              this.linkExtract.statusMsg = `对比中 ${evt.current}/${evt.total}`;
+            } else if (evt.type === 'done') {
+              this.linkExtract.savedPath = evt.saved_path || '';
+              this.linkExtract.statusMsg = `完成：${evt.matched} 成功，${evt.unmatched} 不一致，${evt.failed} 失败`;
+            } else if (evt.type === 'error') {
+              this.linkExtract.statusMsg = evt.message;
+              ElMessage.error(evt.message);
+            }
+          }
+        }
+      } catch (e) {
+        ElMessage.error('对比失败: ' + e.message);
+      } finally {
+        this.linkExtract.running = false;
+      }
+    },
+    async writeBackLink() {
+      const items = this.linkExtract.rows.filter(r => r.match === '不一致' && r.extracted_time)
+        .map(r => ({ record_id: r.record_id, bugid: r.bugid, time: r.extracted_time }));
+      if (!items.length) { ElMessage.warning('没有可写回的不一致时间'); return; }
+      const app = this.linkAppToken();
+      try {
+        const data = await api('/api/trigger/link_writeback', {
+          method: 'POST',
+          body: JSON.stringify({ app_token: app, table_id: this.linkExtract.tableId, items }),
+        });
+        if (data.ok) ElMessage.success(`已写回 ${data.data?.count ?? items.length} 条`);
+        else ElMessage.error(data.message || '写回失败');
+      } catch (e) { ElMessage.error('写回失败: ' + e.message); }
+    },
+    async writeLinkToCloud() {
+      const items = this.linkExtract.rows.filter(r => r.extracted_time)
+        .map(r => ({ bugid: r.bugid, time: r.extracted_time }));
+      if (!items.length) { ElMessage.warning('没有可写入的时间'); return; }
+      try {
+        const data = await api('/api/trigger/link_to_trigger', {
+          method: 'POST', body: JSON.stringify({ items }),
+        });
+        if (data.ok) ElMessage.success(`已写入云端 ${data.data?.count ?? items.length} 条，表 ${data.data?.table_id || ''}`);
+        else ElMessage.error(data.message || '写入失败');
+      } catch (e) { ElMessage.error('写入失败: ' + e.message); }
     },
   },
 };
