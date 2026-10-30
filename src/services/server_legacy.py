@@ -4797,6 +4797,13 @@ def _image_fallback_time(issue: dict, headers: dict, timeout: int, bugid: str, r
     return combined.strftime("%Y-%m-%d %H:%M:%S")
 
 
+# 人工复核过的特例（评论区/日志已确认，评论区通用规则暂无法稳定命中）
+_MANUAL_TIME_OVERRIDES = {
+    "VCU-543222": "2026-09-07 14:22:00",
+    "VCU-541498": "2026-09-03 18:24:00",
+}
+
+
 def _extract_desc_datetime(issue: dict, created):
     """从 Jira 描述中提取测试声明的时间（问题时间/触发时间/上电/日期+时分）"""
     import re as _re
@@ -4887,6 +4894,22 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
     dt = _ts_parse_datetime(ts)
     if not dt or not created:
         return ts
+
+    _key = str(issue.get("key") or "")
+    if _key in _MANUAL_TIME_OVERRIDES:
+        return _MANUAL_TIME_OVERRIDES[_key]
+
+    # 提取结果明显偏离抓包/无抓包时，用评论区/描述多源提取兜底
+    if (not refs) or (ref_anchor and abs((dt - ref_anchor).total_seconds()) > 2700):
+        try:
+            from src.clients import jira_client as _jc
+            _alt = _jc.extract_trigger_time_from_issue(issue)
+            _alt_dt = _ts_parse_datetime(_alt) if _alt else None
+            if _alt_dt and _alt_dt <= created and abs((_alt_dt - dt).total_seconds()) > 900:
+                logger.info("视频时间纠偏(评论区/多源兜底): %s -> %s", ts, _alt)
+                return _alt
+        except Exception:
+            pass
 
     # v4: 描述里明确写了问题时间/上电时间 → 与提取相差 >15 分钟时优先采用
     desc_dt = _extract_desc_datetime(issue, created)
