@@ -5436,7 +5436,8 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     # 确定验证池和容忍度
     if ref_pool:
         # 已解压：使用包内时间戳，±5分钟严格匹配
-        validation_pool = ref_pool
+        # ref_pool 元素为 (str, datetime) 元组，仅取 datetime 参与校验
+        validation_pool = [dt for _, dt in ref_pool]
         strict_tol = 300
         fallback_tol = None  # 无 fallback
     else:

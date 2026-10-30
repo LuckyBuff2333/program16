@@ -10,7 +10,22 @@ export async function api<T = Record<string, unknown>>(url: string, options: Req
     try { options.signal = AbortSignal.timeout(180000); } catch { /* 兼容旧浏览器 */ }
   }
   const resp = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
-  const body = await resp.json() as Record<string, unknown>;
+  // 安全解析响应体（后端可能返回非 JSON，如 500 Internal Server Error 纯文本）
+  let body: Record<string, unknown> | null = null;
+  const text = await resp.text();
+  try {
+    body = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    // 非 JSON 响应：用 HTTP 状态码 + 截断文本构造错误
+    const snippet = text.slice(0, 120) || resp.statusText || 'Unknown Error';
+    if (!resp.ok) {
+      const msg = `服务端错误(${resp.status}): ${snippet}`;
+      ElMessage.error(msg);
+      throw new Error(msg);
+    }
+    ElMessage.error(`响应解析异常: ${snippet}`);
+    throw new Error(`响应解析异常: ${snippet}`);
+  }
   if (!body.ok) {
     ElMessage.error((body.message as string) || '请求失败');
     throw new Error(String(body.message));

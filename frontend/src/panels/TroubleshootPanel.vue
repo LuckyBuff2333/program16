@@ -660,15 +660,29 @@ export default {
           ElMessage.warning('批量诊断已停止：服务已重启，请刷新页面后重新执行');
           return;
         }
+        // AbortSignal 超时：不归为网络中断，仅标记当前条目
+        const isTimeout = e?.name === 'TimeoutError' || msg.includes('signal timed out') || msg.includes('timed out');
+        if (isTimeout) {
+          ElMessage.warning(`${bugid} 诊断超时（5分钟），请稍后重试`);
+          const idx = this.troubleshoot.diagResults.findIndex(r => r.bugid === bugid);
+          const fallback = { bugid, category: '诊断超时', problem_time: row['分析问题时间'] || '',
+            archive_files: [], detail: '诊断接口响应超时（5分钟），请稍后重试',
+            verify_status: '', suggested_time: '', report: {}, done_time: row['分析完成时间'] || '' };
+          if (idx >= 0) { this.troubleshoot.diagResults.splice(idx, 1, fallback); }
+          else { this.troubleshoot.diagResults.push(fallback); }
+          return;
+        }
+        // 真正的网络中断（fetch 本身抛 TypeError）→ 停止批量
         if (e?.name === 'TypeError' || /Failed to fetch|NetworkError|Load failed/i.test(msg)) {
           this.troubleshoot.stopFlag = true;
           ElMessage.error('诊断连接中断（服务可能已重启），批量诊断已停止');
           return;
         }
-        if (e && e.name === 'TimeoutError') ElMessage.warning(`${bugid} 诊断超时，请稍后重试`);
+        // 服务端错误（500 等非 JSON 响应）→ 仅标记当前条目，不停止批量
+        ElMessage.warning(`${bugid} ${msg || '诊断异常'}`);
         const idx = this.troubleshoot.diagResults.findIndex(r => r.bugid === bugid);
-        const fallback = { bugid, category: '诊断超时/异常', problem_time: row['分析问题时间'] || '',
-          archive_files: [], detail: `诊断请求异常: ${e?.message || e?.name || '未知错误'}`,
+        const fallback = { bugid, category: '诊断异常', problem_time: row['分析问题时间'] || '',
+          archive_files: [], detail: `诊断请求异常: ${msg || e?.name || '未知错误'}`,
           verify_status: '', suggested_time: '', report: {}, done_time: row['分析完成时间'] || '' };
         if (idx >= 0) { this.troubleshoot.diagResults.splice(idx, 1, fallback); }
         else { this.troubleshoot.diagResults.push(fallback); }
