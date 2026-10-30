@@ -4797,6 +4797,40 @@ def _image_fallback_time(issue: dict, headers: dict, timeout: int, bugid: str, r
     return combined.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _extract_desc_datetime(issue: dict, created):
+    """从 Jira 描述中提取测试声明的时间（问题时间/触发时间/上电/日期+时分）"""
+    import re as _re
+    from datetime import datetime as _dtm
+    desc = ((issue.get("fields") or {}).get("description") or "")
+    if not desc or not created:
+        return None
+    cands = []
+    # 完整日期+时分
+    for m in _re.finditer(r"(20\d{2})[年/\-](\d{1,2})[月/\-](\d{1,2})[日]?\s*(\d{1,2})[:：](\d{2})", desc):
+        try:
+            cands.append(_dtm(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                              int(m.group(4)), int(m.group(5))))
+        except ValueError:
+            pass
+    # 月/日 + 时分
+    for m in _re.finditer(r"(?<!\d)(\d{1,2})/(\d{1,2})\s+(\d{1,2})[:：](\d{2})", desc):
+        try:
+            cands.append(_dtm(created.year, int(m.group(1)), int(m.group(2)),
+                              int(m.group(3)), int(m.group(4))))
+        except ValueError:
+            pass
+    # 关键词后的纯时分（问题时间/触发时间/上电/初始设定）
+    for m in _re.finditer(r"(?:问题时间|触发时间|上电|整车启动|车辆启动|点火|Initial Setting)[^0-9]{0,30}(\d{1,2})[:：](\d{2})", desc):
+        try:
+            cands.append(created.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0))
+        except ValueError:
+            pass
+    cands = [c for c in cands if c <= created + __import__("datetime").timedelta(minutes=5)]
+    if not cands:
+        return None
+    return max(cands)
+
+
 def _fix_video_time_against_created(issue: dict, ts: str) -> str:
     """用 Jira 创建时间/日志包/视频文件名给提取结果纠偏（v3）
 
@@ -4854,6 +4888,12 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
     if not dt or not created:
         return ts
 
+    # v4: 描述里明确写了问题时间/上电时间 → 与提取相差 >15 分钟时优先采用
+    desc_dt = _extract_desc_datetime(issue, created)
+    if desc_dt and abs((desc_dt - dt).total_seconds()) > 900:
+        logger.info("视频时间纠偏(以描述时间为准): %s -> %s", ts, desc_dt)
+        return desc_dt.strftime("%Y-%m-%d %H:%M:%S")
+
     if dt > created + timedelta(minutes=1):
         if ref_anchor:
             cand = dt.replace(year=ref_anchor.year, month=ref_anchor.month, day=ref_anchor.day)
@@ -4866,13 +4906,34 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
             vt = min(video_dts, key=lambda v: abs((v - created).total_seconds()))
             logger.info("视频时间纠偏(晚于创建,改用视频录制时间): %s -> %s", ts, vt)
             return vt.strftime("%Y-%m-%d %H:%M:%S")
-        return ts
+        cand = created - timedelta(minutes=5)
+        logger.info("视频时间纠偏(晚于创建且无参照,回退创建前5分钟): %s -> %s", ts, cand)
+        return cand.strftime("%Y-%m-%d %H:%M:%S")
 
-    # 与视频录制时间相差 >2 小时：以录制时间为准（OCR 读到的可能是界面里的旧时钟）
+    # v4: 提取时间比抓包时间晚 >45 分钟 → 以抓包时间/邻近视频录制时间为准
+    if ref_anchor and (dt - ref_anchor).total_seconds() > 2700:
+        vt = None
+        if video_dts:
+            near = [v for v in video_dts if abs((v - ref_anchor).total_seconds()) <= 900]
+            if near:
+                vt = min(near, key=lambda v: abs((v - ref_anchor).total_seconds()))
+        cand = vt or ref_anchor
+        if cand <= created + timedelta(minutes=1):
+            logger.info("视频时间纠偏(晚于抓包>90分钟): %s -> %s", ts, cand)
+            return cand.strftime("%Y-%m-%d %H:%M:%S")
+
+    # v4: 无抓包/无视频且与创建时间相差 >3 天 → 回退创建前 5 分钟（防抓到跨天无关会话）
+    if (not refs) and (not video_dts) and abs((dt - created).total_seconds()) > 3 * 86400:
+        cand = created - timedelta(minutes=5)
+        logger.info("视频时间纠偏(无参照且偏离创建>3天): %s -> %s", ts, cand)
+        return cand.strftime("%Y-%m-%d %H:%M:%S")
+
+    # 与视频录制时间相差 >2 小时：仅在提取时间本身偏离抓包时才改用录制时间
     if video_dts:
         vt = min(video_dts, key=lambda v: abs((v - dt).total_seconds()))
-        if abs((vt - dt).total_seconds()) > 3600 and vt <= created + timedelta(minutes=1):
-            logger.info("视频时间纠偏(与录制时间差>2h): %s -> %s", ts, vt)
+        near_capture = bool(ref_anchor) and abs((dt - ref_anchor).total_seconds()) <= 2700
+        if abs((vt - dt).total_seconds()) > 3600 and vt <= created + timedelta(minutes=1) and not near_capture:
+            logger.info("视频时间纠偏(与录制时间差>2h且提取偏离抓包): %s -> %s", ts, vt)
             return vt.strftime("%Y-%m-%d %H:%M:%S")
 
     if (not refs) and (not video_dts) and dt.date() != created.date() and abs(created - dt) <= timedelta(days=3):
@@ -4880,6 +4941,7 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
         if cand <= created + timedelta(minutes=1):
             logger.info("视频时间纠偏(无日期参照,改用创建日): %s -> %s", ts, cand)
             return cand.strftime("%Y-%m-%d %H:%M:%S")
+
     return ts
 
 
