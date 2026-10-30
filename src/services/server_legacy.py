@@ -4800,7 +4800,7 @@ def _image_fallback_time(issue: dict, headers: dict, timeout: int, bugid: str, r
 # 人工复核过的特例（评论区/日志已确认，评论区通用规则暂无法稳定命中）
 _MANUAL_TIME_OVERRIDES = {
     "VCU-543222": "2026-09-07 16:22:00",
-    "VCU-541498": "2026-09-03 18:32:00",
+    "VCU-541498": "2026-09-03 18:24:00",
 }
 
 
