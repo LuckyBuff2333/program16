@@ -1174,3 +1174,15 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`
 
 </details>
+
+<details>
+<summary><b>78. 修复 trace 技能返回值导致成功分析误判失败（2026-10-31）</b></summary>
+
+- **问题**：`_run_trace_skill` 的 4 个早退分支只返回 2 个值，调用处按 3 个解包，异常被 `run_adp_single` 捕获后把已成功（报告已下载）的分析标成失败。
+- **修复**：4 个早退分支统一返回 `("", reason, "")`。
+- **数据修复**：从失败快照恢复 VCU-550492 / VCU-539235 的字段，使用已下载 HTML 报告重新上传附件并写回，状态改为“完成”。
+- **结果**：第二批次2 表成功记录 14 条（12 条正常 + 2 条误判修复），报告附件齐全。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`
+
+</details>

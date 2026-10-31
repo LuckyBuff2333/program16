@@ -150,11 +150,11 @@ def _run_trace_skill(jira_key: str, trace_id: str):
     返回 (report_path, error)：成功 error 为空；失败 report_path 为空。
     """
     if not trace_id:
-        return "", "无 trace_id"
+        return "", "无 trace_id", ""
     skill_dir = _trace_skill_dir()
     script = os.path.join(skill_dir, "scripts", "record_lookup.py")
     if not os.path.isfile(script):
-        return "", "技能未安装（tools/skills/log-review-pan-scan）"
+        return "", "技能未安装（tools/skills/log-review-pan-scan）", ""
     cfg = _get_adp_cfg()
     evidence_dir = os.path.join(get_path("doc_dir"), "adp_results", jira_key, f"traceid_{trace_id[:8]}")
     os.makedirs(evidence_dir, exist_ok=True)
@@ -179,11 +179,11 @@ def _run_trace_skill(jira_key: str, trace_id: str):
             break
         last_err = ((proc.stderr or "") + (proc.stdout or "")).strip()[:200] or f"exit={proc.returncode}"
     else:
-        return "", last_err or "技能无输出"
+        return "", last_err or "技能无输出", ""
 
     rec_path = os.path.join(evidence_dir, "record.json")
     if not os.path.isfile(rec_path):
-        return "", last_err or "未生成 record.json"
+        return "", last_err or "未生成 record.json", ""
     report_path = os.path.join(get_path("doc_dir"), "adp_results", jira_key, f"{jira_key}_traceid_report.md")
     try:
         with open(rec_path, encoding="utf-8") as f:
