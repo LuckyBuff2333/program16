@@ -3159,7 +3159,8 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
     names = [(a.get("filename", "") or "").lower() for a in attachments]
     # 有直接的 gmlogger/gmlog 文件、main.log 或任意 .log/.txt 文件就算有，不需要解压
     if any("gmlogger" in n or "gmlog" in n or "logcat" in n or "dltlog" in n or "bllog" in n
-           or "logger" in n or "main.log" in n or n.endswith(".log") or n.endswith(".txt") for n in names):
+           or "logger" in n or "pataclogger" in n or "log_" in n or "logs.zip" in n
+           or "main.log" in n or n.endswith(".log") or n.endswith(".txt") for n in names):
         return True
     headers, timeout = _jira_att_auth()
     for att in attachments:
@@ -6322,6 +6323,17 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
         cap = max(dt for _, dt in gm_times)
     if cap is None and refs:
         cap = max(refs)
+    if cap is None and vid_time:
+        _vd = _ts_parse_datetime(str(vid_time))
+        if not _vd:
+            import re as _re2
+            _m = _re2.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", str(vid_time).strip())
+            _created = _ts_parse_datetime(str((issue.get("fields") or {}).get("created") or "")[:19])
+            if _m and _created:
+                _vd = _created.replace(hour=int(_m.group(1)), minute=int(_m.group(2)),
+                                       second=int(_m.group(3) or 0), microsecond=0)
+        if _vd:
+            cap = _vd
     ref = cap.strftime("%Y-%m-%d %H:%M:%S") if cap else ""
     chk = self_check_trigger_time(candidate, ref)
     evidence = []
