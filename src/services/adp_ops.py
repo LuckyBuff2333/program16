@@ -432,14 +432,20 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
             ) as resp:
                 if resp.status_code != 200:
                     logger.error("ADP SSE HTTP %d", resp.status_code)
-                    return "", [], None, 0, 0, trace_id
+                    return "", [], None, 0, 0, trace_id, _build_signal(
+                        error_code, error_msg, reply_method, response_status, has_cards,
+                        request_ack, f"HTTP {resp.status_code}", conversation_id=conv_seen)
                 if _should_stop():
                     logger.info("ADP SSE 收到停止信号，中止读取")
-                    return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id
+                    return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id, _build_signal(
+                        error_code, error_msg, reply_method, response_status, has_cards,
+                        request_ack, stream_exc, conversation_id=conv_seen)
                 for line in resp.iter_lines():
                     if _should_stop():
                         logger.info("ADP SSE 收到停止信号，中止读取")
-                        return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id
+                        return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id, _build_signal(
+                            error_code, error_msg, reply_method, response_status, has_cards,
+                            request_ack, stream_exc, conversation_id=conv_seen)
                     # 心跳回调
                     now = time.time()
                     if keepalive_cb and now - last_keepalive >= 30:
@@ -1498,6 +1504,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         _trunc_mid = False
         _concluded = False
         _report_requested = False
+        _questionnaire_replied = False
+        _no_progress_rounds = 0
+        _force_final = False
         for cont_idx in range(max_continues):
             # 前置判断：没有任何报告链接 → 视为"可疑未完成"，参与续接决策
             _no_report = not results.get("_report_url")
@@ -1515,6 +1524,8 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                     break
                 _report_requested = True
                 _continue_prompt = "请把当前结论生成 HTML 分析报告，并给出下载链接"
+            if _force_final:
+                _continue_prompt = "停止继续取证，基于已收集证据直接输出最终结论和 HTML 报告"
             need_continue = (
                 results.get("完成状态") == "分析失败"
                 and results.get("分析失败归因") in (
@@ -1534,12 +1545,18 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             )
             need_new_session = err_code in SESSION_CONFLICT_CODES
             if signal_info.get("has_cards") or signal_info.get("questionnaire"):
-                # 智能体在追问用户（questionnaire/cards）：继续发“继续”没有意义
-                results["完成状态"] = "分析失败"
-                results["分析失败归因"] = "需要澄清（ADP智能体追问，需人工作答）"
-                logger.warning("ADP 智能体追问，停止续接并归因需要澄清: %s", jira_key)
-                _progress("adp_continue", "fail", "智能体追问，需补充信息")
-                break
+                if _questionnaire_replied:
+                    results["完成状态"] = "分析失败"
+                    results["分析失败归因"] = "需要澄清（ADP智能体追问，需人工作答）"
+                    logger.warning("ADP 追问自动应答后仍在追问，归因需要澄清: %s", jira_key)
+                    _progress("adp_continue", "fail", "智能体仍在追问，需人工")
+                    break
+                # 第一次追问：自动回复让智能体继续，不再等人
+                _questionnaire_replied = True
+                need_continue = True
+                _continue_prompt = "按现有描述和附件继续分析，不需要澄清，直接输出最终结论和 HTML 报告"
+                logger.info("ADP 智能体追问，自动应答继续: %s", jira_key)
+                _progress("adp_continue", "running", "智能体追问，自动应答继续")
             if not need_continue and not need_resend and not need_new_session:
                 break
             if need_new_session:
@@ -1578,13 +1595,27 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 cont_text, cont_urls, cont_close, _, _, cont_tid, cont_sig = call_adp_sse_stream(
                     message, keepalive_cb=keepalive_cb, stop_event=stop_event, conversation_id=_conv_use)
             # 合并结果
+            _prev_len = len(full_text)
             full_text += ("\n" + cont_text) if cont_text else ""
+            if _trunc_mid:
+                if len(full_text) - _prev_len < 200:
+                    _no_progress_rounds += 1
+                    if _no_progress_rounds >= 2:
+                        _force_final = True
+                        logger.warning("ADP 续接连续无进展，切换为直接出报告: %s", jira_key)
+                else:
+                    _no_progress_rounds = 0
             file_urls.extend(cont_urls)
             if cont_tid:
                 trace_id = cont_tid  # 以最后一次续接的 traceid 为准
             _sig_conv = (cont_sig or {}).get("conversation_id") or ""
             if _sig_conv:
                 signal_info["conversation_id"] = _sig_conv
+            # 同步续接信号，避免上一轮的 questionnaire/has_cards 残留
+            for _sk in ("error_code", "error_msg", "reply_method", "response_status",
+                        "has_cards", "request_ack", "stream_exc"):
+                if _sk in (cont_sig or {}):
+                    signal_info[_sk] = cont_sig[_sk]
             if cont_close:
                 closeout_data = cont_close
             # 重新提取
