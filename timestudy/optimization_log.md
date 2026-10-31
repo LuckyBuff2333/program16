@@ -1186,3 +1186,14 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`
 
 </details>
+
+<details>
+<summary><b>79. 误判失败原因分析 + 重复失败覆盖最新归因（2026-11-01）</b></summary>
+
+- **误判链路**：分析成功、HTML 已下载后，`_run_trace_skill` 在“技能无输出/未生成 record.json”等早退分支只返回 2 个值；调用处按 3 个解包抛 `ValueError`，被 `run_adp_single` 外层 `except` 捕获，于是把成功结果改成失败快照。
+- **修复**：早退分支统一返回 3 元组（已提交 `5e4aadf6`）。
+- **重复失败原因覆盖**：失败时不再“仅当归因为空才写”，改为**始终用本次最新归因覆盖** `分析失败归因`，`原因` 同步最新短分类；重跑失败不会残留旧原因。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`
+
+</details>

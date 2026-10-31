@@ -1800,11 +1800,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 _ft = classify_adp_failure(error=out.get("error", ""), full_text=full_text,
                                            attachment_count=len(attachments), signal_info=signal_info)
         out["fail_type"] = _ft
-        if not _res.get("分析失败归因"):
-            _res["分析失败归因"] = _ft
-        # 表格"原因"列同步短分类（澄清/拒答/截断/分析超时 等）
-        if not _res.get("原因"):
-            _res["原因"] = short_failure_category(_ft) if _ft else ""
+        # 失败时始终覆盖为本次最新原因，避免重复失败保留旧值
+        _res["分析失败归因"] = _ft
+        _res["原因"] = short_failure_category(_ft) if _ft else ""
         out["results"] = _res
 
     # 失败时记录 SSE 判别信号（reply_method / response_status），便于区分正常收口与异常断开
