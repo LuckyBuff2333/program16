@@ -412,6 +412,7 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
     has_cards = False
     request_ack = False
     stream_exc = ""
+    last_event_ts = 0.0
     for attempt in range(1, max_retries + 1):
         full_text = ""
         file_urls = []
@@ -455,6 +456,11 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
                         continue
                     et = data.get("Type", "")
                     ts = int(data.get("Timestamp", 0))
+                    _now_evt = time.time()
+                    if et == "heartbeat" and last_event_ts and _now_evt - last_event_ts > 90:
+                        logger.warning("ADP SSE 心跳间隔 %.0fs（>90s，疑似工具执行阻塞）",
+                                       _now_evt - last_event_ts)
+                    last_event_ts = _now_evt
                     event_types_seen.add(et)
                     # 未知事件类型每种只打一次（诊断用，不刷屏）
                     if et and et not in _KNOWN_EVENT_TYPES and et not in logged_unknown:
@@ -943,6 +949,35 @@ def _looks_truncated(reply: str) -> bool:
     return reply.rstrip()[-1:] not in "。！？!?…）)】」》\"'"
 
 
+CONCLUDED_MARKERS = ["没有可推进", "分析完成", "无更多工作", "请给新指令",
+                    "已收口", "无进一步", "没有更多", "无实质工作"]
+
+
+def _looks_concluded(reply: str) -> bool:
+    """智能体明确表示已收口/没有可推进的工作"""
+    text = reply or ""
+    return any(k in text for k in CONCLUDED_MARKERS)
+
+
+def _looks_truncated_mid_tool(reply: str) -> bool:
+    """结尾卡在工具调用/参数标签内，或标签未成对 → 判为流中断"""
+    import re as _re
+    text = (reply or "").rstrip()
+    if not text:
+        return False
+    low = text.lower()
+    # 结尾是半截标签名（</inv、</param、<parameter 等）
+    if _re.search(r"</?(inv|invoke|param|parameter)[a-z]*$", low):
+        return not _looks_concluded(text)
+    if text.endswith(("</parameter>", "</invoke>", "<parameter>", "<parameter")):
+        return not _looks_concluded(text)
+    if low.count("<invoke") != low.count("</invoke>"):
+        return True
+    if low.count("<parameter") != low.count("</parameter>"):
+        return True
+    return False
+
+
 def _looks_like_clarify_or_refusal(reply: str, reply_method: str) -> tuple:
     """智能体正常收口但在等用户补充/拒答 → 发"继续"无意义。
     返回 (is_clarify_or_refusal, reason)"""
@@ -1424,10 +1459,11 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         _progress("adp_analysis", "fail", fail_reason)
         return out
     if not full_text:
-        out["error"] = "ADP 无返回"
-        out["results"] = {"完成状态": "分析失败", "分析失败归因": "ADP连接超时或网络异常"}
-        out["fail_type"] = "ADP连接超时或网络异常"
-        _progress("adp_analysis", "fail", "无返回")
+        out["error"] = "ADP 无返回（待重试）"
+        out["retry_empty"] = True
+        out["results"] = {"完成状态": "分析失败", "分析失败归因": "ADP 无返回"}
+        out["fail_type"] = "ADP 无返回"
+        _progress("adp_analysis", "fail", "无返回，已记录待重试")
         return out
     elapsed_sec = (end_ts - start_ts) / 1000 if start_ts and end_ts else 0
     out["elapsed_sec"] = round(elapsed_sec, 1)
@@ -1459,18 +1495,34 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
 
         # Step 3.3: 续接机制（截断/无报告/过程叙述 → 发"继续"；限流/首轮未开工 → 重发原始消息）
         max_continues = 6
+        _trunc_mid = False
+        _concluded = False
+        _report_requested = False
         for cont_idx in range(max_continues):
             # 前置判断：没有任何报告链接 → 视为"可疑未完成"，参与续接决策
             _no_report = not results.get("_report_url")
             _has_closing = any(k in full_text for k in COMPLETE_SECTION_MARKERS)
             _clarify, _ = _looks_like_clarify_or_refusal(full_text, signal_info.get("reply_method", ""))
             _short_no_report = (_no_report and not _clarify and not _has_closing)
+            _trunc_mid = _looks_truncated_mid_tool(full_text)
+            _concluded = bool(_no_report and _looks_concluded(full_text))
+            _continue_prompt = "继续"
+            if _concluded:
+                if _report_requested:
+                    results["完成状态"] = "分析失败"
+                    results["分析失败归因"] = "智能体收口无报告"
+                    logger.warning("ADP 已收口且补报告请求仍无报告: %s", jira_key)
+                    break
+                _report_requested = True
+                _continue_prompt = "请把当前结论生成 HTML 分析报告，并给出下载链接"
             need_continue = (
                 results.get("完成状态") == "分析失败"
                 and results.get("分析失败归因") in (
                     "分析完成但未产出HTML报告", "未完成（疑似流中断）",
                 )
                 or _looks_truncated(full_text)
+                or _trunc_mid
+                or _concluded
                 or (not _clarify and _no_report and _looks_like_process_narration(full_text))
                 or _short_no_report
                 or err_code in RETRYABLE_ERROR_CODES
@@ -1500,10 +1552,11 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             elif need_continue:
                 # 续接必须复用原会话：优先用 response.created 里的 ConversationId
                 _conv_use = signal_info.get("conversation_id") or trace_id
-                _progress("adp_continue", "running", f"第{cont_idx+1}轮续接（发'继续'）")
-                logger.info("ADP 分析疑似截断或完整无报告，第%d次续接（conv=%s）", cont_idx + 1, (_conv_use or "")[:12])
+                _progress("adp_continue", "running", f"第{cont_idx+1}轮续接")
+                logger.info("ADP 续接第%d次（prompt=%s, conv=%s）", cont_idx + 1,
+                            _continue_prompt[:20], (_conv_use or "")[:12])
                 cont_text, cont_urls, cont_close, _, _, cont_tid, cont_sig = call_adp_sse_stream(
-                    "继续", keepalive_cb=keepalive_cb, stop_event=stop_event, conversation_id=_conv_use)
+                    _continue_prompt, keepalive_cb=keepalive_cb, stop_event=stop_event, conversation_id=_conv_use)
             else:
                 if err_code in TPM_LIMIT_CODES:
                     backoff = 60          # TPM 墙：60 秒
@@ -1574,6 +1627,13 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                         return out
                     time.sleep(min(0.5, _backoff - _waited))
                     _waited += 0.5
+        # 续接后仍无报告：按截断/收口细分
+        if not results.get("_report_url") and results.get("完成状态") == "分析失败":
+            if _trunc_mid:
+                results["分析失败归因"] = "流中断（工具调用截断）"
+            elif _concluded or _report_requested:
+                results["分析失败归因"] = "智能体收口无报告"
+
         # 续接后仍无报告的最终归类
         if results.get("完成状态") == "分析失败" and not results.get("分析失败归因"):
             results["分析失败归因"] = classify_adp_failure(
@@ -1619,17 +1679,21 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             out["_sandbox_url"] = report_url
             _progress("download_report", "done", "沙箱链接（不可下载）")
         else:
-            # 无任何报告链接：区分“未完成（疑似流中断）”与“分析完成但无报告”
+            # 无任何报告链接：保留已判定的截断/收口分类
             results["完成状态"] = "分析失败"
-            _has_closing_text = any(k in full_text for k in COMPLETE_SECTION_MARKERS)
-            _unfinished_hint = (
-                bool(signal_info.get("stream_exc"))
-                or _looks_like_process_narration(full_text)
-                or (len(full_text or "") >= 300 and not _has_closing_text)
-            )
-            results["分析失败归因"] = (
-                "未完成（疑似流中断）" if _unfinished_hint else "分析完成但未产出HTML报告"
-            )
+            _existing = results.get("分析失败归因") or ""
+            if _existing not in ("流中断（工具调用截断）", "智能体收口无报告", "ADP 无返回"):
+                _has_closing_text = any(k in full_text for k in COMPLETE_SECTION_MARKERS)
+                _unfinished_hint = (
+                    _trunc_mid
+                    or bool(signal_info.get("stream_exc"))
+                    or _looks_like_process_narration(full_text)
+                    or (len(full_text or "") >= 300 and not _has_closing_text)
+                )
+                results["分析失败归因"] = (
+                    "流中断（工具调用截断）" if _trunc_mid
+                    else ("未完成（疑似流中断）" if _unfinished_hint else "分析完成但未产出HTML报告")
+                )
             results.pop("报告链接（分析报告、可观测报告）", None)
 
         # traceid 排查：仅成功（已拿到报告附件）时调用技能；失败时留空/用返回内容报告

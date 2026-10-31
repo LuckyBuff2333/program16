@@ -5785,6 +5785,44 @@ async def test_adp_lookup(request: Request):
                 yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
             orphans.clear()
 
+        # 空返回项：全部跑完后统一重试一次
+        _empty_retry = [r for r in batch_results
+                        if ((r.get("results") or {}).get("分析失败归因") == "ADP 无返回"
+                            or "ADP 无返回" in (r.get("error") or ""))]
+        if _empty_retry:
+            logger.info("ADP lookup 空返回重试: %d 条", len(_empty_retry))
+            for _old in list(_empty_retry):
+                bugid = _old.get("jira_key", "")
+                yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': bugid, 'retry': 'empty'}, ensure_ascii=False)}\n\n"
+                try:
+                    rr = await loop.run_in_executor(None, _run_one_adp, bugid)
+                except Exception as e:
+                    rr = {"result": {"ok": False, "error": str(e)[:100]}, "has_html": False, "info": {}}
+                info = rr.get("info") or {"bugid": bugid, "rec": bt_map.get(bugid), "bt_desc": "", "bt_time": ""}
+                result = rr.get("result", {})
+                rd = result.get("results") or {}
+                has_html = rr.get("has_html", False)
+                if not has_html and rd.get("完成状态") != "无法分析":
+                    rd["完成状态"] = "分析失败"
+                    if not rd.get("分析失败归因"):
+                        rd["分析失败归因"] = classify_adp_failure(
+                            error=result.get("error", ""), full_text=result.get("full_text", ""),
+                            attachment_count=result.get("attachment_count", 0))
+                item = {
+                    "jira_key": bugid, "ok": bool(result.get("ok")) and has_html,
+                    "has_html": has_html, "skipped": rd.get("完成状态") == "无法分析",
+                    "results": rd, "error": result.get("error", ""),
+                    "bt_found": info.get("rec") is not None,
+                    "desc_source": "bitable" if info.get("bt_desc") else ("api" if info.get("desc") else "none"),
+                    "time_source": "bitable" if info.get("bt_time") else ("api" if info.get("tt") else "none"),
+                    "fail_type": _adp_fail_type(result),
+                    "report_doc_url": result.get("report_doc_url", ""),
+                    **_adp_text_payload(result), "file_urls": result.get("file_urls", []),
+                }
+                batch_results.remove(_old)
+                batch_results.append(item)
+                yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
+
         all_results.extend(batch_results)
         total_success = sum(1 for r in batch_results if r["has_html"])
         total_timeout = sum(1 for r in batch_results if r.get("timed_out") and not r["has_html"])
