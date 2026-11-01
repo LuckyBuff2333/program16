@@ -3985,17 +3985,25 @@ async def regression_run(request: Request):
         all_results = []
         total_success = 0
         total_fail = 0
+        # 跨轮去重：从未抽过的剩余池中抽样，抽完即停止
+        remaining = list(candidates)
         for round_num in range(1, total_rounds + 1):
             if _stop_event.is_set():
                 break
+            if not remaining:
+                yield f"data: {_json.dumps({'type': 'exhausted', 'round': round_num, 'message': f'候选已抽完（共 {len(candidates)} 个），提前结束'}, ensure_ascii=False)}\n\n"
+                break
             if total_rounds > 1:
                 yield f"data: {_json.dumps({'type': 'round', 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
-            # 每轮独立抽样
-            if 0 < sample_count < len(candidates):
-                round_candidates = random.sample(candidates, sample_count)
+            # 从未抽过的剩余池中抽样
+            if 0 < sample_count < len(remaining):
+                round_candidates = random.sample(remaining, sample_count)
             else:
-                round_candidates = list(candidates)
-            yield f"data: {_json.dumps({'type': 'sample', 'total': len(round_candidates), 'round': round_num}, ensure_ascii=False)}\n\n"
+                round_candidates = list(remaining)
+            for _b in round_candidates:
+                if _b in remaining:
+                    remaining.remove(_b)
+            yield f"data: {_json.dumps({'type': 'sample', 'total': len(round_candidates), 'round': round_num, 'remaining': len(remaining)}, ensure_ascii=False)}\n\n"
             batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             results = []
             for bugid in round_candidates:

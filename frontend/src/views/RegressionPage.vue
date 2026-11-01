@@ -276,7 +276,11 @@ export default {
           ElMessage.info(evt.message || `已过滤 ${evt.excluded} 条`);
           break;
         case 'sample':
-          this.logLine(`[第${evt.round}轮] 抽样 ${evt.total} 个`);
+          this.logLine(`[第${evt.round}轮] 抽样 ${evt.total} 个，剩余 ${evt.remaining ?? '-'} 个未抽`);
+          break;
+        case 'exhausted':
+          this.logLine(`[结束] ${evt.message}`);
+          ElMessage.info(evt.message);
           break;
         case 'round':
           this.logLine(`--- 第 ${evt.round}/${evt.total_rounds} 轮 ---`);

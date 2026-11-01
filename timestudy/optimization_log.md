@@ -1298,3 +1298,18 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`、`frontend/src/views/RegressionPage.vue`
 
 </details>
+
+<details>
+<summary><b>88. 回归执行跨轮抽样去重（方案A，2026-11-01）</b></summary>
+
+- **需求**：每轮抽样不重复抽已执行过的 Jira，抽完即停止。
+- **实现**：
+  1. `regression_run` 维护 `remaining` 剩余池；
+  2. 每轮从 `remaining` 中 `random.sample`，抽中后从池中移除；
+  3. 剩余不足 `sample_count` 时全部执行，抽完发 `exhausted` 事件并提前结束；
+  4. 前端日志显示每轮剩余未抽数量。
+- **效果**：216 个候选、每轮 20、10 轮 → 执行 200 个且无重复，剩余 16 个未执行。
+- **验证**：全量 **116 passed**，前端构建通过。
+- **实现文件**：`src/api/routes/testing.py`、`frontend/src/views/RegressionPage.vue`
+
+</details>
