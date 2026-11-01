@@ -292,6 +292,7 @@ export default {
       filterAiPreliminary: true,
       running: false,
       abortCtrl: null as AbortController | null,
+      lastExtractAt: 0,
       total: 0,
       doneCount: 0,
       hitCount: 0,
@@ -356,6 +357,11 @@ export default {
     setJql(key: string) { this.jql = JQL_PRESETS[key] || ''; },
     async startExtract() {
       if (this.running) return ElMessage.warning('已有提取任务在运行，请等待完成或先停止');
+      const _now = Date.now();
+      if (_now - this.lastExtractAt < 30000) {
+        const _left = Math.ceil((30000 - (_now - this.lastExtractAt)) / 1000);
+        return ElMessage.warning(`操作太频繁，请 ${_left} 秒后再试`);
+      }
       if (!this.jql && !this.manualBugids) return ElMessage.warning('请输入 JQL 或 Jira 号');
       // 解析手动输入的 bugid 列表
       const manual = this.manualBugids.split(/[\s,;\n]+/).map((s: string) => s.trim()).filter(Boolean);
@@ -365,6 +371,7 @@ export default {
       body.skip_cached = this.skipCached;
       body.filter_ai_preliminary = this.filterAiPreliminary;
 
+      this.lastExtractAt = _now;
       this.running = true;
       this.total = 0; this.doneCount = 0; this.hitCount = 0; this.skippedCount = 0; this.aiSkippedCount = 0; this.cacheSkippedCount = 0; this.batchSavedCount = 0;
       this.rows = []; this.statusMsg = '正在启动...';

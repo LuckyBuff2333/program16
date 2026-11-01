@@ -1238,3 +1238,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/trigger.py`、`frontend/src/panels/TimeExtractPanel.vue`
 
 </details>
+
+<details>
+<summary><b>83. 时间批量提取按钮 30 秒防连点（2026-11-01）</b></summary>
+
+- **需求**：同一个“开始提取”按钮 30 秒内只能点一次。
+- **实现**：`TimeExtractPanel.vue` 增加 `lastExtractAt`，点击时判断距上次启动是否 <30s；是则提示剩余秒数并拒绝；校验通过后才记录时间。
+- **效果**：30 秒内重复点击不会发起新批次，配合后端单批次锁双重防重复。
+- **验证**：前端构建通过。
+- **实现文件**：`frontend/src/panels/TimeExtractPanel.vue`
+
+</details>
