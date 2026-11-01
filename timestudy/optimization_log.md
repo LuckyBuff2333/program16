@@ -1220,3 +1220,21 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/JiraLookupPanel.vue`
 
 </details>
+
+<details>
+<summary><b>82. 批量提取防重复批次 / 防止完成后台继续跑（2026-11-01）</b></summary>
+
+- **问题**：页面显示 16/16 完成后，后台仍在提取同一 Jira，并继续写触发时间表。
+- **原因**：
+  1. 批量提取是请求级线程池，前端重复点击/重试会再起一批，两批并行；
+  2. `pool.shutdown(wait=False)` 不等工作线程结束，生成器已 `done` 时仍有线程在跑；
+  3. 未对 bugid 去重。
+- **修复**：
+  1. 后端单批次锁：已有 `time_extract` 运行中时拒绝新批次；
+  2. `bugids` 去重；
+  3. `pool.shutdown(wait=True)`，确保 done 一定在工作线程结束后才发出；
+  4. 前端 `startExtract` 增加 `running` 防重复提交。
+- **验证**：`py_compile` OK，全量 **116 passed**，前端构建通过。
+- **实现文件**：`src/api/routes/trigger.py`、`frontend/src/panels/TimeExtractPanel.vue`
+
+</details>

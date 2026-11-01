@@ -355,6 +355,7 @@ export default {
     },
     setJql(key: string) { this.jql = JQL_PRESETS[key] || ''; },
     async startExtract() {
+      if (this.running) return ElMessage.warning('已有提取任务在运行，请等待完成或先停止');
       if (!this.jql && !this.manualBugids) return ElMessage.warning('请输入 JQL 或 Jira 号');
       // 解析手动输入的 bugid 列表
       const manual = this.manualBugids.split(/[\s,;\n]+/).map((s: string) => s.trim()).filter(Boolean);

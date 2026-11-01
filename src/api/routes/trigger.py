@@ -380,6 +380,15 @@ async def batch_extract_time(request: Request):
             return _fail(f"JQL 查询失败: {e}")
     if not bugids:
         return _fail("无待提取的 Jira 号（JQL 未匹配或 bugids 为空）")
+    # 去重，避免同一 Jira 被并行提取两次
+    bugids = list(dict.fromkeys(str(b).strip() for b in bugids if str(b).strip()))
+
+    # 单批次锁：已有 time_extract 在跑时拒绝新批次，避免页面对应一批、后台还在跑另一批
+    from src.core.job_registry import JOBS as _JOBS_ALL
+    _running_jobs = [j for j in _JOBS_ALL.list(50)
+                     if j.type == "time_extract" and j.status == "running"]
+    if _running_jobs:
+        return _fail("已有批量提取任务在运行，请等待完成或先点“停止”")
 
     _stop_event.clear()
     _begin_attach_batch()  # 新批次：重置附件下载预算
@@ -540,7 +549,8 @@ async def batch_extract_time(request: Request):
                 }
                 yield f"data: {_json.dumps(evt, ensure_ascii=False)}\n\n"
         finally:
-            pool.shutdown(wait=False, cancel_futures=True)
+            # 等待工作线程真正结束，避免页面已显示完成、后台仍在提取/写云端
+            pool.shutdown(wait=True, cancel_futures=True)
 
         # 余量写入
         if batch_buf:
@@ -556,6 +566,10 @@ async def batch_extract_time(request: Request):
     from src.api.routes.jobs import job_stream as _job_stream
     from src.api.routes.shared import batch_extract_stop_event as _job_stop
     _job = _JOBS.create("time_extract", "批量提取触发时间作业")
+    try:
+        _JOBS.update(_job.id, total=len(bugids))
+    except Exception:
+        pass
     return StreamingResponse(_job_stream(_job, event_generator, _job_stop), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
