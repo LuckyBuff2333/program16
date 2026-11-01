@@ -183,8 +183,18 @@ export default {
         this.yesterdayBugLoading = false;
       }
     },
+    weekStartDate() {
+      // 以“周一”为一周起点（Jira 的 startOfWeek 可能按周日算，导致周日当天查不到本周）
+      const now = new Date();
+      const day = now.getDay(); // 0=周日
+      const diff = (day + 6) % 7; // 距离周一的天数
+      const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - diff);
+      const mm = String(monday.getMonth() + 1).padStart(2, '0');
+      const dd = String(monday.getDate()).padStart(2, '0');
+      return `${monday.getFullYear()}-${mm}-${dd}`;
+    },
     async queryWeekNewBugs() {
-      const jql = 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
+      const jql = `created >= "${this.weekStartDate()}" AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira`;
       this.query = jql;
       this.weekBugLoading = true;
       this.loading = true; this.queried = true; this.rows = []; this.errors = [];

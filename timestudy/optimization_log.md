@@ -1209,3 +1209,14 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`
 
 </details>
+
+<details>
+<summary><b>81. Jira 查询“本周新增”按周一起算（2026-11-01）</b></summary>
+
+- **问题**：周日页面显示“昨日新增 30 个 Bug”，但“本周暂无新增 Bug”。
+- **原因**：JQL `created >= startOfWeek()` 按 Jira 用户的周起始（周日）计算，周日当天 00:00 起算，周六新增被排除。
+- **修复**：前端按“周一”计算本周起始日期，JQL 改为 `created >= "YYYY-MM-DD"`。
+- **验证**：2026-11-01（周日）按周一起点 `2026-10-26` 查询，返回 200+ 条，不再为 0。
+- **实现文件**：`frontend/src/panels/JiraLookupPanel.vue`
+
+</details>
