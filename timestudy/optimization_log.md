@@ -1249,3 +1249,14 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/TimeExtractPanel.vue`
 
 </details>
+
+<details>
+<summary><b>84. Jira 查询按钮 30 秒防连点（2026-11-01）</b></summary>
+
+- **需求**：Jira 查询相关按钮 30 秒内只能点一次。
+- **实现**：`JiraLookupPanel.vue` 增加 `lastLookupAt` 与 `checkLookupCooldown()`；查询、今日新增、昨日新增、本周新增四个按钮共用 30 秒冷却。
+- **效果**：30 秒内点击任一查询按钮会提示剩余秒数，不发起请求。
+- **验证**：前端构建通过。
+- **实现文件**：`frontend/src/panels/JiraLookupPanel.vue`
+
+</details>

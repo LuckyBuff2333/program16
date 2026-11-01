@@ -88,6 +88,7 @@ export default {
     return {
       query: '',
       loading: false,
+    lastLookupAt: 0,
       queried: false,
       todayBugLoading: false,
       yesterdayBugLoading: false,
@@ -124,9 +125,20 @@ export default {
         }
       }, 30);
     },
+    checkLookupCooldown() {
+      const now = Date.now();
+      if (now - this.lastLookupAt < 30000) {
+        const left = Math.ceil((30000 - (now - this.lastLookupAt)) / 1000);
+        ElMessage.warning(`操作太频繁，请 ${left} 秒后再试`);
+        return false;
+      }
+      this.lastLookupAt = now;
+      return true;
+    },
     async doLookup() {
       const q = this.query.trim();
       if (!q) return ElMessage.warning('请输入 Jira 号或 JQL');
+      if (!this.checkLookupCooldown()) return;
       this.loading = true; this.queried = true; this.rows = []; this.errors = [];
       try {
         const result = await api('/api/test/jira_lookup', { method: 'POST', body: JSON.stringify({ query: q }) });
@@ -144,6 +156,7 @@ export default {
       }
     },
     async queryTodayNewBugs() {
+      if (!this.checkLookupCooldown()) return;
       const jql = 'created >= startOfDay() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
       this.query = jql;
       this.todayBugLoading = true;
@@ -164,6 +177,7 @@ export default {
       }
     },
     async queryYesterdayNewBugs() {
+      if (!this.checkLookupCooldown()) return;
       const jql = 'created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
       this.query = jql;
       this.yesterdayBugLoading = true;
@@ -194,6 +208,7 @@ export default {
       return `${monday.getFullYear()}-${mm}-${dd}`;
     },
     async queryWeekNewBugs() {
+      if (!this.checkLookupCooldown()) return;
       const jql = `created >= "${this.weekStartDate()}" AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira`;
       this.query = jql;
       this.weekBugLoading = true;
