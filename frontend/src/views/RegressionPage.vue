@@ -60,6 +60,7 @@
         <span class="param-label">抽取个数</span>
         <el-input-number v-model="sampleCount" :min="0" :max="2000" :step="1" style="width:130px" controls-position="right" size="small"></el-input-number>
         <span style="font-size:12px;color:#909399">0 = 全部</span>
+        <el-checkbox v-model="filterAiPreliminary" size="small" style="margin-left:12px">过滤AI初步分析结果</el-checkbox>
       </div>
       <div style="margin-top:10px;max-height:180px;overflow-y:auto">
         <el-tag v-for="j in selectedJiras" :key="j" closable size="small" style="margin:2px" @close="removeJira(j)">{{ j }}</el-tag>
@@ -120,6 +121,7 @@ export default {
       expandedSet: new Set<string>(),
       // 区域 C/D
       sampleCount: 0,
+      filterAiPreliminary: false,
       execMode: 'pc',
       intervalMin: 0,
       totalRounds: 1,
@@ -221,6 +223,7 @@ export default {
           body: JSON.stringify({
             bugids: this.selectedJiras,
             sample_count: this.sampleCount || 0,
+            filter_ai_preliminary: this.filterAiPreliminary,
             exec_mode: this.execMode,
             interval_min: this.intervalMin,
             total_rounds: this.totalRounds,
@@ -260,6 +263,10 @@ export default {
         case 'search':
           this.execLogs.push(`[候选] 共 ${evt.total} 个 Jira 号`);
           counters.setTotal(evt.total);
+          break;
+        case 'filtered':
+          this.execLogs.push(`[过滤] 排除 ${evt.excluded} 条，剩余 ${evt.remaining} 条`);
+          ElMessage.info(evt.message || `已过滤 ${evt.excluded} 条`);
           break;
         case 'sample':
           this.execLogs.push(`[第${evt.round}轮] 抽样 ${evt.total} 个`);

@@ -1271,3 +1271,16 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/JiraLookupPanel.vue`
 
 </details>
+
+<details>
+<summary><b>86. 回归测试步骤3增加“过滤AI初步分析结果”（2026-11-01）</b></summary>
+
+- **需求**：回归测试 ③ 汇总与抽样 增加勾选，勾选后用 Jira REST API 过滤已有 AI 初步分析结果（customfield_13714）的 Jira。
+- **实现**：
+  1. `RegressionPage.vue` 添加勾选框与 `filter_ai_preliminary` 参数；
+  2. `regression_run` 在候选确定后并发调用 Jira REST（10 线程），排除自定义字段非空的 Jira；
+  3. SSE 返回 `filtered` 事件，前端日志显示排除/剩余数量。
+- **验证**：全量 **116 passed**，前端构建通过。
+- **实现文件**：`frontend/src/views/RegressionPage.vue`、`src/api/routes/testing.py`
+
+</details>

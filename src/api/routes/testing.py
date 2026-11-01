@@ -3891,6 +3891,7 @@ async def regression_run(request: Request):
     interval_min = max(0, int(body.get("interval_min", 0)))
     total_rounds = max(1, int(body.get("total_rounds", 1)))
     input_bugids = body.get("bugids") or []  # 前端传入的已勾选批次 Jira 号
+    filter_ai_preliminary = bool(body.get("filter_ai_preliminary", False))
     _batch_meta = {
         "分析并发数": str(body.get("analysis_concurrency", "5")),
         "下载并发数": str(body.get("download_concurrency", "2")),
@@ -3946,6 +3947,27 @@ async def regression_run(request: Request):
         if not candidates:
             yield f"data: {_json.dumps({'type': 'done', 'total': 0, 'success': 0, 'fail': 0, 'message': '无候选 Jira 号'}, ensure_ascii=False)}\n\n"
             return
+        # 步骤1.5：按 Jira 自定义字段过滤已有 AI 初步分析结果的 Jira
+        if filter_ai_preliminary:
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _has_ai_preliminary(bid: str) -> str:
+                try:
+                    iss = jira_client.fetch_issue(bid)
+                    v = (iss.get("fields") or {}).get("customfield_13714")
+                    s = str(v).strip() if v is not None else ""
+                    if s and s.lower() not in ("none", "null"):
+                        return bid
+                except Exception:
+                    pass
+                return ""
+
+            with ThreadPoolExecutor(max_workers=10) as _pool:
+                _hits = {x for x in _pool.map(_has_ai_preliminary, candidates) if x}
+            if _hits:
+                candidates = [b for b in candidates if b not in _hits]
+            yield f"data: {_json.dumps({'type': 'filtered', 'excluded': len(_hits), 'remaining': len(candidates), 'message': f'过滤AI初步分析结果: 排除 {len(_hits)} 条，剩余 {len(candidates)} 条'}, ensure_ascii=False)}\n\n"
+
         # 步骤2：加载触发时间
         trigger_times = {}
         cloud_times = await loop.run_in_executor(None, _load_trigger_times_from_cloud)
