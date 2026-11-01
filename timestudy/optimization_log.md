@@ -1260,3 +1260,14 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/JiraLookupPanel.vue`
 
 </details>
+
+<details>
+<summary><b>85. Jira 查询按钮改为各自独立 30 秒冷却（2026-11-01）</b></summary>
+
+- **调整**：原先四个查询按钮共用 30 秒冷却，改为**每个按钮独立计时**。
+- **实现**：`lastLookupAt` 改为按按钮 key 记录（lookup/today/yesterday/week），`checkLookupCooldown(key)` 分别判断。
+- **效果**：查完“今日新增”后可立即点“昨日新增”，但同一个按钮 30 秒内不能重复点。
+- **验证**：前端构建通过。
+- **实现文件**：`frontend/src/panels/JiraLookupPanel.vue`
+
+</details>
