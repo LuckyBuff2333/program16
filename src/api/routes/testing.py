@@ -3904,6 +3904,9 @@ async def regression_run(request: Request):
         from src.clients.base import http_post
         from src.api.routes.shared import regression_stop_event as _stop_event
         _stop_event.clear()  # 新执行开始时清除停止标志
+        # 让 HTTP 请求/重试也能感知停止，避免 ConnectTimeout 重试拖住停止
+        from src.clients import base as _http_base
+        _http_base.set_http_cancel_check(_stop_event.is_set)
         _batch_start = datetime.now()
         _batch_start_str = _batch_start.strftime("%Y-%m-%d %H:%M:%S")
         loop = asyncio.get_event_loop()
@@ -3987,58 +3990,71 @@ async def regression_run(request: Request):
         total_fail = 0
         # 跨轮去重：从未抽过的剩余池中抽样，抽完即停止
         remaining = list(candidates)
-        for round_num in range(1, total_rounds + 1):
-            if _stop_event.is_set():
-                break
-            if not remaining:
-                yield f"data: {_json.dumps({'type': 'exhausted', 'round': round_num, 'message': f'候选已抽完（共 {len(candidates)} 个），提前结束'}, ensure_ascii=False)}\n\n"
-                break
-            if total_rounds > 1:
-                yield f"data: {_json.dumps({'type': 'round', 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
-            # 从未抽过的剩余池中抽样
-            if 0 < sample_count < len(remaining):
-                round_candidates = random.sample(remaining, sample_count)
-            else:
-                round_candidates = list(remaining)
-            for _b in round_candidates:
-                if _b in remaining:
-                    remaining.remove(_b)
-            yield f"data: {_json.dumps({'type': 'sample', 'total': len(round_candidates), 'round': round_num, 'remaining': len(remaining)}, ensure_ascii=False)}\n\n"
-            batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            results = []
-            for bugid in round_candidates:
+        try:
+            for round_num in range(1, total_rounds + 1):
                 if _stop_event.is_set():
-                    yield f"data: {_json.dumps({'type': 'stopped', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'round': round_num, 'message': '用户手动停止'}, ensure_ascii=False)}\n\n"
-                    return
-                exec_time = trigger_times.get(bugid, "")
-                if not exec_time:
-                    results.append({jira_col: bugid, "执行结果": "失败", "备注": "无触发时间"})
-                    continue
-                try:
-                    if exec_mode == "online":
-                        payload = _build_prod_ai_payload(bugid, exec_time)
-                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=_get_prod_ai_cfg()["timeout"]))
-                    else:
-                        payload = {pc_cfg.get("bugid_field", "jira号"): bugid}
-                        if pc_cfg.get("trigger_time_field"):
-                            payload[pc_cfg["trigger_time_field"]] = exec_time
-                        resp = await loop.run_in_executor(None, lambda p=payload: http_post(pc_cfg.get("url", ""), p, timeout=int(pc_cfg.get("timeout", 60))))
-                    resp_code = resp.get("code") if isinstance(resp, dict) else None
-                    resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
-                    is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
-                    results.append({jira_col: bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200], "执行时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-                except Exception as e:
-                    results.append({jira_col: bugid, "执行结果": "失败", "备注": str(e)[:200], "执行时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-                yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(round_candidates), 'bugid': bugid, 'status': results[-1]['执行结果'], 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
-            round_success = sum(1 for r in results if r["执行结果"] == "成功")
-            round_fail = len(results) - round_success
-            total_success += round_success
-            total_fail += round_fail
-            all_results.extend(results)
-            # 轮次间隔
-            if round_num < total_rounds and interval_min > 0:
-                yield f"data: {_json.dumps({'type': 'waiting', 'interval_min': interval_min, 'round': round_num}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(interval_min * 60)
+                    break
+                if not remaining:
+                    yield f"data: {_json.dumps({'type': 'exhausted', 'round': round_num, 'message': f'候选已抽完（共 {len(candidates)} 个），提前结束'}, ensure_ascii=False)}\n\n"
+                    break
+                if total_rounds > 1:
+                    yield f"data: {_json.dumps({'type': 'round', 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
+                # 从未抽过的剩余池中抽样
+                if 0 < sample_count < len(remaining):
+                    round_candidates = random.sample(remaining, sample_count)
+                else:
+                    round_candidates = list(remaining)
+                for _b in round_candidates:
+                    if _b in remaining:
+                        remaining.remove(_b)
+                yield f"data: {_json.dumps({'type': 'sample', 'total': len(round_candidates), 'round': round_num, 'remaining': len(remaining)}, ensure_ascii=False)}\n\n"
+                batch_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                results = []
+                for bugid in round_candidates:
+                    if _stop_event.is_set():
+                        yield f"data: {_json.dumps({'type': 'stopped', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'round': round_num, 'message': '用户手动停止'}, ensure_ascii=False)}\n\n"
+                        return
+                    exec_time = trigger_times.get(bugid, "")
+                    if not exec_time:
+                        results.append({jira_col: bugid, "执行结果": "失败", "备注": "无触发时间"})
+                        continue
+                    try:
+                        if exec_mode == "online":
+                            payload = _build_prod_ai_payload(bugid, exec_time)
+                            resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=_get_prod_ai_cfg()["timeout"]))
+                        else:
+                            payload = {pc_cfg.get("bugid_field", "jira号"): bugid}
+                            if pc_cfg.get("trigger_time_field"):
+                                payload[pc_cfg["trigger_time_field"]] = exec_time
+                            resp = await loop.run_in_executor(None, lambda p=payload: http_post(pc_cfg.get("url", ""), p, timeout=int(pc_cfg.get("timeout", 60))))
+                        resp_code = resp.get("code") if isinstance(resp, dict) else None
+                        resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
+                        is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
+                        results.append({jira_col: bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200], "执行时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                    except Exception as e:
+                        if _stop_event.is_set():
+                            yield f"data: {_json.dumps({'type': 'stopped', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'round': round_num, 'message': '用户手动停止'}, ensure_ascii=False)}\n\n"
+                            return
+                        results.append({jira_col: bugid, "执行结果": "失败", "备注": str(e)[:200], "执行时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                    yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(round_candidates), 'bugid': bugid, 'status': results[-1]['执行结果'], 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
+                round_success = sum(1 for r in results if r["执行结果"] == "成功")
+                round_fail = len(results) - round_success
+                total_success += round_success
+                total_fail += round_fail
+                all_results.extend(results)
+                # 轮次间隔
+                if round_num < total_rounds and interval_min > 0:
+                    yield f"data: {_json.dumps({'type': 'waiting', 'interval_min': interval_min, 'round': round_num}, ensure_ascii=False)}\n\n"
+                    _wait_left = interval_min * 60
+                    while _wait_left > 0:
+                        if _stop_event.is_set():
+                            yield f"data: {_json.dumps({'type': 'stopped', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'round': round_num, 'message': '用户手动停止（等待中）'}, ensure_ascii=False)}\n\n"
+                            return
+                        _sleep = min(1, _wait_left)
+                        await asyncio.sleep(_sleep)
+                        _wait_left -= _sleep
+        finally:
+            _http_base.set_http_cancel_check(None)
         # 步骤4：保存
         date_str = datetime.now().strftime("%Y-%m-%d")
         time_str = datetime.now().strftime("%H%M%S")

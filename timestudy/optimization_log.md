@@ -1313,3 +1313,17 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`、`frontend/src/views/RegressionPage.vue`
 
 </details>
+
+<details>
+<summary><b>89. 回归执行停止信号立即生效（2026-11-01）</b></summary>
+
+- **问题**：点“停止执行”后仍继续 ConnectTimeout 重试，轮次间隔 50 分钟也睡满。
+- **修复**：
+  1. `http_post/http_get` 增加全局取消检查，停止时不再重试并立即抛错；
+  2. 回归执行设置取消检查，并在循环结束/返回时清理；
+  3. 轮次间隔改为每秒检查停止信号，可中断；
+  4. 请求异常时若已停止，直接结束并返回 stopped 事件。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/clients/base.py`、`src/api/routes/testing.py`
+
+</details>

@@ -36,11 +36,29 @@ def _get_verify(url: str) -> bool:
 
 def _should_retry(exc: BaseException) -> bool:
     """仅对网络传输错误和服务端 5xx 错误重试，4xx 客户端错误不重试"""
+    if _http_cancelled():
+        return False
     if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code >= 500
     return False
+
+
+_HTTP_CANCEL_CHECK = None
+
+
+def set_http_cancel_check(fn):
+    """设置全局 HTTP 取消检查（返回 True 时立即停止请求/重试）"""
+    global _HTTP_CANCEL_CHECK
+    _HTTP_CANCEL_CHECK = fn
+
+
+def _http_cancelled() -> bool:
+    try:
+        return bool(_HTTP_CANCEL_CHECK and _HTTP_CANCEL_CHECK())
+    except Exception:
+        return False
 
 
 @retry(
@@ -53,6 +71,8 @@ def _should_retry(exc: BaseException) -> bool:
 def http_post(url: str, payload: dict, timeout: int = DEFAULT_TIMEOUT,
               headers: dict = None) -> dict:
     """POST 请求并返回 JSON，失败时 tenacity 指数退避重试（仅重试网络错误和 5xx）"""
+    if _http_cancelled():
+        raise RuntimeError("操作已停止")
     logger.info("POST %s", url)
     # 分离连接超时和读取超时：连接阶段最多等 CONNECT_TIMEOUT 秒，读取阶段使用 timeout 参数
     http_timeout = httpx.Timeout(timeout, connect=CONNECT_TIMEOUT)
@@ -73,6 +93,8 @@ def http_post(url: str, payload: dict, timeout: int = DEFAULT_TIMEOUT,
 def http_get(url: str, params: dict = None, timeout: int = DEFAULT_TIMEOUT,
              auth: tuple = None, headers: dict = None) -> dict:
     """GET 请求并返回 JSON，失败时 tenacity 指数退避重试（仅重试网络错误和 5xx）"""
+    if _http_cancelled():
+        raise RuntimeError("操作已停止")
     logger.info("GET %s", url)
     http_timeout = httpx.Timeout(timeout, connect=CONNECT_TIMEOUT)
     # 内网环境企业 HTTPS 代理会替换证书，跳过 SSL 验证避免 CERTIFICATE_VERIFY_FAILED
