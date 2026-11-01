@@ -250,7 +250,7 @@ export default {
         }
       } catch (e: any) {
         if (e.name === 'AbortError') {
-          this.execLogs.push('[已中止]');
+          this.logLine('[已中止]');
         } else {
           ElMessage.error('回归执行失败: ' + (e.message || ''));
         }
@@ -258,25 +258,32 @@ export default {
         this.executing = false;
       }
     },
+    logLine(msg: string) {
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, '0');
+      const mm = String(now.getMinutes()).padStart(2, '0');
+      const ss = String(now.getSeconds()).padStart(2, '0');
+      this.execLogs.push(`[${hh}:${mm}:${ss}] ${msg}`);
+    },
     handleSSEEvent(evt: any, counters: any) {
       switch (evt.type) {
         case 'search':
-          this.execLogs.push(`[候选] 共 ${evt.total} 个 Jira 号`);
+          this.logLine(`[候选] 共 ${evt.total} 个 Jira 号`);
           counters.setTotal(evt.total);
           break;
         case 'filtered':
-          this.execLogs.push(`[过滤] 排除 ${evt.excluded} 条，剩余 ${evt.remaining} 条`);
+          this.logLine(`[过滤] 排除 ${evt.excluded} 条，剩余 ${evt.remaining} 条`);
           ElMessage.info(evt.message || `已过滤 ${evt.excluded} 条`);
           break;
         case 'sample':
-          this.execLogs.push(`[第${evt.round}轮] 抽样 ${evt.total} 个`);
+          this.logLine(`[第${evt.round}轮] 抽样 ${evt.total} 个`);
           break;
         case 'round':
-          this.execLogs.push(`--- 第 ${evt.round}/${evt.total_rounds} 轮 ---`);
+          this.logLine(`--- 第 ${evt.round}/${evt.total_rounds} 轮 ---`);
           break;
         case 'progress': {
           const status = evt.status === '成功' ? '✓' : '✗';
-          this.execLogs.push(`${status} ${evt.bugid} (${evt.index}/${evt.total})`);
+          this.logLine(`${status} ${evt.bugid} (${evt.index}/${evt.total})`);
           counters.setDone(evt.index);
           if (counters.totalCount() > 0) {
             this.execProgress = Math.round(evt.index / counters.totalCount() * 100);
@@ -284,11 +291,11 @@ export default {
           break;
         }
         case 'waiting':
-          this.execLogs.push(`[等待] ${evt.interval_min} 分钟后进入下一轮...`);
+          this.logLine(`[等待] ${evt.interval_min} 分钟后进入下一轮...`);
           break;
         case 'stopped':
           this.execSummary = { type: 'warning', text: '已停止', detail: `成功 ${evt.success} / 失败 ${evt.fail}，第 ${evt.round} 轮` };
-          this.execLogs.push(`[已停止] ${evt.message}`);
+          this.logLine(`[已停止] ${evt.message}`);
           break;
         case 'done':
           this.execSummary = {
@@ -297,12 +304,12 @@ export default {
             detail: evt.cloud_url ? `云端: ${evt.cloud_url}` : '',
           };
           this.execProgress = 100;
-          this.execLogs.push(`[完成] ${evt.success}/${evt.total} 成功，${evt.rounds} 轮`);
-          if (evt.cloud_url) this.execLogs.push(`[云端] ${evt.cloud_url}`);
+          this.logLine(`[完成] ${evt.success}/${evt.total} 成功，${evt.rounds} 轮`);
+          if (evt.cloud_url) this.logLine(`[云端] ${evt.cloud_url}`);
           break;
         case 'error':
           this.execSummary = { type: 'danger', text: '执行错误', detail: evt.message };
-          this.execLogs.push(`[错误] ${evt.message}`);
+          this.logLine(`[错误] ${evt.message}`);
           break;
       }
     },

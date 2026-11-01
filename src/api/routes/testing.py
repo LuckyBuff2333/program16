@@ -3904,6 +3904,8 @@ async def regression_run(request: Request):
         from src.clients.base import http_post
         from src.api.routes.shared import regression_stop_event as _stop_event
         _stop_event.clear()  # 新执行开始时清除停止标志
+        _batch_start = datetime.now()
+        _batch_start_str = _batch_start.strftime("%Y-%m-%d %H:%M:%S")
         loop = asyncio.get_event_loop()
         # 读取配置中的 Jira 号字段名
         cfg = load_config().get("feishu_bitable", {})
@@ -4016,9 +4018,9 @@ async def regression_run(request: Request):
                     resp_code = resp.get("code") if isinstance(resp, dict) else None
                     resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
                     is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
-                    results.append({jira_col: bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200]})
+                    results.append({jira_col: bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200], "执行时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                 except Exception as e:
-                    results.append({jira_col: bugid, "执行结果": "失败", "备注": str(e)[:200]})
+                    results.append({jira_col: bugid, "执行结果": "失败", "备注": str(e)[:200], "执行时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                 yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(round_candidates), 'bugid': bugid, 'status': results[-1]['执行结果'], 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
             round_success = sum(1 for r in results if r["执行结果"] == "成功")
             round_fail = len(results) - round_success
@@ -4034,7 +4036,7 @@ async def regression_run(request: Request):
         time_str = datetime.now().strftime("%H%M%S")
         mode_label = "线上" if exec_mode == "online" else "PC"
         os.makedirs(_UNANALYZED_DIR, exist_ok=True)
-        batch_csv = os.path.join(_UNANALYZED_DIR, f"regression_{date_str}_{time_str}.csv")
+        batch_csv = os.path.join(_UNANALYZED_DIR, f"regression_{_batch_start.strftime('%Y-%m-%d')}_{_batch_start.strftime('%H%M%S')}.csv")
         try:
             with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
                 writer = _csv.writer(f)
@@ -4042,10 +4044,10 @@ async def regression_run(request: Request):
                                  "分析并发数", "下载并发数", "模型", "触发来源", "执行模式"])
                 for r in all_results:
                     writer.writerow([r[jira_col], r["执行结果"], trigger_times.get(r[jira_col], ""),
-                                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"), r.get("备注", ""),
+                                     r.get("执行时间") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"), r.get("备注", ""),
                                      _batch_meta["分析并发数"], _batch_meta["下载并发数"],
                                      _batch_meta["模型"], _batch_meta["触发来源"], mode_label])
-            doc_title = f"回归执行 {mode_label} {date_str} {time_str} ({total_success}/{len(all_results)}, {total_rounds}轮)"
+            doc_title = f"回归执行 {mode_label} {_batch_start.strftime('%Y-%m-%d')} {_batch_start.strftime('%H%M%S')} ({total_success}/{len(all_results)}, {total_rounds}轮)"
             cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
         except Exception as e:
             cloud_url = ""

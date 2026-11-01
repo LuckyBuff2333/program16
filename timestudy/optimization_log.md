@@ -1284,3 +1284,17 @@ flowchart TD
 - **实现文件**：`frontend/src/views/RegressionPage.vue`、`src/api/routes/testing.py`
 
 </details>
+
+<details>
+<summary><b>87. 回归批量执行增加执行时间（2026-11-01）</b></summary>
+
+- **需求**：回归批量执行也要记录执行时间，即当前时间。
+- **后端**：
+  1. 批次开始时记录 `_batch_start`；
+  2. 每条结果写入实际执行时间（不再统一用保存时刻）；
+  3. CSV 的“执行时间”列使用每条时间，云端文档标题/文件名使用批次开始时间。
+- **前端**：回归执行日志每行加 `[HH:mm:ss]` 当前时间前缀。
+- **验证**：全量 **116 passed**，前端构建通过。
+- **实现文件**：`src/api/routes/testing.py`、`frontend/src/views/RegressionPage.vue`
+
+</details>
