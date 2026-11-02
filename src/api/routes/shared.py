@@ -80,7 +80,7 @@ try:
     _DIAG_EXECUTOR_MAX_WORKERS = max(1, int(load_config().get("params", {}).get("diag_concurrency", 5)))
 except Exception:
     _DIAG_EXECUTOR_MAX_WORKERS = 1
-_DIAG_TIMEOUT_SECONDS = 300
+_DIAG_TIMEOUT_SECONDS = 900
 
 # 内存缓存：上传文件解析后的行数据
 uploaded_files: dict = {}

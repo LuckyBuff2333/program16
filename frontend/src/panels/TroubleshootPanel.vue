@@ -639,7 +639,7 @@ export default {
       this.troubleshoot.diagLoadingMap = { ...this.troubleshoot.diagLoadingMap, [bugid]: true };
       try {
         let signal;
-        const timeoutSig = (() => { try { return AbortSignal.timeout(300000); } catch (_) { return null; } })();
+        const timeoutSig = (() => { try { return AbortSignal.timeout(900000); } catch (_) { return null; } })();
         const abortSig = this.troubleshoot.abortController ? this.troubleshoot.abortController.signal : null;
         if (abortSig && timeoutSig) {
           try { signal = (AbortSignal as any).any([abortSig, timeoutSig]); } catch (_) { signal = abortSig; }
@@ -663,10 +663,10 @@ export default {
         // AbortSignal 超时：不归为网络中断，仅标记当前条目
         const isTimeout = e?.name === 'TimeoutError' || msg.includes('signal timed out') || msg.includes('timed out');
         if (isTimeout) {
-          ElMessage.warning(`${bugid} 诊断超时（5分钟），请稍后重试`);
+          ElMessage.warning(`${bugid} 诊断超时（15分钟），请稍后重试`);
           const idx = this.troubleshoot.diagResults.findIndex(r => r.bugid === bugid);
           const fallback = { bugid, category: '诊断超时', problem_time: row['分析问题时间'] || '',
-            archive_files: [], detail: '诊断接口响应超时（5分钟），请稍后重试',
+            archive_files: [], detail: '诊断接口响应超时（15分钟），请稍后重试',
             verify_status: '', suggested_time: '', report: {}, done_time: row['分析完成时间'] || '' };
           if (idx >= 0) { this.troubleshoot.diagResults.splice(idx, 1, fallback); }
           else { this.troubleshoot.diagResults.push(fallback); }

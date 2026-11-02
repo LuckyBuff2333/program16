@@ -1457,3 +1457,13 @@ flowchart TD
 - **实现文件**：`src/core/attachment_guard.py`、`src/api/routes/shared.py`、`frontend/src/panels/TroubleshootPanel.vue`、`config/config.yaml`
 
 </details>
+
+<details>
+<summary><b>101. 诊断超时由5分钟放宽到15分钟（2026-11-02）</b></summary>
+
+- **问题**：诊断并发提到 5、下载限 3 后，排队等待下载的条目容易超过 5 分钟，被前后端超时中断，表现为“本轮执行失败”。
+- **修改**：后端 `_DIAG_TIMEOUT_SECONDS` 300→900；前端 `AbortSignal.timeout` 300000→900000，提示文案同步为 15 分钟。
+- **验证**：`py_compile` OK，前端构建通过。
+- **实现文件**：`src/api/routes/shared.py`、`frontend/src/panels/TroubleshootPanel.vue`
+
+</details>
