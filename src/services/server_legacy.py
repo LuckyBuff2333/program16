@@ -6695,9 +6695,18 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             return _ok(result, f"{bugid} 诊断完成：{category}")
     # —— 识别 gmlogger 附件（智能检测：文件名含 gmlogger 或压缩包内含 main.log）——
     if not _has_gmlogger_logs(attachments, bugid):
-        # 无 gmlogger 日志文件
-        category = "无gmlogger文件"
-        detail = _build_simple_detail("", "", "", f"无gmlogger文件（共 {len(attachments)} 个附件）")
+        # 附件存在但未被识别为日志 → 不能直接判“无gmlogger”，避免误伤
+        _names = [str(a.get("filename", "") or "") for a in attachments]
+        _archive_like = any(n.lower().endswith((".zip", ".rar", ".7z", ".log", ".txt", ".gz")) for n in _names)
+        if not attachments:
+            category = "无gmlogger文件"
+            detail = _build_simple_detail("", "", "", "无任何附件（无日志）")
+        elif _archive_like:
+            category = "解压问题"
+            detail = _build_simple_detail("", "", "", f"附件中存在压缩包/日志，但未识别出可用 gmlogger（共 {len(attachments)} 个附件）")
+        else:
+            category = "无参考"
+            detail = _build_simple_detail("", "", "", f"附件中无 gmlogger/日志文件（共 {len(attachments)} 个附件，视频/图片已跳过）")
         verify_status, suggested_time = "", ""
         archive_results = []
         report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time, archive_results)
@@ -7057,24 +7066,42 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             _save_diagnose_cache(bugid, result)
             return _ok(result, f"{bugid} 诊断完成：{category}")
         category = "触发时间问题"
-        if main_times:
-            final_msg = f"触发时间问题（包内时间戳与错误时间不匹配）"
-        elif all_times:
-            final_msg = f"触发时间问题（包内文件时间戳与错误时间不匹配）"
+        _no_ts = not main_times and not all_times
+        if _no_ts:
+            # 包内没有任何时间戳：不能用“触发时间问题”下结论
+            _gm_hit = [t for _s, t in gm_times if err_dt and abs((t - err_dt).total_seconds()) <= 300]
+            if _gm_hit:
+                category = "正常"
+                final_msg = "触发时间与 gmlogger 文件名时间一致"
+                verify_status, suggested_time = "success", problem_time
+            elif gm_probe.get("status") == "failed":
+                category = "解压问题"
+                final_msg = "压缩包探测失败，无法验证触发时间"
+                verify_status, suggested_time = "manual", ""
+            else:
+                category = "无参考"
+                final_msg = "包内未提取到内容时间戳，无法验证触发时间"
+                verify_status, suggested_time = "manual", ""
         else:
-            final_msg = f"触发时间问题（包内未提取到内容时间戳）"
-        if gm_probe.get("status") == "failed":
-            final_msg += f"（内包探测失败）"
-        elif main_entries:
-            final_msg += f"（包内 main 文件：{', '.join(main_entries[:5])}）"
-        # —— 包内时间戳也未命中：用包内时间戳重新验证修正建议 ——
-        _check_diag_cancel(bugid)
-        verify_status, suggested_time, vdetail, _vid_extracted = _diag_verify_suggestion(issue, gm_times, [],
+            if main_times:
+                final_msg = f"触发时间问题（包内时间戳与错误时间不匹配）"
+            else:
+                final_msg = f"触发时间问题（包内文件时间戳与错误时间不匹配）"
+            if gm_probe.get("status") == "failed":
+                final_msg += f"（内包探测失败）"
+            elif main_entries:
+                final_msg += f"（包内 main 文件：{', '.join(main_entries[:5])}）"
+        # —— 仅“触发时间问题”需要用包内时间戳重新验证修正建议 ——
+        _vid_extracted = ""
+        vdetail = ""
+        if category == "触发时间问题":
+            _check_diag_cancel(bugid)
+            verify_status, suggested_time, vdetail, _vid_extracted = _diag_verify_suggestion(issue, gm_times, [],
                                                                          main_times=main_times, all_times=all_times,
                                                                          headers=headers, att_timeout=att_timeout)
-        # 直接使用函数返回的视频提取时间（即使未通过验证也记录）
-        if _vid_extracted:
-            video_time = _vid_extracted
+            # 直接使用函数返回的视频提取时间（即使未通过验证也记录）
+            if _vid_extracted:
+                video_time = _vid_extracted
         # 方向敏感判定：晚于抓包 >300s 判不可用；早于抓包 <=15min 属正常
         time_check = _diag_time_check(issue, suggested_time or problem_time, gm_times, main_times, all_times,
                                       video_time or "", current_time=problem_time)
