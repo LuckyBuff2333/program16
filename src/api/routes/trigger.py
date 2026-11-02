@@ -974,7 +974,7 @@ def _parse_time_any(s: str):
     s = str(s).strip()
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
         try:
-            return datetime.strptime(s, fmt)
+            return _datetime.strptime(s, fmt)
         except ValueError:
             continue
     return None
@@ -1036,6 +1036,9 @@ async def link_compare(request: Request):
         return _fail("缺少 app_token 或 table_id")
 
     def event_generator():
+        import json as _json
+        import csv
+        from datetime import datetime
         from src.clients import jira_client as _jc
         from src.services.server_legacy import (_diag_extract_time_from_video_simple,
                                                 _diag_extract_time_from_images, _VIDEO_SUFFIXES)
@@ -1198,6 +1201,7 @@ async def link_writeback(request: Request):
 
 @router.post("/api/trigger/link_to_trigger")
 async def link_to_trigger(request: Request):
+    import re
     from src.api.routes.shared import ok as _ok, fail as _fail
     from src.clients import feishu_client
     body = await request.json()
