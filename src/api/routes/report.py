@@ -17,7 +17,7 @@ router = APIRouter()
 # ── 云端看板缓存（按日期，今天 30 分钟 / 历史 24 小时）──
 _dashboard_cloud_cache = {}  # {date_str: {"ts": float, "batches": list}}
 _dashboard_cache_lock = threading.Lock()
-_DASHBOARD_CLOUD_TTL = 120  # 今天: 2 分钟（手动刷新时更新）
+_DASHBOARD_CLOUD_TTL = 2 * 3600  # 今天: 2 小时（2 小时内重复打开页面直接复用缓存，避免重复刷新）
 _DASHBOARD_HISTORY_TTL = 10 * 365 * 86400  # 历史日期: 永久（数据不会变，除非 force 或云端 JSON 被删）
 _DASHBOARD_CACHE_FOLDER = "JXbNfpdzJlJELNdv10Pc5ElVnAc"  # 看板缓存 JSON 文件夹（批次文件夹下的 dashboard_cache 子文件夹，user_access_token 创建）
 _dashboard_cloud_index = {}  # {date_str: file_token} 缓存云端 JSON 文件索引

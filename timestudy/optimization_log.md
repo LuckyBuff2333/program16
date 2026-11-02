@@ -1407,3 +1407,13 @@ flowchart TD
 - **实现文件**：`src/services/troubleshoot_service.py`
 
 </details>
+
+<details>
+<summary><b>97. 看板今天缓存改为 2 小时（2026-11-02）</b></summary>
+
+- **需求**：今天的数据 2 小时内已刷新过，重新打开页面不再重复刷新。
+- **修改**：`_DASHBOARD_CLOUD_TTL` 由 120 秒改为 2 小时；页面在 2 小时内打开直接命中缓存，后台仍每 2 小时增量刷新一次。
+- **验证**：`py_compile` OK，全量 **116 passed**。
+- **实现文件**：`src/api/routes/report.py`
+
+</details>
