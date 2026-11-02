@@ -4034,7 +4034,7 @@ def _ocr_frame_regions(frame) -> str:
         h, w = frame.shape[:2]
         regions = [
             (0, 0, w, max(1, int(h * 0.10))),                 # 顶部状态栏
-            (int(w * 0.55), int(h * 0.94), w, h),             # 右下任务栏
+            (int(w * 0.55), int(h * 0.75), w, h),             # 右下任务栏（上移到 75%，避免漏掉 17:51 这类任务栏时间）
         ]
         for (x1, y1, x2, y2) in regions:
             if x2 - x1 < 40 or y2 - y1 < 12:
