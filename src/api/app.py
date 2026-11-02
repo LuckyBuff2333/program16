@@ -277,26 +277,32 @@ async def _on_startup():
                 pass
 
     # 后台预热看板缓存：冷启动首次计算要 60~90 秒（主表 6000+ 条 + CSV），
-    # 提前算好，用户打开「数据看板」时直接命中缓存
-    def _warm_dashboard_cache():
-        import time as _time
+    # 提前算好，用户打开「数据看板」时直接命中缓存；
+    # 服务运行期间每 2 小时做一次增量刷新（仅刷新未完成/新增批次）
+    _dashboard_refresh_stop = threading.Event()
+
+    def _dashboard_refresher():
         from datetime import datetime
-        _time.sleep(8)
-        try:
-            from src.api.routes.report import _dashboard_data_sync, _dashboard_dates_sync
-            _dashboard_data_sync(datetime.now().strftime("%Y-%m-%d"))
+        # 启动后先预热
+        _dashboard_refresh_stop.wait(8)
+        while not _dashboard_refresh_stop.is_set():
             try:
-                _dashboard_dates_sync()
-            except Exception as _e2:
-                _logger.warning("看板日期列表预热失败: %s", _e2)
-            _logger.info("看板缓存预热完成（今天 + 日期列表）")
-        except Exception as _e:
-            _logger.warning("看板缓存预热失败（不影响主服务）: %s", _e)
+                from src.api.routes.report import _dashboard_data_sync, _dashboard_dates_sync
+                _dashboard_data_sync(datetime.now().strftime("%Y-%m-%d"))
+                try:
+                    _dashboard_dates_sync()
+                except Exception as _e2:
+                    _logger.warning("看板日期列表刷新失败: %s", _e2)
+                _logger.info("看板缓存刷新完成（今天 + 日期列表）")
+            except Exception as _e:
+                _logger.warning("看板缓存刷新失败（不影响主服务）: %s", _e)
+            # 每 2 小时刷新一次，服务关闭时立即退出
+            _dashboard_refresh_stop.wait(2 * 3600)
 
     try:
-        threading.Thread(target=_warm_dashboard_cache, name="dashboard-warmup", daemon=True).start()
+        threading.Thread(target=_dashboard_refresher, name="dashboard-refresher", daemon=True).start()
     except Exception as _e:
-        _logger.warning("看板预热线程启动失败: %s", _e)
+        _logger.warning("看板刷新线程启动失败: %s", _e)
 
 async def _on_shutdown():
     """服务关闭时：设置所有取消标志，让轮询线程快速退出"""

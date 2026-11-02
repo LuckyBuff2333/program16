@@ -1327,3 +1327,16 @@ flowchart TD
 - **实现文件**：`src/clients/base.py`、`src/api/routes/testing.py`
 
 </details>
+
+<details>
+<summary><b>90. 数据看板每 2 小时增量刷新（2026-11-02）</b></summary>
+
+- **需求**：服务运行期间，数据看板每 2 小时自动增量更新一次。
+- **实现**：`app.py` 启动线程由“只预热一次”改为循环：
+  1. 启动 8 秒后先预热今天数据 + 日期列表；
+  2. 之后每 2 小时调用 `_dashboard_data_sync(今天)`，内部按批次增量刷新；
+  3. 同时刷新日期列表；异常只记日志，不影响主服务。
+- **验证**：`py_compile` OK，全量 **116 passed**。
+- **实现文件**：`src/api/app.py`
+
+</details>
