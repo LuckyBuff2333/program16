@@ -7067,14 +7067,15 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             return _ok(result, f"{bugid} 诊断完成：{category}")
         category = "触发时间问题"
         _no_ts = not main_times and not all_times
-        if _no_ts:
+        # gmlogger 文件名时间优先：与问题时间一致即正常（即使包内时间戳有偏差）
+        _gm_hit = [t for _s, t in gm_times if err_dt and abs((t - err_dt).total_seconds()) <= 300]
+        if _gm_hit:
+            category = "正常"
+            final_msg = "触发时间与 gmlogger 文件名时间一致"
+            verify_status, suggested_time = "success", problem_time
+        elif _no_ts:
             # 包内没有任何时间戳：不能用“触发时间问题”下结论
-            _gm_hit = [t for _s, t in gm_times if err_dt and abs((t - err_dt).total_seconds()) <= 300]
-            if _gm_hit:
-                category = "正常"
-                final_msg = "触发时间与 gmlogger 文件名时间一致"
-                verify_status, suggested_time = "success", problem_time
-            elif gm_times:
+            if gm_times:
                 # 有 gmlogger 文件名时间但与问题时间不一致 → 触发时间问题，并给出参考时间
                 _gm_best = min(gm_times, key=lambda kv: abs((kv[1] - err_dt).total_seconds())) if err_dt else gm_times[0]
                 category = "触发时间问题"
@@ -7108,6 +7109,13 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             # 直接使用函数返回的视频提取时间（即使未通过验证也记录）
             if _vid_extracted:
                 video_time = _vid_extracted
+        # 触发时间问题必须有明确建议；没有时用最近的包内/gmlogger 时间兜底
+        if category == "触发时间问题" and not suggested_time:
+            _pool = [t for _s, t in (main_times + all_times + gm_times)]
+            if _pool and err_dt:
+                suggested_time = min(_pool, key=lambda t: abs((t - err_dt).total_seconds())).strftime("%Y-%m-%d %H:%M:%S")
+                verify_status = "manual"
+                final_msg += "（已给出最近日志时间）"
         # 方向敏感判定：晚于抓包 >300s 判不可用；早于抓包 <=15min 属正常
         time_check = _diag_time_check(issue, suggested_time or problem_time, gm_times, main_times, all_times,
                                       video_time or "", current_time=problem_time)

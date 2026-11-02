@@ -1431,3 +1431,17 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>99. 诊断误判全量修正：gmlogger 时间优先 + 建议时间兜底（2026-11-02）</b></summary>
+
+- **修正**：
+  1. gmlogger 文件名时间与问题时间 ≤300s → 正常（即使包内时间戳有偏差）；
+  2. 包内有时间戳但与问题时间不一致 → 触发时间问题；
+  3. 包内无时间戳：gmlogger 时间不一致→触发时间问题并建议；探测失败→解压问题；都没有→无参考；
+  4. 触发时间问题若没有建议时间，用最近的 main/all/gmlogger 时间兜底；
+  5. 只有视频/图片附件 → 无参考，不再判无gmlogger。
+- **验证**：`py_compile` OK，全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>
