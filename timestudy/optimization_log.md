@@ -1532,3 +1532,17 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>107. 只有时分时用 gmlogger main 文件名日期补全（2026-11-02）</b></summary>
+
+- **规则**：OCR 只有 14:43 这类时分时，不再丢弃；用 gmlogger 解压出的 main 文件名时间中“时分最接近”的那个日期补全。
+- **实现**：
+  1. 新增 `_fill_time_with_ref_date(time_str, refs)`，按时分圆周距离选最近参考；
+  2. 视频建议返回前补全为完整日期时间；
+  3. `_diag_time_check` 的时分候选优先用 main/all/gmlogger 参考日期，没有参考时才用 Jira 创建日期。
+- **示例**：OCR 14:43，main 文件 14:43:12 → 补全为当天 14:43:00。
+- **验证**：main 文件名解析测试通过（11:14:23 等），全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>

@@ -6203,6 +6203,35 @@ def _build_simple_detail(comment_time: str, video_time: str, img_time_str: str, 
     return "\n".join(lines)
 
 
+def _fill_time_with_ref_date(time_str: str, refs) -> str:
+    """只有时分的时间：用参考时间中“时分最接近”的那个日期补全。
+
+    例如 OCR 14:43，gmlogger main 文件有 14:43:12/15:20:00，则取 14:43:12 的日期。
+    """
+    import re as _re
+    import datetime as _dtmod
+    s = str(time_str or "").strip()
+    if not s or _ts_parse_datetime(s):
+        return s
+    m = _re.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", s)
+    if not m:
+        return s
+    hh, mm, ss = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+    tod = hh * 3600 + mm * 60 + ss
+    best_dt = None; best_diff = None
+    for r in (refs or []):
+        dt = r[1] if isinstance(r, tuple) else r
+        if not isinstance(dt, _dtmod.datetime):
+            continue
+        d = abs(dt.hour * 3600 + dt.minute * 60 + dt.second - tod)
+        d = min(d, 86400 - d)
+        if best_diff is None or d < best_diff:
+            best_diff, best_dt = d, dt
+    if best_dt is None:
+        return s
+    return best_dt.replace(hour=hh, minute=mm, second=ss, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _gmlogger_segment_bounds(t, refs):
     """返回事件时间所在日志包的 (start, end)；不在任何包内返回 None。
 
@@ -6264,7 +6293,8 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
             gm_ref_dt = gm_times[0][1] if gm_times else None
             vid_time, vid_detail = _diag_extract_time_from_video(issue, headers, att_timeout, gm_dates, ref_pool, gm_ref_dt, gm_times)
             if vid_time:
-                return "success", vid_time, f"视频帧 OCR 兜底: {vid_detail}", vid_time
+                _vid_full = _fill_time_with_ref_date(vid_time, ref_pool) or vid_time
+                return "success", _vid_full, f"视频帧 OCR 兜底: {vid_detail}", _vid_full
         # 视频兜底未命中：用包内时间戳中最近的作为建议
         if ref_pool and ext_dt:
             # 找与提取时间最近的包内时间戳
@@ -6364,9 +6394,14 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
     if candidate and not _ts_parse_datetime(str(candidate)):
         _m3 = _re3.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", str(candidate).strip())
         _created3 = _ts_parse_datetime(str((issue.get("fields") or {}).get("created") or "")[:19])
-        if _m3 and _created3:
-            candidate = _created3.replace(hour=int(_m3.group(1)), minute=int(_m3.group(2)),
-                                          second=int(_m3.group(3) or 0), microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        if _m3:
+            _refs3 = [dt for _, dt in (main_times or [])] + [dt for _, dt in (all_times or [])] + [dt for _, dt in (gm_times or [])]
+            _filled3 = _fill_time_with_ref_date(str(candidate), _refs3)
+            if _filled3 != str(candidate):
+                candidate = _filled3
+            elif _created3:
+                candidate = _created3.replace(hour=int(_m3.group(1)), minute=int(_m3.group(2)),
+                                              second=int(_m3.group(3) or 0), microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
     refs = [dt for _, dt in (main_times or [])] + [dt for _, dt in (all_times or [])]
     # 优先用日志包文件名时间（真正的抓包时刻）；包内时间戳可能是历史轮转日志，不能直接当抓包时间
     # 事件时间：用于选择“事件之后最近的一次抓包”，避免落在两个包之间时默认取前一个
