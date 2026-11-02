@@ -1163,11 +1163,21 @@ export default {
       } catch (e) { ElMessage.error('写入失败: ' + (e.message || e)); }
       finally { this.troubleshoot.writingReview = false; }
     },
+    getManualReviewRows() {
+      const onlyEmpty = !!this.troubleshoot.execOnlyEmptyReview;
+      return (this.troubleshoot.diagResults || []).filter(r => {
+        if (r.verify_status !== 'manual') return false;
+        if (!onlyEmpty) return true;
+        const row = (this.troubleshoot.records || []).find(x => x['jira号'] === r.bugid);
+        const review = String((row && row['人工审核结果']) || r.human_review || '').trim();
+        return !review;
+      });
+    },
     getManualReviewCount() {
-      return (this.troubleshoot.diagResults || []).filter(r => r.verify_status === 'manual').length;
+      return this.getManualReviewRows().length;
     },
     async rerunManualReview() {
-      const manuals = this.troubleshoot.diagResults.filter(r => r.verify_status === 'manual');
+      const manuals = this.getManualReviewRows();
       if (!manuals.length) { ElMessage.warning('无待人工审核的记录'); return; }
       this.troubleshoot.diagRunning = true;
       this.troubleshoot.stopFlag = false;

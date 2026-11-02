@@ -1363,3 +1363,14 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>93. 问题排查“仅执行人工审核为空”过滤生效（2026-11-02）</b></summary>
+
+- **问题**：勾选“仅执行人工审核为空的记录”后，已手动填写人工审核结果的 Jira 仍被加入重跑队列。
+- **原因**：`rerunManualReview` 只按 `verify_status==='manual'` 过滤，完全没用勾选项。
+- **修复**：新增 `getManualReviewRows()`，勾选时用 `records` 里的 `人工审核结果` 排除非空记录；按钮数量与执行队列统一使用该结果。
+- **验证**：前端构建通过。
+- **实现文件**：`frontend/src/panels/TroubleshootPanel.vue`
+
+</details>
