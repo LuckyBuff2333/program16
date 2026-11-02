@@ -1340,3 +1340,13 @@ flowchart TD
 - **实现文件**：`src/api/app.py`
 
 </details>
+
+<details>
+<summary><b>91. 看板定时刷新只刷当天（2026-11-02）</b></summary>
+
+- **调整**：2 小时定时刷新只调用 `_dashboard_data_sync(今天)`，历史日期不再参与；
+- **日期列表**：仅在跨天时刷新一次，避免每 2 小时扫描历史日期；
+- **验证**：`py_compile` OK，全量 **116 passed**。
+- **实现文件**：`src/api/app.py`
+
+</details>

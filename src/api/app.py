@@ -283,17 +283,23 @@ async def _on_startup():
 
     def _dashboard_refresher():
         from datetime import datetime
+        _last_date = ""
         # 启动后先预热
         _dashboard_refresh_stop.wait(8)
         while not _dashboard_refresh_stop.is_set():
             try:
                 from src.api.routes.report import _dashboard_data_sync, _dashboard_dates_sync
-                _dashboard_data_sync(datetime.now().strftime("%Y-%m-%d"))
-                try:
-                    _dashboard_dates_sync()
-                except Exception as _e2:
-                    _logger.warning("看板日期列表刷新失败: %s", _e2)
-                _logger.info("看板缓存刷新完成（今天 + 日期列表）")
+                _today = datetime.now().strftime("%Y-%m-%d")
+                # 只刷新当天数据，历史日期不刷新
+                _dashboard_data_sync(_today)
+                # 日期列表仅在跨天时刷新一次，避免每 2 小时扫描历史日期
+                if _today != _last_date:
+                    try:
+                        _dashboard_dates_sync()
+                    except Exception as _e2:
+                        _logger.warning("看板日期列表刷新失败: %s", _e2)
+                    _last_date = _today
+                _logger.info("看板缓存刷新完成（仅今天 %s）", _today)
             except Exception as _e:
                 _logger.warning("看板缓存刷新失败（不影响主服务）: %s", _e)
             # 每 2 小时刷新一次，服务关闭时立即退出
