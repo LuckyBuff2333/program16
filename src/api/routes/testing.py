@@ -2725,6 +2725,34 @@ async def test_prod_batch_run(request: Request):
                 logger.warning("云端触发时间加载失败: %s", e)
                 cloud_keys = set()
             cloud_hit_count = len(trigger_times) - frontend_hit
+        # 已有时间（前端/云端缓存）也做一次 gmlogger 对齐，避免旧时间直接进入分析
+        _align_targets = [b for b in run_bugids if b in trigger_times]
+        if _align_targets:
+            def _align_all():
+                import concurrent.futures as _cf
+                from src.clients import jira_client as _jc2
+                from src.services.server_legacy import _align_time_to_gmlogger as _align2
+                def _one(b):
+                    try:
+                        iss = _jc2.fetch_issue(b)
+                        atts = (iss.get("fields") or {}).get("attachment") or []
+                        return b, _align2(iss, trigger_times.get(b, ""), atts)
+                    except Exception:
+                        return b, trigger_times.get(b, "")
+                out = {}
+                with _cf.ThreadPoolExecutor(max_workers=8) as _pool:
+                    for b, v in _pool.map(_one, _align_targets):
+                        out[b] = v
+                return out
+            try:
+                _aligned = await loop.run_in_executor(None, _align_all)
+                _changed = sum(1 for b, v in _aligned.items() if v and v != trigger_times.get(b))
+                trigger_times.update({b: v for b, v in _aligned.items() if v})
+                if _changed:
+                    logger.info("批量执行前时间对齐: %d/%d 条已修正", _changed, len(_align_targets))
+                    yield f"data: {_json.dumps({'type': 'align_done', 'changed': _changed, 'total': len(_align_targets)}, ensure_ascii=False)}\n\n"
+            except Exception as _e:
+                logger.warning("批量执行前时间对齐失败（继续）: %s", _e)
         # 跳过云端缓存时，所有 bugid 都进入待提取池
         pending_pool = [b for b in run_bugids if b not in trigger_times and (skip_cloud_cache or b not in cloud_keys)]
         logger.info("前端传入 %d 条，云端补充 %d 条，空标记跳过 %d 条，待提取池 %d 条%s",

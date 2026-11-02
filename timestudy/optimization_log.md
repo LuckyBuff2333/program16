@@ -1545,3 +1545,15 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>116. 修复时间对齐 NameError，并对已有缓存时间去重对齐（2026-11-03）</b></summary>
+
+- **严重 bug**：`_align_time_to_gmlogger` 使用 `timedelta` 但未导入，批量时间纠偏会抛 `NameError` 被外层吞掉，实际不生效。
+- **修复**：导入 `timedelta`；VCU-562469 验证 14:19:41 → 14:16:41。
+- **覆盖**：本周 77 条时间失败中 **45 条**会被纠偏（36 条抓包相等回退 3 分钟、9 条偏差对齐）。
+- **功能测试批量执行**：对前端/云端已有时间也先做 gmlogger 对齐，避免旧错误时间直接进入分析。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`、`src/api/routes/testing.py`
+
+</details>
