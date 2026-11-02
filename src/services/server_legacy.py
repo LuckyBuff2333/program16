@@ -6315,14 +6315,28 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
     from src.services.trigger_ops import self_check_trigger_time
     refs = [dt for _, dt in (main_times or [])] + [dt for _, dt in (all_times or [])]
     # 优先用日志包文件名时间（真正的抓包时刻）；包内时间戳可能是历史轮转日志，不能直接当抓包时间
+    # 事件时间：用于选择“事件之后最近的一次抓包”，避免落在两个包之间时默认取前一个
+    _near = (_ts_parse_datetime(str(candidate)) or _ts_parse_datetime(str(vid_time))
+             or _ts_parse_datetime(str(current_time)))
     try:
-        cap = _jc.get_log_capture_time(issue)
+        cap = _jc.get_log_capture_time(issue, near_time=_near)
     except Exception:
         cap = None
     if cap is None and gm_times:
-        cap = max(dt for _, dt in gm_times)
+        _gmts = sorted(dt for _, dt in gm_times)
+        if _near:
+            _after = [dt for dt in _gmts if dt >= _near]
+            cap = min(_after) if _after else max(_gmts)
+        else:
+            cap = max(_gmts)
     if cap is None and refs:
-        cap = max(refs)
+        # 包内时间戳作为兜底：取“事件之后最近的一次”，避免落在两个文件之间时默认取前一个
+        _rs = sorted(refs)
+        if _near:
+            _after = [r for r in _rs if r >= _near]
+            cap = min(_after) if _after else max(_rs)
+        else:
+            cap = max(_rs)
     if cap is None and vid_time:
         _vd = _ts_parse_datetime(str(vid_time))
         if not _vd:

@@ -1051,9 +1051,20 @@ def parse_log_filename_time(filename: str):
         return None
 
 
-def get_log_capture_time(issue: dict):
-    """从 issue 的日志附件文件名取抓包时间（datetime），没有则 None"""
+def get_log_capture_time(issue: dict, near_time=None):
+    """从 issue 的日志附件文件名取抓包时间（datetime），没有则 None
+
+    :param near_time: 事件时间；给出时选择“事件之后最近的一次抓包”，
+                      避免事件 11:17 被错误归到 11:14 的包里（应归 11:20）。
+    """
+    from datetime import datetime as _dt
+    if isinstance(near_time, str):
+        try:
+            near_time = datetime.strptime(near_time[:19], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            near_time = None
     fields = issue.get("fields") or {}
+    _times = []
     for att in fields.get("attachment") or []:
         fname = att.get("filename", "") or ""
         if not fname:
@@ -1068,8 +1079,16 @@ def get_log_capture_time(issue: dict):
             continue
         t = parse_log_filename_time(fname)
         if t:
-            return t[1]
-    return None
+            _times.append(t[1])
+    if not _times:
+        return None
+    if near_time is None:
+        return _times[0]
+    # 事件一定发生在抓包之前：取“事件之后最近的一次抓包”
+    _after = [t for t in _times if t >= near_time]
+    if _after:
+        return min(_after)
+    return max(_times)
 
 
 def extract_trigger_time_from_issue(issue: dict, return_source: bool = False, skip_attachment: bool = False):
@@ -1089,10 +1108,10 @@ def extract_trigger_time_from_issue(issue: dict, return_source: bool = False, sk
                                                                  skip_attachment=skip_attachment), ""
     if not time_str:
         return _ret("", source)
-    cap = get_log_capture_time(issue)
+    parsed = _parse_datetime_string(str(time_str))
+    cap = get_log_capture_time(issue, near_time=parsed[1] if parsed else None)
     if cap is None:
         return _ret(time_str, source)
-    parsed = _parse_datetime_string(str(time_str))
     if not parsed:
         return _ret(time_str, source)
     if (parsed[1] - cap).total_seconds() <= 300:

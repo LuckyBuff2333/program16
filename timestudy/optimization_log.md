@@ -1467,3 +1467,17 @@ flowchart TD
 - **实现文件**：`src/api/routes/shared.py`、`frontend/src/panels/TroubleshootPanel.vue`
 
 </details>
+
+<details>
+<summary><b>102. 抓包时间选择：事件之后最近，而非前一个包（2026-11-02）</b></summary>
+
+- **问题**：VCU-562951 视频 11:17，日志包时间有 11:14 和 11:20，旧逻辑默认归到 11:14（前一个包），导致 11:17 被当成晚于抓包/不可用。
+- **修复**：
+  1. `get_log_capture_time(issue, near_time)` 支持按事件时间选择“事件之后最近的一次抓包”；
+  2. `_diag_time_check` 在包内时间戳兜底时同样取 `>= 事件时间` 的最近值，而不是直接 `max` 或前一个；
+  3. 没有更晚的抓包时才回退到最晚包。
+- **效果**：11:17 会匹配 11:20 的包，而不是 11:14；事件早于抓包方向判定恢复正常。
+- **验证**：`py_compile` OK，全量 **116 passed**。
+- **实现文件**：`src/clients/jira_client.py`、`src/services/server_legacy.py`
+
+</details>
