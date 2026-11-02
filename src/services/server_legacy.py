@@ -4259,6 +4259,8 @@ def _preprocess_ocr_datetime(text: str) -> str:
                 return f"{date_part} {hh:02d}:{mm:02d}"
         return m.group(0)
     text = re.sub(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})(\d{4,6})(?!\d)', _split_date_digits, text)
+    # OCR 常把日期和时间之间的空格识别成竖线：2026-10-26|19:39:17
+    text = re.sub(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})\s*[|｜]\s*(?=\d{1,2}[:：])', r'\1 ', text)
     return text
 
 
@@ -5706,14 +5708,15 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                         logger.warning("视频帧提取：OCR 第%d秒失败: %s", sec, e)
                         continue
                     all_text = " ".join(r[1] for r in results)
-                    # 先整帧识别；没有时间相关文本时再对状态栏/任务栏/中控屏 ROI 兜底
-                    if not (_OCR_TIME_FULL_RE.search(all_text) or _OCR_TIME_ONLY_RE.search(all_text)):
-                        try:
-                            _roi_text = _ocr_frame_regions(frame) or ""
-                        except Exception:
-                            _roi_text = ""
-                        if _roi_text:
-                            all_text = f"{_roi_text} {all_text}".strip()
+                    # 状态栏/任务栏/中控屏 ROI 往往比整帧更准（整帧可能同时含视频内嵌旧时间）
+                    try:
+                        _roi_text = _ocr_frame_regions(frame) or ""
+                    except Exception:
+                        _roi_text = ""
+                    if _roi_text and (_OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text)):
+                        all_text = _roi_text
+                    elif _roi_text:
+                        all_text = f"{_roi_text} {all_text}".strip()
                     logger.info("视频帧提取(%s)：第%d秒 OCR: %s", video_label, sec + 1,
                                 all_text[:200] if all_text else "(空)")
                     all_text = _fix_ocr_missing_colon(all_text)
