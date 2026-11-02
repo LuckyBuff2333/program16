@@ -72,3 +72,6 @@ case_reports/
 # 临时下载目录
 .tmp_remote/
 tools/skills/**/adp_records_*.json
+config/config.key
+config/config.yaml.bak
+config/config.yaml.tmp

@@ -1603,3 +1603,17 @@ flowchart TD
 - **实现文件**：`src/config.py`、`config/core_settings.json`、`config/config.example.yaml`
 
 </details>
+
+<details>
+<summary><b>121. 配置加密提交：config.enc + 本机密钥（2026-11-03）</b></summary>
+
+- **问题**：明文 config.yaml 含 token/secret/cookie，GitHub push protection 直接拒绝推送。
+- **方案**：
+  1. 用 AES-256-GCM 把 config.yaml 加密为 `config/config.enc` 提交；
+  2. 密钥放 `config/config.key`（不提交）或环境变量 `D16_CONFIG_KEY`；
+  3. `load_config()` 无明文 config.yaml 时自动解密 config.enc，再与 core_settings.json 合并；
+  4. 新增 `scripts/config_crypt.py`（genkey/encrypt/decrypt）。
+- **验证**：移除明文后加载成功（token、并发参数正确）；全量 **116 passed**。
+- **实现文件**：`src/config.py`、`scripts/config_crypt.py`、`config/config.enc`
+
+</details>

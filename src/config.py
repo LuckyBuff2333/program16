@@ -17,9 +17,32 @@ else:
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "config", "config.yaml")
 # 可提交的公共配置（不含密钥），先加载它，再用本地 config.yaml 覆盖
 CONFIG_CORE_PATH = os.path.join(PROJECT_ROOT, "config", "core_settings.json")
+# 加密配置（仓库里只提交密文）
+CONFIG_ENC_PATH = os.path.join(PROJECT_ROOT, "config", "config.enc")
+CONFIG_KEY_PATH = os.path.join(PROJECT_ROOT, "config", "config.key")
 
 # 全局配置缓存
 _CONFIG = None
+
+
+def _read_encrypted_yaml() -> dict:
+    """用 config.key 或环境变量 D16_CONFIG_KEY 解密 config.enc。"""
+    import base64
+    from Crypto.Cipher import AES
+
+    key_text = os.environ.get("D16_CONFIG_KEY", "").strip()
+    if not key_text and os.path.exists(CONFIG_KEY_PATH):
+        with open(CONFIG_KEY_PATH, "r", encoding="utf-8") as f:
+            key_text = f.read().strip()
+    if not key_text:
+        raise RuntimeError("缺少配置密钥：请设置 D16_CONFIG_KEY 或放置 config/config.key")
+    key = base64.b64decode(key_text)
+    with open(CONFIG_ENC_PATH, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=base64.b64decode(payload["nonce"]))
+    plain = cipher.decrypt_and_verify(
+        base64.b64decode(payload["data"]), base64.b64decode(payload["tag"]))
+    return yaml.safe_load(plain.decode("utf-8")) or {}
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -49,8 +72,13 @@ def load_config(config_path: str = None) -> dict:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             import shutil
             shutil.copy2(bundled, path)
-    with open(path, "r", encoding="utf-8") as f:
-        local_cfg = yaml.safe_load(f) or {}
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            local_cfg = yaml.safe_load(f) or {}
+    elif config_path is None and os.path.exists(CONFIG_ENC_PATH):
+        local_cfg = _read_encrypted_yaml()
+    else:
+        raise FileNotFoundError(f"未找到配置文件：{path}")
     merged = {}
     if config_path is None and os.path.exists(CONFIG_CORE_PATH):
         try:
