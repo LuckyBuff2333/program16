@@ -1385,3 +1385,14 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/TroubleshootPanel.vue`
 
 </details>
+
+<details>
+<summary><b>95. 问题排查“人工审核为空”按 Jira 级别过滤（2026-11-02）</b></summary>
+
+- **问题**：查询条件“人工审核为空”仍返回 VCU-561234 等已手写人工审核结果的 Jira。
+- **原因**：过滤发生在**逐条记录**上；同一 Jira 有多条记录，最新一条审核为空、旧记录有“压缩包已损坏”，于是最新空记录被保留。
+- **修复**：先收集该 Jira 是否存在任一带审核结果的记录（`reviewed_jiras`），去重后再按 Jira 级别排除；只要任一记录有审核结果，整个 Jira 不返回。
+- **验证**：查询验证 `VCU-561234` 已被排除，未审核的 `VCU-562804` 保留。
+- **实现文件**：`src/services/troubleshoot_service.py`
+
+</details>

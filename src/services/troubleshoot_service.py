@@ -200,6 +200,7 @@ def query_records(
             raise
     bugid_field = _resolve_bugid_field(cfg)
     picked = {}
+    reviewed_jiras = set()  # 任一记录有人工审核结果，则整个 Jira 视为已审核
 
     for rec in records:
         fields = rec.get("fields", {})
@@ -217,11 +218,14 @@ def query_records(
         if not jira_no:
             continue
         row = _extract_record_row(fields, cfg)
-        if no_manual_review and row["人工审核结果"]:
-            continue
+        if row["人工审核结果"]:
+            reviewed_jiras.add(jira_no)
         prev = picked.get(jira_no)
         if not dedup or prev is None or row["分析完成时间"] > prev["分析完成时间"]:
             picked[jira_no] = row
+
+    if no_manual_review:
+        picked = {j: r for j, r in picked.items() if j not in reviewed_jiras}
 
     rows = sorted(picked.values(), key=lambda r: r["分析完成时间"])
     source_label = {"parseFullTicket": "线上", "feishu_bot": "飞书机器人", "jira_analyze": "PC"}.get(source_filter, "全部")
