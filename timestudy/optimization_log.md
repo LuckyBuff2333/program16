@@ -1417,3 +1417,17 @@ flowchart TD
 - **实现文件**：`src/api/routes/report.py`
 
 </details>
+
+<details>
+<summary><b>98. gmlogger 文件名时间优先于“解压失败”判定（2026-11-02）</b></summary>
+
+- **问题**：30 条“解压问题”中 11 条其实有 gmlogger 文件名时间；其中 1 条与问题时间一致、10 条不一致，应判正常/触发时间问题，而不是解压问题。
+- **修复**：包内无时间戳时，先看 gmlogger 文件名时间：
+  1. 与问题时间差 ≤300s → 正常；
+  2. 有文件名时间但不一致 → 触发时间问题，并建议最接近的 gmlogger 时间；
+  3. 没有文件名时间且探测失败 → 解压问题；
+  4. 都没有 → 无参考。
+- **验证**：`py_compile` OK，全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>

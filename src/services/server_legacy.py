@@ -7074,9 +7074,15 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                 category = "正常"
                 final_msg = "触发时间与 gmlogger 文件名时间一致"
                 verify_status, suggested_time = "success", problem_time
+            elif gm_times:
+                # 有 gmlogger 文件名时间但与问题时间不一致 → 触发时间问题，并给出参考时间
+                _gm_best = min(gm_times, key=lambda kv: abs((kv[1] - err_dt).total_seconds())) if err_dt else gm_times[0]
+                category = "触发时间问题"
+                final_msg = "触发时间与 gmlogger 文件名时间不一致"
+                verify_status, suggested_time = "manual", _gm_best[0]
             elif gm_probe.get("status") == "failed":
                 category = "解压问题"
-                final_msg = "压缩包探测失败，无法验证触发时间"
+                final_msg = "压缩包探测失败，且无 gmlogger 文件名时间，无法验证触发时间"
                 verify_status, suggested_time = "manual", ""
             else:
                 category = "无参考"
