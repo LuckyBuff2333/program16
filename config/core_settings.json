@@ -1,0 +1,183 @@
+{
+  "ai_log_api": {
+    "bugid_field": "issue_key",
+    "mock": false,
+    "time_check_enabled": true,
+    "time_warn_offset_sec": 30,
+    "time_reject_offset_sec": 300,
+    "timeout": "15",
+    "trigger_time_field": "problem_time",
+    "url": "http://10.22.126.136:8001/jira/analyze",
+    "custom_header": "X-Test-Header"
+  },
+  "adp": {
+    "app_key": "skOjTaUWsqWhWYamAtTTaQpRXiqgGirNGEoJmwRlEptJQTDduXplKpFHcTwapQYOVxhbXKmTxuzKjtWuYSJCyPYLptOCLkGuvhQBwkXYXOHjvZtPPLiTdPuffyzorKKQ",
+    "app_id": "2107062858696560449",
+    "space_id": "default_space",
+    "mcp_api_key": "11IgBMeaQ15GQGUn6R9x92pghT38yMFANLy4vC75kaFUDJoxwWmyJpPDDMSQS1dI8",
+    "mcp_url": "https://adp.cloud.tencent.com/plugin/mcp/921ad3a1-0def-4b8a-aaa6-4e5be898f511/mcp",
+    "url": "https://wss.lke.cloud.tencent.com/adp/v2/chat",
+    "sandbox_base": "https://sandbox.adp.cloud.tencent.com/files?path=",
+    "attach_api": "https://dpportal.apps.saic-gm.com/api/logAnalysis/attachments",
+    "attach_api_key": "c2e9188021fe686418627992aace130062e663940bc27629ba191672ba91547f",
+    "timeout": 3600,
+    "bitable_app_token": "K7wibpzjIaqm9DsXKfKcMDxjnQb",
+    "bitable_table_id": "tblbZDBbuidowRhX",
+    "bitable_table_name": "回归测试-第一批次",
+    "bitable_view_id": "",
+    "jira_field": "Jira链接",
+    "save_dir": "docs/adp_results",
+    "trace_report_folder": "Gia7fmmoqlLRCGdW5x1caCd2nfg",
+    "report_folder": "SeCwfa1iwlLpNEd4lf9cwAZnnHf",
+    "batch_report_folder": "Mhhdfq23flRR12die9scepr9nbd"
+  },
+  "app_log_server": {
+    "online": {
+      "debug_endpoint": "/api/logs/debug",
+      "endpoint": "/api/logs/download",
+      "host": "10.203.67.142",
+      "port": 8001
+    },
+    "pc": {
+      "debug_endpoint": "/api/logs/debug",
+      "endpoint": "/api/logs/download",
+      "host": "10.22.126.136",
+      "port": 8001
+    }
+  },
+  "audit": {
+    "audited_file": "audited_bugids.csv",
+    "bugid_column": "bugid",
+    "kb_table": "kb_analysis",
+    "process_column": "analysis_process",
+    "report_file": "audit_comparison.csv",
+    "root_cause_column": "root_cause",
+    "sample_count": 30,
+    "trigger_time_column": "trigger_time"
+  },
+  "database": {
+    "table_name": "bug_records",
+    "url": "sqlite:///data/app.db"
+  },
+  "diana": {
+    "api_key": "1fea2cc6-9ee3-4095-8715-a93976447fe0",
+    "client_id": "PVCS0l3wUS3xhb1V2Y721hIQV25SmjGVECDodz612xyYYz249G22s2771a0",
+    "env": "prod",
+    "mock": false,
+    "model": "deepseek-v-flash",
+    "prod_client_id": "PVCS0Kmt3F0lSxLNZw1kalEhdT1vdnB28NpZ2Jnse7BO5rfo7xYs42uC428",
+    "prod_model": "deepseek-v-flash",
+    "prod_url": "http://zonea-gw01.silk.saic-gm.com/aibd-diana/dianaDeepSeekVFlash/v1/chat/completions",
+    "url": "http://aigw01.apps-qa.saic-gm.com/diana-text/v1/chat/completions"
+  },
+  "feishu_bitable": {
+    "app_id": "cli_aa02aaae1538dcba",
+    "app_token": "HOARbsrB0aSViFs5AjNchSQ0nAf",
+    "batch_folder_token": "RUaqfJVJLlZ3hkdKSEuclX7Ynje",
+    "bugid_field": "jira号",
+    "domain": "saic-gm.feishu.cn",
+    "poll_interval": 30,
+    "report_field": "AI分析结果(飞书链接)",
+    "table_id": "tblM5keGYh2y0aSX",
+    "trigger_time_app_token": "Nj7Cb8vt3ayGXSsXjS9c3aFPnfd",
+    "trigger_time_table_ids": [
+      "tblhNJmpgJ2wFHsr",
+      "tblpsjgFvDnWP8Af",
+      "tblf1XfWDoKUVS6a",
+      "tblMUxahB7ENNgRx",
+      "tblo1uqz6dMM18vT",
+      "tblLWh9Bqj1DOncQ",
+      "tbl0NZ7TcY7AtRAk",
+      "tbl21OuGAmlybyoc",
+      "tblDZlUcCqiWvI0Q",
+      "tblLh5uROUJAowHQ",
+      "tbls8XOf7nngf6jL",
+      "tblYPxW14DH8ZWIs",
+      "tblq5TggwlNv1s4m",
+      "tblIsoBz9hWcgtjP",
+      "tblFt4lvsLCOHSYa",
+      "tbliPlJDgTdP2GFT"
+    ],
+    "view_id": "vewxmuI3le",
+    "wiki_token": "VSWFwwkLTiZC6QkeZY4csbwUnjd"
+  },
+  "feishu_bot": {
+    "app_id": "",
+    "enabled": true,
+    "jqls": [
+      {
+        "id": "JQL1",
+        "jql": "issuetype = bug AND text ~ \"远控\" AND text ~ \"VCU\"",
+        "label": "远控"
+      },
+      {
+        "id": "JQL2",
+        "jql": "issuetype = bug AND text ~ \"coreservice\" AND text ~ \"VCU\"",
+        "label": "coreservice"
+      },
+      {
+        "id": "JQL3",
+        "jql": "issuetype = bug AND text ~ \"SGM_Navigation750\" AND text ~ \"VCU\"",
+        "label": "导航"
+      },
+      {
+        "id": "JQL4",
+        "jql": "issuetype = bug AND text ~ \"VCU\" AND created >= \"2026/08/15\" AND created <= now() AND status != CLOSED",
+        "label": "VCU近期末关闭"
+      }
+    ]
+  },
+  "jira_api": {
+    "auth_type": "bearer",
+    "bugid_field": "",
+    "mock": false,
+    "root_cause_field": "customfield_10603",
+    "timeout": 30,
+    "url": "https://jira-patac.apps.saic-gm.com/rest/api/2/issue",
+    "username": ""
+  },
+  "knowledge_base_api": {
+    "bugid_field": "bug_id",
+    "content_field": "content",
+    "mock": true,
+    "timeout": 30,
+    "url": "http://knowledge-base.example.com/api/store"
+  },
+  "output": {
+    "doc_dir": "docs",
+    "log_dir": "logs",
+    "report_dir": "reports"
+  },
+  "params": {
+    "diag_concurrency": 5,
+    "diag_download_concurrency": 3,
+    "analysis_concurrency": 5,
+    "download_concurrency": 2,
+    "logagent_version": "1.0.0",
+    "model": "deepseek-v-pro",
+    "ocr_parallel": 2,
+    "project_name": "Jira日志分析工具",
+    "trigger_parallel": 8,
+    "trigger_source": "线上",
+    "version": "1.0.2"
+  },
+  "pc": {
+    "analysis_concurrency": 10,
+    "download_concurrency": 4
+  },
+  "prod_ai": {
+    "mock": false,
+    "timeout": 30,
+    "url": "https://dpportal.apps.saic-gm.com/api/logAnalysis/parseFullTicket"
+  },
+  "similarity": {
+    "root_cause_hit_ratio": 0.8,
+    "threshold": 0.7
+  },
+  "web": {
+    "browser": "chrome"
+  },
+  "batch_env": {
+    "software_version": "V1.0.3"
+  }
+}

@@ -1589,3 +1589,17 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>120. 公共参数抽到可提交的 core_settings.json（2026-11-03）</b></summary>
+
+- **问题**：`config/config.yaml` 含本机密钥被忽略，换机器后并发、超时、OCR 等参数不一致，提交也总被拦截。
+- **方案**：
+  1. 新增 `config/core_settings.json`：只放非密钥公共参数（并发、超时、开关、服务地址、资源 ID），提交到仓库；
+  2. `config/config.yaml` 只保留本机密钥与本地覆盖，仍不提交；
+  3. `load_config()` 先读 core，再用本地 YAML 深合并覆盖；
+  4. 新增 `config/config.example.yaml`，只列需要填写的密钥占位。
+- **验证**：合并后密钥、app_token、并发参数均正确；全量 **116 passed**。
+- **实现文件**：`src/config.py`、`config/core_settings.json`、`config/config.example.yaml`
+
+</details>

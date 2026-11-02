@@ -1,4 +1,5 @@
 """全局配置加载与日志初始化模块"""
+import json
 import logging
 import os
 import sys
@@ -14,13 +15,29 @@ else:
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 默认配置文件路径
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "config", "config.yaml")
+# 可提交的公共配置（不含密钥），先加载它，再用本地 config.yaml 覆盖
+CONFIG_CORE_PATH = os.path.join(PROJECT_ROOT, "config", "core_settings.json")
 
 # 全局配置缓存
 _CONFIG = None
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """递归合并配置：override 覆盖 base，dict 逐层合并。"""
+    for key, val in (override or {}).items():
+        if isinstance(val, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], val)
+        else:
+            base[key] = val
+    return base
+
+
 def load_config(config_path: str = None) -> dict:
-    """加载 YAML 配置文件，结果缓存供全局复用"""
+    """加载公共配置 + 本地 YAML，结果缓存供全局复用
+
+    - config/core_settings.json：可提交的公共参数（并发、超时、开关等）；
+    - config/config.yaml：本机密钥与本机覆盖，不提交。
+    """
     global _CONFIG
     if _CONFIG is not None and config_path is None:
         return _CONFIG
@@ -33,7 +50,15 @@ def load_config(config_path: str = None) -> dict:
             import shutil
             shutil.copy2(bundled, path)
     with open(path, "r", encoding="utf-8") as f:
-        _CONFIG = yaml.safe_load(f)
+        local_cfg = yaml.safe_load(f) or {}
+    merged = {}
+    if config_path is None and os.path.exists(CONFIG_CORE_PATH):
+        try:
+            with open(CONFIG_CORE_PATH, "r", encoding="utf-8") as f:
+                merged = json.load(f) or {}
+        except Exception:
+            merged = {}
+    _CONFIG = _deep_merge(merged, local_cfg)
     return _CONFIG
 
 
