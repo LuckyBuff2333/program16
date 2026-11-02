@@ -2725,8 +2725,25 @@ async def test_prod_batch_run(request: Request):
                 logger.warning("云端触发时间加载失败: %s", e)
                 cloud_keys = set()
             cloud_hit_count = len(trigger_times) - frontend_hit
-        # 已有时间（前端/云端缓存）也做一次 gmlogger 对齐，避免旧时间直接进入分析
-        _align_targets = [b for b in run_bugids if b in trigger_times]
+        # 已有时间（前端/云端缓存）也做一次 gmlogger 对齐；已分析成功的 Jira 不再纠偏
+        _success_jiras = set()
+        try:
+            from src.clients import feishu_client as _fc
+            _fcfg = load_config().get("feishu_bitable", {})
+            if _fcfg.get("app_token") and _fcfg.get("table_id"):
+                _frecs = await loop.run_in_executor(
+                    None, _fc.list_bitable_records, _fcfg["app_token"], _fcfg["table_id"])
+                _bset = set(run_bugids)
+                for _r in _frecs:
+                    _f = _r.get("fields") or {}
+                    _jk = _bitable_text(_f.get("jira号", ""))
+                    if _jk in _bset and _bitable_text(_f.get("分析结果", "")) == "成功":
+                        _success_jiras.add(_jk)
+                if _success_jiras:
+                    logger.info("时间对齐跳过已成功 Jira: %d 条", len(_success_jiras))
+        except Exception as _e:
+            logger.warning("查询已成功 Jira 失败（继续对齐）: %s", _e)
+        _align_targets = [b for b in run_bugids if b in trigger_times and b not in _success_jiras]
         if _align_targets:
             def _align_all():
                 import concurrent.futures as _cf

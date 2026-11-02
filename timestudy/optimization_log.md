@@ -1557,3 +1557,13 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`、`src/api/routes/testing.py`
 
 </details>
+
+<details>
+<summary><b>117. 已成功 Jira 不再做时间纠偏（2026-11-03）</b></summary>
+
+- **问题**：批量执行前对所有缓存时间统一纠偏，会把已分析成功、时间正确的 Jira 也改掉。
+- **修复**：纠偏前查询数据沉淀表，收集“分析结果=成功”的 Jira；这些 Jira 保留原时间，只对未成功/失败记录做 gmlogger 对齐。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/api/routes/testing.py`
+
+</details>
