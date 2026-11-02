@@ -1481,3 +1481,17 @@ flowchart TD
 - **实现文件**：`src/clients/jira_client.py`、`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>103. 日志包按时间段覆盖判定：11:17 命中 11:14 包（2026-11-02）</b></summary>
+
+- **规则**：gmlogger 的 main 文件按开始时间命名，一个文件覆盖到下一个文件开始之前；
+  例如 11:14 的包覆盖 11:14:00~11:19:59，11:17 判定为命中 11:14 包。
+- **实现**：
+  1. 新增 `_gmlogger_segment_bounds(t, refs)` 计算所在包的 `[start, end)`；
+  2. `_diag_time_check` 优先用区间结束边界作为抓包参考（11:17 → 11:20），不再默认取前一个包；
+  3. `_diag_verify_suggestion` 增加区间命中判断，命中即确认建议时间。
+- **验证**：11:17 → (11:14, 11:20) 命中；11:37 不在任何包内。全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>

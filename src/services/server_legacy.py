@@ -6189,6 +6189,36 @@ def _build_simple_detail(comment_time: str, video_time: str, img_time_str: str, 
     return "\n".join(lines)
 
 
+def _gmlogger_segment_bounds(t, refs):
+    """返回事件时间所在日志包的 (start, end)；不在任何包内返回 None。
+
+    gmlogger 的 main 文件按开始时间命名，一个文件覆盖到下一个文件开始之前：
+    例如 11:14 的包覆盖 11:14:00 ~ 11:19:59，11:17 应判定为命中 11:14 包。
+    """
+    import bisect as _bisect
+    import datetime as _dtmod
+    times = sorted({(r[1] if isinstance(r, tuple) else r) for r in (refs or []) if r})
+    if not times or t is None:
+        return None
+    i = _bisect.bisect_right(times, t) - 1
+    if i < 0:
+        return None
+    start = times[i]
+    if i + 1 < len(times):
+        end = times[i + 1]
+    else:
+        # 最后一个包：用相邻包的中位间隔估计覆盖长度，避免无限延伸
+        gaps = [(b - a).total_seconds() for a, b in zip(times, times[1:])]
+        end = start + _dtmod.timedelta(seconds=(sorted(gaps)[len(gaps)//2] if gaps else 600))
+    if start <= t < end:
+        return start, end
+    return None
+
+
+def _time_in_gmlogger_segment(t, refs) -> bool:
+    return _gmlogger_segment_bounds(t, refs) is not None
+
+
 def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, main_times: list = None,
                             all_times: list = None, headers: dict = None, att_timeout: int = 60) -> tuple:
     """触发时间修正链路：先用已有时间提取工具提取新时间（评论区优先），再用 gmlogger 包内时间戳验证，返回 (verify_status, suggested_time, verify_detail, vid_time)
@@ -6212,6 +6242,8 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
             for s, dt in ref_pool:
                 if abs((dt - ext_dt).total_seconds()) <= 300:
                     return "success", extracted, f"提取时间 {extracted}（评论区优先）在 gmlogger 包内前后5分钟有对应时间戳({s})，可用该时间作为替换", ""
+            if _time_in_gmlogger_segment(ext_dt, ref_pool):
+                return "success", extracted, f"提取时间 {extracted} 落在 gmlogger 包内时间段，确认命中", ""
         # 包内时间戳存在但提取时间未命中：尝试视频帧 OCR 兜底
         if headers:
             gm_dates = [(dt.year, dt.month, dt.day) for _, dt in (gm_times or [])]
@@ -6324,15 +6356,21 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
         cap = None
     if cap is None and gm_times:
         _gmts = sorted(dt for _, dt in gm_times)
-        if _near:
+        _b = _gmlogger_segment_bounds(_near, _gmts)
+        if _b:
+            cap = _b[1]  # 事件落在某个包内：用该包的结束边界作为抓包参考
+        elif _near:
             _after = [dt for dt in _gmts if dt >= _near]
             cap = min(_after) if _after else max(_gmts)
         else:
             cap = max(_gmts)
     if cap is None and refs:
-        # 包内时间戳作为兜底：取“事件之后最近的一次”，避免落在两个文件之间时默认取前一个
+        # 包内时间戳作为兜底：先看事件是否落在某个包的时间段内
         _rs = sorted(refs)
-        if _near:
+        _b2 = _gmlogger_segment_bounds(_near, _rs)
+        if _b2:
+            cap = _b2[1]  # 11:17 落在 11:14~11:19:59 内 → 参考 11:20
+        elif _near:
             _after = [r for r in _rs if r >= _near]
             cap = min(_after) if _after else max(_rs)
         else:
