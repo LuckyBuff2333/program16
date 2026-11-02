@@ -1578,3 +1578,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`
 
 </details>
+
+<details>
+<summary><b>119. 压缩包内包探测上限统一为 300MB（2026-11-03）</b></summary>
+
+- **规则**：gmlogger 压缩包解压/内包探测上限 300MB；超过则跳过探测，改用压缩包文件名时间或视频 OCR 对比。
+- **实现**：`_ARCHIVE_PROBE_MAX_BYTES=300MB`，探测判断与提示统一使用该常量，不再硬编码 500MB。
+- **单视频+单压缩包**：优先用压缩包文件名时间做参考；能解压时再用包内 main 时间做权威比对。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>

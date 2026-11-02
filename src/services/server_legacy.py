@@ -229,7 +229,7 @@ _ARCHIVE_NAME_RE = re.compile(r"\.(zip|7z|rar|tar|gz|bz2|xz)(\.\d{2,3})?$", re.I
 
 _SPLIT_ARCHIVE_RE = re.compile(r"\.\d{2,3}$")
 
-_ARCHIVE_PROBE_MAX_BYTES = 500 * 1024 * 1024
+_ARCHIVE_PROBE_MAX_BYTES = 300 * 1024 * 1024
 
 # 视频文件后缀
 _VIDEO_SUFFIXES = (".mp4", ".avi", ".mov", ".mkv")
@@ -3838,9 +3838,10 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
         return {"status": "failed", "reason": "无 gmlogger 压缩包附件", "main_entries": [], "main_times": []}
     # 超大包上限：避免数百分兆下载阻塞诊断太久，超限跳过内包探测走兆底链路
     total_size = sum(a.get("size", 0) for ps in groups.values() for _p, a in ps)
-    if total_size > 500 * 1024 * 1024:
-        logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > 500MB）", total_size // 1024 // 1024)
-        return {"status": "failed", "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>500MB），已跳过内包探测",
+    if total_size > _ARCHIVE_PROBE_MAX_BYTES:
+        _limit_mb = _ARCHIVE_PROBE_MAX_BYTES // 1024 // 1024
+        logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > %dMB）", total_size // 1024 // 1024, _limit_mb)
+        return {"status": "failed", "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>{_limit_mb}MB），已跳过内包探测",
                 "main_entries": [], "main_times": [], "all_times": []}
     logger.info("gmlogger 内包探测：开始下载（%dMB）", total_size // 1024 // 1024)
     _DL_DEADLINE = 300  # 总下载时间上限 5 分钟，超时则跳过
