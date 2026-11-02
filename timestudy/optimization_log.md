@@ -1569,3 +1569,14 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>111. VCU-561096 视频 19:34 优先于包内 19:44（2026-11-02）</b></summary>
+
+- **问题**：视频 OCR 读到 19:34，但包内最近时间 19:44 覆盖了建议时间。
+- **修复**：触发时间分支中，只要视频 OCR 有结果，就用“时分最接近的参考日期”补全并覆盖 suggested_time，标记人工确认。
+- **效果**：VCU-561096 建议 2026-10-25 19:34，不再取 19:44。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>

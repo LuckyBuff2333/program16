@@ -7244,6 +7244,13 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             # 直接使用函数返回的视频提取时间（即使未通过验证也记录）
             if _vid_extracted:
                 video_time = _vid_extracted
+            # 视频时间优先：避免被包内“最近时间”覆盖（如 19:34 被 19:44 覆盖）
+            if video_time:
+                _vt_full = _fill_time_with_ref_date(video_time, list(main_times or []) + list(all_times or []) + list(gm_times or []))
+                if _vt_full and _vt_full != suggested_time:
+                    suggested_time = _vt_full
+                    verify_status = "manual"
+                    final_msg += "（采用视频时间）"
         # 触发时间问题必须有明确建议；没有时用最近的包内/gmlogger 时间兜底
         if category == "触发时间问题" and not suggested_time:
             _pool = [t for _s, t in (main_times + all_times + gm_times)]
