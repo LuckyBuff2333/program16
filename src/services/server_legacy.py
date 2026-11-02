@@ -5789,6 +5789,10 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     m = _OCR_TIME_ONLY_RE.search(all_text)
                     if m:
                         time_str = _normalize_ocr_time(m.group(1))
+                        # 时分时间先保留为候选，后面用 gmlogger/创建日期补全
+                        if not first_partial:
+                            first_partial = time_str
+                            first_detail = f"从视频{video_label}第{sec+1}秒 OCR 识别到 {time_str}"
                         # 优先检查视频自身文件名是否含完整日期时间且时间匹配
                         _vid_fn_dt_str = _parse_video_filename_datetime(video_name)
                         if _vid_fn_dt_str:
@@ -6266,7 +6270,8 @@ def _time_in_gmlogger_segment(t, refs) -> bool:
 
 
 def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, main_times: list = None,
-                            all_times: list = None, headers: dict = None, att_timeout: int = 60) -> tuple:
+                            all_times: list = None, headers: dict = None, att_timeout: int = 60,
+                            video_time_hint: str = "") -> tuple:
     """触发时间修正链路：先用已有时间提取工具提取新时间（评论区优先），再用 gmlogger 包内时间戳验证，返回 (verify_status, suggested_time, verify_detail, vid_time)
 
     验证池：包内全部时间戳（main 文件 + 全部条目文件名），任一与提取时间前后5分钟命中即验证通过。
@@ -6279,12 +6284,23 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
         extracted = jira_client.extract_trigger_time_from_issue(issue)
     except Exception as e:
         logger.warning("排查诊断：触发时间提取失败: %s", e)
+    if extracted:
+        # 评论/描述只有时分：用包内时间中“时分最接近”的日期补全
+        extracted = _fill_time_with_ref_date(extracted, list(main_times or []) + list(all_times or []) + list(gm_times or []))
     ext_dt = _ts_parse_datetime(extracted) if extracted else None
     gm_note = f"（注：gmlogger 外侧文件名时间 {gm_times[0][0]} 仅供参考，可能不准）" if gm_times else ""
     # —— gmlogger 场景：以包内时间戳为验证依据（只要有一个文件满足条件即通过）——
     ref_pool = (main_times or []) + (all_times or [])
     if ref_pool:
         if ext_dt:
+            # 日期错一天但时分一致：以日志包为准修正日期（如评论 10-28 04:01，包内为 10-29 04:01）
+            _ext_tod = ext_dt.hour * 3600 + ext_dt.minute * 60 + ext_dt.second
+            for s, dt in ref_pool:
+                _dt_tod = dt.hour * 3600 + dt.minute * 60 + dt.second
+                if dt.date() != ext_dt.date() and abs(_dt_tod - _ext_tod) <= 60:
+                    _corrected = dt.replace(hour=ext_dt.hour, minute=ext_dt.minute, second=ext_dt.second)
+                    return ("success", _corrected.strftime("%Y-%m-%d %H:%M:%S"),
+                            f"评论时间 {extracted} 与日志包日期不一致，按包内日期修正为 {_corrected.strftime('%Y-%m-%d %H:%M:%S')}", "")
             for s, dt in ref_pool:
                 if abs((dt - ext_dt).total_seconds()) <= 300:
                     return "success", extracted, f"提取时间 {extracted}（评论区优先）在 gmlogger 包内前后5分钟有对应时间戳({s})，可用该时间作为替换", ""
@@ -6295,6 +6311,9 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
             gm_dates = [(dt.year, dt.month, dt.day) for _, dt in (gm_times or [])]
             gm_ref_dt = gm_times[0][1] if gm_times else None
             vid_time, vid_detail = _diag_extract_time_from_video(issue, headers, att_timeout, gm_dates, ref_pool, gm_ref_dt, gm_times)
+            if not vid_time and video_time_hint:
+                vid_time = video_time_hint
+                vid_detail = f"使用诊断阶段视频 OCR 结果 {vid_time}"
             if vid_time:
                 _vid_full = _fill_time_with_ref_date(vid_time, ref_pool) or vid_time
                 return "success", _vid_full, f"视频帧 OCR 兜底: {vid_detail}", _vid_full
@@ -6307,6 +6326,9 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
             latest_entry = max(ref_pool, key=lambda e: e[1])
             latest_s, latest_dt = latest_entry
             # 取最接近提取时间的那个
+            # 包内时间与评论时间差距过大时，优先保留评论时间，避免用无关日志时间覆盖
+            if min(abs((dt - ext_dt).total_seconds()) for _, dt in ref_pool) > 3600:
+                return "manual", extracted, f"评论/字段提取时间 {extracted} 与日志包差距较大，优先保留该时间，请人工确认", ""
             if abs((closest_dt - ext_dt).total_seconds()) <= abs((latest_dt - ext_dt).total_seconds()):
                 best_s, best_dt = closest_s, closest_dt
             else:
@@ -7217,7 +7239,8 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             _check_diag_cancel(bugid)
             verify_status, suggested_time, vdetail, _vid_extracted = _diag_verify_suggestion(issue, gm_times, [],
                                                                          main_times=main_times, all_times=all_times,
-                                                                         headers=headers, att_timeout=att_timeout)
+                                                                         headers=headers, att_timeout=att_timeout,
+                                                                         video_time_hint=video_time or "")
             # 直接使用函数返回的视频提取时间（即使未通过验证也记录）
             if _vid_extracted:
                 video_time = _vid_extracted

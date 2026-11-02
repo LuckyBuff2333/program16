@@ -1559,3 +1559,13 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>110. 评论时间优先，避免被无关日志时间覆盖（2026-11-02）</b></summary>
+
+- **问题**：VCU-562169 评论提取到 04:01，但包内时间与之差距大，最终建议被改成 20:09。
+- **修复**：包内最近时间与评论时间差距 >1 小时时，不再用包内时间覆盖，保留评论时间并标记人工确认。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>
