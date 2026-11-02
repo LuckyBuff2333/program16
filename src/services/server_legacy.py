@@ -3451,6 +3451,37 @@ def _diag_gmlogger_times(attachments: list) -> list:
     return times
 
 
+def _align_time_to_gmlogger(issue: dict, tt: str, attachments: list) -> str:
+    """把提取时间对齐到 gmlogger 抓包时间，减少“时间过滤后日志为空”。
+
+    - 提取时间缺失 → 用最近的 gmlogger 文件名时间；
+    - 提取时间比抓包晚 >5 分钟 → 用抓包时间；
+    - 提取时间与最近抓包相差 >30 分钟 → 用最近抓包时间；
+    - 其余保持原值。
+    """
+    try:
+        gm = _diag_gmlogger_times(attachments or [])
+    except Exception:
+        gm = []
+    if not gm:
+        return tt
+    gm_sorted = sorted(gm, key=lambda x: x[1])
+    if not tt:
+        return gm_sorted[-1][0]
+    dt = _ts_parse_datetime(str(tt))
+    if not dt:
+        # 只有时分：用最近抓包的日期补全
+        return _fill_time_with_ref_date(str(tt), gm_sorted) or tt
+    latest = gm_sorted[-1][1]
+    nearest = min(gm_sorted, key=lambda x: abs((x[1] - dt).total_seconds()))
+    diff = abs((nearest[1] - dt).total_seconds())
+    if dt > latest and (dt - latest).total_seconds() > 300:
+        return latest.strftime("%Y-%m-%d %H:%M:%S")
+    if diff > 1800:
+        return nearest[1].strftime("%Y-%m-%d %H:%M:%S")
+    return tt
+
+
 def _diag_7z_tool_path() -> str:
     """定位本机 7z 可执行文件（用于 rar 解压），未找到返回空串
 

@@ -359,7 +359,7 @@ async def batch_extract_time(request: Request):
     from src.clients import jira_client as _jc
     from src.services.server_legacy import (
         _diag_extract_time_from_video_simple, _diag_extract_time_from_images,
-        _VIDEO_SUFFIXES,
+        _align_time_to_gmlogger, _VIDEO_SUFFIXES,
     )
     from src.services.trigger_ops import (
         _load_trigger_times_from_cloud,
@@ -499,6 +499,7 @@ async def batch_extract_time(request: Request):
                 if tt:
                     if not isinstance(tt, str):
                         tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
+                    tt = _align_time_to_gmlogger(issue, tt, attachments)
                     return bugid, tt, source, None
                 return bugid, "", "failed", "优先级提取未获取到时间"
             except Exception as e:

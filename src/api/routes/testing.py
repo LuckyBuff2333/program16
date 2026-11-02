@@ -501,7 +501,7 @@ async def test_batch_ai_extract_times(request: Request):
     _timestudy_record,
     )
     from src.services.report_ops import _load_bitable_success_jiras
-    from src.services.server_legacy import _diag_extract_time_from_video_simple, _has_gmlogger_logs, _diag_extract_time_from_images, _diag_gmlogger_times
+    from src.services.server_legacy import _diag_extract_time_from_video_simple, _has_gmlogger_logs, _diag_extract_time_from_images, _align_time_to_gmlogger, _diag_gmlogger_times
     body = await request.json() or {}
     keys = body.get("keys") or []
     filter_existing = body.get("filter_existing", False)  # 过滤多维表格中已有数据
@@ -2756,13 +2756,13 @@ async def test_prod_batch_run(request: Request):
                     if tt:
                         if not isinstance(tt, str):
                             tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
-                        return bugid, tt
+                        return bugid, _align_time_to_gmlogger(issue, tt, attachments)
                     # 文本未命中，视频OCR兑底
                     tt = _diag_extract_time_from_video_simple(issue)
                     if tt:
                         if not isinstance(tt, str):
                             tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
-                        return bugid, tt
+                        return bugid, _align_time_to_gmlogger(issue, tt, attachments)
                     # 视频也未命中，图片OCR再兑底
                     cfg_api = load_config().get("jira_api", {})
                     img_h = {}
@@ -2774,11 +2774,11 @@ async def test_prod_batch_run(request: Request):
                     if img_tt:
                         if not isinstance(img_tt, str):
                             img_tt = img_tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(img_tt, 'strftime') else str(img_tt)
-                        return bugid, img_tt
+                        return bugid, _align_time_to_gmlogger(issue, img_tt, attachments)
                     # 所有方法均失败，附件文件名作为最终兑底
                     att_tt = _jc.extract_attachment_time(issue)
                     if att_tt:
-                        return bugid, att_tt
+                        return bugid, _align_time_to_gmlogger(issue, att_tt, attachments)
                 except Exception:
                     pass
                 return bugid, ""

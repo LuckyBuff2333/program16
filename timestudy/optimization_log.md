@@ -1514,3 +1514,20 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>114. 时间批量提取/功能测试批量执行前自动对齐 gmlogger（2026-11-02）</b></summary>
+
+- **背景**：本周 127 条失败中 77 条为“时间过滤后日志为空”；其中 36 条提取时间与 gmlogger 文件名时间完全一致（属日志过滤问题），12 条时间明显偏差，29 条无 gmlogger 文件名时间。
+- **修复**：新增 `_align_time_to_gmlogger`：
+  1. 提取时间比抓包晚 >5 分钟 → 用抓包时间；
+  2. 与最近抓包相差 >30 分钟 → 用最近抓包时间；
+  3. 只有时分 → 用抓包日期补全；
+  4. 无时间 → 用最近抓包时间。
+- **接入**：
+  - 时间批量提取 `/api/trigger/batch_extract_time`；
+  - 功能测试批量执行 `/api/test/prod_batch_run` 的时间预提取。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`、`src/api/routes/trigger.py`、`src/api/routes/testing.py`
+
+</details>
