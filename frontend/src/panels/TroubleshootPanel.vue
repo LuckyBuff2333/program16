@@ -854,7 +854,12 @@ export default {
       ElMessage.info('正在停止诊断，已完成的结果保留');
     },
     async diagnoseAllFailed() {
-      const targets = this.troubleshoot.records.filter(r => r['分析结果'] === '失败');
+      const onlyEmpty = !!this.troubleshoot.execOnlyEmptyReview;
+      const targets = this.troubleshoot.records.filter(r => {
+        if (r['分析结果'] !== '失败') return false;
+        if (!onlyEmpty) return true;
+        return !String(r['人工审核结果'] || '').trim();
+      });
       if (!targets.length) { ElMessage.warning('无可诊断的记录（需分析结果为失败）'); return; }
       // jira号去重，同一 bug 仅诊断一次
       const seen = new Set();
@@ -949,7 +954,9 @@ export default {
       } catch (e) { console.warn('加载根因失败:', e); }
     },
     getTroubleshootFailedCount() {
-      return this.troubleshoot.records.filter(r => r['分析结果'] === '失败').length;
+      const onlyEmpty = !!this.troubleshoot.execOnlyEmptyReview;
+      return (this.troubleshoot.records || []).filter(r => r['分析结果'] === '失败'
+        && (!onlyEmpty || !String(r['人工审核结果'] || '').trim())).length;
     },
     // 判断诊断详情是否为新格式（4行简洁格式）
     isNewDetailFormat(detail) {

@@ -1374,3 +1374,14 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/TroubleshootPanel.vue`
 
 </details>
+
+<details>
+<summary><b>94. “仅执行人工审核为空”同时作用于批量诊断（2026-11-02）</b></summary>
+
+- **问题**：勾选后“批量诊断失败记录（85 条）”仍包含已手写人工审核结果的 Jira。
+- **原因**：上一版只修了“待人工审核重新执行”，`diagnoseAllFailed` 和失败计数仍只按 `分析结果=失败`。
+- **修复**：`diagnoseAllFailed` 与 `getTroubleshootFailedCount` 统一按勾选项过滤 `人工审核结果` 非空的记录。
+- **验证**：前端构建通过。
+- **实现文件**：`frontend/src/panels/TroubleshootPanel.vue`
+
+</details>
