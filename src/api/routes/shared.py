@@ -77,7 +77,7 @@ _DIAG_EXECUTOR = None
 # 全局线程池（限制诊断等同步操作的最大并发数）
 # 诊断主要是附件下载（网络 IO），适度并发能显著提速；OCR 另有信号量(2)限制 GPU 抢占
 try:
-    _DIAG_EXECUTOR_MAX_WORKERS = max(1, int(load_config().get("params", {}).get("diag_concurrency", 3)))
+    _DIAG_EXECUTOR_MAX_WORKERS = max(1, int(load_config().get("params", {}).get("diag_concurrency", 5)))
 except Exception:
     _DIAG_EXECUTOR_MAX_WORKERS = 1
 _DIAG_TIMEOUT_SECONDS = 300

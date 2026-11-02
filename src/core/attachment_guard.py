@@ -18,7 +18,7 @@ import shutil
 import threading
 import time
 
-from src.config import PROJECT_ROOT, setup_logger
+from src.config import PROJECT_ROOT, load_config, setup_logger
 
 logger = setup_logger("attachment_guard")
 
@@ -269,6 +269,25 @@ def maintenance() -> None:
     cleanup_stale_temp()
 
 
+_DOWNLOAD_SEM = None
+_DOWNLOAD_SEM_LOCK = threading.Lock()
+
+
+def _get_download_sem():
+    """全局下载并发信号量（默认 3，可通过 params.diag_download_concurrency 配置）"""
+    global _DOWNLOAD_SEM
+    if _DOWNLOAD_SEM is None:
+        with _DOWNLOAD_SEM_LOCK:
+            if _DOWNLOAD_SEM is None:
+                n = 3
+                try:
+                    n = max(1, int(load_config().get("params", {}).get("diag_download_concurrency", 3)))
+                except Exception:
+                    pass
+                _DOWNLOAD_SEM = threading.Semaphore(n)
+    return _DOWNLOAD_SEM
+
+
 def stream_download(url: str, headers: dict, dest_path: str, timeout=60,
                     bugid: str = "", max_bytes: int = MAX_ATTACHMENT_BYTES,
                     filename: str = "", use_cache: bool = True,
@@ -297,24 +316,26 @@ def stream_download(url: str, headers: dict, dest_path: str, timeout=60,
     os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
     written = 0
     started = time.time()
+    _sem = _get_download_sem()
     try:
-        with httpx.stream("GET", url, headers=headers, timeout=timeout,
-                          verify=False, follow_redirects=True) as resp:
-            resp.raise_for_status()
-            with open(dest_path, "wb") as out:
-                for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                    if stop_event is not None and stop_event.is_set():
-                        raise TimeoutError("用户停止")
-                    if deadline_seconds and (time.time() - started) > deadline_seconds:
-                        raise TimeoutError(f"下载超时({deadline_seconds}s)")
-                    written += len(chunk)
-                    if written > max_bytes:
-                        raise AttachmentLimitError(
-                            f"附件超过 {max_bytes // 1024 // 1024}MB 上限"
-                            f"（已下载 {written / 1024 / 1024:.1f}MB），已中止")
-                    # 边下边记账：让单 bug/单批次预算能及时生效
-                    BUDGET.charge(len(chunk), bugid)
-                    out.write(chunk)
+        with _sem:
+            with httpx.stream("GET", url, headers=headers, timeout=timeout,
+                              verify=False, follow_redirects=True) as resp:
+                resp.raise_for_status()
+                with open(dest_path, "wb") as out:
+                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                        if stop_event is not None and stop_event.is_set():
+                            raise TimeoutError("用户停止")
+                        if deadline_seconds and (time.time() - started) > deadline_seconds:
+                            raise TimeoutError(f"下载超时({deadline_seconds}s)")
+                        written += len(chunk)
+                        if written > max_bytes:
+                            raise AttachmentLimitError(
+                                f"附件超过 {max_bytes // 1024 // 1024}MB 上限"
+                                f"（已下载 {written / 1024 / 1024:.1f}MB），已中止")
+                        # 边下边记账：让单 bug/单批次预算能及时生效
+                        BUDGET.charge(len(chunk), bugid)
+                        out.write(chunk)
         if use_cache:
             _cache_store(url, filename, dest_path)
         return written

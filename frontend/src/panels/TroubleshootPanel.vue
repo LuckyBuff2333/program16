@@ -931,7 +931,7 @@ export default {
             if (queue.length) await new Promise(r => setTimeout(r, 3000));
           }
         };
-        await worker();
+        await Promise.all(Array.from({ length: 5 }, () => worker()));
       } catch (e) {
         console.error('批量诊断异常:', e);
       }
@@ -1204,7 +1204,7 @@ export default {
           await this._diagnoseRow(row, true, this.troubleshoot.skipVideoCache);
         }
       };
-      await Promise.all([worker(), worker(), worker()]);
+      await Promise.all(Array.from({ length: 5 }, () => worker()));
       this.troubleshoot.diagRunning = false;
       if (this.troubleshoot.stopFlag) { ElMessage.warning(`已停止，剩余 ${queue.length} 条未执行`); }
       else { ElMessage.success(`重新执行完成，共 ${manuals.length} 条`); }

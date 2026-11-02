@@ -1445,3 +1445,15 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>100. 问题排查并发调整：诊断5、下载3、OCR2（2026-11-02）</b></summary>
+
+- **诊断并发**：前端 worker 3→5（批量诊断 + 待人工审核重跑），后端 `diag_concurrency` 默认 3→5。
+- **下载并发**：新增全局信号量 `diag_download_concurrency`，默认 3，`stream_download` 统一限流，避免 5 路诊断同时拉大附件。
+- **OCR 并行**：保持 2，避免 GPU/CPU 争抢。
+- **配置**：`config.yaml` 增加 `diag_download_concurrency: 3`，`diag_concurrency: 5`。
+- **验证**：`py_compile` OK，全量 **116 passed**，前端构建通过。
+- **实现文件**：`src/core/attachment_guard.py`、`src/api/routes/shared.py`、`frontend/src/panels/TroubleshootPanel.vue`、`config/config.yaml`
+
+</details>
