@@ -3464,7 +3464,29 @@ def _align_time_to_gmlogger(issue: dict, tt: str, attachments: list) -> str:
     except Exception:
         gm = []
     if not gm:
-        # 没有 gmlogger 文件名时间：用视频文件名时间兜底，并用创建日期补全
+        # 没有 gmlogger 文件名时间：先用视频 OCR 缓存兜底
+        try:
+            _vcache = _load_video_time_cache()
+            _bugid = str(issue.get("key") or "")
+            for _a in (attachments or []):
+                _fn = str(_a.get("filename", "") or "")
+                if not _fn.lower().endswith((".mp4", ".mov", ".avi", ".mkv")):
+                    continue
+                _ct = (_vcache.get(f"{_bugid}:{_fn}") or {}).get("time")
+                if _ct:
+                    _created = _ts_parse_datetime(str((issue.get("fields") or {}).get("created") or "")[:19])
+                    _ct_dt = _ts_parse_datetime(str(_ct))
+                    if _ct_dt and _created and abs((_created - _ct_dt).days) > 7:
+                        continue  # 缓存时间与工单创建时间相差过大，视为失效
+                    if not _ct_dt:
+                        _m = __import__("re").match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", str(_ct).strip())
+                        if _created and _m:
+                            return _created.replace(hour=int(_m.group(1)), minute=int(_m.group(2)),
+                                                    second=int(_m.group(3) or 0), microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+                    return _ct
+        except Exception:
+            pass
+        # 没有缓存：用视频文件名时间兜底，并用创建日期补全
         _vids = []
         for _a in (attachments or []):
             _fn = str(_a.get("filename", "") or "")

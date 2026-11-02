@@ -1567,3 +1567,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`
 
 </details>
+
+<details>
+<summary><b>118. 云端已存时间不加纠偏，仅学习人工结果（2026-11-03）</b></summary>
+
+- **规则**：云端已存在的触发时间（含人工修正）一律保持不动；时间纠偏只作用于前端传入/本次新提取的失败记录。
+- **实现**：功能测试批量执行前收集 `cloud_times`/`cloud_keys`，从纠偏目标中排除。
+- **保留**：已分析成功的 Jira 也不纠偏。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/api/routes/testing.py`
+
+</details>

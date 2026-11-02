@@ -2743,7 +2743,14 @@ async def test_prod_batch_run(request: Request):
                     logger.info("时间对齐跳过已成功 Jira: %d 条", len(_success_jiras))
         except Exception as _e:
             logger.warning("查询已成功 Jira 失败（继续对齐）: %s", _e)
-        _align_targets = [b for b in run_bugids if b in trigger_times and b not in _success_jiras]
+        # 云端已存的时间（含人工修正）保持不动，只纠偏前端传入/本次新提取的
+        _cloud_locked = set(cloud_keys)
+        try:
+            _cloud_locked |= set(cloud_times.keys())
+        except Exception:
+            pass
+        _align_targets = [b for b in run_bugids
+                          if b in trigger_times and b not in _success_jiras and b not in _cloud_locked]
         if _align_targets:
             def _align_all():
                 import concurrent.futures as _cf
