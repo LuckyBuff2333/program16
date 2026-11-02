@@ -1396,3 +1396,14 @@ flowchart TD
 - **实现文件**：`src/services/troubleshoot_service.py`
 
 </details>
+
+<details>
+<summary><b>96. 人工审核为空过滤：审核记录为成功时也生效（2026-11-02）</b></summary>
+
+- **问题**：结果筛选“失败”时，VCU-561324 仍出现，尽管同 Jira 的成功记录上有人工审核结果“压缩包已损坏”。
+- **原因**：先按 `分析结果=失败` 过滤，再收集人工审核标记；成功记录被提前剔除，导致审核标记丢失。
+- **修复**：每条记录先提取并收集 `人工审核结果`，再做结果/来源筛选；只要任一记录有审核，整个 Jira 在“人工审核为空”查询中排除。
+- **验证**：`result_filter=失败, no_manual_review=True` 查询返回 83 条，`VCU-561234` 已排除。
+- **实现文件**：`src/services/troubleshoot_service.py`
+
+</details>

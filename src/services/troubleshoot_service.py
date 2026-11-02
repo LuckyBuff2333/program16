@@ -207,6 +207,13 @@ def query_records(
         done_dt = _ts_parse_datetime(fields.get("分析完成时间", ""))
         if not done_dt or done_dt <= cutoff:
             continue
+        jira_no = _bitable_text(fields.get(bugid_field, ""))
+        if not jira_no:
+            continue
+        # 先收集人工审核标记，不受结果/来源筛选影响
+        row = _extract_record_row(fields, cfg)
+        if row["人工审核结果"]:
+            reviewed_jiras.add(jira_no)
         result_status = _bitable_text(fields.get("分析结果", ""))
         if result_filter and result_status != result_filter:
             continue
@@ -214,12 +221,6 @@ def query_records(
             trigger_source = _bitable_text(fields.get("触发来源", ""))
             if trigger_source != source_filter:
                 continue
-        jira_no = _bitable_text(fields.get(bugid_field, ""))
-        if not jira_no:
-            continue
-        row = _extract_record_row(fields, cfg)
-        if row["人工审核结果"]:
-            reviewed_jiras.add(jira_no)
         prev = picked.get(jira_no)
         if not dedup or prev is None or row["分析完成时间"] > prev["分析完成时间"]:
             picked[jira_no] = row
