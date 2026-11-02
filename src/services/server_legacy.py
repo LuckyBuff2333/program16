@@ -7216,8 +7216,14 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                 final_msg = "触发时间与 gmlogger 文件名时间不一致"
                 verify_status, suggested_time = "manual", _gm_best[0]
             elif gm_probe.get("status") == "failed":
-                category = "解压问题"
-                final_msg = "压缩包探测失败，且无 gmlogger 文件名时间，无法验证触发时间"
+                _reason = str(gm_probe.get("reason") or "")
+                # 只有“解压失败/格式损坏”才算解压问题；过大跳过、超时、下载失败属于无参考
+                if any(k in _reason for k in ("解压失败", "损坏", "格式不支持", "无法识别")):
+                    category = "解压问题"
+                    final_msg = f"压缩包解压失败（{_reason}），无法验证触发时间"
+                else:
+                    category = "无参考"
+                    final_msg = f"压缩包探测未完成（{_reason or '过大/超时'}），无法验证触发时间"
                 verify_status, suggested_time = "manual", ""
             else:
                 category = "无参考"
