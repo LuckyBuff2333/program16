@@ -3464,21 +3464,39 @@ def _align_time_to_gmlogger(issue: dict, tt: str, attachments: list) -> str:
     except Exception:
         gm = []
     if not gm:
+        # 没有 gmlogger 文件名时间：用视频文件名时间兜底，并用创建日期补全
+        _vids = []
+        for _a in (attachments or []):
+            _fn = str(_a.get("filename", "") or "")
+            if _fn.lower().endswith((".mp4", ".mov", ".avi", ".mkv")):
+                _vt = _parse_video_filename_time(_fn)
+                if _vt:
+                    _vids.append(_vt)
+        if _vids:
+            _base = tt or _vids[0]
+            if not _ts_parse_datetime(str(_base)):
+                _created = _ts_parse_datetime(str((issue.get("fields") or {}).get("created") or "")[:19])
+                _m = __import__("re").match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", str(_base).strip())
+                if _created and _m:
+                    return _created.replace(hour=int(_m.group(1)), minute=int(_m.group(2)),
+                                            second=int(_m.group(3) or 0), microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+            return _base
         return tt
     gm_sorted = sorted(gm, key=lambda x: x[1])
+    latest = gm_sorted[-1][1]
     if not tt:
-        return gm_sorted[-1][0]
+        return (latest - timedelta(seconds=180)).strftime("%Y-%m-%d %H:%M:%S")
     dt = _ts_parse_datetime(str(tt))
     if not dt:
         # 只有时分：用最近抓包的日期补全
         return _fill_time_with_ref_date(str(tt), gm_sorted) or tt
-    latest = gm_sorted[-1][1]
     nearest = min(gm_sorted, key=lambda x: abs((x[1] - dt).total_seconds()))
-    diff = abs((nearest[1] - dt).total_seconds())
-    if dt > latest and (dt - latest).total_seconds() > 300:
-        return latest.strftime("%Y-%m-%d %H:%M:%S")
-    if diff > 1800:
-        return nearest[1].strftime("%Y-%m-%d %H:%M:%S")
+    # 事件应在抓包之前；等于抓包或只早不到 1 分钟时，向前留 3 分钟窗口
+    delta_before = (nearest[1] - dt).total_seconds()
+    if delta_before < 60:
+        return (nearest[1] - timedelta(seconds=180)).strftime("%Y-%m-%d %H:%M:%S")
+    if abs(delta_before) > 1800:
+        return (nearest[1] - timedelta(seconds=180)).strftime("%Y-%m-%d %H:%M:%S")
     return tt
 
 

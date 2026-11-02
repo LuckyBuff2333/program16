@@ -1531,3 +1531,17 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`、`src/api/routes/trigger.py`、`src/api/routes/testing.py`
 
 </details>
+
+<details>
+<summary><b>115. 触发时间等于抓包时回退3分钟 + 无gmlogger用视频文件名（2026-11-03）</b></summary>
+
+- **证据**：本周成功记录的时间通常比 gmlogger 抓包早约 198 秒；失败记录中 7/14 与抓包完全相等，时间过滤窗口取不到日志。
+- **修复**：
+  1. 提取时间等于/晚于抓包、或只早不到 1 分钟 → 用 `抓包时间 - 3 分钟`；
+  2. 与最近抓包相差 >30 分钟 → 用 `最近抓包 - 3 分钟`；
+  3. 完全没有 gmlogger 文件名时间 → 用视频文件名时间兜底，并用 Jira 创建日期补全时分。
+- **接入**：时间批量提取、功能测试批量执行的时间预提取。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>
