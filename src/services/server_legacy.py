@@ -6359,6 +6359,14 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
     """
     from src.clients import jira_client as _jc
     from src.services.trigger_ops import self_check_trigger_time
+    # 只有时分的时间（如 14:43）：用 Jira 创建日期补全，避免被当成无参考
+    import re as _re3
+    if candidate and not _ts_parse_datetime(str(candidate)):
+        _m3 = _re3.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", str(candidate).strip())
+        _created3 = _ts_parse_datetime(str((issue.get("fields") or {}).get("created") or "")[:19])
+        if _m3 and _created3:
+            candidate = _created3.replace(hour=int(_m3.group(1)), minute=int(_m3.group(2)),
+                                          second=int(_m3.group(3) or 0), microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
     refs = [dt for _, dt in (main_times or [])] + [dt for _, dt in (all_times or [])]
     # 优先用日志包文件名时间（真正的抓包时刻）；包内时间戳可能是历史轮转日志，不能直接当抓包时间
     # 事件时间：用于选择“事件之后最近的一次抓包”，避免落在两个包之间时默认取前一个

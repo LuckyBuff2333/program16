@@ -1520,3 +1520,15 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>106. 视频时分时间（14:43）保留并用创建日期补全（2026-11-02）</b></summary>
+
+- **问题**：VCU-560554 视频 6 帧 OCR 都读到 `14:43`，但因只有时分、无日志包日期，被判定“未识别到时间”；前端显示问题时间 15:43，无法建议 14:43。
+- **修复**：
+  1. 没有 gmlogger 日期可补时，保留 OCR 的时分作为部分时间；
+  2. `_diag_time_check` 收到只有时分的时间时，用 Jira 创建日期补全后再做方向判定。
+- **验证**：`py_compile` OK，全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>
