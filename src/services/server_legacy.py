@@ -4035,6 +4035,7 @@ def _ocr_frame_regions(frame) -> str:
         regions = [
             (0, 0, w, max(1, int(h * 0.10))),                 # 顶部状态栏
             (int(w * 0.55), int(h * 0.75), w, h),             # 右下任务栏（上移到 75%，避免漏掉 17:51 这类任务栏时间）
+            (int(w * 0.40), int(h * 0.18), w, int(h * 0.70)), # 中控屏/车机屏（16:21 这类画面内时间）
         ]
         for (x1, y1, x2, y2) in regions:
             if x2 - x1 < 40 or y2 - y1 < 12:
@@ -5705,6 +5706,14 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                         logger.warning("视频帧提取：OCR 第%d秒失败: %s", sec, e)
                         continue
                     all_text = " ".join(r[1] for r in results)
+                    # 先整帧识别；没有时间相关文本时再对状态栏/任务栏/中控屏 ROI 兜底
+                    if not (_OCR_TIME_FULL_RE.search(all_text) or _OCR_TIME_ONLY_RE.search(all_text)):
+                        try:
+                            _roi_text = _ocr_frame_regions(frame) or ""
+                        except Exception:
+                            _roi_text = ""
+                        if _roi_text:
+                            all_text = f"{_roi_text} {all_text}".strip()
                     logger.info("视频帧提取(%s)：第%d秒 OCR: %s", video_label, sec + 1,
                                 all_text[:200] if all_text else "(空)")
                     all_text = _fix_ocr_missing_colon(all_text)
@@ -5851,6 +5860,10 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                                     first_partial = extracted_time
                                     first_detail = (f"从视频{video_label}第{sec+1}秒 OCR 识别到 {time_str}，"
                                                     f"用 gmlogger 日期补充为 {extracted_time}（未命中验证池）")
+                    if not first_partial and not gmlogger_dates and not validation_pool:
+                        # 没有日志包日期可补：保留 OCR 的时分，交给诊断用 Jira 创建日期补全
+                        first_partial = time_str
+                        first_detail = f"从视频{video_label}第{sec+1}秒 OCR 识别到 {time_str}（未与日志包匹配，供参考）"
             # OCR 完全失败时，尝试从视频文件名提取时间（回退方案）
             if not first_full and not first_partial:
                 fn_time = _parse_video_filename_time(video_name)
@@ -5941,7 +5954,8 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     if best_full:
         logger.info("视频帧提取：完整时间候选 %s 未通过校验，丢弃", best_full)
     if best_partial:
-        logger.info("视频帧提取：部分时间候选 %s 未通过校验，丢弃", best_partial)
+        logger.info("视频帧提取：部分时间候选 %s 未通过日志包校验，作为参考返回", best_partial)
+        return best_partial, f"视频帧 OCR 识别到 {best_partial}（未与日志包严格匹配，供参考）"
     return "", ""
 
 
