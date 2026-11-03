@@ -655,8 +655,24 @@ def _judge_compare_time(ext_time, table_time_str, ref_dt, created_dt):
     if tbl_dt is None:
         return ("正常" if ext_sane else "提取错误"), "表格时间无法解析"
     diff = abs((ext_dt - tbl_dt).total_seconds())
+    # 整 1/2/3 天的差异：优先提示日期可能取错
     if diff > 3600 and diff % 86400 <= 120:
         return "日期待确认", f"相差约 {int(round(diff / 86400))} 天（日期可能取错）"
+    # 抓包参考：事件通常落在抓包前 1 小时内
+    ext_near = bool(ref_dt and ext_dt <= ref_dt + _timedelta(minutes=5)
+                    and (ref_dt - ext_dt) <= _timedelta(minutes=60))
+    tbl_near = bool(ref_dt and tbl_dt <= ref_dt + _timedelta(minutes=5)
+                    and (ref_dt - tbl_dt) <= _timedelta(minutes=60))
+    # 只有一侧靠近抓包时，才用“创建时间”判断另一侧是否明显越界
+    if created_dt and (ext_near or tbl_near):
+        if tbl_dt > created_dt + _timedelta(minutes=1) and ext_dt <= created_dt + _timedelta(minutes=1):
+            return "表格错误", "表格时间晚于 Jira 创建时间，提取时间在创建前"
+        if ext_dt > created_dt + _timedelta(minutes=1) and tbl_dt <= created_dt + _timedelta(minutes=1):
+            return "提取错误", "提取时间晚于 Jira 创建时间，表格时间在创建前"
+    if ext_near and not tbl_near:
+        return "表格错误", "提取时间落在抓包前 1 小时内，表格时间偏离抓包"
+    if tbl_near and not ext_near:
+        return "提取错误", "表格时间落在抓包前 1 小时内，提取时间偏离抓包"
     if diff <= 300:
         return "正常", ""
     if ext_sane is False and tbl_sane is False:
