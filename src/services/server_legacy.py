@@ -3993,8 +3993,21 @@ def _get_rapid_ocr():
             return None if _rapid_ocr_engine is _OCR_UNAVAILABLE else _rapid_ocr_engine
         try:
             from rapidocr_onnxruntime import RapidOCR
-            _rapid_ocr_engine = RapidOCR()
-            logger.info("RapidOCR 引擎初始化完成")
+            # 优先 PP-OCRv5（参数已调优）；模型缺失或环境变量 OCR_ENGINE=v4 时回退 v4
+            _v5_cfg = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                "models", "ppocrv5", "rapidocr_v5.yaml")
+            if os.path.exists(_v5_cfg) and os.environ.get("OCR_ENGINE", "").lower() != "v4":
+                try:
+                    _rapid_ocr_engine = RapidOCR(config_path=_v5_cfg)
+                    logger.info("RapidOCR 引擎初始化完成（PP-OCRv5）")
+                except Exception as e:
+                    logger.warning("PP-OCRv5 初始化失败，回退 PP-OCRv4: %s", e)
+                    _rapid_ocr_engine = RapidOCR()
+                    logger.info("RapidOCR 引擎初始化完成（PP-OCRv4 回退）")
+            else:
+                _rapid_ocr_engine = RapidOCR()
+                logger.info("RapidOCR 引擎初始化完成（PP-OCRv4）")
         except Exception as e:
             logger.warning("RapidOCR 引擎初始化失败（未安装或依赖缺失）: %s", e)
             _rapid_ocr_engine = _OCR_UNAVAILABLE

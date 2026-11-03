@@ -1694,3 +1694,15 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/TimeExtractPanel.vue`
 
 </details>
+
+<details>
+<summary><b>127. 主 OCR 切换 PP-OCRv5，保留特殊时间格式兼容（2026-11-03）</b></summary>
+
+- **模型**：PP-OCRv5 mobile det/rec/cls + ppocrv5_dict，放 `models/ppocrv5/`；参数：cls 80×160、box_thresh 0.6、unclip_ratio 1.5。
+- **切换**：`_get_rapid_ocr()` 优先加载 `models/ppocrv5/rapidocr_v5.yaml`；文件缺失或 `OCR_ENGINE=v4` 时自动回退 PP-OCRv4。
+- **兼容**：`19.34`/`1934` 仍由 `_fix_ocr_missing_colon`、`_normalize_ocr_time`、`_OCR_TIME_ONLY_RE` 归一化为 `19:34`；竖线日期、12 小时制、纯数字时间规则不变。
+- **实测**：10 条视频 v4/v5 提取时间 10/10 一致；v5 平均 5695ms，v4 6541ms，约快 13%；19:34/17:51/14:43 截图均可识别。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`、`models/ppocrv5/`
+
+</details>
