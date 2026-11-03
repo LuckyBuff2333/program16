@@ -31,7 +31,10 @@ async def batch_read_trigger_times(req: BugidListRequest):
     bugids = req.bugids
     if not bugids:
         return _fail("请输入 jira 号列表")
-    local_times = _load_trigger_times_from_cloud()
+    cache_only = req.cache_only
+    loop = asyncio.get_event_loop()
+    # 全量云端触发时间首次加载可能需要几十秒，放线程池避免阻塞事件循环
+    local_times = await loop.run_in_executor(None, _load_trigger_times_from_cloud)
     result, extracted_count, batch_to_cloud = [], 0, {}
     batch_refs = {}
     for bugid in bugids:
@@ -39,10 +42,9 @@ async def batch_read_trigger_times(req: BugidListRequest):
         if not bugid:
             continue
         current_time = local_times.get(bugid, "")
-        if not current_time:
+        if not current_time and not cache_only:
             try:
                 from src.clients import jira_client as _jc
-                loop = asyncio.get_event_loop()
                 issue = await loop.run_in_executor(None, _jc.fetch_issue, bugid)
                 tt = await loop.run_in_executor(None, _jc.extract_trigger_time_from_issue, issue)
                 if tt:
@@ -63,7 +65,8 @@ async def batch_read_trigger_times(req: BugidListRequest):
                 logger.warning("批量读取触发时间-提取失败 %s: %s", bugid, e)
         result.append({"bugid": bugid, "current_time": current_time})
     if batch_to_cloud:
-        _batch_save_trigger_times_to_cloud(
+        await loop.run_in_executor(
+            None, _batch_save_trigger_times_to_cloud,
             batch_to_cloud, {k: "时间对比(读取)" for k in batch_to_cloud},
             {k: v for k, v in batch_refs.items() if v})
     hit_count = sum(1 for r in result if r["current_time"])

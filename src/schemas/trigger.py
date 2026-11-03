@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 class BugidListRequest(BaseModel):
     """Jira 号列表请求"""
     bugids: List[str] = Field(default_factory=list, description="Jira 编号列表")
+    cache_only: bool = Field(default=False, description="仅读取云端已有时间，不访问 Jira 补提取")
 
 
 class UpdateTriggerTimeRequest(BaseModel):

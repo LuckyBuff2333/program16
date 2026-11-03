@@ -265,13 +265,67 @@
         </el-card>
         <el-empty v-if="!linkExtract.running && !linkExtract.rows.length" description="解析表格并选择后，点击开始对比提取" style="margin-top:30px"></el-empty>
       </el-tab-pane>
+
+      <!-- ====== Tab 4: 时间修改 ====== -->
+      <el-tab-pane label="时间修改" name="timeEdit">
+        <el-card shadow="never">
+          <div style="margin-bottom:8px;font-weight:600;color:#303133">按 Jira 号修改云端触发时间</div>
+          <el-input v-model="timeEdit.input" type="textarea" :rows="3"
+            placeholder="输入单个或多个 Jira 号，逗号/换行/空格分隔，如：VCU-123456, VCU-123457"
+            @keydown.ctrl.enter="loadCloudTimes"></el-input>
+          <div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <el-button type="primary" :loading="timeEdit.loading" :disabled="!timeEdit.input.trim()" @click="loadCloudTimes">读取云端时间</el-button>
+            <el-button :disabled="!timeEdit.rows.length || timeEdit.saving" @click="clearCloudTimes">清空</el-button>
+            <span style="font-size:12px;color:#909399">{{ timeEdit.statusMsg }}</span>
+          </div>
+          <div style="margin-top:6px;font-size:12px;color:#c0c4cc">
+            读取的是云端缓存中的触发时间；首次读取会加载云端全量缓存，可能需要几十秒。无记录的 Jira 可直接填写时间，保存时会新建。
+          </div>
+        </el-card>
+
+        <el-card v-if="timeEdit.rows.length" shadow="never" style="margin-top:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+            <span style="font-weight:600">共 {{ timeEdit.rows.length }} 条，待修改 {{ changedTimeRows.length }} 条</span>
+            <span style="font-size:12px;color:#909399">时间格式 YYYY-MM-DD HH:mm:ss，修改后点击保存写回云端</span>
+          </div>
+          <el-table :data="timeEdit.rows" row-key="bugid" size="small" stripe border max-height="420">
+            <el-table-column type="index" label="#" width="50" align="center"></el-table-column>
+            <el-table-column prop="bugid" label="Jira号" width="150"></el-table-column>
+            <el-table-column label="当前云端时间" width="200">
+              <template #default="{ row }">
+                <span v-if="row.current_time">{{ row.current_time }}</span>
+                <el-tag v-else type="info" size="small">无记录</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="修改为" min-width="240">
+              <template #default="{ row }">
+                <el-date-picker v-model="row.new_time" type="datetime" value-format="YYYY-MM-DD HH:mm:ss"
+                  placeholder="选择/输入时间" style="width:200px" :disabled="timeEdit.saving"></el-date-picker>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="90" align="center">
+              <template #default="{ row }">
+                <el-button link type="primary" :disabled="timeEdit.saving || !row.current_time"
+                  @click="row.new_time = row.current_time">恢复</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+            <el-button type="success" :loading="timeEdit.saving" :disabled="!changedTimeRows.length" @click="saveCloudTimes">
+              保存修改（{{ changedTimeRows.length }} 条）
+            </el-button>
+            <span style="font-size:12px;color:#e6a23c" v-if="changedTimeRows.length">修改仅写回云端，请确认后再保存</span>
+          </div>
+        </el-card>
+        <el-empty v-else-if="!timeEdit.loading" description="输入 Jira 号后读取云端时间" style="margin-top:30px"></el-empty>
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
 
 <script lang="ts">
 // @ts-nocheck
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../composables/utils';
 
 const JQL_PRESETS = {
@@ -323,6 +377,9 @@ export default {
         running: false, total: 0, doneCount: 0, matched: 0, unmatched: 0, failed: 0,
         statusMsg: '', rows: [] as any[], savedPath: '',
       },
+      timeEdit: {
+        input: '', rows: [] as any[], loading: false, saving: false, statusMsg: '',
+      },
     };
   },
   computed: {
@@ -339,6 +396,9 @@ export default {
     linkPct() { return this.linkExtract.total ? Math.round((this.linkExtract.doneCount / this.linkExtract.total) * 100) : 0; },
     linkWriteCount() {
       return this.linkExtract.rows.filter(r => r.match === '不一致' && r.extracted_time).length;
+    },
+    changedTimeRows() {
+      return this.timeEdit.rows.filter((r: any) => r.new_time && r.new_time !== r.current_time);
     },
   },
   methods: {
@@ -636,6 +696,63 @@ export default {
         if (data.ok) ElMessage.success(`已写入云端 ${data.data?.count ?? items.length} 条，表 ${data.data?.table_id || ''}`);
         else ElMessage.error(data.message || '写入失败');
       } catch (e) { ElMessage.error('写入失败: ' + e.message); }
+    },
+    parseBugidList(raw: string) {
+      return [...new Set(String(raw || '').split(/[\s,;，、]+/).map(s => s.trim().toUpperCase()).filter(Boolean))];
+    },
+    clearCloudTimes() {
+      this.timeEdit.rows = [];
+      this.timeEdit.statusMsg = '';
+    },
+    async loadCloudTimes() {
+      const bugids = this.parseBugidList(this.timeEdit.input);
+      if (!bugids.length) return ElMessage.warning('请输入 Jira 号');
+      this.timeEdit.loading = true;
+      this.timeEdit.statusMsg = '读取中（首次加载云端缓存可能较慢）...';
+      this.timeEdit.rows = [];
+      try {
+        const res = await api('/api/trigger_time/batch_read', {
+          method: 'POST',
+          // cache_only: 只读云端已有时间，不触发 Jira 补提取
+          body: JSON.stringify({ bugids, cache_only: true }),
+        });
+        const rows = (res.data && res.data.rows) || [];
+        this.timeEdit.rows = rows.map((r: any) => ({
+          bugid: r.bugid, current_time: r.current_time || '', new_time: r.current_time || '',
+        }));
+        const hit = (res.data && res.data.hit) || 0;
+        this.timeEdit.statusMsg = res.message || `读取 ${rows.length} 个，${hit} 个有云端时间`;
+        ElMessage.success(`读取完成：${rows.length} 个 Jira 号，${hit} 个有云端时间`);
+      } catch (e) {
+        this.timeEdit.statusMsg = '读取失败';
+      } finally {
+        this.timeEdit.loading = false;
+      }
+    },
+    async saveCloudTimes() {
+      const items = this.changedTimeRows.map((r: any) => ({ bugid: r.bugid, new_time: r.new_time }));
+      if (!items.length) return ElMessage.info('没有需要保存的修改');
+      try {
+        await ElMessageBox.confirm(
+          `将把 ${items.length} 条触发时间写回云端（并同步诊断缓存），确认保存？`,
+          '确认保存', { confirmButtonText: '保存', cancelButtonText: '取消', type: 'warning' });
+      } catch { return; }
+      this.timeEdit.saving = true;
+      try {
+        const res = await api('/api/trigger_time/batch_update', {
+          method: 'POST', body: JSON.stringify({ items }),
+        });
+        for (const it of items) {
+          const row = this.timeEdit.rows.find((r: any) => r.bugid === it.bugid);
+          if (row) row.current_time = it.new_time;
+        }
+        this.timeEdit.statusMsg = res.message || `已保存 ${items.length} 条`;
+        ElMessage.success(res.message || `已保存 ${items.length} 条`);
+      } catch (e) {
+        // api() 已提示错误
+      } finally {
+        this.timeEdit.saving = false;
+      }
     },
   },
 };

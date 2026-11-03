@@ -673,6 +673,7 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "",
         _save_trigger_time_to_csv(bugid, trigger_time)
         # 清除云端触发时间批量缓存，确保后续步骤能读到最新数据
         _bitable_bulk_cache.pop("cloud_trigger_cache", None)
+        _bitable_bulk_cache.pop("trigger_times_cloud", None)
     else:
         logger.warning("云端写入失败，跳过本地 CSV 保存: %s", bugid)
 
@@ -867,6 +868,7 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
         return False
     # 批量写入成功后清除云端触发时间批量缓存，确保后续步骤能读到最新数据
     _bitable_bulk_cache.pop("cloud_trigger_cache", None)
+    _bitable_bulk_cache.pop("trigger_times_cloud", None)
     return True
 
 
