@@ -403,8 +403,8 @@ async def test_jira_lookup(request: Request):
                 issues = await _run_blocking(jira_client.search_issues, raw, max_results=500)
                 bugids = [(i.get("key") or "").strip() for i in issues if i.get("key")]
                 bugids = [b for b in bugids if b]
-                # 并行拉取详情（15路并发）
-                with _cf.ThreadPoolExecutor(max_workers=15) as pool:
+                # 并行拉取详情（8路并发，避免对 Jira 服务器造成过大压力）
+                with _cf.ThreadPoolExecutor(max_workers=8) as pool:
                     for row, err in pool.map(_fetch_one, bugids):
                         if row:
                             rows.append(row)
@@ -419,8 +419,8 @@ async def test_jira_lookup(request: Request):
             for k in keys:
                 if k not in seen:
                     seen.add(k); dedup.append(k)
-            # 并行拉取详情（15路并发）
-            with _cf.ThreadPoolExecutor(max_workers=15) as pool:
+            # 并行拉取详情（8路并发，避免对 Jira 服务器造成过大压力）
+            with _cf.ThreadPoolExecutor(max_workers=8) as pool:
                 for row, err in pool.map(_fetch_one, dedup):
                     if row:
                         rows.append(row)

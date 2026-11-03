@@ -666,7 +666,7 @@ def list_bitable_records(app_token: str, table_id: str,
         params["view_id"] = view_id
     if filter_expr:
         params["filter"] = filter_expr
-    log_msg = "Bitable 过滤查询" if filter_expr else "获取 Bitable 记录失败"
+    log_msg = "Bitable 过滤查询" if filter_expr else "Bitable 记录查询"
     all_records = _paginate_get(url, _bitable_headers(), params, log_msg,
                                 retry_on_token_expire=True, timeout=timeout)
     logger.info("Bitable 记录获取完成: app=%s, table=%s, 共 %d 条%s",
@@ -2185,7 +2185,7 @@ def cookie_list_records(app_token: str, table_id: str, view_id: str = None) -> l
     params = {"page_size": 500}
     if view_id:
         params["view_id"] = view_id
-    all_records = _paginate_get(url, headers, params, "Cookie 模式: 获取 Bitable 记录失败",
+    all_records = _paginate_get(url, headers, params, "Cookie 模式: Bitable 记录查询",
                                 retry_on_token_expire=True)
     logger.info("Cookie 模式: 获取到 %d 条记录", len(all_records))
     return all_records

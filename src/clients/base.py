@@ -5,7 +5,7 @@ import warnings
 import httpx
 import urllib3
 from tenacity import (
-    retry, stop_after_attempt, wait_exponential,
+    retry, stop_after_attempt, wait_exponential, wait_random,
     retry_if_exception, before_sleep_log,
 )
 
@@ -63,7 +63,7 @@ def _http_cancelled() -> bool:
 
 @retry(
     stop=stop_after_attempt(DEFAULT_RETRIES),
-    wait=wait_exponential(multiplier=1, min=1, max=10),
+    wait=wait_exponential(multiplier=1, min=1, max=10) + wait_random(0, 2),
     retry=retry_if_exception(_should_retry),
     before_sleep=before_sleep_log(logger, 20),
     reraise=True,
@@ -85,7 +85,7 @@ def http_post(url: str, payload: dict, timeout: int = DEFAULT_TIMEOUT,
 
 @retry(
     stop=stop_after_attempt(DEFAULT_RETRIES),
-    wait=wait_exponential(multiplier=1, min=1, max=10),
+    wait=wait_exponential(multiplier=1, min=1, max=10) + wait_random(0, 2),
     retry=retry_if_exception(_should_retry),
     before_sleep=before_sleep_log(logger, 20),
     reraise=True,
