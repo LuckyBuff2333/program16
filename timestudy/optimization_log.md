@@ -1683,3 +1683,14 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/TimeExtractPanel.vue`
 
 </details>
+
+<details>
+<summary><b>126. 一键写回只统计可写回的不一致记录（2026-11-03）</b></summary>
+
+- **规则**：一键写回只处理“对比结果=不一致”且不在“待确认/两边都错”中的记录；成功记录不写。
+- **修复**：`linkWriteCount` 同步排除待确认/两边都错，按钮数量与实际写回数一致（29 条中实际写 22 条）。
+- **写入字段**：`问题发生时间锚点`，不覆盖原表格时间字段。
+- **验证**：前端构建通过；全量 **116 passed**。
+- **实现文件**：`frontend/src/panels/TimeExtractPanel.vue`
+
+</details>

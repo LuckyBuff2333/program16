@@ -395,7 +395,8 @@ export default {
     },
     linkPct() { return this.linkExtract.total ? Math.round((this.linkExtract.doneCount / this.linkExtract.total) * 100) : 0; },
     linkWriteCount() {
-      return this.linkExtract.rows.filter(r => r.match === '不一致' && r.extracted_time).length;
+      const keepJudges = ['待确认', '两边都错'];
+      return this.linkExtract.rows.filter(r => r.match === '不一致' && r.extracted_time && !keepJudges.includes(r.judge)).length;
     },
     changedTimeRows() {
       return this.timeEdit.rows.filter((r: any) => r.new_time && r.new_time !== r.current_time);
