@@ -1680,7 +1680,8 @@ def _troubleshoot_cache_dir() -> str:
 
 # 诊断缓存版本：时间提取逻辑升级后自增，旧缓存自动失效（避免旧结论一直生效）
 # v3: main.log 时间改为优先取 main.log 后面的日志时间（前面的包名/目录名多为创建时间）
-_DIAG_CACHE_VERSION = 3
+# v4: 视频帧 OCR 内容优先；只有时分时按 main.log 文件名时分最近的日期拼凑
+_DIAG_CACHE_VERSION = 4
 
 
 def _load_diagnose_cache(bugid: str) -> dict:

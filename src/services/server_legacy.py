@@ -6979,6 +6979,7 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
     # —— 多源独立提取，然后综合置信度判断 ——
     comment_time = ""  # 文本提取时间（仅用于显示，保持原始格式）
     video_time = ""
+    _vid_from_content = False  # True=视频帧 OCR 内容；False=视频文件名兜底
     img_time_str = ""
     # 源2: 视频 OCR（独立执行，不因评论成功而跳过）
     _check_diag_cancel(bugid)
@@ -6990,7 +6991,9 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             issue, headers, att_timeout, gm_dates_for_video, [], gm_ref_dt_for_video, gm_times)
         if _vid_result:
             video_time = _vid_result
-            logger.info("诊断 %s: 视频 OCR 提取到 %s", bugid, video_time)
+            # 区分“视频帧 OCR 内容”和“OCR 失败后的文件名兜底”
+            _vid_from_content = "文件名" not in (_vid_detail or "")
+            logger.info("诊断 %s: 视频 OCR 提取到 %s（内容=%s）", bugid, video_time, _vid_from_content)
         else:
             logger.info("诊断 %s: 视频 OCR 未提取到时间", bugid)
     # 源3: 图片 OCR（独立执行）
@@ -7050,8 +7053,8 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             break
     # A2b: 视频上传日期不再参与日期补全（上传日≠事件日，会算错日期）
     # A3: gmlogger 文件名日期时间仅作为兑底，不直接作为日期提供者（已在步骤E处理）
-    # A4: 视频 OCR 结果（如果有完整日期）
-    if video_time and len(video_time) >= 16:
+    # A4: 视频 OCR 结果（如果有完整日期；文件名兜底不算 OCR 内容）
+    if video_time and len(video_time) >= 16 and _vid_from_content:
         _vid_dt = _jc._parse_datetime_string(video_time)
         if _vid_dt:
             _date_providers.append((_vid_dt[1], "视频OCR", video_time))
@@ -7065,8 +7068,8 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
     # B1: 文本中仅时间
     for _hm, _src in _text_time_only_hm:
         _time_only_candidates.append((_hm, f"文本:{_src}"))
-    # B2: 视频 OCR（如果结果是仅时间 HH:MM）
-    if video_time and len(video_time) <= 8:
+    # B2: 视频 OCR（如果结果是仅时间 HH:MM；文件名兜底不算）
+    if video_time and len(video_time) <= 8 and _vid_from_content:
         _time_only_candidates.append((video_time[:5], "视频OCR"))
     # B3: 图片 OCR（如果结果是仅时间）
     if img_time_str and len(img_time_str) <= 8:
@@ -7117,7 +7120,12 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
     _vid_date_providers = []  # [(date_tuple, label)]
     if _vid_fn_date:
         _vid_date_providers.append((_vid_fn_date, "视频文件名"))
-    if _vid_date_providers and _time_only_candidates:
+    # 有日志压缩包时不用视频文件名日期，交给步骤E扫描包内 main.log，用 main 文件日期补全
+    _has_log_archive = any(
+        str(a.get("filename", "") or "").lower().endswith(
+            (".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".zst"))
+        for a in attachments)
+    if _vid_date_providers and _time_only_candidates and not _has_log_archive:
         for _hm, _hm_src in _time_only_candidates:
             if _hm_src != "视频OCR":
                 continue
@@ -7168,11 +7176,14 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             except Exception as e:
                 logger.warning("诊断 %s: 包内main兜底失败: %s", bugid, e)
         # E2: 用兜底日期提供者重新匹配仅时间候选
-        _fallback_srcs = {"gmlogger兜底", "包内main"}
+        # 有包内 main.log 时只用 main.log 日期，外层 gmlogger 文件名日期仅作无 main 时的兜底
+        _has_main_ref = any(_src == "包内main" for _dt, _src, _str in _date_providers)
+        _fallback_srcs = {"包内main"} if _has_main_ref else {"gmlogger兜底"}
         if _date_providers and _time_only_candidates:
             for _hm, _hm_src in _time_only_candidates:
                 _best_dp_score2 = 0.0
                 _best_dp_key2 = ""
+                _best_diff2 = None
                 for _dp_dt, _dp_src, _dp_str in _date_providers:
                     if _dp_src not in _fallback_srcs:
                         continue
@@ -7189,7 +7200,9 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                         continue
                     _ck = _dp_dt.strftime("%Y-%m-%d") + " " + _hm
                     _ensure_key(_ck)
-                    if _match_score > _best_dp_score2:
+                    # 取时分最接近的 main.log 日期（而不是先遇到的）
+                    if _best_diff2 is None or _min_diff < _best_diff2:
+                        _best_diff2 = _min_diff
                         _best_dp_score2 = _match_score
                         _best_dp_key2 = _ck
                 if _best_dp_key2:
@@ -7329,6 +7342,22 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             category = "正常"
             final_msg = "触发时间与 gmlogger 文件名时间一致"
             verify_status, suggested_time = "success", problem_time
+            # 视频帧 OCR 内容优先：内容时间 + 包内 main 日期，比文件名/包名时间更接近实际
+            if video_time and _vid_from_content:
+                _vt = video_time
+                if not _ts_parse_datetime(_vt):
+                    _vt = _fill_time_with_main_date(
+                        _vt, main_times, (all_times or []) + (gm_times or []))
+                if not _ts_parse_datetime(_vt):
+                    _pd = _ts_parse_datetime(problem_time)
+                    _m = re.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", str(_vt).strip())
+                    if _pd and _m:
+                        _vt = (f"{_pd:%Y-%m-%d} {int(_m.group(1)):02d}:"
+                               f"{int(_m.group(2)):02d}:{int(_m.group(3) or 0):02d}")
+                _vt_dt = _ts_parse_datetime(_vt)
+                if _vt_dt and err_dt and abs((_vt_dt - err_dt).total_seconds()) <= 300:
+                    suggested_time = _vt
+                    final_msg = "视频内容时间与 gmlogger 文件名时间一致"
         elif _no_ts:
             # 包内没有任何时间戳：不能用“触发时间问题”下结论
             if gm_times:
