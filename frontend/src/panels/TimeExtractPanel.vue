@@ -58,7 +58,7 @@
         <el-table-column prop="bugid" label="Jira号" width="140"></el-table-column>
         <el-table-column prop="time" label="触发时间" min-width="160">
           <template #default="{ row }">
-            <span :style="row.time ? 'color:#67c23a' : 'color:#c0c4cc'">{{ row.time || '—' }}</span>
+            <span :style="row.time ? 'color:#67c23a' : 'color:#c0c4cc'">{{ formatMinute(row.time) || '—' }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="source" label="来源" width="110" align="center">
@@ -279,7 +279,7 @@
             <span style="font-size:12px;color:#909399">{{ timeEdit.statusMsg }}</span>
           </div>
           <div style="margin-top:6px;font-size:12px;color:#c0c4cc">
-            读取的是云端缓存中的触发时间；首次读取会加载云端全量缓存，可能需要几十秒。无记录的 Jira 可直接填写时间，保存时会新建。
+            读取的是云端缓存中的触发时间（缓存保留真实秒）；首次读取会加载云端全量缓存，可能需要几十秒。无记录的 Jira 可直接填写时间，保存到云端时秒自动补 00。
           </div>
         </el-card>
 
@@ -326,7 +326,7 @@
 <script lang="ts">
 // @ts-nocheck
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api } from '../composables/utils';
+import { api, formatMinute } from '../composables/utils';
 
 const JQL_PRESETS = {
   today: 'created >= startOfDay() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
@@ -402,6 +402,7 @@ export default {
     },
   },
   methods: {
+    formatMinute,
     judgeTagType(judge: string) {
       const map: Record<string, string> = {
         '正常': 'success',
@@ -730,7 +731,7 @@ export default {
       }
     },
     async saveCloudTimes() {
-      const items = this.changedTimeRows.map((r: any) => ({ bugid: r.bugid, new_time: r.new_time }));
+      const items = this.changedTimeRows.map((r: any) => ({ bugid: r.bugid, new_time: formatMinute(r.new_time) }));
       if (!items.length) return ElMessage.info('没有需要保存的修改');
       try {
         await ElMessageBox.confirm(

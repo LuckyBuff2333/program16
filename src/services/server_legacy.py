@@ -3124,7 +3124,10 @@ def _diag_match_time_window(filename: str, target_time: str, minutes: int = 5):
     target_dt = _ts_parse_datetime(target_time)
     if not target_dt:
         return False, ""
-    parsed = _diag_parse_entry_time(filename)
+    if "main.log" in filename.lower():
+        parsed = _diag_parse_main_time(os.path.basename(filename))
+    else:
+        parsed = _diag_parse_entry_time(filename)
     if not parsed:
         return False, ""
     file_str, file_dt = parsed
@@ -3570,11 +3573,41 @@ def _setup_rarfile() -> bool:
     return False
 
 
+def _diag_parse_main_log_suffix_time(bname: str):
+    """解析 main.log 后面的日志时间（main.log 前面/外层包名通常是创建时间，不准确）
+
+    支持 main.log_2026_10_25_20_39_50、main.log-2026-10-25-20-39-50、main.log20261025203950 等。
+    """
+    low = bname.lower()
+    pos = low.rfind("main.log")
+    if pos < 0:
+        return None
+    tail = bname[pos + len("main.log"):]
+    m = re.search(r"(20\d{2})[-_](\d{1,2})[-_](\d{1,2})[-_ T]?(\d{1,2})[-_:](\d{1,2})(?:[-_:](\d{1,2}))?", tail)
+    if m:
+        groups = m.groups()
+    else:
+        m2 = re.search(r"(20\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})", tail)
+        if not m2:
+            return None
+        groups = m2.groups()
+    try:
+        ts = datetime(int(groups[0]), int(groups[1]), int(groups[2]),
+                      int(groups[3]), int(groups[4]), int(groups[5] or 0))
+        return (ts.strftime("%Y-%m-%d %H:%M:%S"), ts)
+    except ValueError:
+        return None
+
+
 def _diag_parse_main_time(bname: str, head: str = ""):
     """从 main 文件名或文件头内容提取时间，返回 (时间字符串, datetime) 或 None
 
-    依次尝试：常规附件名格式 → 下划线分隔格式（月日时允许一位数） → 文件头首条日志时间戳。
+    依次尝试：main.log 后面的日志时间 → 常规附件名格式 → 下划线分隔格式 → 文件头首条日志时间戳。
     """
+    # main.log 后面的时间才是日志时间，优先于前面的包名/目录名时间
+    _suffix = _diag_parse_main_log_suffix_time(bname)
+    if _suffix:
+        return _suffix
     parsed = _diag_parse_entry_time(bname)
     if parsed:
         return parsed
@@ -3826,7 +3859,9 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
     groups = {}
     for att in attachments:
         fname = att.get("filename", "") or ""
-        if "gmlogger" not in fname.lower():
+        _fn = fname.lower()
+        # 日志包：gmlogger/gmlog/log_/pataclogger 等，或直接是 .log/.txt
+        if not (any(h in _fn for h in _LOG_NAME_HINTS) or _fn.endswith((".log", ".txt"))):
             continue
         m = _re.search(r"(?:\.part(\d+))?\.(zip|7z|rar|tar|gz)(\.(\d{2,3}))?$", fname, _re.I)
         if not m:
@@ -3913,28 +3948,19 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
             if not ok:
                 logger.warning("gmlogger 解压失败 %s: %s", base, names)
                 return {"status": "failed", "reason": f"gmlogger 解压失败: {names}", "main_entries": [], "main_times": []}
-            main_names = [n for n in names if "main" in os.path.basename(n).lower()
-                          and os.path.basename(n).lower().endswith((".log", ".txt"))]
-            if not main_names:
-                main_names = [n for n in names if "main" in os.path.basename(n).lower()]
+            main_names = [n for n in names
+                          if ("main.log" in os.path.basename(n).lower()
+                              or "main_" in os.path.basename(n).lower())
+                          and (".log" in os.path.basename(n).lower()
+                               or os.path.basename(n).lower().endswith((".txt", ".gz", ".log")))]
             main_times = []
             need_head = []  # 文件名无时间的 main 文件，待批量读头部提取首条日志时间戳
-            for n in main_names[:5]:
+            for n in main_names:
                 bname = os.path.basename(n)
-                parsed = _diag_parse_entry_time(bname)
+                parsed = _diag_parse_main_time(bname)
                 if parsed:
                     main_times.append(parsed)
                     continue
-                # 文件名下划线分隔日期时间（如 main_2026_08_30_10_39.log）
-                mu = _re.search(r"(20\d{2})[-_]?(\d{2})[-_]?(\d{2})[-_ ]?(\d{2})[-_](\d{2})(?:[-_](\d{2}))?", bname)
-                if mu:
-                    try:
-                        ts = datetime(int(mu.group(1)), int(mu.group(2)), int(mu.group(3)),
-                                      int(mu.group(4)), int(mu.group(5)), int(mu.group(6) or 0))
-                        main_times.append((ts.strftime("%Y-%m-%d %H:%M:%S"), ts))
-                        continue
-                    except ValueError:
-                        pass
                 need_head.append(n)
             # 批量读文件头部提取首条日志时间戳（7z 一次解压，读 64KB 提升命中率）
             if need_head:
@@ -6311,6 +6337,17 @@ def _fill_time_with_ref_date(time_str: str, refs) -> str:
     return best_dt.replace(hour=hh, minute=mm, second=ss, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _fill_time_with_main_date(time_str: str, main_times=None, other_refs=None) -> str:
+    """优先用包内 main.log 相关文件的日期补全只有时分的时间。
+
+    外层压缩包名/附件名的日期可能只是创建时间，不能优先用于拼凑日期；
+    没有包内 main.log 时间时，才退回其它参考时间。
+    """
+    if main_times:
+        return _fill_time_with_ref_date(time_str, main_times)
+    return _fill_time_with_ref_date(time_str, other_refs or [])
+
+
 def _gmlogger_segment_bounds(t, refs):
     """返回事件时间所在日志包的 (start, end)；不在任何包内返回 None。
 
@@ -6358,7 +6395,8 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
         logger.warning("排查诊断：触发时间提取失败: %s", e)
     if extracted:
         # 评论/描述只有时分：用包内时间中“时分最接近”的日期补全
-        extracted = _fill_time_with_ref_date(extracted, list(main_times or []) + list(all_times or []) + list(gm_times or []))
+        extracted = _fill_time_with_main_date(
+            extracted, main_times, list(all_times or []) + list(gm_times or []))
     ext_dt = _ts_parse_datetime(extracted) if extracted else None
     gm_note = f"（注：gmlogger 外侧文件名时间 {gm_times[0][0]} 仅供参考，可能不准）" if gm_times else ""
     # —— gmlogger 场景：以包内时间戳为验证依据（只要有一个文件满足条件即通过）——
@@ -6387,7 +6425,7 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
                 vid_time = video_time_hint
                 vid_detail = f"使用诊断阶段视频 OCR 结果 {vid_time}"
             if vid_time:
-                _vid_full = _fill_time_with_ref_date(vid_time, ref_pool) or vid_time
+                _vid_full = _fill_time_with_main_date(vid_time, main_times, list(all_times or []) + list(gm_times or []))
                 return "success", _vid_full, f"视频帧 OCR 兜底: {vid_detail}", _vid_full
         # 视频兜底未命中：用包内时间戳中最近的作为建议
         if ref_pool and ext_dt:
@@ -6492,15 +6530,16 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
         _m3 = _re3.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", str(candidate).strip())
         _created3 = _ts_parse_datetime(str((issue.get("fields") or {}).get("created") or "")[:19])
         if _m3:
-            _refs3 = [dt for _, dt in (main_times or [])] + [dt for _, dt in (all_times or [])] + [dt for _, dt in (gm_times or [])]
-            _filled3 = _fill_time_with_ref_date(str(candidate), _refs3)
+            _refs3 = [dt for _, dt in (all_times or [])] + [dt for _, dt in (gm_times or [])]
+            _filled3 = _fill_time_with_main_date(str(candidate), main_times, _refs3)
             if _filled3 != str(candidate):
                 candidate = _filled3
             elif _created3:
                 candidate = _created3.replace(hour=int(_m3.group(1)), minute=int(_m3.group(2)),
                                               second=int(_m3.group(3) or 0), microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
     refs = [dt for _, dt in (main_times or [])] + [dt for _, dt in (all_times or [])]
-    # 优先用日志包文件名时间（真正的抓包时刻）；包内时间戳可能是历史轮转日志，不能直接当抓包时间
+    _main_refs = [dt for _, dt in (main_times or [])]
+    # main.log 文件名中 main.log 后面的时间才是日志时间；外层压缩包名/附件名通常是创建时间，不准确
     # 事件时间：用于选择“事件之后最近的一次抓包”，避免落在两个包之间时默认取前一个
     _near = (_ts_parse_datetime(str(candidate)) or _ts_parse_datetime(str(vid_time))
              or _ts_parse_datetime(str(current_time)))
@@ -6508,7 +6547,18 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
         cap = _jc.get_log_capture_time(issue, near_time=_near)
     except Exception:
         cap = None
-    if cap is None and gm_times:
+    if _main_refs:
+        # 包内 main.log 时间优先于外层包名/附件名时间
+        _rs = sorted(_main_refs)
+        _b2 = _gmlogger_segment_bounds(_near, _rs)
+        if _b2:
+            cap = _b2[1]
+        elif _near:
+            _after = [r for r in _rs if r >= _near]
+            cap = min(_after) if _after else max(_rs)
+        else:
+            cap = max(_rs)
+    elif cap is None and gm_times:
         _gmts = sorted(dt for _, dt in gm_times)
         _b = _gmlogger_segment_bounds(_near, _gmts)
         if _b:
@@ -7324,7 +7374,8 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                 video_time = _vid_extracted
             # 视频时间优先：避免被包内“最近时间”覆盖（如 19:34 被 19:44 覆盖）
             if video_time:
-                _vt_full = _fill_time_with_ref_date(video_time, list(main_times or []) + list(all_times or []) + list(gm_times or []))
+                _vt_full = _fill_time_with_main_date(
+                    video_time, main_times, list(all_times or []) + list(gm_times or []))
                 if _vt_full and _vt_full != suggested_time:
                     suggested_time = _vt_full
                     verify_status = "manual"

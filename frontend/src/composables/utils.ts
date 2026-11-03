@@ -104,3 +104,15 @@ export function diagCategoryTagType(category: string): string {
   if (category.includes('超时') || category.includes('网络')) return '';
   return 'info';
 }
+
+// ─── 展示/人工审核时间统一到分（秒补 00；云端提取缓存仍保留秒）───
+export function formatMinute(ts: any): string {
+  const s = String(ts ?? '').trim().replace(/\//g, '-');
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?$/);
+  return m ? `${m[1]} ${m[2]}:00` : s;
+}
+
+export function formatHumanReason(text: any): string {
+  return String(text ?? '').replace(
+    /(时间添加为\s*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}):\d{2}/g, '$1:00');
+}

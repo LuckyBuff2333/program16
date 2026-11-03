@@ -1617,3 +1617,25 @@ flowchart TD
 - **实现文件**：`src/config.py`、`scripts/config_crypt.py`、`config/config.enc`
 
 </details>
+
+<details>
+<summary><b>122. main.log 时间改取 main.log 后面的日志时间，非 gmlogger 包也解析包内日期（2026-11-03）</b></summary>
+
+- **问题**：
+  1. `main.log` 文件名解析先命中前面的压缩包/目录时间（如 `log_20261027193659`，实为创建时间），没有使用 `main.log` 后面的日志时间；
+  2. 只扫描文件名含 `gmlogger` 的包，`log_...zip`、`GMLog_...7z` 等非 gmlogger 日志包被跳过；
+  3. `main.log` 筛选只取 `.log/.txt` 结尾，漏掉 `0-main.log_2026_10_25_20_39_50.gz` 这类轮转文件；
+  4. 只有时分的时间拼日期时，优先用了外层包名/附件名日期，可能得到错误的创建日期。
+- **修复**：
+  1. 新增 `_diag_parse_main_log_suffix_time()`，优先解析 `main.log` 后面的时间（支持 `_`、`-`、紧凑 `YYYYMMDDHHMMSS`）；
+  2. `_diag_parse_main_time()`、`_diag_match_time_window()` 对 main.log 均使用后缀时间；
+  3. `_diag_gmlogger_main_times()` 识别范围扩大到 `gmlogger/gmlog/log_/pataclogger` 等日志包，`main.log_*.gz` 全部纳入解析；
+  4. 新增 `_fill_time_with_main_date()`：拼日期优先用包内 main.log 日期，其次包内其它时间，最后才用外层附件名；接入 `_diag_verify_suggestion()`、`_diag_time_check()` 和视频时间补日期；
+  5. `_diag_time_check()` 的抓包参考优先使用包内 main.log 时间，外层包名/附件名只作为证据展示；
+  6. 诊断缓存版本 `2 → 3`，旧缓存自动失效。
+- **验证**：
+  - VCU-561563：包内 27 个 main.log，时间 `2026-10-25 20:39:50` ~ `2026-10-25 23:25:07`；外层 `2026-10-27 19:36:59` 判为不可用；
+  - VCU-561526：`GMLog_20261027_152355.7z`（196MB）包内 140 个条目、68 个 main 文件、67 个时间，日期 `2026-10-25 21:09:54` ~ `2026-10-26 03:18:18`；`15:24` 用包内日期拼为 `2026-10-25 15:24:00`，不再用外层 `2026-10-27`。
+- **实现文件**：`src/services/server_legacy.py`、`src/services/report_ops.py`
+
+</details>

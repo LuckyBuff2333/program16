@@ -1548,6 +1548,13 @@ def _load_bitable_success_jiras() -> set:
         return set()
 
 
+def _minute_of(ts: str) -> str:
+    """把 YYYY-MM-DD HH:MM[:SS] 统一为 YYYY-MM-DD HH:MM:00（人工审核/展示到分）"""
+    s = str(ts or "").strip().replace("/", "-")
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?$", s)
+    return f"{m.group(1)} {m.group(2)}:00" if m else s
+
+
 def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detail: str,
                                    problem_time: str = "", verify_status: str = "",
                                    suggested_time: str = "", archive_files: list = None) -> dict:
@@ -1607,10 +1614,21 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         human_reason = "解压问题，待排查"
         retry_result = ""
         final_category = "解压问题"
+    elif category == "正常":
+        ai_reason = msg or "触发时间与 gmlogger 文件名时间一致"
+        _normal_time = _minute_of(suggested_time or problem_time)
+        human_reason = f"时间添加为{_normal_time}" if _normal_time else "触发时间正常"
+        retry_result = ""
+        final_category = "正常"
+    elif category == "无参考":
+        ai_reason = msg or "无法验证触发时间（无参考时间）"
+        human_reason = "无参考时间，待人工排查"
+        retry_result = ""
+        final_category = "无参考"
     elif category == "触发时间问题":
         ai_reason = msg or "未找到问题时间: JIRA 自定义字段、标题、description、LLM 及评论区均未能提取到问题发生时间，请在请求中显式传入 problem_time 参数（格式: YYYY-MM-DD HH:MM:SS）"
         if suggested_time:
-            human_reason = f"时间添加为{suggested_time}"
+            human_reason = f"时间添加为{_minute_of(suggested_time)}"
         else:
             human_reason = "时间异常无对应日志，应该添加为正确的触发时间"
         retry_result = ""
@@ -1641,6 +1659,10 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         retry_result = ""
         final_category = "问题未复现"
 
+    # 兜底：人工审核结果不允许为空（未知分类至少给出待人工排查）
+    if not human_reason:
+        human_reason = "待人工排查"
+
     return {
         "ai_reason": ai_reason,
         "human_reason": human_reason,
@@ -1657,7 +1679,8 @@ def _troubleshoot_cache_dir() -> str:
 
 
 # 诊断缓存版本：时间提取逻辑升级后自增，旧缓存自动失效（避免旧结论一直生效）
-_DIAG_CACHE_VERSION = 2
+# v3: main.log 时间改为优先取 main.log 后面的日志时间（前面的包名/目录名多为创建时间）
+_DIAG_CACHE_VERSION = 3
 
 
 def _load_diagnose_cache(bugid: str) -> dict:
@@ -1678,6 +1701,24 @@ def _load_diagnose_cache(bugid: str) -> dict:
         valid_status = {"success", "manual", "corrected", ""}
         if data.get("verify_status") not in valid_status:
             data["verify_status"] = ""
+        # 兼容旧缓存：时间判定正常的记录可能没有人工审核结论，读取时补齐，避免前端显示为空
+        report = data.get("report")
+        if isinstance(report, dict):
+            _hr = report.get("human_reason") or ""
+            if _hr:
+                # 人工审核里的“时间添加为...”统一到分（秒补 00）
+                report["human_reason"] = re.sub(
+                    r"(时间添加为\s*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}):\d{2}",
+                    r"\1:00", _hr)
+            else:
+                sug = data.get("suggested_time") or ""
+                status = (data.get("time_check") or {}).get("status")
+                if (status == "正常" or data.get("category") == "正常") and sug:
+                    report["human_reason"] = f"时间添加为{_minute_of(sug)}"
+                elif data.get("category") == "正常":
+                    report["human_reason"] = "触发时间正常"
+                elif data.get("category") == "无参考":
+                    report["human_reason"] = "无参考时间，待人工排查"
         return data
     except Exception as e:
         logger.warning("读取诊断缓存失败 %s: %s", bugid, e)

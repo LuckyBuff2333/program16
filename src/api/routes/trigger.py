@@ -20,6 +20,14 @@ logger = setup_logger("web.trigger")
 router = APIRouter()
 
 
+def _to_minute(ts: str) -> str:
+    """人工保存触发时间时统一到分：秒补 00（云端提取缓存仍保留原始秒）"""
+    import re
+    s = str(ts or "").strip().replace("/", "-")
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?$", s)
+    return f"{m.group(1)} {m.group(2)}:00" if m else s
+
+
 @router.post("/api/trigger_time/batch_read", response_model=ApiResponse)
 async def batch_read_trigger_times(req: BugidListRequest):
     """批量读取指定 jira 号的当前触发时间"""
@@ -87,7 +95,7 @@ def update_trigger_time(req: UpdateTriggerTimeRequest):
     )
     from src.services.trigger_ops import _save_trigger_time_to_cloud
     bugid = req.bugid.strip()
-    new_time = req.new_time.strip()
+    new_time = _to_minute(req.new_time)
     if not bugid:
         return _fail("请输入 bugid/jira号")
     if not new_time:
@@ -118,7 +126,7 @@ def batch_update_trigger_time(req: BatchUpdateRequest):
     valid_items = {}
     for item in items:
         bugid = item.bugid.strip()
-        new_time = item.new_time.strip()
+        new_time = _to_minute(item.new_time)
         if not bugid or not new_time:
             continue
         valid_items[bugid] = new_time

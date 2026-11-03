@@ -159,13 +159,21 @@
         <el-table-column label="人工审核结果" min-width="200">
           <template #default="{row}">
             <div v-if="troubleshoot.editingSkipBugid === row.bugid" style="display:flex;align-items:center;gap:4px">
-              <el-input v-model="troubleshoot.editingSkipReason" size="small" placeholder="输入人工审核结果" autofocus
-                @keyup.enter="saveSkipHumanReason(row)"></el-input>
+              <el-autocomplete v-model="troubleshoot.editingSkipReason" size="small"
+                :fetch-suggestions="matchHumanReasonCategories" :trigger-on-focus="true"
+                placeholder="输入或选择人工审核结果" style="flex:1;min-width:160px"
+                @select="(item) => onSkipHumanReasonSelect(item, row)"
+                @keyup.enter="saveSkipHumanReason(row)">
+                <template #default="{ item }">
+                  <span>{{ item.value }}</span>
+                  <el-tag size="small" type="info" style="margin-left:8px">{{ item.category }}</el-tag>
+                </template>
+              </el-autocomplete>
               <el-button size="small" type="success" link @click="saveSkipHumanReason(row)">保存</el-button>
               <el-button size="small" type="info" link @click="troubleshoot.editingSkipBugid=''">取消</el-button>
             </div>
             <div v-else style="display:flex;align-items:center;gap:6px">
-              <span v-if="row.report && row.report.human_reason" style="color:#e6a23c;font-weight:600;font-size:12px">{{ row.report.human_reason }}</span>
+              <span v-if="row.report && row.report.human_reason" style="color:#e6a23c;font-weight:600;font-size:12px">{{ formatHumanReason(row.report.human_reason) }}</span>
               <span v-else style="color:#c0c4cc;font-size:12px">-</span>
               <el-button link size="small" type="primary" style="color:#909399;font-size:12px" @click="startEditSkipHuman(row)">编辑</el-button>
             </div>
@@ -216,7 +224,7 @@
         <el-table-column prop="done_time" label="分析完成时间" width="160"></el-table-column>
         <el-table-column label="当前触发时间" width="200">
           <template #default="{row}">
-            <span>{{ row.problem_time || '-' }}</span>
+            <span>{{ formatMinute(row.problem_time) || '-' }}</span>
             <el-tag v-if="row.time_check && row.time_check.current && row.time_check.current.status"
               size="mini" style="margin-left:6px" :type="timeStatusTagType(row.time_check.current.status)">
               {{ row.time_check.current.status }}
@@ -225,14 +233,14 @@
         </el-table-column>
         <el-table-column label="建议时间" width="190">
           <template #default="{row}">
-            <span v-if="row.suggested_time">{{ row.suggested_time }}</span>
+            <span v-if="row.suggested_time">{{ formatMinute(row.suggested_time) }}</span>
             <span v-else style="color:#c0c4cc">-</span>
             <span v-if="row.time_check && row.time_check.change_sec !== null && row.time_check.change_sec !== undefined"
               style="margin-left:6px;font-size:12px;color:#909399">{{ formatChange(row.time_check) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="抓包时间" width="150">
-          <template #default="{row}">{{ (row.time_check && row.time_check.ref_time) || '-' }}</template>
+          <template #default="{row}">{{ formatMinute((row.time_check && row.time_check.ref_time) || '') || '-' }}</template>
         </el-table-column>
         <el-table-column label="差秒" width="90">
           <template #default="{row}">
@@ -282,14 +290,22 @@
         <el-table-column label="人工审核结果" min-width="200" show-overflow-tooltip>
           <template #default="{row}">
             <div v-if="troubleshoot.editingSkipBugid === row.bugid" style="display:flex;align-items:center;gap:4px">
-              <el-input v-model="troubleshoot.editingSkipReason" size="small" placeholder="输入人工审核结果" autofocus
-                @keyup.enter="saveSkipHumanReason(row)"></el-input>
+              <el-autocomplete v-model="troubleshoot.editingSkipReason" size="small"
+                :fetch-suggestions="matchHumanReasonCategories" :trigger-on-focus="true"
+                placeholder="输入或选择人工审核结果" style="flex:1;min-width:160px"
+                @select="(item) => onSkipHumanReasonSelect(item, row)"
+                @keyup.enter="saveSkipHumanReason(row)">
+                <template #default="{ item }">
+                  <span>{{ item.value }}</span>
+                  <el-tag size="small" type="info" style="margin-left:8px">{{ item.category }}</el-tag>
+                </template>
+              </el-autocomplete>
               <el-button size="small" type="success" link @click="saveSkipHumanReason(row)">保存</el-button>
               <el-button size="small" type="info" link @click="troubleshoot.editingSkipBugid=''">取消</el-button>
             </div>
             <div v-else style="display:flex;align-items:center;gap:6px">
               <span v-if="row.report && row.report.human_reason"
-                :style="isTimeDifferent(row) ? 'color:#67c23a;font-weight:600' : 'color:#e6a23c;font-weight:600'">{{ row.report.human_reason }}</span>
+                :style="isTimeDifferent(row) ? 'color:#67c23a;font-weight:600' : 'color:#e6a23c;font-weight:600'">{{ formatHumanReason(row.report.human_reason) }}</span>
               <span v-else style="color:#c0c4cc">-</span>
               <el-button link size="small" type="primary" style="color:#909399;font-size:12px" @click="startEditSkipHuman(row)">编辑</el-button>
             </div>
@@ -481,7 +497,7 @@
             :fetch-suggestions="matchHumanReasonCategories"
             placeholder="输入关键词自动匹配归类（如：无gmlogger、重复、超时）"
             style="width:100%" clearable
-            @select="(item) => { troubleshoot.correctionEditor.humanReason = item.value; troubleshoot.correctionEditor.matchedCategory = item.category; }">
+            @select="onCorrectionHumanReasonSelect">
             <template #default="{ item }">
               <span>{{ item.value }}</span>
               <el-tag size="small" type="info" style="margin-left:8px">{{ item.category }}</el-tag>
@@ -506,7 +522,7 @@
 <script lang="ts">
 // @ts-nocheck
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, diagCategoryTagType } from '../composables/utils';
+import { api, diagCategoryTagType, formatMinute, formatHumanReason } from '../composables/utils';
 export default {
   name: 'TroubleshootPanel',
   components: {},
@@ -571,6 +587,8 @@ export default {
       return s === '正常' ? 'success' : (s === '待确认' ? 'warning' : (s === '不可用' ? 'danger' : 'info'));
     },
     diagCategoryTagType,
+    formatMinute,
+    formatHumanReason,
     getMainEntries(row) {
       const bugid = row['jira号'] || row['bugid'];
       if (!bugid) return '-';
@@ -726,19 +744,20 @@ export default {
       if (!row?.bugid || !row?.suggested_time) {
         return ElMessage.warning('缺少 bugid 或建议时间');
       }
+      const newTime = formatMinute(row.suggested_time);
       try {
         const body = await api('/api/trigger_time/update', {
-          method: 'POST', body: JSON.stringify({ bugid: row.bugid, new_time: row.suggested_time })
+          method: 'POST', body: JSON.stringify({ bugid: row.bugid, new_time: newTime })
         });
-        ElMessage.success(`${row.bugid} 触发时间已替换为 ${row.suggested_time}（${body.message || '已保存'}）`);
+        ElMessage.success(`${row.bugid} 触发时间已替换为 ${newTime}（${body.message || '已保存'}）`);
         row.verify_status = 'corrected';
-        row.correction_time = row.suggested_time;
+        row.correction_time = newTime;
       } catch (e) { /* 已提示 */ }
     },
     getApplicableCorrections() {
       return this.troubleshoot.diagResults.filter((r) => {
         if (r.verify_status !== 'success' || !r.suggested_time) return false;
-        if (r.suggested_time === r.problem_time) return false;
+        if (formatMinute(r.suggested_time) === formatMinute(r.problem_time)) return false;
         // 时间方向判定为“不可用”的不自动应用（避免把逻辑上不可能的时间写回去）
         if (r.time_check && r.time_check.status === '不可用') return false;
         return true;
@@ -752,11 +771,11 @@ export default {
       if (!targets.length) return ElMessage.warning('无待应用的修正时间');
       this.troubleshoot.batchApplyingTime = true;
       try {
-        const items = targets.map(r => ({ bugid: r.bugid, new_time: r.suggested_time }));
+        const items = targets.map(r => ({ bugid: r.bugid, new_time: formatMinute(r.suggested_time) }));
         const body = await api('/api/trigger_time/batch_update', {
           method: 'POST', body: JSON.stringify({ items })
         });
-        targets.forEach(r => { r.verify_status = 'corrected'; r.correction_time = r.suggested_time; });
+        targets.forEach(r => { r.verify_status = 'corrected'; r.correction_time = formatMinute(r.suggested_time); });
         ElMessage.success(body.message || `已应用 ${targets.length} 条修正时间`);
       } catch (e) { /* 已提示 */ }
       finally { this.troubleshoot.batchApplyingTime = false; }
@@ -786,6 +805,9 @@ export default {
         { value: '疑似接口拥堵导致的接口无响应，待源泉排查', category: '接口并发响应问题', keywords: ['拥堵', '并发', 'adjudication'] },
         { value: '疑似接口拥堵导致的手动中断', category: '接口并发响应问题', keywords: ['拥堵', '手动中断', '手动中断'] },
         { value: '时间添加为', category: '触发时间问题', keywords: ['时间添加', '修改时间', '替换时间'] },
+        { value: '日志待补充', category: '日志待补充', keywords: ['日志待补充', '待补充', '日志不全', '日志缺失'] },
+        { value: '无参考时间，待人工排查', category: '无参考', keywords: ['无参考', '无法验证'] },
+        { value: '分析can信号导致超时', category: '分析can信号导致超时', keywords: ['can信号', 'can'] },
         { value: '无法自动归类，待人工排查', category: '待人工排查', keywords: ['人工', '待人工', '无法归类'] },
         { value: '解压问题，待排查', category: '解压问题', keywords: ['解压', '解压问题', '待排查'] },
       ];
@@ -796,11 +818,31 @@ export default {
       );
       cb(matched.length ? matched.map(o => ({ value: o.value, category: o.category })) : allOptions.map(o => ({ value: o.value, category: o.category })));
     },
+    onSkipHumanReasonSelect(item, row) {
+      const val = (item && item.value) || '';
+      if (val === '时间添加为') {
+        const t = formatMinute((row && (row.suggested_time || row.problem_time)) || '');
+        this.troubleshoot.editingSkipReason = t ? `时间添加为${t}` : '时间添加为';
+      } else {
+        this.troubleshoot.editingSkipReason = val;
+      }
+    },
+    onCorrectionHumanReasonSelect(item) {
+      const ed = this.troubleshoot.correctionEditor;
+      ed.matchedCategory = (item && item.category) || '';
+      const val = (item && item.value) || '';
+      if (val === '时间添加为') {
+        const t = formatMinute(ed.time || (ed.row && (ed.row.suggested_time || ed.row.problem_time)) || '');
+        ed.humanReason = t ? `时间添加为${t}` : '时间添加为';
+      } else {
+        ed.humanReason = val;
+      }
+    },
     onCorrectionTimeChange(val) {
-      // 时间变更时实时更新人工审核结果
+      // 时间变更时实时更新人工审核结果（统一到分）
       const ed = this.troubleshoot.correctionEditor;
       if (val) {
-        ed.humanReason = `时间添加为${val}`;
+        ed.humanReason = `时间添加为${formatMinute(val)}`;
       }
     },
     async saveSuggestion() {
@@ -811,7 +853,7 @@ export default {
       const row = ed.row;
       try {
         if (ed.time) {
-          const timeStr = typeof ed.time === 'object' ? new Date(ed.time).toISOString().replace('T', ' ').slice(0, 19) : String(ed.time);
+          const timeStr = formatMinute(typeof ed.time === 'object' ? new Date(ed.time).toISOString().replace('T', ' ').slice(0, 19) : String(ed.time));
           await api('/api/trigger_time/update', {
             method: 'POST', body: JSON.stringify({ bugid: row.bugid, new_time: timeStr })
           });
@@ -825,19 +867,19 @@ export default {
         row.correction_note = ed.note;
         if (ed.humanReason) {
           if (!row.report) row.report = {};
-          let reason = ed.humanReason;
+          let reason = formatHumanReason(ed.humanReason);
           if (reason === '时间添加为' && ed.time) {
-            const timeStr = typeof ed.time === 'object' ? new Date(ed.time).toISOString().replace('T', ' ').slice(0, 19) : String(ed.time);
+            const timeStr = formatMinute(typeof ed.time === 'object' ? new Date(ed.time).toISOString().replace('T', ' ').slice(0, 19) : String(ed.time));
             reason = `时间添加为${timeStr}`;
           }
-          row.report.human_reason = reason;
+          row.report.human_reason = formatHumanReason(reason);
           if (ed.matchedCategory) { row.report.final_category = ed.matchedCategory; row.category = ed.matchedCategory; }
           if (!ed.time) row.verify_status = 'corrected';
         }
         const cacheUpdate = { bugid: row.bugid };
         if (ed.time) cacheUpdate.correction_time = row.correction_time;
         if (ed.note !== undefined) cacheUpdate.correction_note = ed.note;
-        if (row.report && row.report.human_reason) cacheUpdate.human_reason = row.report.human_reason;
+        if (row.report && row.report.human_reason) cacheUpdate.human_reason = formatHumanReason(row.report.human_reason);
         if (ed.matchedCategory) cacheUpdate.category = ed.matchedCategory;
         await api('/api/troubleshoot/update_cache', { method: 'POST', body: JSON.stringify(cacheUpdate) });
         ed.visible = false;
@@ -1013,7 +1055,7 @@ export default {
       // 从错误时间中提取完整日期时间
       const problemDT = extractDateTime(row.problem_time);
       if (!humanDT || !problemDT) return false;
-      return humanDT !== problemDT;
+      return formatMinute(humanDT) !== formatMinute(problemDT);
     },
     // 根据人工审核文本自动匹配分类
     classifyHumanReason(text) {
@@ -1050,7 +1092,7 @@ export default {
       return '';
     },
     async saveSkipHumanReason(row) {
-      const newReason = this.troubleshoot.editingSkipReason;
+      const newReason = formatHumanReason(this.troubleshoot.editingSkipReason);
       if (!newReason || !newReason.trim()) {
         ElMessage.warning('请输入审核内容');
         return;
@@ -1083,12 +1125,13 @@ export default {
         if (newCategory === '触发时间问题') {
           const timeMatch = newReason.match(/(\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?)/);
           if (timeMatch) {
+            const newTime = formatMinute(timeMatch[1]);
             try {
               await api('/api/trigger_time/batch_update', {
                 method: 'POST',
-                body: JSON.stringify({ items: [{ bugid: row.bugid, new_time: timeMatch[1] }] }),
+                body: JSON.stringify({ items: [{ bugid: row.bugid, new_time: newTime }] }),
               });
-              ElMessage({ type: 'success', message: `云端触发时间已更新为 ${timeMatch[1]}`, duration: 2000, showClose: true });
+              ElMessage({ type: 'success', message: `云端触发时间已更新为 ${newTime}`, duration: 2000, showClose: true });
             } catch (e2) {
               ElMessage({ type: 'warning', message: `云端写入失败: ${e2.message || e2}`, duration: 3000, showClose: true });
             }
@@ -1154,7 +1197,7 @@ export default {
     async batchWriteSkipReview() {
       const items = this.getFilteredSkipResults()
         .filter(r => r.report && r.report.human_reason)
-        .map(r => ({ bugid: r.bugid, done_time: r.done_time, human_reason: r.report.human_reason }));
+        .map(r => ({ bugid: r.bugid, done_time: r.done_time, human_reason: formatHumanReason(r.report.human_reason) }));
       if (!items.length) return ElMessage.warning('无有人工分析失败原因的跳过记录');
       try {
         await ElMessageBox.confirm(
@@ -1245,7 +1288,7 @@ export default {
     async batchWriteReview() {
       const items = this.getFilteredDiagResults()
         .filter(r => r.report && r.report.human_reason)
-        .map(r => ({ bugid: r.bugid, done_time: r.done_time, human_reason: r.report.human_reason }));
+        .map(r => ({ bugid: r.bugid, done_time: r.done_time, human_reason: formatHumanReason(r.report.human_reason) }));
       if (!items.length) return ElMessage.warning('无有人工分析失败原因的记录');
       const scope = this.troubleshoot.categoryFilter ? `筛选「${this.troubleshoot.categoryFilter}」中 ` : '';
       const emptyHint = this.troubleshoot.onlyEmptyReview ? '（仅写入人工审核结果为空的记录）' : '';
@@ -1269,9 +1312,9 @@ export default {
         .filter(r => r.verify_status !== 'manual')
         .map(r => ({
           jira号: r.bugid, 问题归类: r.category, 分析完成时间: r.done_time || '',
-          错误时间: r.problem_time || '', 诊断详情: r.detail || '',
-          修正建议: r.suggested_time || '',
-          人工审核结果: (r.report && r.report.human_reason) || r.correction_note || '',
+          错误时间: formatMinute(r.problem_time || ''), 诊断详情: r.detail || '',
+          修正建议: formatMinute(r.suggested_time || ''),
+          人工审核结果: formatHumanReason((r.report && r.report.human_reason) || r.correction_note || ''),
         }));
       if (!triggerIssues.length) return ElMessage.warning('无触发时间问题记录');
       this.troubleshoot.exportingTriggerIssues = true;
