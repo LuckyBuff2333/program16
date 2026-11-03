@@ -2802,14 +2802,28 @@ async def test_prod_batch_run(request: Request):
                     if not _has_gmlogger_logs(attachments, bugid):
                         logger.info("触发时间: %s 无gmlogger附件，跳过", bugid)
                         return bugid, None  # None 表示无gmlogger，不写空标签
-                    # 评论/字段提取优先（基于对比实验结果：文本提取准确率最高且速度最快）
-                    # skip_attachment=True：有视频时先试视频，附件名才是真正最后兑底
+                    # Closed：评论区优先；非 Closed：视频优先
+                    _status = (_jc.extract_status(issue) or "").lower()
+                    _closed = _status == "closed"
+                    _has_video = any((a.get("filename") or "").lower().endswith((".mp4", ".mov", ".avi", ".mkv"))
+                                     for a in attachments)
+                    if _closed:
+                        tt = _jc.extract_latest_comment_time(issue)
+                        if tt:
+                            return bugid, _align_time_to_gmlogger(issue, tt, attachments)
+                    elif _has_video:
+                        tt = _diag_extract_time_from_video_simple(issue)
+                        if tt:
+                            if not isinstance(tt, str):
+                                tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
+                            return bugid, _align_time_to_gmlogger(issue, tt, attachments)
+                    # 通用文本/字段提取
                     tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
                     if tt:
                         if not isinstance(tt, str):
                             tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, 'strftime') else str(tt)
                         return bugid, _align_time_to_gmlogger(issue, tt, attachments)
-                    # 文本未命中，视频OCR兑底
+                    # 视频 OCR 兜底
                     tt = _diag_extract_time_from_video_simple(issue)
                     if tt:
                         if not isinstance(tt, str):

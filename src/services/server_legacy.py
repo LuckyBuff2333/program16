@@ -5181,6 +5181,18 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
     fields = issue.get("fields") or {}
     attachments = fields.get("attachment") or []
     videos = [a for a in attachments if (a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES)]
+    # 多视频：优先选上传日期与日志包上传日期最接近的
+    try:
+        _gm_dates = [_ts_parse_datetime(str(a.get("created") or "")[:19]) for a in attachments
+                     if "gmlogger" in (a.get("filename") or "").lower()]
+        _gm_dates = [d for d in _gm_dates if d]
+        if _gm_dates and len(videos) > 1:
+            def _vkey(a):
+                _vd = _ts_parse_datetime(str(a.get("created") or "")[:19])
+                return min((abs((_vd - g).total_seconds()) for g in _gm_dates), default=0) if _vd else 10 ** 12
+            videos.sort(key=_vkey)
+    except Exception:
+        pass
     if not videos:
         _timestudy_update_ctx(issue.get("key", ""), error_type="no_video", error_detail="Jira无视频附件")
         _timestudy_trace(issue.get("key", ""), "video:0")

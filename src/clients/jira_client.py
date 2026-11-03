@@ -1132,6 +1132,30 @@ def extract_attachment_time(issue: dict) -> str:
     return _extract_attachment_time(issue)
 
 
+def extract_latest_comment_time(issue: dict) -> str:
+    """按“最新优先”提取评论时间：先找最新结论/日志分析语句里的时间，再找最新普通时间。"""
+    fields = issue.get("fields") or {}
+    raw = (fields.get("comment") or {}).get("comments") or []
+    raw = sorted(raw, key=lambda c: c.get("created", ""), reverse=True)
+    prefer_keys = ("结论", "日志分析", "分析结果", "触发时间", "问题时间", "时间：", "时间:")
+    for c in raw:
+        body = c.get("body") or ""
+        if isinstance(body, dict):
+            body = _extract_adf_text(body)
+        if not body.strip() or _is_ai_analysis_comment(body):
+            continue
+        year = (c.get("created") or "")[:4]
+        lines = [ln for ln in body.split("\n") if ln.strip()]
+        preferred = [ln for ln in lines if any(k in ln for k in prefer_keys)]
+        for group in (preferred, lines):
+            for ln in group:
+                ts = _extract_times_from_text(ln, year)
+                if ts:
+                    logger.info("评论区最新时间: %s", ts[0][0])
+                    return ts[0][0]
+    return ""
+
+
 def extract_trigger_time_from_comments(comments: list) -> str:
     """从评论文本列表中提取日志时间（仅支持完整格式）
 

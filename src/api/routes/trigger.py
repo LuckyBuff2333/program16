@@ -487,7 +487,13 @@ async def batch_extract_time(request: Request):
                     pass
                 has_video = any((a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES) for a in attachments)
                 tt, source = "", ""
-                # 1. 视频 OCR（最高优先级）
+                # Closed：评论区最新结论/普通时间优先
+                if (_jc.extract_status(issue) or "").lower() == "closed":
+                    tt = _jc.extract_latest_comment_time(issue)
+                    if tt:
+                        tt = _align_time_to_gmlogger(issue, tt, attachments)
+                        return bugid, tt, "评论", None
+                # 1. 视频 OCR（非 Closed 最高优先级）
                 if has_video:
                     tt = _diag_extract_time_from_video_simple(issue, stop_event=_stop_event)
                     if tt:

@@ -1706,3 +1706,17 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`、`models/ppocrv5/`
 
 </details>
+
+<details>
+<summary><b>128. 按 Closed/非 Closed 分流：评论区优先或视频优先（2026-11-03）</b></summary>
+
+- **规则**：
+  1. Closed 且有附件 → 评论区优先：先找最新“结论/日志分析/触发时间”语句里的时间，再找最新普通时间；
+  2. 非 Closed → 视频 OCR 优先，视频失败再走评论/字段；
+  3. 多视频 → 优先选上传日期与日志包上传日期最接近的视频；
+  4. 无附件/包内无 main/txt → 仍判无指定日志附件。
+- **实现**：新增 `extract_latest_comment_time()`；时间批量提取、功能测试批量执行按状态分流；视频按上传日期排序。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/clients/jira_client.py`、`src/api/routes/trigger.py`、`src/api/routes/testing.py`、`src/services/server_legacy.py`
+
+</details>
