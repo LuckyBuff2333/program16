@@ -1720,3 +1720,18 @@ flowchart TD
 - **实现文件**：`src/clients/jira_client.py`、`src/api/routes/trigger.py`、`src/api/routes/testing.py`、`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>129. 诊断结果自动定论，减少待人工审核（2026-11-03）</b></summary>
+
+- **问题**：大量 `verify_status=manual` 其实已有明确建议或属于信息类（无参考/解压问题），仍进入待人工。
+- **规则**：
+  1. 触发时间问题 + 有建议时间 + 方向判定“正常” → 自动 `corrected`；
+  2. 视频时间优先覆盖时 → `corrected`；
+  3. 兜底最近日志时间 → `corrected`；
+  4. 无参考/解压问题且无建议 → `verify_status=""`，只作为信息记录，不交人工改时间；
+  5. 只有“触发时间问题但无建议/方向待确认”和“待人工排查”才保留 manual。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>

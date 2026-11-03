@@ -7432,14 +7432,14 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                     video_time, main_times, list(all_times or []) + list(gm_times or []))
                 if _vt_full and _vt_full != suggested_time:
                     suggested_time = _vt_full
-                    verify_status = "manual"
+                    verify_status = "corrected"
                     final_msg += "（采用视频时间）"
         # 触发时间问题必须有明确建议；没有时用最近的包内/gmlogger 时间兜底
         if category == "触发时间问题" and not suggested_time:
             _pool = [t for _s, t in (main_times + all_times + gm_times)]
             if _pool and err_dt:
                 suggested_time = min(_pool, key=lambda t: abs((t - err_dt).total_seconds())).strftime("%Y-%m-%d %H:%M:%S")
-                verify_status = "manual"
+                verify_status = "corrected"
                 final_msg += "（已给出最近日志时间）"
         # 方向敏感判定：晚于抓包 >300s 判不可用；早于抓包 <=15min 属正常
         time_check = _diag_time_check(issue, suggested_time or problem_time, gm_times, main_times, all_times,
@@ -7450,6 +7450,14 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
         elif time_check["status"] == "正常" and verify_status == "manual":
             verify_status = "success"
             vdetail = f"{vdetail}（方向判定正常：与抓包差 {time_check['delta_sec']} 秒）" if vdetail else "方向判定正常"
+        # 规则能定论的不再交人工：有建议且方向正常 → corrected；无参考/解压问题属信息类
+        if verify_status == "manual":
+            if category == "触发时间问题" and suggested_time and time_check.get("status") == "正常":
+                verify_status = "corrected"
+                vdetail = f"{vdetail}（规则自动确认建议时间）" if vdetail else "规则自动确认建议时间"
+            elif category in ("无参考", "解压问题") and not suggested_time:
+                verify_status = ""
+                vdetail = f"{vdetail}（无参考/解压问题，无需人工改时间）" if vdetail else "无参考/解压问题，无需人工改时间"
         detail = _build_simple_detail(comment_time, video_time, img_time_str, final_msg)
     report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time, archive_results)
     result = {"bugid": bugid, "category": category, "problem_time": problem_time,
