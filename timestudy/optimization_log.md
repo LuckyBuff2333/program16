@@ -1672,3 +1672,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/trigger.py`
 
 </details>
+
+<details>
+<summary><b>125. 待确认/两边都错保持表格时间，不参与一键写回（2026-11-03）</b></summary>
+
+- **规则**：时间判定为“待确认”或“两边都错”的记录，一律保留表格原值，不写回云端。
+- **实现**：`TimeExtractPanel` 的一键写回、批量写入云端均跳过这两个判定。
+- **复判 29 条**：其中 7 条（待确认 4 + 两边都错 3）建议时间改为表格时间，动作标“保持表格不变”。
+- **验证**：前端构建通过；全量 **116 passed**。
+- **实现文件**：`frontend/src/panels/TimeExtractPanel.vue`
+
+</details>

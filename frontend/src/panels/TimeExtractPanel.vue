@@ -673,7 +673,8 @@ export default {
       }
     },
     async writeBackLink() {
-      const items = this.linkExtract.rows.filter(r => r.match === '不一致' && r.extracted_time)
+      const keepJudges = ['待确认', '两边都错'];
+      const items = this.linkExtract.rows.filter(r => r.match === '不一致' && r.extracted_time && !keepJudges.includes(r.judge))
         .map(r => ({ record_id: r.record_id, bugid: r.bugid, time: r.extracted_time }));
       if (!items.length) { ElMessage.warning('没有可写回的不一致时间'); return; }
       const app = this.linkAppToken();
@@ -687,7 +688,8 @@ export default {
       } catch (e) { ElMessage.error('写回失败: ' + e.message); }
     },
     async writeLinkToCloud() {
-      const items = this.linkExtract.rows.filter(r => r.extracted_time)
+      const keepJudges = ['待确认', '两边都错'];
+      const items = this.linkExtract.rows.filter(r => r.extracted_time && !keepJudges.includes(r.judge))
         .map(r => ({ bugid: r.bugid, time: r.extracted_time }));
       if (!items.length) { ElMessage.warning('没有可写入的时间'); return; }
       try {
