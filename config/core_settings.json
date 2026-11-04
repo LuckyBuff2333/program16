@@ -106,7 +106,7 @@
     "enabled": true,
     "morning_briefing_enabled": false,
     "morning_briefing_chat_id": "",
-    "morning_briefing_jql": "JQL2",
+    "morning_briefing_jql": "JQL7",
     "jqls": [
       {
         "id": "JQL1",

@@ -3031,6 +3031,7 @@ def _get_unanalyzed_jql_presets() -> dict:
         "JQL4": ("昨日远控", f'issuetype = bug AND text ~ "远控" AND text ~ "VCU" AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND status != "closed" AND {_PROJECT}'),
         "JQL5": ("昨日导航", f'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU" AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND status != "closed" AND {_PROJECT}'),
         "JQL6": ("本周新增Bug", f'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND {_PROJECT}'),
+        "JQL7": ("前天新增Bug", f'issuetype = bug AND created >= startOfDay("-2d") AND created <= endOfDay("-2d") AND status != "closed" AND {_PROJECT}'),
     }
 
 
