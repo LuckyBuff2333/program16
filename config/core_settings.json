@@ -104,6 +104,9 @@
   "feishu_bot": {
     "app_id": "",
     "enabled": true,
+    "morning_briefing_enabled": false,
+    "morning_briefing_chat_id": "",
+    "morning_briefing_jql": "JQL4",
     "jqls": [
       {
         "id": "JQL1",

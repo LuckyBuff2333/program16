@@ -121,6 +121,13 @@ async def _on_startup():
     except Exception as e:
         _logger.warning("每日播报调度器初始化失败（不影响主服务）: %s", e)
 
+    # 初始化每日待执行播报调度器（工作日9:00）
+    try:
+        from src.services.server_legacy import _init_morning_briefing_scheduler
+        _init_morning_briefing_scheduler()
+    except Exception as e:
+        _logger.warning("待执行播报调度器初始化失败（不影响主服务）: %s", e)
+
     # 服务就绪后打开浏览器（仅首次，reload 时不重复打开）
     _open_url = os.environ.pop("_WEB_OPEN_URL", None)
     if _open_url:

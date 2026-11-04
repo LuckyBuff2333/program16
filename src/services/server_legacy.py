@@ -2432,6 +2432,180 @@ def _init_daily_scheduler():
                    sum(1 for v in cfg.values() if v.get("enabled")))
 
 
+# ── 每日待执行播报调度器（工作日9:00） ──
+_morning_briefing_stop = threading.Event()
+_morning_briefing_thread = None
+
+
+def _morning_briefing(chat_id: str) -> bool:
+    """每日待执行播报：查询待执行Bug + 统计昨日执行失败数量
+
+    :return: 是否成功发送
+    """
+    from src.clients import feishu_client, jira_client
+    from src.clients.base import http_get
+
+    try:
+        # 1. 获取配置
+        bot_cfg = load_config().get("feishu_bot", {})
+        jql_preset = bot_cfg.get("morning_briefing_jql", "JQL4")  # 默认用 JQL4 (VCU近期末关闭)
+        jqls_cfg = bot_cfg.get("jqls", {})
+
+        # 查找对应的 JQL
+        jql = ""
+        jql_label = jql_preset
+        if isinstance(jqls_cfg, list):
+            for item in jqls_cfg:
+                if item.get("id") == jql_preset:
+                    jql = item.get("jql", "")
+                    jql_label = item.get("label", jql_preset)
+                    break
+        elif isinstance(jqls_cfg, dict):
+            jql = jqls_cfg.get(jql_preset, {}).get("jql", "")
+            jql_label = jqls_cfg.get(jql_preset, {}).get("label", jql_preset)
+
+        if not jql:
+            logger.warning("待执行播报: 未找到 JQL 配置 %s", jql_preset)
+            return False
+
+        # 2. 查询待执行 Bug（与 unanalyzed_bugs 相同的逻辑，筛选无AI初步分析的）
+        cfg = load_config()["jira_api"]
+        headers, auth = {}, None
+        token = cfg.get("token", "")
+        if token:
+            auth_type = cfg.get("auth_type", "bearer").lower()
+            if auth_type == "bearer":
+                headers["Authorization"] = f"Bearer {token}"
+            elif cfg.get("username"):
+                auth = (cfg["username"], token)
+        search_url = cfg["url"].rsplit("/issue", 1)[0] + "/search"
+        fields = "summary,status,created," + _AI_INIT_FIELD_ID
+
+        result = jira_client.http_get(search_url, params={
+            "jql": jql, "maxResults": 1000, "startAt": 0, "fields": fields
+        }, timeout=cfg.get("timeout", 30), auth=auth, headers=headers)
+        issues = result.get("issues", [])
+
+        # 筛选待执行（无AI初步分析的）
+        pending_bugs = []
+        for iss in issues:
+            f = iss.get("fields") or {}
+            val = f.get(_AI_INIT_FIELD_ID)
+            has_val = bool(val and str(val).strip() and str(val).strip().lower() not in ("none", "null"))
+            if not has_val:
+                pending_bugs.append(iss.get("key", ""))
+
+        # 3. 统计昨日执行失败的 Bug（读取 data/unanalyzed/prod_batch_{昨天}_*.csv）
+        yesterday = _get_prev_chinese_workday(datetime.now())
+        failed_yesterday = set()
+        if os.path.isdir(_UNANALYZED_DIR):
+            for fname in os.listdir(_UNANALYZED_DIR):
+                if not fname.startswith(f"prod_batch_{yesterday}") or not fname.endswith(".csv"):
+                    continue
+                fpath = os.path.join(_UNANALYZED_DIR, fname)
+                try:
+                    import csv as _csv
+                    with open(fpath, "r", encoding="utf-8-sig") as f:
+                        for row in _csv.DictReader(f):
+                            jira_no = (row.get("Jira号") or row.get("jira号") or "").strip()
+                            exec_result = (row.get("执行结果") or "").strip()
+                            if jira_no and exec_result == "失败":
+                                failed_yesterday.add(jira_no)
+                except Exception:
+                    pass
+
+        # 4. 计算交集：昨日执行失败且今天仍待执行的
+        still_pending_failed = [b for b in pending_bugs if b in failed_yesterday]
+
+        # 5. 发送播报
+        msg_lines = [
+            f"📊 每日待执行播报 ({datetime.now().strftime('%m-%d')} {datetime.now().strftime('%A')[:3]})",
+            "",
+            f"📋 待执行总数: {len(pending_bugs)} 条",
+            f"📋 查询范围: {jql_label}",
+            "",
+            f"❌ 昨日执行失败仍待执行: {len(still_pending_failed)} 条",
+        ]
+        if still_pending_failed:
+            msg_lines.append(f"   ({', '.join(still_pending_failed[:10])}{'...' if len(still_pending_failed) > 10 else ''})")
+
+        msg_lines.extend([
+            "",
+            f"✅ 昨日执行成功: {len(failed_yesterday) - len(still_pending_failed)} 条（已从待执行移除）"
+        ])
+
+        ok = feishu_client.send_bot_message(chat_id, "\n".join(msg_lines))
+        if ok:
+            logger.info("待执行播报已发送: chat=%s, 待执行=%d, 昨日失败=%d",
+                       chat_id[:12], len(pending_bugs), len(failed_yesterday))
+        return ok
+
+    except Exception as e:
+        logger.error("待执行播报失败: %s", e, exc_info=True)
+        return False
+
+
+def _morning_briefing_scheduler_loop():
+    """每日待执行播报调度器：工作日9:00触发"""
+    logger.info("待执行播报调度器已启动")
+    while not _morning_briefing_stop.is_set():
+        try:
+            bot_cfg = load_config().get("feishu_bot", {})
+            if not bot_cfg.get("morning_briefing_enabled", False):
+                _morning_briefing_stop.wait(60)
+                continue
+
+            now = datetime.now()
+            cur_date = now.strftime("%Y-%m-%d")
+            cur_time = now.strftime("%H:%M")
+
+            # 检查是否工作日 + 是否到达播报时间
+            if _is_chinese_workday(now) and cur_time >= "09:00":
+                # 检查今天是否已播过
+                state_file = os.path.join(_UNANALYZED_DIR, f".morning_briefing_{cur_date}")
+                if os.path.exists(state_file):
+                    _morning_briefing_stop.wait(60)
+                    continue
+
+                # 获取配置的群聊
+                chat_id = bot_cfg.get("morning_briefing_chat_id", "")
+                if not chat_id:
+                    logger.warning("待执行播报: 未配置 morning_briefing_chat_id")
+                    _morning_briefing_stop.wait(60)
+                    continue
+
+                # 执行播报
+                logger.info("触发待执行播报: chat=%s, date=%s", chat_id[:12], cur_date)
+                _morning_briefing(chat_id)
+
+                # 记录已播状态
+                os.makedirs(_UNANALYZED_DIR, exist_ok=True)
+                with open(state_file, "w") as f:
+                    f.write(cur_time)
+
+        except Exception as e:
+            logger.warning("待执行播报调度器异常: %s", e)
+
+        _morning_briefing_stop.wait(30)  # 每30秒检查一次
+    logger.info("待执行播报调度器已停止")
+
+
+def _init_morning_briefing_scheduler():
+    """服务启动时初始化每日待执行播报调度器"""
+    global _morning_briefing_thread
+    bot_cfg = load_config().get("feishu_bot", {})
+    if bot_cfg.get("morning_briefing_enabled", False):
+        _morning_briefing_stop.clear()
+        _morning_briefing_thread = threading.Thread(
+            target=_morning_briefing_scheduler_loop,
+            name="morning-briefing-scheduler",
+            daemon=True
+        )
+        _morning_briefing_thread.start()
+        logger.info("待执行播报调度器已初始化")
+
+
+
 def _bot_run_single_execute(chat_id: str, bugids: list, exec_mode: str = "pc"):
     """功能6.2后台执行：提取触发时间→根据执行模式调用对应接口
 
