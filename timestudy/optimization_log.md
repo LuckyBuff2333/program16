@@ -1749,3 +1749,19 @@ flowchart TD
 - **实现文件**：`src/api/routes/shared.py`、`src/api/routes/testing.py`、`frontend/src/panels/BatchAiPanel.vue`
 
 </details>
+
+<details>
+<summary><b>131. 问题排查建议时间硬约束：不晚于当前时间、视频拼凑不晚于视频上传（2026-11-04）</b></summary>
+
+- **问题**：今天 11 条排查里 8 条建议时间不准；典型是视频 OCR 21:56，但视频文件名是 15:15 录制、15:17 上传，仍建议 21:56；main.log 是 10/20、10/28 的旧日志，却拿来补 11/02 的日期。
+- **修复**：
+  1. 新增 `_apply_diag_time_bounds()`：最终建议必须早于当前时间；视频内容时间拼出的时间必须早于视频附件上传时间。
+  2. 如果拼出的时间晚于上传时间/当前时间，判断为**日期拼错**，按天提前（最多 7 天），而不是判定 OCR 时分错误；提前后仍不满足才丢弃。
+  3. 早期多源置信度分支和最终 `_diag_verify_suggestion` 分支都过这个约束；丢弃后“正常”类回退问题时间，其余转人工。
+  4. 统一接入 `_guard_extracted_time()`：视频简单提取、图片 OCR、`_align_time_to_gmlogger()`、jira 文本/附件/评论提取都过同一约束；功能测试批量执行、时间批量提取共用这些入口。
+  5. 诊断缓存版本 `4 → 5`，旧建议失效。
+- **验证**：合成用例：11-02 21:56 + 上传 11-02 15:17 → 提前为 11-01 21:56；11-02 21:55 早于上传 11-03 17:34 → 不变；2027 年日期提前 7 天仍未来 → 丢弃。
+- **实现文件**：`src/services/server_legacy.py`、`src/services/report_ops.py`
+- **待确认**：main.log 日期窗口、time_check 不可用时是否还输出建议等（见分析）。
+
+</details>

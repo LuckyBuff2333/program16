@@ -1091,7 +1091,18 @@ def get_log_capture_time(issue: dict, near_time=None):
     return max(_times)
 
 
-def extract_trigger_time_from_issue(issue: dict, return_source: bool = False, skip_attachment: bool = False):
+def _guard_jira_time(issue: dict, value):
+    """统一时间约束：所有文本/附件时间也要早于当前时间（视频上传约束由视频入口处理）"""
+    if not value:
+        return value
+    try:
+        from src.services.server_legacy import _guard_extracted_time
+        return _guard_extracted_time(issue, value)
+    except Exception:
+        return value
+
+
+def _extract_trigger_time_with_capture_guard(issue: dict, return_source: bool = False, skip_attachment: bool = False):
     """提取触发时间（在原有文本/字段/附件逻辑外增加方向校验）
 
     事件必然发生在日志抓包之前，所以文本/字段提取到的时间如果**晚于抓包时间 5 分钟以上**，
@@ -1127,12 +1138,28 @@ def extract_trigger_time_from_issue(issue: dict, return_source: bool = False, sk
     return _ret("", "rejected_after_capture")
 
 
-def extract_attachment_time(issue: dict) -> str:
+def extract_trigger_time_from_issue(issue: dict, return_source: bool = False, skip_attachment: bool = False):
+    value = _extract_trigger_time_with_capture_guard(
+        issue, return_source=return_source, skip_attachment=skip_attachment)
+    if return_source and isinstance(value, tuple):
+        return _guard_jira_time(issue, value[0]), value[1]
+    return _guard_jira_time(issue, value)
+
+
+def _extract_attachment_time_public(issue: dict) -> str:
     """从附件文件名提取触发时间（单独暴露，供视频/图片均失败后的最终兑底）"""
     return _extract_attachment_time(issue)
 
 
+def extract_attachment_time(issue: dict) -> str:
+    return _guard_jira_time(issue, _extract_attachment_time_public(issue))
+
+
 def extract_latest_comment_time(issue: dict) -> str:
+    return _guard_jira_time(issue, _extract_latest_comment_time_raw(issue))
+
+
+def _extract_latest_comment_time_raw(issue: dict) -> str:
     """按“最新优先”提取评论时间：先找最新结论/日志分析语句里的时间，再找最新普通时间。"""
     fields = issue.get("fields") or {}
     raw = (fields.get("comment") or {}).get("comments") or []

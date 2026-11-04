@@ -3490,6 +3490,12 @@ def _diag_gmlogger_times(attachments: list) -> list:
 
 
 def _align_time_to_gmlogger(issue: dict, tt: str, attachments: list) -> str:
+    """把提取时间对齐到 gmlogger 抓包时间，并统一过时间约束。"""
+    result = _align_time_to_gmlogger_impl(issue, tt, attachments)
+    return _guard_extracted_time(issue, result, attachments, force_video=True)
+
+
+def _align_time_to_gmlogger_impl(issue: dict, tt: str, attachments: list) -> str:
     """把提取时间对齐到 gmlogger 抓包时间，减少“时间过滤后日志为空”。
 
     - 提取时间缺失 → 用最近的 gmlogger 文件名时间；
@@ -5337,13 +5343,13 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
 
 
 def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
-    """视频提取入口（带创建时间纠偏）"""
+    """视频提取入口（带创建时间纠偏 + 统一时间约束）"""
     ts = _diag_extract_time_from_video_simple_impl(issue, stop_event=stop_event)
     try:
-        return _fix_video_time_against_created(issue, ts)
+        ts = _fix_video_time_against_created(issue, ts)
     except Exception as e:
         logger.warning("视频时间纠偏失败: %s", e)
-        return ts
+    return _guard_extracted_time(issue, ts, force_video=True)
 
 
 def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> str:
@@ -6285,6 +6291,13 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
 
 
 def _diag_extract_time_from_images(issue: dict, headers: dict, timeout: int, bugid: str = "", stop_event=None) -> tuple:
+    """图片 OCR 提取入口（统一时间约束）"""
+    time_str, detail = _diag_extract_time_from_images_impl(
+        issue, headers, timeout, bugid=bugid, stop_event=stop_event)
+    return _guard_extracted_time(issue, time_str), detail
+
+
+def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int, bugid: str = "", stop_event=None) -> tuple:
     """从图片附件 OCR 提取触发时间，返回 (time_str, detail) 或 ("", "")
 
     优先级：
@@ -6596,6 +6609,85 @@ def _gmlogger_segment_bounds(t, refs):
 
 def _time_in_gmlogger_segment(t, refs) -> bool:
     return _gmlogger_segment_bounds(t, refs) is not None
+
+
+def _video_upload_datetime(attachments: list):
+    """视频附件上传时间；多个视频取最早的上传时间，保证建议早于所有视频"""
+    uploads = []
+    for att in (attachments or []):
+        fn = str(att.get("filename") or "").lower()
+        if fn.endswith(_VIDEO_SUFFIXES):
+            dt = _ts_parse_datetime(att.get("created") or "")
+            if dt:
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone().replace(tzinfo=None)
+                uploads.append(dt)
+    return min(uploads) if uploads else None
+
+
+def _hm_of_time_text(text: str) -> str:
+    """从 YYYY-MM-DD HH:MM[:SS] 或 HH:MM[:SS] 中取 HH:MM"""
+    m = re.match(r"^(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}[ T])?(\d{1,2}):(\d{2})", str(text or "").strip())
+    if not m:
+        return ""
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
+def _apply_diag_time_bounds(suggested_time: str, video_time: str, attachments: list,
+                            now=None) -> tuple:
+    """问题排查建议时间的硬约束，返回 (调整后时间, 说明)。
+
+    1. 最终建议时间必须早于当前时间；
+    2. 视频 OCR 时间拼出来的日期必须早于视频附件上传时间：
+       - 若晚于上传时间/当前时间，说明日期拼错，逐日提前（最多 7 天）；
+       - 提前后仍不满足，则丢弃该建议。
+    """
+    s = str(suggested_time or "").strip()
+    if not s:
+        return "", ""
+    dt = _ts_parse_datetime(s)
+    if not dt:
+        return s, ""
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    now = now or datetime.now()
+    upload = None
+    # 只有“视频内容时间”拼出来的建议才用视频上传时间约束
+    if video_time and _hm_of_time_text(video_time) and _hm_of_time_text(s):
+        if _hm_of_time_text(video_time) == _hm_of_time_text(s):
+            upload = _video_upload_datetime(attachments)
+    # 日期拼接偏晚（晚于现在或晚于视频上传）：把日期逐日提前，最多提前 7 天
+    if dt >= now or (upload and dt >= upload):
+        reasons = []
+        if dt >= now:
+            reasons.append("晚于当前时间")
+        if upload and dt >= upload:
+            reasons.append(f"晚于视频上传时间 {upload.strftime('%Y-%m-%d %H:%M:%S')}")
+        reason = "、".join(reasons)
+        for days in range(1, 8):
+            cand = dt - timedelta(days=days)
+            if cand < now and (not upload or cand < upload):
+                return cand.strftime("%Y-%m-%d %H:%M:%S"), (
+                    f"日期拼接{reason}，已提前 {days} 天为 "
+                    f"{cand.strftime('%Y-%m-%d %H:%M:%S')}")
+        return "", f"日期拼接{reason}，提前 7 天仍不满足，已丢弃"
+    return s, ""
+
+
+def _guard_extracted_time(issue: dict, tt, attachments: list = None, force_video: bool = False):
+    """所有时间提取入口的统一约束：早于当前时间；视频来源的还要早于视频上传时间。"""
+    if not tt:
+        return tt
+    try:
+        atts = attachments if attachments is not None else ((issue.get("fields") or {}).get("attachment") or [])
+        bounded, note = _apply_diag_time_bounds(
+            str(tt), str(tt) if force_video else "", atts)
+        if note:
+            logger.info("提取时间约束 %s: %s", issue.get("key", ""), note)
+        return bounded
+    except Exception as e:
+        logger.warning("提取时间约束失败 %s: %s", issue.get("key", ""), e)
+        return tt
 
 
 def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, main_times: list = None,
@@ -7455,12 +7547,19 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
     suggested_time = ""
     vdetail = ""
     if _best_time:
-        suggested_time = _best_time
-        verify_status = "success" if _best_score >= 2.0 else "manual"
         vdetail = f"多源置信度: {'+'.join(_best_sources)}={_best_score}分"
-        # 如果视频提取的是仅时间，且最终结果来自视频源，显示组合后的完整时间
-        if video_time and len(video_time) <= 8 and any("视频" in s for s in _best_sources):
-            video_time = f"{video_time}（结合视频日期 → {suggested_time}）"
+        _bounded, _bound_note = _apply_diag_time_bounds(_best_time, video_time, attachments)
+        if _bound_note:
+            logger.info("诊断 %s: 建议时间约束: %s", bugid, _bound_note)
+            vdetail = f"{vdetail}；{_bound_note}" if vdetail else _bound_note
+        if _bounded:
+            suggested_time = _bounded
+            verify_status = "success" if _best_score >= 2.0 else "manual"
+            # 如果视频提取的是仅时间，且最终结果来自视频源，显示组合后的完整时间
+            if video_time and len(video_time) <= 8 and any("视频" in s for s in _best_sources):
+                video_time = f"{video_time}（结合视频日期 → {suggested_time}）"
+        else:
+            _best_time = ""
     if verify_status == "success":
         category = "触发时间问题"
         # 根据置信度评分结果生成描述
@@ -7636,6 +7735,21 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                 suggested_time = min(_pool, key=lambda t: abs((t - err_dt).total_seconds())).strftime("%Y-%m-%d %H:%M:%S")
                 verify_status = "corrected"
                 final_msg += "（已给出最近日志时间）"
+        # 硬约束：建议时间必须早于当前时间；视频拼凑时间必须早于视频上传时间
+        _bounded, _bound_note = _apply_diag_time_bounds(suggested_time, video_time, attachments)
+        if _bound_note:
+            logger.info("诊断 %s: 最终建议时间约束: %s", bugid, _bound_note)
+            final_msg += f"（{_bound_note}）"
+            suggested_time = _bounded
+            if not suggested_time:
+                if verify_status in ("success", "corrected"):
+                    verify_status = "manual"
+                # “正常”类保留原问题时间（它通常就是表格里的正常时间）
+                if category == "正常":
+                    _pd = _ts_parse_datetime(problem_time)
+                    if _pd and _pd < datetime.now():
+                        suggested_time = problem_time
+                        verify_status = "success"
         # 方向敏感判定：晚于抓包 >300s 判不可用；早于抓包 <=15min 属正常
         time_check = _diag_time_check(issue, suggested_time or problem_time, gm_times, main_times, all_times,
                                       video_time or "", current_time=problem_time)
