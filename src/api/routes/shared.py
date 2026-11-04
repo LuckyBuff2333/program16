@@ -31,26 +31,24 @@ diag_cancel: dict = {}
 
 # 全局中断标志：Ctrl+C 时设为 True
 interrupted = False
-prev_sigint = None  # 保存 uvicorn/asyncio 的原始 SIGINT 处理器
 
 # 服务启动标识：每个进程启动时生成一次。前端批量诊断会携带它，
 # 服务重启后旧页面/旧批量任务的请求会被拒绝，避免“重启后仍继续上次排查”。
 SERVER_BOOT_ID = uuid.uuid4().hex
 
 
+def _force_exit_after_delay():
+    """Ctrl+C 后 5 秒仍未退出则强制终止进程（兜底，防止后台线程阻塞关闭）"""
+    import time as _time
+    _time.sleep(5)
+    os._exit(1)
+
+
 def handle_sigint(signum, frame):
-    """SIGINT 处理：设置中断标志 + 取消诊断任务，然后让 uvicorn 正常关闭"""
-    global interrupted, prev_sigint
+    """SIGINT 处理：设置中断标志 + 取消诊断任务，3秒后强制退出"""
+    global interrupted
     if interrupted:
-        ppid = os.getppid()
-        if ppid > 1 and ppid != os.getpid():
-            try:
-                if sys.platform == 'win32':
-                    os.system(f'taskkill /F /T /PID {ppid} >nul 2>&1')
-                else:
-                    os.kill(ppid, signal.SIGTERM)
-            except Exception:
-                pass
+        # 第二次 Ctrl+C：立即强制退出
         os._exit(1)
     interrupted = True
     for bugid in list(diag_cancel):
@@ -62,9 +60,9 @@ def handle_sigint(signum, frame):
     regression_stop_event.set()
     form_exec_stop_event.set()
     prod_batch_stop_event.set()
-    logger.warning("收到 Ctrl+C，正在停止当前操作（再次按 Ctrl+C 强制退出）")
-    if prev_sigint and callable(prev_sigint) and prev_sigint not in (signal.SIG_IGN, signal.SIG_DFL):
-        prev_sigint(signum, frame)
+    logger.warning("收到 Ctrl+C，正在停止服务...")
+    # 启动强制退出守护线程：3秒内 uvicorn 正常关闭则进程自然退出，否则兜底强杀
+    threading.Thread(target=_force_exit_after_delay, daemon=True).start()
 
 # 批量提取触发时间停止标志
 batch_extract_stop_event = threading.Event()

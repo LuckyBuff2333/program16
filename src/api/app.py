@@ -94,9 +94,8 @@ async def _on_startup():
 
     # 重置中断标志
     _shared.interrupted = False
-    _shared.prev_sigint = None
     try:
-        _shared.prev_sigint = signal.signal(signal.SIGINT, _shared.handle_sigint)
+        signal.signal(signal.SIGINT, _shared.handle_sigint)
     except (ValueError, OSError):
         pass  # 非主线程时忽略
 

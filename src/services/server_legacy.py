@@ -18,6 +18,18 @@ import re
 import signal
 import sys
 import threading
+
+# ── CUDA 库预加载（必须在 onnxruntime import 之前，ctypes.RTLD_GLOBAL 让后续 dlopen 能找到） ──
+import ctypes as _ctypes
+import glob as _glob
+_nvidia_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                             ".venv", "lib", f"python{sys.version_info.major}.{sys.version_info.minor}",
+                             "site-packages", "nvidia")
+for _so in _glob.glob(os.path.join(_nvidia_base, "*", "lib", "*.so*")):
+    try:
+        _ctypes.CDLL(_so, mode=_ctypes.RTLD_GLOBAL)
+    except OSError:
+        pass
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -216,6 +228,26 @@ _OCR_CHAR_MAP = {
     'S': '5', 's': '5',  # S → 5
     'B': '8',            # B → 8
 }
+
+
+def _valid_ocr_time(time_str: str) -> bool:
+    """验证 OCR 时间字符串是否在合理范围内（HH:MM 或 HH:MM:SS）
+
+    过滤规则：
+    - 小时 0-23，分钟 0-59，秒 0-59
+    - 拒绝无效时间如 99:99、25:00
+    """
+    parts = time_str.split(':')
+    if len(parts) < 2:
+        return False
+    try:
+        hh = int(parts[0])
+        mm = int(parts[1])
+        ss = int(parts[2]) if len(parts) > 2 else 0
+    except (ValueError, IndexError):
+        return False
+    return 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59
+
 
 _VIDEO_TIME_CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "video_time_cache.json")
 
@@ -3981,6 +4013,20 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
     return {"status": "failed", "reason": last_reason, "main_entries": [], "main_times": []}
 
 
+def _has_gpu_runtime():
+    """检测是否有可用的独立显卡 + onnxruntime-gpu"""
+    import shutil
+    if not shutil.which("nvidia-smi"):
+        return False
+    try:
+        import subprocess
+        r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                           capture_output=True, text=True, timeout=5)
+        return r.returncode == 0 and bool(r.stdout.strip())
+    except Exception:
+        return False
+
+
 def _get_rapid_ocr():
     """获取 RapidOCR 引擎实例（懒加载+缓存，线程安全，安装不可用时返回 None）"""
     global _rapid_ocr_engine
@@ -3999,8 +4045,32 @@ def _get_rapid_ocr():
                 "models", "ppocrv5", "rapidocr_v5.yaml")
             if os.path.exists(_v5_cfg) and os.environ.get("OCR_ENGINE", "").lower() != "v4":
                 try:
-                    _rapid_ocr_engine = RapidOCR(config_path=_v5_cfg)
-                    logger.info("RapidOCR 引擎初始化完成（PP-OCRv5）")
+                    # 自动检测 GPU：有独显且 onnxruntime-gpu 已安装才开 CUDA
+                    _gpu = _has_gpu_runtime()
+                    try:
+                        import onnxruntime as _ort
+                        _gpu = _gpu and "CUDAExecutionProvider" in _ort.get_available_providers()
+                    except ImportError:
+                        _gpu = False
+                    # 读取 yaml 并将相对路径转为绝对路径（RapidOCR 默认从包目录解析相对路径）
+                    import yaml as _yaml
+                    _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    with open(_v5_cfg) as _f:
+                        _ycfg = _yaml.safe_load(_f)
+                    for _sec in ["Det", "Cls", "Rec"]:
+                        if _sec in _ycfg and "model_path" in _ycfg[_sec]:
+                            _mp = _ycfg[_sec]["model_path"]
+                            if not os.path.isabs(_mp):
+                                _ycfg[_sec]["model_path"] = os.path.join(_proj_root, _mp)
+                        if not _gpu and _sec in _ycfg:
+                            _ycfg[_sec]["use_cuda"] = False
+                    import tempfile
+                    _tmp_cfg = os.path.join(tempfile.gettempdir(), "rapidocr_v5_runtime.yaml")
+                    with open(_tmp_cfg, "w") as _f:
+                        _yaml.dump(_ycfg, _f, default_flow_style=False, allow_unicode=True)
+                    _rapid_ocr_engine = RapidOCR(config_path=_tmp_cfg)
+                    _mode = "PP-OCRv5+GPU" if _gpu else "PP-OCRv5+CPU"
+                    logger.info("RapidOCR 引擎初始化完成（%s）", _mode)
                 except Exception as e:
                     logger.warning("PP-OCRv5 初始化失败，回退 PP-OCRv4: %s", e)
                     _rapid_ocr_engine = RapidOCR()
@@ -4113,9 +4183,10 @@ def _vote_from_texts(texts, ref_pool, gm_ref_dt, tol):
         if not text:
             continue
         fixed = _fix_ocr_char_confusion(_fix_ocr_missing_colon(text))
-        m = _OCR_TIME_ONLY_RE.search(fixed)
-        if m:
-            votes[_normalize_ocr_time(m.group(1))] += 1
+        # 扫描所有时间匹配（不仅第一个），避免视频计数器 00:00 遮挡实际时钟时间
+        for m in _OCR_TIME_ONLY_RE.finditer(fixed):
+            if _valid_ocr_time(m.group(1)):
+                votes[_normalize_ocr_time(m.group(1))] += 1
     if not votes:
         return "", 0
     hm, n = votes.most_common(1)[0]
@@ -4207,13 +4278,15 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
                 results = easy_results
     import re as _re
     _time_like = _re.compile(r'^[\d:\-/\.\s]+$')
-    # 1. 过滤低置信度的时间类文本
+    # 1. 过滤低置信度的时间类文本（整体质量差时提高过滤阈值）
+    _low_conf_thresh = 0.35 if _avg_conf < 0.25 else 0.15
     filtered = []
     for item in results:
         text = item[1] if len(item) > 1 else ""
         conf = item[2] if len(item) > 2 else 1.0
-        if conf < 0.15 and text and _time_like.match(text.strip()):
-            logger.info("OCR 过滤低置信度时间类文本: '%s' (conf=%.2f)", text, conf)
+        if conf < _low_conf_thresh and text and _time_like.match(text.strip()):
+            logger.info("OCR 过滤低置信度时间类文本: '%s' (conf=%.2f, avg=%.2f, thresh=%.2f)",
+                        text, conf, _avg_conf, _low_conf_thresh)
             continue
         filtered.append(item)
     # 2. 过滤水印相机区域内的时间类文本
@@ -4377,12 +4450,18 @@ def _preprocess_ocr_datetime(text: str) -> str:
 
 def _fix_ocr_char_confusion(text: str) -> str:
     """修夌 OCR 常见字符混淆：O→0, I/l/L→1, Z→2, S→5, B→8
-    仅对匹配时间模式的片段进行替换，避免误修改其他文本
+    仅对匹配时间模式的片段进行替换，避免误修改其他文本。
+    增加数字密度检查：若匹配片段中实际数字太少，说明是乱码，不做替换。
     """
     # 匹配类似时间的模式（含字母混淆），如 ZO:LI → 20:11
     def _fix_time_like(m):
+        matched = m.group(0)
+        # 数字密度检查：至少 40% 是实际数字，否则大概率是乱码（如 OI:OB）
+        digit_count = sum(1 for c in matched if c.isdigit())
+        if len(matched) > 0 and digit_count / len(matched) < 0.4:
+            return matched  # 乱码文本，不替换
         result = []
-        for ch in m.group(0):
+        for ch in matched:
             result.append(_OCR_CHAR_MAP.get(ch, ch))
         return ''.join(result)
     # 匹配 HH:MM 模式（允许字母混入）
@@ -5460,6 +5539,13 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                     else:
                         _timestudy_trace(bugid, "ocr:empty")
                     _timestudy_update_ctx(bugid, ocr_text=all_text[:200])
+                    # OCR 质量门槛：整体置信度极低且无完整日期时跳过时间提取（手机拍屏乱码场景）
+                    _avg_conf = sum((r[2] for r in results if len(r) > 2), 0) / max(len(results), 1) if results else 0
+                    _has_full_dt = bool(_OCR_TIME_FULL_RE.search(all_text))
+                    if _avg_conf < 0.10 and not _has_full_dt:
+                        logger.info("视频兗底提取(%s)：第%d秒 OCR 质量过低 (avg_conf=%.2f)，跳过时间提取",
+                                    video_label, sec + 1, _avg_conf)
+                        continue
                     all_text = _fix_ocr_missing_colon(all_text)
                     all_text = _fix_ocr_char_confusion(all_text)
                     all_text = _preprocess_ocr_datetime(all_text)
@@ -5526,7 +5612,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                                         closest_gm[0]["filename_time"].day)
                     if not closest_date and gm_dates:
                         closest_date = gm_dates[0]
-                    if m:
+                    if m and _valid_ocr_time(_normalize_ocr_time(m.group(1))):
                         time_str = _normalize_ocr_time(m.group(1))
                         # 多级验证：检查视频自身文件名是否含完整日期时间且时间匹配
                         _vid_fn_dt_str = _parse_video_filename_datetime(video_name)
@@ -5842,6 +5928,13 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                         all_text = f"{_roi_text} {all_text}".strip()
                     logger.info("视频帧提取(%s)：第%d秒 OCR: %s", video_label, sec + 1,
                                 all_text[:200] if all_text else "(空)")
+                    # OCR 质量门槛：整体置信度极低且无完整日期时跳过时间提取
+                    _avg_conf = sum((r[2] for r in results if len(r) > 2), 0) / max(len(results), 1) if results else 0
+                    _has_full_dt = bool(_OCR_TIME_FULL_RE.search(all_text))
+                    if _avg_conf < 0.10 and not _has_full_dt:
+                        logger.info("视频帧提取(%s)：第%d秒 OCR 质量过低 (avg_conf=%.2f)，跳过时间提取",
+                                    video_label, sec + 1, _avg_conf)
+                        continue
                     all_text = _fix_ocr_missing_colon(all_text)
                     all_text = _fix_ocr_char_confusion(all_text)
                     all_text = _preprocess_ocr_datetime(all_text)
@@ -5910,7 +6003,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                                 first_detail = f"从视频{video_label}第{sec+1}秒 OCR 识别到完整日期时间 {extracted_time}"
                     # 仅时间（无日期），优先用视频文件名日期补充，再用 gmlogger 文件名日期补充，延迟 12h 决策
                     m = _OCR_TIME_ONLY_RE.search(all_text)
-                    if m:
+                    if m and _valid_ocr_time(_normalize_ocr_time(m.group(1))):
                         time_str = _normalize_ocr_time(m.group(1))
                         # 时分时间先保留为候选，后面用 gmlogger/创建日期补全
                         if not first_partial:
