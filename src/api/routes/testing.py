@@ -4195,6 +4195,106 @@ async def regression_run(request: Request):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@router.post("/api/test/regression_date_load", response_model=ApiResponse)
+async def regression_date_load(request: Request):
+    """按分析完成时间加载线上失败记录，按日期+人工审核原因分组"""
+    from src.clients import feishu_client
+    body = await request.json() or {}
+    after_time = str(body.get("after_time", "") or "").strip()
+    cfg = load_config().get("feishu_bitable", {})
+    app_token = cfg.get("app_token", "")
+    table_id = cfg.get("table_id", "")
+    bugid_field = cfg.get("bugid_field", "jira号")
+    if not app_token or not table_id:
+        return _fail("多维表格 app_token/table_id 未配置")
+    try:
+        records = await _run_blocking(feishu_client.list_bitable_records, app_token, table_id)
+    except Exception as e:
+        return _fail(f"读取多维表格失败: {e}")
+    # 筛选线上记录，按 Jira 号分组
+    jira_records = {}  # jira -> [{done_time, result, reason}]
+    for rec in records:
+        fields = rec.get("fields", {})
+        jn = _bitable_text(fields.get(bugid_field, ""))
+        if not jn:
+            continue
+        trigger_src = _bitable_text(fields.get("触发来源", ""))
+        if trigger_src != "parseFullTicket":
+            continue
+        done_time = _bitable_text(fields.get("分析完成时间", ""))
+        if after_time and (not done_time or done_time < after_time):
+            continue
+        result_status = _bitable_text(fields.get("分析结果", ""))
+        reason = _bitable_text(fields.get("人工审核结果", ""))
+        jira_records.setdefault(jn, []).append({
+            "done_time": done_time, "result": result_status, "reason": reason,
+        })
+    # 失败后又成功判定：只有纯失败无成功的 Jira 归为真正失败
+    failed_items = []  # [{jira, reason, date, done_time}]
+    for jn, recs in jira_records.items():
+        has_success = any(r["result"] == "成功" for r in recs)
+        if has_success:
+            continue  # 失败后又成功，排除
+        # 取失败记录中最后一条的信息
+        fail_recs = [r for r in recs if r["result"] == "失败"]
+        if not fail_recs:
+            continue
+        fail_recs.sort(key=lambda x: x["done_time"], reverse=True)
+        latest = fail_recs[0]
+        date_str = latest["done_time"][:10] if latest["done_time"] else ""
+        failed_items.append({
+            "jira": jn, "reason": latest["reason"] or "",
+            "date": date_str, "done_time": latest["done_time"],
+        })
+    # 按日期分组，再按人工审核原因分两组
+    date_map = {}  # date -> {with_time_add: [], other: []}
+    for item in failed_items:
+        d = item["date"]
+        if not d:
+            continue
+        if d not in date_map:
+            date_map[d] = {"date": d, "with_time_add": [], "other": []}
+        if "时间添加为" in item["reason"]:
+            date_map[d]["with_time_add"].append({"jira": item["jira"], "reason": item["reason"]})
+        else:
+            date_map[d]["other"].append({"jira": item["jira"], "reason": item["reason"]})
+    dates = sorted(date_map.values(), key=lambda x: x["date"], reverse=True)
+    for d in dates:
+        d["total"] = len(d["with_time_add"]) + len(d["other"])
+    total_fail = sum(d["total"] for d in dates)
+    return _ok({"dates": dates, "total_fail": total_fail},
+               f"共 {total_fail} 条失败记录，{len(dates)} 个日期")
+
+
+@router.post("/api/test/regression_filter_ai", response_model=ApiResponse)
+async def regression_filter_ai(request: Request):
+    """批量检查 Jira 号是否有 AI 初步分析结果（customfield_13714）"""
+    from concurrent.futures import ThreadPoolExecutor
+    from src.clients import jira_client
+    body = await request.json() or {}
+    bugids = body.get("bugids") or []
+    if not bugids:
+        return _fail("bugids 不能为空")
+
+    def _check_one(bid: str) -> str:
+        try:
+            iss = jira_client.fetch_issue(bid)
+            v = (iss.get("fields") or {}).get("customfield_13714")
+            s = str(v).strip() if v is not None else ""
+            if s and s.lower() not in ("none", "null"):
+                return bid
+        except Exception:
+            pass
+        return ""
+
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        hits = {x for x in await loop.run_in_executor(None, lambda: list(pool.map(_check_one, bugids))) if x}
+    no_ai = [b for b in bugids if b not in hits]
+    return _ok({"has_ai": list(hits), "no_ai": no_ai},
+               f"共 {len(bugids)} 条，{len(hits)} 条已有AI初步分析结果")
+
+
 # ==================== AB实验 ====================
 
 
