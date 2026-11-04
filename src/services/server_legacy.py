@@ -3023,13 +3023,14 @@ def _bot_run_batch_ai_single_round(chat_id: str, jql_key: str, count: int, exec_
 
 def _get_unanalyzed_jql_presets() -> dict:
     """Bug未分析提取的 JQL 预设（与测试页同步），返回 {编号: (标签, JQL)} 字典"""
+    _PROJECT = 'project = VCS_Info4.0_High_Platform_PATAC_Jira'
     return {
-        "JQL1": ("以往已关闭Bug", 'issuetype = bug AND created >= "2026/08/25" AND status = closed'),
-        "JQL2": ("昨日新增Bug", "issuetype = bug AND created >= startOfDay('-1d') AND created <= endOfDay('-1d')"),
-        "JQL3": ("昨日coreservice", 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU" AND created >= startOfDay(\'-1d\') AND created <= endOfDay(\'-1d\')'),
-        "JQL4": ("昨日远控", 'issuetype = bug AND text ~ "远控" AND text ~ "VCU" AND created >= startOfDay(\'-1d\') AND created <= endOfDay(\'-1d\')'),
-        "JQL5": ("昨日导航", 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU" AND created >= startOfDay(\'-1d\') AND created <= endOfDay(\'-1d\')'),
-        "JQL6": ("本周新增Bug", 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed"'),
+        "JQL1": ("以往已关闭Bug", f'issuetype = bug AND created >= "2026/08/25" AND status = closed AND {_PROJECT}'),
+        "JQL2": ("昨日新增Bug", f'issuetype = bug AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND status != "closed" AND {_PROJECT}'),
+        "JQL3": ("昨日coreservice", f'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU" AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND status != "closed" AND {_PROJECT}'),
+        "JQL4": ("昨日远控", f'issuetype = bug AND text ~ "远控" AND text ~ "VCU" AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND status != "closed" AND {_PROJECT}'),
+        "JQL5": ("昨日导航", f'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU" AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND status != "closed" AND {_PROJECT}'),
+        "JQL6": ("本周新增Bug", f'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND {_PROJECT}'),
     }
 
 

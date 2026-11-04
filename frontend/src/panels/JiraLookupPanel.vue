@@ -25,12 +25,18 @@
     </el-card>
 
     <el-card v-if="rows.length || errors.length" shadow="never" style="margin-top:14px">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
         <span class="section-title" style="margin:0">查询结果</span>
-        <el-tag type="success" size="small">显示 {{ displayedRows.length }}/{{ rows.length }}</el-tag>
-        <el-tag v-if="errors.length" type="danger" size="small">失败 {{ errors.length }}</el-tag>
+        <div class="stat-bar" style="display:flex;gap:6px;align-items:center">
+          <el-tag type="info" size="small">总数 <b>{{ rows.length }}</b></el-tag>
+          <el-tag type="warning" size="small">待执行 <b>{{ pendingCount }}</b></el-tag>
+          <el-tag type="success" size="small">已分析 <b>{{ analyzedCount }}</b></el-tag>
+          <el-tag v-if="errors.length" type="danger" size="small">失败 {{ errors.length }}</el-tag>
+        </div>
         <el-tag type="info" size="small">{{ mode === 'jql' ? 'JQL 模式' : 'Key 模式' }}</el-tag>
-        <el-button size="small" link type="primary" style="margin-left:auto" @click="copyAllKeys">复制所有 Key</el-button>
+        <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+          <el-button size="small" link type="primary" @click="copyAllKeys">复制所有 Key</el-button>
+        </div>
       </div>
 
       <el-table :data="displayedRows" size="small" stripe border max-height="520"
@@ -103,6 +109,12 @@ export default {
     displayedRows() {
       if (!this.filterAiPreliminary) return this.rows;
       return this.rows.filter((r: any) => !r.has_ai_preliminary);
+    },
+    analyzedCount() {
+      return this.rows.filter((r: any) => r.has_ai_preliminary).length;
+    },
+    pendingCount() {
+      return this.rows.length - this.analyzedCount;
     },
   },
   methods: {
