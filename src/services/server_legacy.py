@@ -2551,7 +2551,7 @@ def _morning_briefing(chat_id: str) -> bool:
 
 
 def _morning_briefing_scheduler_loop():
-    """每日待执行播报调度器：工作日9:00触发"""
+    """每日待执行播报调度器：工作日9:00触发，原子文件锁保证多台机器只有一台发送"""
     logger.info("待执行播报调度器已启动")
     while not _morning_briefing_stop.is_set():
         try:
@@ -2566,9 +2566,15 @@ def _morning_briefing_scheduler_loop():
 
             # 检查是否工作日 + 是否到达播报时间
             if _is_chinese_workday(now) and cur_time >= "09:00":
-                # 检查今天是否已播过
+                # 用原子文件创建作为分布式锁，确保多台机器只有一台发送
+                os.makedirs(_UNANALYZED_DIR, exist_ok=True)
                 state_file = os.path.join(_UNANALYZED_DIR, f".morning_briefing_{cur_date}")
-                if os.path.exists(state_file):
+                try:
+                    fd = os.open(state_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.write(fd, cur_time.encode())
+                    os.close(fd)
+                except FileExistsError:
+                    # 其他机器已抢到了，今天不再发送
                     _morning_briefing_stop.wait(60)
                     continue
 
@@ -2582,11 +2588,6 @@ def _morning_briefing_scheduler_loop():
                 # 执行播报
                 logger.info("触发待执行播报: chat=%s, date=%s", chat_id[:12], cur_date)
                 _morning_briefing(chat_id)
-
-                # 记录已播状态
-                os.makedirs(_UNANALYZED_DIR, exist_ok=True)
-                with open(state_file, "w") as f:
-                    f.write(cur_time)
 
         except Exception as e:
             logger.warning("待执行播报调度器异常: %s", e)
