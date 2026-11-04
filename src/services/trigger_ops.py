@@ -458,7 +458,7 @@ def _ensure_trigger_time_bugid_cache():
 
 
 # ── 按需搜索：少量查询时用 filter_expr 逐表搜索，避免全量加载 ──
-_FILTER_SEARCH_THRESHOLD = 10  # bugid 数量 <= 此值时走 filter 搜索
+_FILTER_SEARCH_THRESHOLD = 20  # bugid 数量 <= 此值时走 filter 搜索，超过走全量加载
 _table_counts_cache = {}  # {tid: count} 表记录数缓存
 _table_counts_ts = [0.0]  # 缓存时间戳
 
