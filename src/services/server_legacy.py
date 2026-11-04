@@ -2488,24 +2488,31 @@ def _morning_briefing(chat_id: str) -> bool:
             if not has_val:
                 pending_bugs.append(iss.get("key", ""))
 
-        # 3. 统计昨日执行失败的 Bug（读取 data/unanalyzed/prod_batch_{昨天}_*.csv）
+        # 3. 统计昨日执行失败的 Bug（用多维表格 filter 查询）
         yesterday = _get_prev_chinese_workday(datetime.now())
-        failed_yesterday = set()
-        if os.path.isdir(_UNANALYZED_DIR):
-            for fname in os.listdir(_UNANALYZED_DIR):
-                if not fname.startswith(f"prod_batch_{yesterday}") or not fname.endswith(".csv"):
+        failed_yesterday = {}  # {jira_no: 人工审核结果}
+        try:
+            from src.api.routes.shared import bitable_text as _bt
+            bt_cfg = load_config().get("feishu_bitable", {})
+            bugid_field = bt_cfg.get("bugid_field", "jira号")
+            app_token = bt_cfg.get("app_token", "")
+            table_id = bt_cfg.get("table_id", "")
+            # 筛选：分析结果=失败，然后在 Python 中过滤昨日日期
+            filter_expr = 'CurrentValue.[分析结果] = "失败"'
+            records = feishu_client.list_bitable_records(
+                app_token, table_id, filter_expr=filter_expr, timeout=60)
+            for rec in records:
+                fields = rec.get("fields", {})
+                done_time = _bt(fields.get("分析完成时间", ""))
+                if not done_time or not done_time.startswith(yesterday):
                     continue
-                fpath = os.path.join(_UNANALYZED_DIR, fname)
-                try:
-                    import csv as _csv
-                    with open(fpath, "r", encoding="utf-8-sig") as f:
-                        for row in _csv.DictReader(f):
-                            jira_no = (row.get("Jira号") or row.get("jira号") or "").strip()
-                            exec_result = (row.get("执行结果") or "").strip()
-                            if jira_no and exec_result == "失败":
-                                failed_yesterday.add(jira_no)
-                except Exception:
-                    pass
+                jira_no = _bt(fields.get(bugid_field, ""))
+                if jira_no:
+                    human_review = _bt(fields.get("人工审核结果", "")) or "未审核"
+                    failed_yesterday[jira_no] = human_review
+            logger.info("待执行播报: 昨日(%s)失败记录 %d 条", yesterday, len(failed_yesterday))
+        except Exception as e:
+            logger.warning("待执行播报: 多维表格查询失败: %s", e)
 
         # 4. 计算交集：昨日执行失败且今天仍待执行的
         still_pending_failed = [b for b in pending_bugs if b in failed_yesterday]
@@ -2517,15 +2524,15 @@ def _morning_briefing(chat_id: str) -> bool:
             f"📋 待执行总数: {len(pending_bugs)} 条",
             f"📋 查询范围: {jql_label}",
             "",
-            f"❌ 昨日执行失败仍待执行: {len(still_pending_failed)} 条",
+            f"❗ 昨日失败总数: {len(failed_yesterday)} 条",
         ]
-        if still_pending_failed:
-            msg_lines.append(f"   ({', '.join(still_pending_failed[:10])}{'...' if len(still_pending_failed) > 10 else ''})")
-
-        msg_lines.extend([
-            "",
-            f"✅ 昨日执行成功: {len(failed_yesterday) - len(still_pending_failed)} 条（已从待执行移除）"
-        ])
+        # 昨日失败明细表格
+        if failed_yesterday:
+            msg_lines.append("")
+            msg_lines.append("📝 昨日失败明细:")
+            for i, (jira_no, review) in enumerate(sorted(failed_yesterday.items()), 1):
+                in_pending = "⚠️待执行" if jira_no in failed_yesterday and jira_no in pending_bugs else ""
+                msg_lines.append(f"  {i}. {jira_no} | {review} {in_pending}")
 
         ok = feishu_client.send_bot_message(chat_id, "\n".join(msg_lines))
         if ok:
