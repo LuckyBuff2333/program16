@@ -154,7 +154,7 @@
   "params": {
     "diag_concurrency": 5,
     "diag_download_concurrency": 3,
-    "analysis_concurrency": 5,
+    "analysis_concurrency": 6,
     "download_concurrency": 2,
     "logagent_version": "1.0.0",
     "model": "deepseek-v-pro",
