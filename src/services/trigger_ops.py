@@ -457,6 +457,110 @@ def _ensure_trigger_time_bugid_cache():
     logger.info("触发时间缓存已加载: %d 条记录", len(_trigger_time_bugid_cache))
 
 
+# ── 按需搜索：少量查询时用 filter_expr 逐表搜索，避免全量加载 ──
+_FILTER_SEARCH_THRESHOLD = 10  # bugid 数量 <= 此值时走 filter 搜索
+_table_counts_cache = {}  # {tid: count} 表记录数缓存
+_table_counts_ts = [0.0]  # 缓存时间戳
+
+
+def _search_trigger_time_single(bugid: str) -> dict:
+    """用 filter_expr 逐表搜索单个 Jira 号，命中即停
+
+    :return: {"table_id", "record_id", "trigger_time"} 或 None
+    """
+    from src.clients import feishu_client
+    app_token, table_ids = _get_trigger_time_table_cfg()
+    filter_expr = f'CurrentValue.[jira号] = "{bugid}"'
+    for tid in table_ids:
+        try:
+            records = feishu_client.list_bitable_records(
+                app_token, tid, filter_expr=filter_expr)
+            if records:
+                rec = records[0]
+                fields = rec.get("fields", {})
+                tt = _bitable_text(fields.get("触发时间", ""))
+                result = {"table_id": tid, "record_id": rec["record_id"], "trigger_time": tt}
+                # 填充缓存
+                _trigger_time_bugid_cache[bugid] = (tid, rec["record_id"], tt)
+                logger.info("触发时间搜索命中: %s -> %s (表 %s)", bugid, tt or "(空)", tid[:8])
+                return result
+        except Exception as e:
+            logger.warning("搜索触发时间失败(表 %s, bugid=%s): %s", tid[:8], bugid, e)
+    return None
+
+
+def _search_trigger_time_batch(bugids: list) -> dict:
+    """用 filter_expr OR 搜索少量 Jira 号，返回 {bugid: trigger_time}
+
+    适合 2~10 个 bugid 的场景，比全量加载快 10 倍以上
+    """
+    from src.clients import feishu_client
+    if not bugids:
+        return {}
+    app_token, table_ids = _get_trigger_time_table_cfg()
+    result = {}
+    # 构建 OR 过滤表达式
+    conditions = [f'CurrentValue.[jira号] = "{b}"' for b in bugids]
+    filter_expr = " OR ".join(conditions) if len(conditions) == 1 else "(" + " OR ".join(conditions) + ")"
+    remaining = set(bugids)
+    for tid in table_ids:
+        if not remaining:
+            break
+        try:
+            records = feishu_client.list_bitable_records(
+                app_token, tid, filter_expr=filter_expr)
+            for rec in records:
+                fields = rec.get("fields", {})
+                jira_no = _bitable_text(fields.get("jira号", ""))
+                if jira_no and jira_no in remaining:
+                    tt = _bitable_text(fields.get("触发时间", ""))
+                    if tt:
+                        result[jira_no] = tt
+                    _trigger_time_bugid_cache[jira_no] = (tid, rec["record_id"], tt)
+                    remaining.discard(jira_no)
+        except Exception as e:
+            logger.warning("批量搜索触发时间失败(表 %s): %s", tid[:8], e)
+    found = len(bugids) - len(remaining)
+    logger.info("触发时间批量搜索: %d/%d 命中", found, len(bugids))
+    return result
+
+
+def _refresh_table_counts():
+    """刷新各子表的记录数缓存，从 _trigger_time_bugid_cache 统计，缓存空时触发全量加载"""
+    import time
+    if time.time() - _table_counts_ts[0] < 300 and _table_counts_cache:  # 5分钟有效
+        return _table_counts_cache
+    # 优先从已有缓存统计
+    if _trigger_time_bugid_cache:
+        counts = {}
+        for tid, _, _ in _trigger_time_bugid_cache.values():
+            counts[tid] = counts.get(tid, 0) + 1
+        _table_counts_cache.clear()
+        _table_counts_cache.update(counts)
+        _table_counts_ts[0] = time.time()
+        logger.info("表记录数缓存已刷新(从缓存): %s", {k[:8]: v for k, v in counts.items()})
+        return counts
+    # 缓存为空时触发全量加载并统计
+    _ensure_trigger_time_bugid_cache()
+    counts = {}
+    for tid, _, _ in _trigger_time_bugid_cache.values():
+        counts[tid] = counts.get(tid, 0) + 1
+    _table_counts_cache.clear()
+    _table_counts_cache.update(counts)
+    _table_counts_ts[0] = time.time()
+    logger.info("表记录数缓存已刷新(全量加载): %s", {k[:8]: v for k, v in counts.items()})
+    return counts
+
+
+def _find_available_table() -> str:
+    """找到第一个未满 500 条的表，用于新记录写入"""
+    counts = _refresh_table_counts()
+    for tid, count in counts.items():
+        if count < _TRIGGER_TIME_TABLE_LIMIT:
+            return tid
+    return ""
+
+
 # ── 触发时间扩展字段（P0-1）：时间来源 / 参考时间 / 时间差秒 / 窗口命中 / 时间状态 ──
 _TRIGGER_TIME_EXTRA_FIELDS = ["时间来源", "参考时间", "时间差秒", "窗口命中", "时间状态"]
 _TRIGGER_TIME_FIELDS_ENSURED = {"done": False}
@@ -642,7 +746,12 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "",
         if _last_cache_load_partial:
             logger.warning("跳过空值写入，bugid=%s 云端缓存为部分加载，无法确认是否已有值", bugid)
             return
-    # 懒加载缓存
+    # 懒加载缓存：单条写入时优先用 filter 搜索，避免全量加载
+    if not _trigger_time_bugid_cache:
+        hit = _search_trigger_time_single(bugid)
+        if hit:
+            logger.info("单条写入: filter 搜索命中 %s", bugid)
+        # 搜索未命中时再走全量缓存（由下面 _ensure 触发）
     _ensure_trigger_time_bugid_cache()
     # 单条更新：优先用缓存直接定位，避免全表扫描
     cached = _trigger_time_bugid_cache.get(bugid)

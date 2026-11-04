@@ -30,25 +30,28 @@ def _to_minute(ts: str) -> str:
 
 @router.post("/api/trigger_time/batch_read", response_model=ApiResponse)
 async def batch_read_trigger_times(req: BugidListRequest):
-    """批量读取指定 jira 号的当前触发时间"""
+    """批量读取指定 jira 号的当前触发时间，少量用 filter 搜索，批量用全量缓存"""
     from src.services.trigger_ops import (
         _load_trigger_times_from_cloud, _save_trigger_time_to_csv,
-        _batch_save_trigger_times_to_cloud,
+        _batch_save_trigger_times_to_cloud, _search_trigger_time_batch,
+        _FILTER_SEARCH_THRESHOLD,
     )
     from src.api.routes.shared import ok as _ok, fail as _fail
-    bugids = req.bugids
+    bugids = [b.strip() for b in req.bugids if b.strip()]
     if not bugids:
         return _fail("请输入 jira 号列表")
     cache_only = req.cache_only
     loop = asyncio.get_event_loop()
-    # 全量云端触发时间首次加载可能需要几十秒，放线程池避免阻塞事件循环
-    local_times = await loop.run_in_executor(None, _load_trigger_times_from_cloud)
+    # 自动选择策略：少量用 filter 搜索，批量用全量缓存
+    if len(bugids) <= _FILTER_SEARCH_THRESHOLD:
+        logger.info("触发时间读取: %d 个 bugid，使用 filter 搜索策略", len(bugids))
+        local_times = await loop.run_in_executor(None, _search_trigger_time_batch, bugids)
+    else:
+        logger.info("触发时间读取: %d 个 bugid，使用全量缓存策略", len(bugids))
+        local_times = await loop.run_in_executor(None, _load_trigger_times_from_cloud)
     result, extracted_count, batch_to_cloud = [], 0, {}
     batch_refs = {}
     for bugid in bugids:
-        bugid = bugid.strip()
-        if not bugid:
-            continue
         current_time = local_times.get(bugid, "")
         if not current_time and not cache_only:
             try:
@@ -78,8 +81,9 @@ async def batch_read_trigger_times(req: BugidListRequest):
             batch_to_cloud, {k: "时间对比(读取)" for k in batch_to_cloud},
             {k: v for k, v in batch_refs.items() if v})
     hit_count = sum(1 for r in result if r["current_time"])
+    strategy = "搜索" if len(bugids) <= _FILTER_SEARCH_THRESHOLD else "全量"
     return _ok({"rows": result, "total": len(result), "hit": hit_count},
-               f"查询完成：{len(result)} 个 Jira 号，{hit_count} 个有记录（本地命中 {hit_count - extracted_count}，新提取 {extracted_count}）")
+               f"查询完成({strategy})：{len(result)} 个 Jira 号，{hit_count} 个有记录（本地命中 {hit_count - extracted_count}，新提取 {extracted_count}）")
 
 
 @router.post("/api/trigger_time/update", response_model=ApiResponse)
