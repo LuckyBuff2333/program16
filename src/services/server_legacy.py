@@ -2526,13 +2526,14 @@ def _morning_briefing(chat_id: str) -> bool:
             "",
             f"❗ 昨日失败总数: {len(failed_yesterday)} 条",
         ]
-        # 昨日失败明细表格
+        # 昨日失败明细表格（待执行排前，其他排后）
         if failed_yesterday:
             msg_lines.append("")
             msg_lines.append("📝 昨日失败明细:")
-            for i, (jira_no, review) in enumerate(sorted(failed_yesterday.items()), 1):
-                in_pending = "⚠️待执行" if jira_no in failed_yesterday and jira_no in pending_bugs else ""
-                msg_lines.append(f"  {i}. {jira_no} | {review} {in_pending}")
+            pending_set = set(pending_bugs)
+            sorted_items = sorted(failed_yesterday.items(), key=lambda x: (x[0] not in pending_set, x[0]))
+            for i, (jira_no, review) in enumerate(sorted_items, 1):
+                msg_lines.append(f"  {i}. {jira_no} | {review}")
 
         ok = feishu_client.send_bot_message(chat_id, "\n".join(msg_lines))
         if ok:
