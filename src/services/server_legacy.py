@@ -2526,12 +2526,16 @@ def _morning_briefing(chat_id: str) -> bool:
             "",
             f"❗ 昨日失败总数: {len(failed_yesterday)} 条",
         ]
-        # 昨日失败明细表格（待执行排前，其他排后）
+        # 昨日失败明细表格（时间问题排前，其他按分类聚合）
         if failed_yesterday:
             msg_lines.append("")
             msg_lines.append("📝 昨日失败明细:")
-            pending_set = set(pending_bugs)
-            sorted_items = sorted(failed_yesterday.items(), key=lambda x: (x[0] not in pending_set, x[0]))
+            # 按人工审核结果分类排序：时间问题优先，其他按分类聚合
+            def _sort_key(item):
+                review = item[1]
+                is_time = "时间" in review
+                return (0 if is_time else 1, review, item[0])
+            sorted_items = sorted(failed_yesterday.items(), key=_sort_key)
             for i, (jira_no, review) in enumerate(sorted_items, 1):
                 msg_lines.append(f"  {i}. {jira_no} | {review}")
 
