@@ -776,6 +776,7 @@ def _dashboard_data_sync(date_str: str, force: bool = False):
             exec_time = f"{m.group(1)} {m.group(2)[:2]}:{m.group(2)[2:4]}:{m.group(2)[4:]}"
         submit_ok = sum(1 for r in rows if (r.get("执行结果") or "").strip() not in ("失败", ""))
         submit_fail = total - submit_ok
+        trigger_ok = sum(1 for r in rows if (r.get("触发时间") or "").strip())
         source = (rows[0].get("触发来源") or "").strip() if rows else ""
         if not source:
             source = "线上" if "线上" in name else "PC"
@@ -794,6 +795,7 @@ def _dashboard_data_sync(date_str: str, force: bool = False):
         batches.append({
             "name": name, "source": source, "total": total,
             "submit_ok": submit_ok, "submit_fail": submit_fail,
+            "trigger_ok": trigger_ok,
             "exec_time": exec_time, "model": model,
             "has_report": has_report, "report_file": report_file,
             "all_failed": all_failed, "is_cloud": True, "token": token,
@@ -814,6 +816,7 @@ def _dashboard_data_sync(date_str: str, force: bool = False):
     total_submit = sum(b["total"] for b in batches)
     total_ok = sum(b["submit_ok"] for b in batches)
     total_fail = sum(b["submit_fail"] for b in batches)
+    total_trigger_ok = sum(b.get("trigger_ok", 0) for b in batches)
     pc_batches = sum(1 for b in batches if b["source"] == "PC")
     online_batches = sum(1 for b in batches if b["source"] != "PC")
     daily_html = os.path.join(reports_dir, f"daily_report_{date_str}.html")
@@ -827,6 +830,7 @@ def _dashboard_data_sync(date_str: str, force: bool = False):
         "online_batches": online_batches,
         "submit_rate": round(total_ok / total_submit * 100, 1) if total_submit else 0,
         "has_daily_report": has_daily_report,
+        "total_trigger_ok": total_trigger_ok,
         "cloud_count": sum(1 for b in batches if b.get("is_cloud")),
     }
 

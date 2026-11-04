@@ -6,6 +6,10 @@
     <el-tab-pane label="任务总览" name="flow">
       <div class="to-head">
         <span class="to-title">任务总览</span>
+        <el-button-group class="to-date-toggle" style="margin-left:12px">
+          <el-button :type="toMode === 'today' ? 'primary' : 'default'" size="small" @click="switchToMode('today')">今日</el-button>
+          <el-button :type="toMode === 'yesterday' ? 'primary' : 'default'" size="small" @click="switchToMode('yesterday')">昨日</el-button>
+        </el-button-group>
         <el-button :loading="toLoading" @click="refreshTaskOverview" round size="small" style="margin-left:10px">
           <span v-if="!toLoading" style="margin-right:2px">↻</span> 刷新
         </el-button>
@@ -13,7 +17,7 @@
       <div v-if="toLoaded || toLoading" class="to-grid">
         <div class="to-card to-click" :class="{ 'is-active': activeCat === 'total' }" style="--accent:#409eff;--bg:linear-gradient(135deg,#e8f4fd,#f0f7ff)" @click="selectCategory('total')">
           <div class="to-icon">📦</div>
-          <div class="to-body"><div class="to-value">{{ taskOv.total }}</div><div class="to-label">今日执行总数</div></div>
+          <div class="to-body"><div class="to-value">{{ taskOv.total }}</div><div class="to-label">{{ toMode === 'today' ? '今日执行总数' : '昨日执行总数' }}</div></div>
           <div class="to-foot">去重 Jira 号</div>
         </div>
         <div class="to-card to-click" :class="{ 'is-active': activeCat === 'success' }" style="--accent:#16a34a;--bg:linear-gradient(135deg,#f0fdf4,#ecfdf5)" @click="selectCategory('success')">
@@ -146,7 +150,7 @@
                     <template #label><el-tooltip :content="s(field)" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
                     <div class="cfg-field-row">
                       <el-input :model-value="secretDraft[secretKey(item.key, s(field))] || ''"
-                        @update:model-value="(v) => setSecret(item.key, s(field), v)"
+                        @update:model-value="(v: string) => setSecret(item.key, s(field), v)"
                         type="password" show-password
                         :placeholder="fieldPlaceholder(item.key, s(field), val)"></el-input>
                       <span class="field-del-btn" title="删除字段" @click="removeField(item.key, s(field))">&#x2715;</span>
@@ -156,7 +160,7 @@
                     <template #label><el-tooltip :content="field" placement="top" :disabled="s(field).length < 8"><span>{{ fieldLabel(s(field)) }}</span></el-tooltip></template>
                     <div style="width:100%">
                       <div v-for="(row, idx) in config[item.key][field]" :key="idx" style="display:flex;gap:4px;margin-bottom:4px;align-items:center">
-                        <span style="min-width:20px;font-size:11px;color:#909399">{{ idx + 1 }}</span>
+                        <span style="min-width:20px;font-size:11px;color:#909399">{{ Number(idx) + 1 }}</span>
                         <el-input v-for="(subVal, subKey) in row" :key="subKey" v-model="config[item.key][field][idx][subKey]" size="small" :placeholder="s(subKey)" style="flex:1" />
                         <el-button size="small" type="danger" link @click="config[item.key][field].splice(idx, 1)">✕</el-button>
                       </div>
@@ -317,6 +321,7 @@ export default {
       taskOv: { total: 0, all_rows: [] as any[], success: { count: 0, rows: [] as any[] }, analyzing: { count: 0, rows: [] as any[] }, investigate: { count: 0, rows: [] as any[] }, retry: { count: 0, rows: [] as any[] } } as Record<string, any>,
       toLoading: false,
       toLoaded: false,
+      toMode: 'today' as 'today' | 'yesterday',
       activeCat: '' as string,
       config: {} as Record<string, any>,
       apiSections: [
@@ -359,7 +364,7 @@ export default {
       return (this.taskOv[this.activeCat] && this.taskOv[this.activeCat].rows) || [];
     },
     activeCatTitle() {
-      const map = { total: '今日执行总数', success: '成功数量', analyzing: '分析中', investigate: '待排查', retry: '待重试' } as Record<string, string>;
+      const map = { total: this.toMode === 'today' ? '今日执行总数' : '昨日执行总数', success: '成功数量', analyzing: '分析中', investigate: '待排查', retry: '待重试' } as Record<string, string>;
       return map[this.activeCat] || '';
     },
     tableMaxHeight() {
@@ -553,15 +558,27 @@ export default {
     async loadTaskOverview(force = false) {
       this.toLoading = true;
       try {
-        const url = force
-          ? '/api/dashboard/task_overview?force=true'
-          : '/api/dashboard/task_overview';
+        let url = '/api/dashboard/task_overview';
+        const params: string[] = [];
+        if (force) params.push('force=true');
+        if (this.toMode === 'yesterday') {
+          const d = new Date(); d.setDate(d.getDate() - 1);
+          const p2 = (n: number) => String(n).padStart(2, '0');
+          const yDate = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+          params.push(`date=${yDate}`);
+        }
+        if (params.length) url += '?' + params.join('&');
         const r = await api(url);
         this.taskOv = r.data as any;
         this.toLoaded = true;
       } catch (e: any) { ElMessage.error('任务总览加载失败: ' + (e?.message || e)); } finally { this.toLoading = false; }
     },
     refreshTaskOverview() { this.loadTaskOverview(true); },
+    switchToMode(mode: 'today' | 'yesterday') {
+      this.toMode = mode;
+      this.activeCat = '';
+      this.loadTaskOverview();
+    },
     selectCategory(cat: string) {
       this.activeCat = this.activeCat === cat ? '' : cat;
       if (this.activeCat) {
@@ -647,6 +664,7 @@ export default {
 /* ── 任务总览 ── */
 .to-head { display: flex; align-items: center; margin-bottom: 16px; }
 .to-title { font-size: 16px; font-weight: 700; color: #1f3b73; }
+.to-date-toggle .el-button { min-width: 52px; font-weight: 600; }
 .to-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 20px; }
 .to-card {
   background: var(--bg, #f5f7fa); border-radius: 12px; padding: 18px 20px;
