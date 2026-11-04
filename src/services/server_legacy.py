@@ -209,6 +209,9 @@ _OCR_UNAVAILABLE = object()  # OCR 不可用哨兵值
 _rapid_ocr_engine = None
 
 _rapid_ocr_lock = threading.Lock()  # 防止 RapidOCR 并发初始化
+_rapid_ocr_cpu_engine = None  # OOM 回退用 CPU-only 引擎
+_ocr_oom_cooldown_until = 0.0  # OOM 冷却截止时间戳
+_ocr_max_pixels = 2_000_000  # GPU 推理最大像素面积（200万像素，防止 OOM）
 
 _OCR_TIME_FULL_RE = re.compile(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2}[\s.,\-]?\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?)')
 
@@ -4085,6 +4088,49 @@ def _get_rapid_ocr():
     return _rapid_ocr_engine
 
 
+def _get_rapid_ocr_cpu():
+    """获取 CPU-only RapidOCR 引擎（GPU OOM 回退用，懒加载+缓存）"""
+    global _rapid_ocr_cpu_engine
+    if _rapid_ocr_cpu_engine is not None:
+        return _rapid_ocr_cpu_engine
+    with _rapid_ocr_lock:
+        if _rapid_ocr_cpu_engine is not None:
+            return _rapid_ocr_cpu_engine
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            _v5_cfg = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                "models", "ppocrv5", "rapidocr_v5.yaml")
+            if os.path.exists(_v5_cfg):
+                try:
+                    import yaml as _yaml
+                    _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    with open(_v5_cfg) as _f:
+                        _ycfg = _yaml.safe_load(_f)
+                    for _sec in ["Det", "Cls", "Rec"]:
+                        if _sec in _ycfg and "model_path" in _ycfg[_sec]:
+                            _mp = _ycfg[_sec]["model_path"]
+                            if not os.path.isabs(_mp):
+                                _ycfg[_sec]["model_path"] = os.path.join(_proj_root, _mp)
+                        if _sec in _ycfg:
+                            _ycfg[_sec]["use_cuda"] = False
+                    import tempfile
+                    _tmp_cfg = os.path.join(tempfile.gettempdir(), "rapidocr_v5_cpu_runtime.yaml")
+                    with open(_tmp_cfg, "w") as _f:
+                        _yaml.dump(_ycfg, _f, default_flow_style=False, allow_unicode=True)
+                    _rapid_ocr_cpu_engine = RapidOCR(config_path=_tmp_cfg)
+                    logger.info("RapidOCR CPU-only 引擎初始化完成（OOM 回退用）")
+                except Exception as e:
+                    logger.warning("CPU-only V5 初始化失败，回退 V4: %s", e)
+                    _rapid_ocr_cpu_engine = RapidOCR()
+            else:
+                _rapid_ocr_cpu_engine = RapidOCR()
+        except Exception as e:
+            logger.warning("CPU-only OCR 引擎初始化失败: %s", e)
+            return None
+    return _rapid_ocr_cpu_engine
+
+
 def _rapid_ocr_readtext(image, _already_enhanced: bool = False):
     """调用 RapidOCR 识别图像，返回与 EasyOCR 兼容的 [bbox, text, conf] 格式
 
@@ -4093,42 +4139,98 @@ def _rapid_ocr_readtext(image, _already_enhanced: bool = False):
     - 已二值化/锐化的图像不再放大（_already_enhanced=True），避免伪影放大降低识别率
     - 降低 box_thresh 至 0.3（默认 0.5 太高，低质量视频帧检测不到文本）
     - text_score 至 0.15（与应用层过滤阈值对齐，避免引擎内部丢弃可用文本）
+
+    GPU OOM 防护：
+    - 超大图像自动缩放（限制像素面积 ≤ 200 万），防止 GPU 显存溢出
+    - OOM 异常时自动回退 CPU-only 引擎，避免级联降级到 EasyOCR
+    - OOM 后 5 分钟冷却期，期间直接使用 CPU 引擎
     """
+    global _ocr_oom_cooldown_until
     import numpy as np
     import cv2
+    import time as _time
+
+    # ── OOM 冷却期：直接使用 CPU 引擎 ──
+    if _time.time() < _ocr_oom_cooldown_until:
+        _cpu_eng = _get_rapid_ocr_cpu()
+        if _cpu_eng is not None:
+            return _run_ocr(_cpu_eng, image, _already_enhanced, tag="CPU(冷却中)")
+
     engine = _get_rapid_ocr()
     if engine is None:
         return []
+
     try:
-        h, w = image.shape[:2]
-        # 仅对小尺寸原始帧放大，已二值化/锐化的图像跳过（ROI 已放大，跳过二次放大）
-        if not _already_enhanced and w < 1280:
-            mag_ratio = 1.5
-            enlarged = cv2.resize(image, (int(w * mag_ratio), int(h * mag_ratio)),
-                                  interpolation=cv2.INTER_CUBIC)
-        else:
-            mag_ratio = 1.0
-            enlarged = image
-        scale = enlarged.shape[0] / h if enlarged is not image else 1.0
-        result, elapse = engine(enlarged, box_thresh=0.3, text_score=0.15, use_cls=False)
-        if not result:
-            return []
-        items = []
-        for bbox, text, conf in result:
-            # 将 bbox 缩放回原图坐标（如果做过放大）
-            if scale != 1.0:
-                bbox = [[p[0] / scale, p[1] / scale] for p in bbox]
-            # RapidOCR bbox 是 [[x1,y1],[x2,y1],[x2,y2],[x1,y2]] 格式，与 EasyOCR 兼容
-            items.append([bbox, text, conf])
-        logger.info("RapidOCR 识别完成: %d 条文本 (放大%.1fx), 耗时 det=%.2fs cls=%.2fs rec=%.2fs",
-                    len(items), mag_ratio if scale != 1.0 else 1.0,
-                    elapse[0] if len(elapse) > 0 else 0,
-                    elapse[1] if len(elapse) > 1 else 0,
-                    elapse[2] if len(elapse) > 2 else 0)
-        return items
+        return _run_ocr(engine, image, _already_enhanced, tag="GPU")
     except Exception as e:
-        logger.warning("RapidOCR 识别异常: %s", e)
+        _err = str(e)
+        _is_oom = "AllocateRawInternal" in _err or "memory" in _err.lower() or "OOM" in _err
+        if _is_oom:
+            _ocr_oom_cooldown_until = _time.time() + 300  # 5 分钟冷却
+            logger.warning("RapidOCR GPU OOM 检测！启动 5 分钟 CPU 冷却: %s", _err[:200])
+            # 尝试 GC 释放显存
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
+            # 回退 CPU-only 重试一次
+            _cpu_eng = _get_rapid_ocr_cpu()
+            if _cpu_eng is not None:
+                try:
+                    return _run_ocr(_cpu_eng, image, _already_enhanced, tag="CPU(OOM回退)")
+                except Exception as e2:
+                    logger.warning("RapidOCR CPU 回退也失败: %s", e2)
+            return []
+        else:
+            logger.warning("RapidOCR 识别异常: %s", e)
+            return []
+
+
+def _run_ocr(engine, image, _already_enhanced: bool, tag: str = ""):
+    """执行 OCR 推理（内部辅助函数，供 GPU/CPU 两种路径复用）"""
+    import numpy as np
+    import cv2
+    h, w = image.shape[:2]
+    pixel_area = h * w
+
+    # ── 大图预缩放：防止 GPU OOM ──
+    if pixel_area > _ocr_max_pixels:
+        scale_down = (_ocr_max_pixels / pixel_area) ** 0.5
+        new_w, new_h = int(w * scale_down), int(h * scale_down)
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        h, w = new_h, new_w
+        logger.info("OCR 大图预缩放: %dx%d (%.1fMP→%.1fMP, tag=%s)",
+                    w, h, pixel_area / 1e6, w * h / 1e6, tag)
+
+    # 仅对小尺寸原始帧放大，已二值化/锐化的图像跳过（ROI 已放大，跳过二次放大）
+    if not _already_enhanced and w < 1280:
+        mag_ratio = 1.5
+        enlarged = cv2.resize(image, (int(w * mag_ratio), int(h * mag_ratio)),
+                              interpolation=cv2.INTER_CUBIC)
+    else:
+        mag_ratio = 1.0
+        enlarged = image
+    scale = enlarged.shape[0] / h if enlarged is not image else 1.0
+    result, elapse = engine(enlarged, box_thresh=0.3, text_score=0.15, use_cls=False)
+    if not result:
         return []
+    items = []
+    for bbox, text, conf in result:
+        # 将 bbox 缩放回原图坐标（如果做过放大）
+        if scale != 1.0:
+            bbox = [[p[0] / scale, p[1] / scale] for p in bbox]
+        # RapidOCR bbox 是 [[x1,y1],[x2,y1],[x2,y2],[x1,y2]] 格式，与 EasyOCR 兼容
+        items.append([bbox, text, conf])
+    logger.info("RapidOCR 识别完成: %d 条文本 (放大%.1fx, %s), 耗时 det=%.2fs cls=%.2fs rec=%.2fs",
+                len(items), mag_ratio if scale != 1.0 else 1.0, tag,
+                elapse[0] if len(elapse) > 0 else 0,
+                elapse[1] if len(elapse) > 1 else 0,
+                elapse[2] if len(elapse) > 2 else 0)
+    return items
 
 
 def _get_ocr_reader():
