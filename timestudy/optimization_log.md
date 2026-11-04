@@ -1735,3 +1735,17 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>130. 功能测试批量执行支持「当前提取完再停」（2026-11-04）</b></summary>
+
+- **问题**：持续执行中点停止只中断前端 SSE，后端 `prod_batch_run` 的 5 线程提取队列和 `batch_ai_sample` 抽样提取仍会跑完整批；`form_exec` 也只 abort 前端，服务端继续提取。
+- **修复**：
+  1. 新增 `prod_batch_stop_event` 和 `POST /api/test/prod_batch_run/stop`；`form_exec` 新增 `POST /api/test/form_exec/stop`；
+  2. 停止时取消排队中的提取任务，只让已经在跑的 Jira 完成并逐条写云端，然后返回 `stopped`，不进入后续执行；
+  3. `batch_ai_sample` 每开始一个条目先查停止标志，当前条目完成后 break，并 flush 增量云端；
+  4. 前端停止按钮改为先调后端 stop 接口，不立即 abort SSE，等后端把当前提取写完再结束；PC 执行阶段仍直接 abort。
+- **验证**：`npm run build` 通过；`src/api/routes/testing.py` 路由注册检查通过（`prod_batch_run/stop`、`form_exec/stop` 均存在）。
+- **实现文件**：`src/api/routes/shared.py`、`src/api/routes/testing.py`、`frontend/src/panels/BatchAiPanel.vue`
+
+</details>

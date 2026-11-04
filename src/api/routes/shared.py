@@ -61,6 +61,7 @@ def handle_sigint(signum, frame):
     adp_lookup_stop_event.set()
     regression_stop_event.set()
     form_exec_stop_event.set()
+    prod_batch_stop_event.set()
     logger.warning("收到 Ctrl+C，正在停止当前操作（再次按 Ctrl+C 强制退出）")
     if prev_sigint and callable(prev_sigint) and prev_sigint not in (signal.SIG_IGN, signal.SIG_DFL):
         prev_sigint(signum, frame)
@@ -72,6 +73,8 @@ adp_lookup_stop_event = threading.Event()
 # 各跑批流程独立的停止标志：避免“停回归把时间提取一起停掉”这类串台
 regression_stop_event = threading.Event()
 form_exec_stop_event = threading.Event()
+# 功能测试「批量执行」停止标志：停止后让当前在提取的 Jira 完成并写云端，再取消后续队列
+prod_batch_stop_event = threading.Event()
 
 _DIAG_EXECUTOR = None
 # 全局线程池（限制诊断等同步操作的最大并发数）

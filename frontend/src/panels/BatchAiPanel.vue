@@ -141,7 +141,7 @@
           <el-button type="primary" size="large" :loading="running.batchOneClick" :disabled="!batchAi.execMode || !batchAi.softwareVersion" @click="batchAiOneClick">
             {{ batchAi.continuous ? `持续执行（${batchAi.rounds} 轮）` : '一键执行' }}
           </el-button>
-          <el-button v-if="running.batchOneClick && batchAi.continuous" type="danger" size="large" @click="batchAiAbort && batchAiAbort.abort()">停止</el-button>
+          <el-button v-if="running.batchOneClick && batchAi.continuous" type="danger" size="large" @click="stopBatchOneClick">停止</el-button>
         </div>
         <el-alert v-if="batchAi.oneClickMsg" :type="batchAi.oneClickError ? 'error' : 'success'" :closable="false" :title="batchAi.oneClickMsg" style="margin-top:10px"></el-alert>
         <div v-if="batchAi.currentRound > 0 && batchAi.continuousRunning" class="round-info">
@@ -379,7 +379,7 @@ export default {
         running: false, abortController: null, currentRound: 0,
         results: [], noTimeJiras: [], sampleStats: null, doneMsg: '', doneError: false,
       },
-      batchAi: { jql: 'issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', jqlPresets: ['issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND created >= startOfDay(-1d) AND created <= endOfDay(-1d) AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC', 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND status != closed AND created >= "2026/10/01" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'], jqlLabels: ['今日新增Bug', '昨日新增Bug', '本周新增Bug', '10月新增未关闭', '远控', 'coreservice', '导航'], sampleCount: 5, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, filterExistingSuccess: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '', envSavedMsg: '', rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, filterCounts: null, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, preSample: null },
+      batchAi: { jql: 'issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', jqlPresets: ['issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND created >= startOfDay(-1d) AND created <= endOfDay(-1d) AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC', 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND status != closed AND created >= "2026/10/01" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'], jqlLabels: ['今日新增Bug', '昨日新增Bug', '本周新增Bug', '10月新增未关闭', '远控', 'coreservice', '导航'], sampleCount: 5, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, filterExistingSuccess: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '', envSavedMsg: '', rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, filterCounts: null, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, stopRequested: false, preSample: null },
     };
   },
   mounted() {
@@ -442,7 +442,7 @@ export default {
       const sampleAbort = AbortSignal.timeout(600000);
       try {
         const keys = this.batchAi.filteredKeys.length ? this.batchAi.filteredKeys : this.batchAi.rows.map(r => r.key);
-        const body = await api('/api/test/batch_ai_sample', { method: 'POST', body: JSON.stringify({ keys, count: this.batchAi.sampleCount, csv_trigger_times: this.batchAi.csvTriggerTimes }), signal: sampleAbort });
+        const body = await api('/api/test/batch_ai_sample', { method: 'POST', body: JSON.stringify({ keys, count: this.batchAi.sampleCount, csv_trigger_times: this.batchAi.csvTriggerTimes, reset_stop: !silent }), signal: sampleAbort });
         const result = { selected: body.data.selected, trigger_times: body.data.trigger_times || {},
           sampleStats: { selected: body.data.selected_count || 0, cloud_picked: body.data.cloud_picked || 0, csv_hit: body.data.csv_hit || 0, new_extracted: body.data.new_extracted || 0, extract_failed: body.data.extract_failed || 0 },
           message: body.message };
@@ -515,6 +515,7 @@ export default {
                 this.batchAi.runDone = evt.index;
                 this.batchAi.runResults.push({ 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '触发时间': evt.exec_time || '', '执行时间': evt.analysis_time || '', '备注': evt.msg || '' });
               } else if (evt.type === 'done') { this.batchAi.runDoneMsg = evt.message || '线上执行完成'; }
+              else if (evt.type === 'stopped') { this.batchAi.stopRequested = true; this.batchAi.runDoneMsg = evt.message || '已停止：当前提取已保存，后续队列取消'; }
             } catch (e) { /* ignore */ }
           }
         }
@@ -572,6 +573,7 @@ export default {
     async batchAiOneClick() {
       this.running.batchOneClick = true;
       this.batchAi.oneClickMsg = ''; this.batchAi.oneClickError = false; this.batchAi.continuousRunning = false;
+      this.batchAi.stopRequested = false;
       this.batchAiAbort = new AbortController();
       try {
         if (!this.batchAi.softwareVersion.trim()) throw new Error('请填写软件版本');
@@ -585,6 +587,7 @@ export default {
         else { this.batchAi.filteredKeys = this.batchAi.rows.map(r => r.key); }
         const runOneRound = async (roundLabel = '') => {
           await this.batchAiSample();
+          if (this.batchAi.stopRequested) { const e = new Error('stopped'); e.name = 'AbortError'; throw e; }
           if (!this.batchAi.selected.length) throw new Error(`${roundLabel}抽样结果为空`);
           if (this.batchAi.execMode === 'online') { await this.batchAiRunOnline(); } else { await this.batchAiRun(); }
         };
@@ -610,8 +613,9 @@ export default {
             else { this.batchAi.oneClickMsg = `[1/${totalRounds}] 执行中断: ${e.message}`; this.batchAi.oneClickError = true; }
             this.batchAi.continuousRunning = false; return;
           }
+          if (this.batchAi.stopRequested) { this.batchAi.oneClickMsg = '持续执行已停止：当前提取已保存，后续队列取消'; this.batchAi.oneClickError = false; this.batchAi.continuousRunning = false; return; }
           for (let i = 2; i <= totalRounds; i++) {
-            if (this.batchAiAbort && this.batchAiAbort.signal.aborted) { this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 2}/${totalRounds} 轮）`; this.batchAi.oneClickError = false; break; }
+            if (this.batchAi.stopRequested || (this.batchAiAbort && this.batchAiAbort.signal.aborted)) { this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 2}/${totalRounds} 轮）`; this.batchAi.oneClickError = false; break; }
             this.batchAi.preSample = { ready: false, selected: [], trigger_times: {}, sampleStats: null, error: null };
             const remaining = this.batchAi.filteredKeys.length;
             this.batchAi.oneClickMsg = `第 ${i - 1} 轮完成 | 剩余 ${remaining} 个候选 | 正在预提取第 ${i}/${totalRounds} 轮触发时间...`;
@@ -622,7 +626,7 @@ export default {
             const waitUntil = Date.now() + intervalMs;
             let aborted = false;
             while (Date.now() < waitUntil) {
-              if (this.batchAiAbort && this.batchAiAbort.signal.aborted) { aborted = true; break; }
+              if (this.batchAi.stopRequested || (this.batchAiAbort && this.batchAiAbort.signal.aborted)) { aborted = true; break; }
               const remainSec = Math.ceil((waitUntil - Date.now()) / 1000);
               const mm = Math.floor(remainSec / 60); const ss = remainSec % 60;
               const preStatus = this.batchAi.preSample.ready ? '✅ 就绪' : (this.batchAi.preSample.error ? '❌ 失败' : '⏳ 提取中');
@@ -631,6 +635,7 @@ export default {
             }
             if (aborted) { this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 1}/${totalRounds} 轮）`; this.batchAi.oneClickError = false; break; }
             await preSamplePromise;
+            if (this.batchAi.stopRequested) { this.batchAi.oneClickMsg = '持续执行已停止：当前提取已保存，后续队列取消'; this.batchAi.oneClickError = false; break; }
             this.batchAi.currentRound = i;
             if (this.batchAi.preSample.error || !this.batchAi.preSample.selected.length) { this.batchAi.oneClickMsg = `[${i}/${totalRounds}] 预提取失败或结果为空，跳过本轮`; this.batchAi.oneClickError = true; break; }
             this.batchAi.selected = this.batchAi.preSample.selected;
@@ -640,6 +645,7 @@ export default {
             try {
               if (this.batchAi.execMode === 'online') { await this.batchAiRunOnline(); } else { await this.batchAiRun(); }
               shrinkPool();
+              if (this.batchAi.stopRequested) { this.batchAi.oneClickMsg = '持续执行已停止：当前提取已保存，后续队列取消'; this.batchAi.oneClickError = false; break; }
             } catch (e) {
               if (e.name === 'AbortError') { this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 1}/${totalRounds} 轮）`; this.batchAi.oneClickError = false; }
               else { this.batchAi.oneClickMsg = `[${i}/${totalRounds}] 执行中断: ${e.message}`; this.batchAi.oneClickError = true; }
@@ -651,6 +657,17 @@ export default {
         }
       } catch (e) { this.batchAi.oneClickMsg = '一键执行中断: ' + e.message; this.batchAi.oneClickError = true; }
       finally { this.running.batchOneClick = false; }
+    },
+    stopBatchOneClick() {
+      if (this.batchAi.stopRequested) return;
+      this.batchAi.stopRequested = true;
+      this.batchAi.oneClickMsg = '正在停止：等待当前正在提取的 Jira 完成并写入云端，后续队列取消...';
+      this.batchAi.oneClickError = false;
+      // 通知后端：抽样提取队列和线上批量预提取都停止；已提取完的会先写云端
+      fetch('/api/test/batch_ai_extract_times/stop', { method: 'POST' }).catch(() => {});
+      fetch('/api/test/prod_batch_run/stop', { method: 'POST' }).catch(() => {});
+      // PC 模式执行阶段没有服务端提取队列，直接中止当前分析请求；线上模式等后端优雅返回
+      if (this.batchAi.execMode !== 'online' && this.batchAiAbort) this.batchAiAbort.abort();
     },
     parseAiDirectBugids() {
       const ids = this.aiDirect.bugidsRaw.split(/[\s,，;；]+/).map(s => s.trim()).filter(Boolean);
@@ -862,7 +879,11 @@ export default {
         else { this.formExec.doneMsg = '执行失败: ' + e.message; this.formExec.doneError = true; }
       } finally { this.formExec.running = false; }
     },
-    stopFormExec() { if (this.formExec.abortController) this.formExec.abortController.abort(); }
+    stopFormExec() {
+      this.formExec.doneMsg = '正在停止：等待当前正在提取的 Jira 完成并写入云端，后续队列取消...';
+      this.formExec.doneError = false;
+      fetch('/api/test/form_exec/stop', { method: 'POST' }).catch(() => {});
+    }
   },
 };
 </script>

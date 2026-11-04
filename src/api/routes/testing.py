@@ -1051,6 +1051,11 @@ async def test_batch_ai_sample(request: Request):
     keys = body.get("keys") or []
     count = int(body.get("count", 0))
     csv_trigger_times = body.get("csv_trigger_times") or {}  # CSV 导入时携带的触发时间
+    # 新一轮抽样开始：清除上一轮停止信号；停止后当前条目完成即退出，剩余队列取消
+    # 预提取（silent）不清停止标志，避免停止后又把预提取队列跑完
+    from src.api.routes.shared import batch_extract_stop_event as _batch_stop
+    if body.get("reset_stop", True):
+        _batch_stop.clear()
     if not keys:
         return _fail("候选列表为空，请先执行步骤1")
     if count <= 0:
@@ -1113,11 +1118,14 @@ async def test_batch_ai_sample(request: Request):
         extract_batch = 20
         _cloud_flush_interval = 2  # 每提取 2 个增量保存一次云端，防止请求超时丢失
         _cloud_flush_counter = 0
-        while len(selected) < sample_size and pending_pool:
+        while len(selected) < sample_size and pending_pool and not _batch_stop.is_set():
             batch = pending_pool[:extract_batch]
             pending_pool = pending_pool[extract_batch:]
             for k in batch:
                 if len(selected) >= sample_size:
+                    break
+                if _batch_stop.is_set():
+                    logger.info("抽样提取收到停止信号，当前条目完成后停止，剩余队列取消")
                     break
                 try:
                     from src.clients import jira_client as _jc
@@ -2582,6 +2590,15 @@ async def test_prod_csv_bitable(request: Request):
                f"已加载 {len(results)} 条记录，多维表格命中 {matched} 个")
 
 
+@router.post("/api/test/prod_batch_run/stop", response_model=ApiResponse)
+def stop_prod_batch_run():
+    """功能测试「批量执行」停止：当前正在提取的 Jira 完成并写云端后，取消后续提取/执行队列"""
+    from src.api.routes.shared import prod_batch_stop_event as _stop
+    _stop.set()
+    logger.info("收到功能测试批量执行停止信号：当前提取完成后停止，后续队列取消")
+    return _ok(None, "已请求停止：当前正在提取的 Jira 保存后停止，后续队列取消")
+
+
 @router.post("/api/test/prod_batch_run", response_model=ApiResponse)
 async def test_prod_batch_run(request: Request):
     """AI日志分析批量执行：读取CSV → 提取触发时间(优先云端) → 去重 → 批量调用接口（支持PC/线上模式）"""
@@ -2697,8 +2714,9 @@ async def test_prod_batch_run(request: Request):
             logger.warning("多维表格重复过滤查询失败（跳过此检查）: %s", e)
 
     async def event_generator():
-        import threading
-        stop_event = threading.Event()
+        # 停止标志由 /api/test/prod_batch_run/stop 设置：当前在提取的 Jira 完成并写云端后，取消后续队列
+        from src.api.routes.shared import prod_batch_stop_event as stop_event
+        stop_event.clear()
         batch_start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         loop = asyncio.get_event_loop()
         run_bugids = list(bugids)  # 局部副本，避免闭包变量赋值冲突
@@ -2785,6 +2803,8 @@ async def test_prod_batch_run(request: Request):
         yield f"data: {_json.dumps({'type': 'start', 'total': len(run_bugids), 'dedup': dedup_count, 'skipped': skipped_count, 'raw': len(all_bugids), 'max_count': max_count, 'frontend_hit': frontend_hit, 'cloud_hit': cloud_hit_count, 'skip_empty_mark': skip_empty_mark, 'need_fetch': len(pending_pool)}, ensure_ascii=False)}\n\n"
         extract_batch_size = 50
         while pending_pool:
+            if stop_event.is_set():
+                break
             need = (max_count - len(trigger_times)) if max_count > 0 else len(pending_pool)
             if need <= 0:
                 break
@@ -2795,6 +2815,8 @@ async def test_prod_batch_run(request: Request):
             from src.services.server_legacy import _diag_extract_time_from_video_simple, _has_gmlogger_logs, _diag_extract_time_from_images
             from src.clients import jira_client as _jc
             def _extract_one(bugid):
+                if stop_event.is_set():
+                    return bugid, None  # 已请求停止：排队中的任务不再发起提取
                 try:
                     issue = _jc.fetch_issue(bugid)
                     # gmlogger 前置检查：无 gmlogger 附件直接跳过所有时间提取（与机器人流程一致）
@@ -2849,10 +2871,20 @@ async def test_prod_batch_run(request: Request):
                     pass
                 return bugid, ""
             import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
-                futures = {pool.submit(_extract_one, b): b for b in batch}
-                done_count = 0
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+            futures = {pool.submit(_extract_one, b): b for b in batch}
+            done_count = 0
+            stop_requested = False
+            try:
                 for future in concurrent.futures.as_completed(futures):
+                    # 收到停止：取消排队中的任务，只让已经在跑的几个提取完成并写云端
+                    if stop_event.is_set() and not stop_requested:
+                        stop_requested = True
+                        for _f in futures:
+                            if not _f.done():
+                                _f.cancel()
+                    if future.cancelled():
+                        continue
                     done_count += 1
                     try:
                         bugid, tt = future.result()
@@ -2867,6 +2899,14 @@ async def test_prod_batch_run(request: Request):
                         pass
                     if done_count % 20 == 0 or done_count == len(batch):
                         yield f"data: {_json.dumps({'type': 'extract_progress', 'current': done_count, 'total': len(batch), 'hit': len(trigger_times)}, ensure_ascii=False)}\n\n"
+            finally:
+                pool.shutdown(wait=True)
+            if stop_requested or stop_event.is_set():
+                logger.info("功能测试批量执行已停止：本轮已完成 %d 个提取，后续队列取消", done_count)
+                break
+        if stop_event.is_set():
+            yield f"data: {_json.dumps({'type': 'stopped', 'total': len(trigger_times), 'with_time': len(trigger_times), 'message': '已停止：当前正在提取的 Jira 已保存到云端，后续队列已取消'}, ensure_ascii=False)}\n\n"
+            return
         if max_count > 0:
             run_bugids = [b for b in run_bugids if b in trigger_times][:max_count]
         else:
@@ -2939,6 +2979,8 @@ async def test_prod_batch_run(request: Request):
 
         results = []
         while len(results) < len(run_bugids):
+            if stop_event.is_set():
+                break
             if await request.is_disconnected():
                 stop_event.set()
                 break
@@ -4917,6 +4959,15 @@ async def form_upload(file: UploadFile = File(None)):
     if csv_trigger_times:
         msg += f"，其中 {len(csv_trigger_times)} 个有触发时间"
     return _ok({"keys": keys, "csv_trigger_times": csv_trigger_times}, msg)
+
+
+@router.post("/api/test/form_exec/stop", response_model=ApiResponse)
+def stop_form_exec():
+    """表单执行停止：当前正在提取的 Jira 完成并写云端后，取消后续提取/执行队列"""
+    from src.api.routes.shared import form_exec_stop_event as _stop
+    _stop.set()
+    logger.info("收到表单执行停止信号：当前提取完成后停止，后续队列取消")
+    return _ok(None, "已请求停止：当前正在提取的 Jira 保存后停止，后续队列取消")
 
 
 @router.post("/api/test/form_exec")
