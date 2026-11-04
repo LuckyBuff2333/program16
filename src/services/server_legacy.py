@@ -2446,23 +2446,16 @@ def _morning_briefing(chat_id: str) -> bool:
     from src.clients.base import http_get
 
     try:
-        # 1. 获取配置
+        # 1. 获取配置（使用 unanalyzed 的 JQL 预设，如 JQL2=昨日新增Bug）
         bot_cfg = load_config().get("feishu_bot", {})
-        jql_preset = bot_cfg.get("morning_briefing_jql", "JQL4")  # 默认用 JQL4 (VCU近期末关闭)
-        jqls_cfg = bot_cfg.get("jqls", {})
+        jql_preset = bot_cfg.get("morning_briefing_jql", "JQL2")  # 默认用 JQL2 (昨日新增Bug)
+        jqls_presets = _get_unanalyzed_jql_presets()
 
         # 查找对应的 JQL
         jql = ""
         jql_label = jql_preset
-        if isinstance(jqls_cfg, list):
-            for item in jqls_cfg:
-                if item.get("id") == jql_preset:
-                    jql = item.get("jql", "")
-                    jql_label = item.get("label", jql_preset)
-                    break
-        elif isinstance(jqls_cfg, dict):
-            jql = jqls_cfg.get(jql_preset, {}).get("jql", "")
-            jql_label = jqls_cfg.get(jql_preset, {}).get("label", jql_preset)
+        if jql_preset in jqls_presets:
+            jql_label, jql = jqls_presets[jql_preset]
 
         if not jql:
             logger.warning("待执行播报: 未找到 JQL 配置 %s", jql_preset)
