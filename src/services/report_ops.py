@@ -310,7 +310,19 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
                 row = _flatten_bitable_record_all(fields, report_field)
                 row["jira号"] = _bitable_text(fields.get(bugid_field, "")) or row.get("jira号", "")
                 row["分析完成时间"] = completed[:19]
-                rows.append(row)
+                # 同一 Jira 可能因重试产生多条记录：优先人工审核记录，其次最新完成
+                prev = next((r for r in rows if r.get("jira号") == row["jira号"]), None)
+                if prev is None:
+                    rows.append(row)
+                else:
+                    prev_review = _bitable_text(prev.get("人工审核结果", "")).strip()
+                    cur_review = _bitable_text(row.get("人工审核结果", "")).strip()
+                    prev_score = (1 if prev_review and prev_review not in ("-", "None") else 0,
+                                  prev.get("分析完成时间", ""))
+                    cur_score = (1 if cur_review and cur_review not in ("-", "None") else 0,
+                                 row.get("分析完成时间", ""))
+                    if cur_score > prev_score:
+                        rows[rows.index(prev)] = row
         except Exception as e:
             logger.warning("每日播报：数据沉淀查询失败: %s", e)
 
@@ -633,8 +645,62 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
             "yesterday_done": yesterday_done}
 
 
+def _review_category(review: str) -> str:
+    """按人工审核结果判定分类；返回空串表示未命中。"""
+    review = (review or "").strip()
+    if not review or review in ("-", "None"):
+        return ""
+    if "并发过多" in review or "接口拥堵" in review or "手动中断" in review:
+        return "并发过多"
+    if "模型调用失败" in review or "IT侧服务停止" in review or "服务停止" in review:
+        return "IT侧服务停止"
+    if "服务关闭" in review or "服务有报错" in review:
+        return "服务关闭"
+    if "待后端开发排查" in review:
+        return "待后端开发排查"
+    if "时间添加" in review or "时间异常" in review:
+        return "触发时间问题"
+    if "无gmlogger" in review or "无日志附件" in review or "gmlogger文件已上传" in review:
+        return "无gmlogger"
+    if "损坏" in review or "日志文件已损坏" in review:
+        return "日志过滤逻辑"
+    if "日志里无对应" in review or "信息不全" in review:
+        return "日志过滤逻辑"
+    if "解压" in review or "unrar" in review or "RAR5" in review:
+        return "解压问题"
+    if "接口无响应" in review:
+        return "接口响应问题"
+    if "JIRA Server" in review or "过载" in review or "网络抖动" in review:
+        return "并发过多"
+    if "执行超时" in review or "JIRA 分析任务执行超时" in review:
+        return "待人工排查"
+    if "人工取消" in review:
+        return "人工取消"
+    if "无时间信息" in review or "未找到问题时间" in review:
+        return "无时间信息"
+    if "网络波动" in review or "网络通信失败" in review or "网络连接超时" in review:
+        return "网络波动"
+    if "IP配置错误" in review:
+        return "IP配置错误"
+    if "问题重复" in review:
+        return "问题重复"
+    if "未复现" in review or "不复现" in review:
+        return "问题未复现"
+    if "磁盘空间不足" in review:
+        return "磁盘空间不足"
+    if "待人工排查" in review:
+        return "待人工排查"
+    if "分析can信号导致超时" in review:
+        return "分析can信号导致超时"
+    return review[:20]
+
+
 def _classify_failure(jira_no: str, bf: dict) -> str:
-    """失败分类：优先错误分类字段，其次诊断缓存/错误信息，最后人工审核结果倒推"""
+    """失败分类：主要按人工审核结果判断，无人工审核时才看错误分类/错误信息。"""
+    review = (bf.get("人工审核结果", "") or "").strip()
+    review_cat = _review_category(review)
+    if review_cat:
+        return review_cat
     error_class = _bitable_text(bf.get("错误分类", "")).strip()
     if error_class:
         try:
@@ -694,52 +760,7 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
     # HTTPStatusError → 待后端开发排查
     if "HTTPStatusError" in err_info:
         return "待后端开发排查"
-    review = (bf.get("人工审核结果", "") or "").strip()
-    if not review or review in ("-", "None"):
-        return "待后端开发排查"
-    if "并发过多" in review or "接口拥堵" in review or "手动中断" in review:
-        return "并发过多"
-    if "模型调用失败" in review or "IT侧服务停止" in review or "服务停止" in review:
-        return "IT侧服务停止"
-    if "服务关闭" in review or "服务有报错" in review:
-        return "服务关闭"
-    if "待后端开发排查" in review:
-        return "待后端开发排查"
-    if "时间添加" in review or "时间异常" in review:
-        return "触发时间问题"
-    if "无gmlogger" in review or "无日志附件" in review or "gmlogger文件已上传" in review:
-        return "无gmlogger"
-    if "损坏" in review or "日志文件已损坏" in review:
-        return "日志过滤逻辑"
-    if "日志里无对应" in review or "信息不全" in review:
-        return "日志过滤逻辑"
-    if "解压" in review or "unrar" in review or "RAR5" in review:
-        return "解压问题"
-    if "接口无响应" in review:
-        return "接口响应问题"
-    if "JIRA Server" in review or "过载" in review or "网络抖动" in review:
-        return "并发过多"
-    if "执行超时" in review or "JIRA 分析任务执行超时" in review:
-        return "待人工排查"
-    if "人工取消" in review:
-        return "人工取消"
-    if "无时间信息" in review or "未找到问题时间" in review:
-        return "无时间信息"
-    if "网络波动" in review or "网络通信失败" in review or "网络连接超时" in review:
-        return "网络波动"
-    if "IP配置错误" in review:
-        return "IP配置错误"
-    if "问题重复" in review:
-        return "问题重复"
-    if "未复现" in review or "不复现" in review:
-        return "问题未复现"
-    if "磁盘空间不足" in review:
-        return "磁盘空间不足"
-    if "待人工排查" in review:
-        return "待人工排查"
-    if "分析can信号导致超时" in review:
-        return "分析can信号导致超时"
-    return review[:20]
+    return "待后端开发排查"
 
 
 def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -> str:
