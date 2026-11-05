@@ -7135,9 +7135,9 @@ def _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force=
             if done_time:
                 cached["done_time"] = done_time
             return _ok(cached, f"{bugid} 诊断结果（本地缓存）")
-    # —— 无报错信息且无错误分类的记录不进行排查，直接跳过 ——
+    # —— 无报错信息且无错误分类的记录：历史人工审核均为服务关闭 ——
     if not err_msg and not error_class:
-        skip_category = "待人工排查"
+        skip_category = "服务关闭"
         report = _generate_troubleshoot_report(bugid, skip_category, err_msg, "")
         result = {"bugid": bugid, "category": skip_category, "problem_time": problem_time,
                   "archive_files": [], "detail": "多维表格记录无错误信息字段，无排查依据，已跳过",

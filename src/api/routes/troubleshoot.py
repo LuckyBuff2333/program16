@@ -122,7 +122,7 @@ def troubleshoot_diagnose(req: DiagnoseRequest):
     # 预归类保护：错误分类/错误信息命中跳过类别时直接返回，不执行诊断
     if not force:
         if not err_msg and not error_class:
-            _pre_cat = "待人工排查"
+            _pre_cat = "服务关闭"
         else:
             _pre_cat = _diag_pre_classify(err_msg, error_class)
         if _pre_cat and _pre_cat in _SKIP_ANALYSIS_CATEGORIES:
