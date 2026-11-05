@@ -9,11 +9,11 @@ Global:
   max_side_len: 2000
   min_side_len: 30
   return_word_box: false
-  intra_op_num_threads: -1
-  inter_op_num_threads: -1
+  intra_op_num_threads: 4
+  inter_op_num_threads: 1
 Det:
-  intra_op_num_threads: -1
-  inter_op_num_threads: -1
+  intra_op_num_threads: 4
+  inter_op_num_threads: 1
   use_cuda: true
   use_dml: false
   model_path: models/ppocrv5/det.onnx
@@ -34,8 +34,8 @@ Det:
   use_dilation: true
   score_mode: fast
 Cls:
-  intra_op_num_threads: -1
-  inter_op_num_threads: -1
+  intra_op_num_threads: 4
+  inter_op_num_threads: 1
   use_cuda: true
   use_dml: false
   model_path: models/ppocrv5/cls.onnx
@@ -49,8 +49,8 @@ Cls:
   - '0'
   - '180'
 Rec:
-  intra_op_num_threads: -1
-  inter_op_num_threads: -1
+  intra_op_num_threads: 4
+  inter_op_num_threads: 1
   use_cuda: true
   use_dml: false
   model_path: models/ppocrv5/rec.onnx

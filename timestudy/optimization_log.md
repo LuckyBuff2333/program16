@@ -1779,3 +1779,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/trigger.py`、`src/api/routes/testing.py`、`src/services/server_legacy.py`、`frontend/src/panels/TimeExtractPanel.vue`、`config/core_settings.json`、`config/config.enc`
 
 </details>
+
+<details>
+<summary><b>131. OCR 线程数固定为 intra=4 / inter=1（2026-11-05）</b></summary>
+
+- **配置**：`models/ppocrv5/rapidocr_v5.yaml` 的 Global/Det/Cls/Rec 全部设置 `intra_op_num_threads=4`、`inter_op_num_threads=1`。
+- **目的**：6 路提取 × 4 线程 ≈ 24 线程，匹配 24 核 CPU，避免 ONNX 默认 -1 吃满核心导致线程超订。
+- **配套**：提取并发 6、下载并发 3、OCR 并发 6。
+- **验证**：V5 引擎初始化正常，19:34 截图可识别；全量 **116 passed**。
+- **实现文件**：`models/ppocrv5/rapidocr_v5.yaml`
+
+</details>
