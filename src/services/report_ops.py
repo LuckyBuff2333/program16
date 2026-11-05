@@ -819,10 +819,6 @@ def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -
         msg += "\n失败分析：\n"
         for cat, cnt in failures.items():
             msg += f"  · {cat}：{cnt}\n"
-    # 待办跟进数量提示
-    todo_items = report.get("todo_items", [])
-    if todo_items:
-        msg += f"\n📝 待办跟进：{len(todo_items)} 项（详见文档）\n"
     msg += "\n"
     detail_url = cloud_url or get_daily_report_url()
     msg += detail_url
@@ -886,131 +882,65 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
              f"- 成功率：{rate}",
              f"- 平均总耗时：{report.get('avg_total_duration', '-')}",
              f"- 平均分析耗时：{report.get('avg_analysis_duration', '-')}{('，耗时过高 ' + str(report['too_long']) + ' 条') if report.get('too_long') else ''}", ""]
-    # 失败分类
+    # 失败分析
     failures = report.get("failures", {})
+    lines.append("## 失败分析")
+    lines.append("")
     if failures:
-        lines.append("### 失败分析")
-        lines.append("")
         for cat, cnt in failures.items():
             lines.append(f"- {cat}：{cnt} 条")
-        lines.append("")
-    # 待办跟进：普通待办只展示 Jira号 + 执行时间；触发时间问题额外展示触发时间
-    todo_items = report.get("todo_items", [])
-    if todo_items:
-        lines.append("## 待办跟进")
-        lines.append("")
-        lines.append(f"共 {len(todo_items)} 项待处理：")
-        lines.append("")
-        trigger_todos = [it for it in todo_items if "触发时间问题" in str(it.get("reason", ""))]
-        other_todos = [it for it in todo_items if it not in trigger_todos]
-        if trigger_todos:
-            lines.append("### 触发时间问题")
-            lines.append("")
-            lines.append("| Jira号 | 触发时间 | 执行时间 |")
-            lines.append("|--------|----------|----------|")
-            for item in trigger_todos:
-                lines.append(f"| {item['jira号']} | {item.get('触发时间', '')} | {item.get('执行时间', '')} |")
-            lines.append("")
-        if other_todos:
-            if trigger_todos:
-                lines.append("### 其他待办")
-                lines.append("")
-            lines.append("| Jira号 | 执行时间 |")
-            lines.append("|--------|----------|")
-            for item in other_todos:
-                lines.append(f"| {item['jira号']} | {item.get('执行时间', '')} |")
-            lines.append("")
-    # 执行详情（分四个模块：分析失败、待开发排查、耗时过长、分析成功）
+    else:
+        lines.append("无")
+    lines.append("")
+    # 执行详情
     lines.append("## 执行详情")
     lines.append("")
     rows = report.get("rows", [])
-    too_long_threshold = 900
-    # 分组（用分析结果而非执行结果，因为执行结果=成功仅代表接口正常返回）
-    failed_rows, pending_rows, too_long_success_rows, normal_success_rows = [], [], [], []
+    failed_rows, pending_rows, success_rows = [], [], []
     for r in rows:
         analysis_result = r.get("分析结果", "") or ""
-        analysis_sec = _parse_dur_sec(r.get("分析耗时", ""))
-        is_too_long = analysis_sec > too_long_threshold if analysis_sec > 0 else False
         if analysis_result == "失败":
             failed_rows.append(r)
         elif not analysis_result or analysis_result == "分析中":
             pending_rows.append(r)
-        elif is_too_long:
-            too_long_success_rows.append(r)
         else:
-            normal_success_rows.append(r)
-    # 失败排序：具体原因在前，待审核在后
-    def _fail_sort_key(r):
-        reason = r.get("人工审核结果", "") or ""
-        is_pending = not reason or reason in ("-", "None")
-        return (1 if is_pending else 0, reason)
-    failed_rows.sort(key=_fail_sort_key)
-    pending_rows.sort(key=lambda r: r.get("jira号", ""))
-    too_long_success_rows.sort(key=lambda r: -_parse_dur_sec(r.get("分析耗时", "")))
-    # 各模块表格表头
-    detail_header = ["| Jira号 | 触发时间 | 执行时间 | 分析耗时 | 分析结果 |",
-                     "|--------|----------|----------|----------|----------|"]
-    detail_header_no_trigger = ["| Jira号 | 执行时间 | 分析耗时 | 分析结果 |",
-                                "|--------|----------|----------|----------|"]
-    def _detail_row(r):
-        return (f"| {r.get('jira号', '')} | {r.get('触发时间', '')} | "
-                f"{r.get('执行时间', '')} | {r.get('分析耗时', '')} | "
-                f"{r.get('分析结果', '') or r.get('备注', '')[:50]} |")
-    def _detail_row_no_trigger(r):
-        return (f"| {r.get('jira号', '')} | {r.get('执行时间', '')} | "
-                f"{r.get('分析耗时', '')} | {r.get('分析结果', '') or r.get('备注', '')[:50]} |")
-    # 模块 1：分析失败（按失败分类归类）
+            success_rows.append(r)
+
+    def _jira_lines(group):
+        """一行两个 Jira 号，不带表头。"""
+        out = []
+        for i in range(0, len(group), 2):
+            out.append("  ".join(str(r.get("jira号", "")) for r in group[i:i + 2]))
+        return out
+
     lines.append(f"### 分析失败（{len(failed_rows)}条）")
     lines.append("")
     if failed_rows:
-        # 按失败分类归类
-        fail_groups = {}  # {分类: [rows]}
+        fail_groups = {}
         for r in failed_rows:
             cat = _classify_failure(r.get("jira号", ""), r)
             fail_groups.setdefault(cat, []).append(r)
-        # 按分组数量降序排列
         for cat, group_rows in sorted(fail_groups.items(), key=lambda x: -len(x[1])):
             lines.append(f"#### {cat}（{len(group_rows)}条）")
             lines.append("")
             if cat == "触发时间问题":
-                lines.extend(detail_header_no_trigger)
                 for r in group_rows:
-                    lines.append(_detail_row_no_trigger(r))
+                    lines.append(f"{r.get('jira号', '')}  {r.get('触发时间', '')}")
             else:
-                lines.extend(detail_header)
-                for r in group_rows:
-                    lines.append(_detail_row(r))
+                lines.extend(_jira_lines(group_rows))
             lines.append("")
     else:
         lines.append("无")
-    lines.append("")
-    # 模块 2：待分析（已计入失败总数）
-    lines.append(f"### 待分析（已计入失败，{len(pending_rows)}条）")
-    lines.append("")
+        lines.append("")
     if pending_rows:
-        lines.extend(detail_header)
-        for r in pending_rows:
-            lines.append(_detail_row(r))
-    else:
-        lines.append("无")
+        lines.append(f"#### 待分析（{len(pending_rows)}条）")
+        lines.append("")
+        lines.extend(_jira_lines(pending_rows))
+        lines.append("")
+    lines.append(f"### 分析成功（{len(success_rows)}条）")
     lines.append("")
-    # 模块 3：耗时过长（成功但分析耗时>{threshold}s）
-    lines.append(f"### 耗时过长（{len(too_long_success_rows)}条）")
-    lines.append("")
-    if too_long_success_rows:
-        lines.extend(detail_header)
-        for r in too_long_success_rows:
-            lines.append(_detail_row(r))
-    else:
-        lines.append("无")
-    lines.append("")
-    # 模块 4：分析成功
-    lines.append(f"### 分析成功（{len(normal_success_rows)}条）")
-    lines.append("")
-    if normal_success_rows:
-        lines.extend(detail_header)
-        for r in normal_success_rows:
-            lines.append(_detail_row(r))
+    if success_rows:
+        lines.extend(_jira_lines(success_rows))
     else:
         lines.append("无")
     lines.append("")
