@@ -1643,9 +1643,29 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         human_reason = "JIRA 分析任务执行超时"
         retry_result = ""
         final_category = "分析任务执行超时，跳过排查"
+    elif category == "IP配置错误":
+        ai_reason = msg or "504/502/503/500 网关错误，IP 配置错误"
+        human_reason = "IP配置错误"
+        retry_result = ""
+        final_category = "IP配置错误"
+    elif category == "人工取消":
+        ai_reason = msg or "分析任务被人工取消"
+        human_reason = "人工取消"
+        retry_result = ""
+        final_category = "人工取消"
+    elif category == "无时间信息":
+        ai_reason = msg or "未找到问题时间"
+        human_reason = "无时间信息"
+        retry_result = ""
+        final_category = "无时间信息"
+    elif category == "网络波动":
+        ai_reason = msg or "网络通信失败/网络连接超时"
+        human_reason = "网络波动"
+        retry_result = ""
+        final_category = "网络波动"
     elif category == "待人工排查":
-        ai_reason = msg or "未知错误"
-        human_reason = "无法自动归类，待人工排查"
+        ai_reason = msg or "需要人工查看线上 app.log 对应时刻的报错信息"
+        human_reason = "待人工排查"
         retry_result = ""
         final_category = "待人工排查"
     elif category == "问题重复":
@@ -1682,7 +1702,8 @@ def _troubleshoot_cache_dir() -> str:
 # v3: main.log 时间改为优先取 main.log 后面的日志时间（前面的包名/目录名多为创建时间）
 # v4: 视频帧 OCR 内容优先；只有时分时按 main.log 文件名时分最近的日期拼凑
 # v5: 建议时间必须早于当前时间；视频拼凑时间必须早于视频上传时间
-_DIAG_CACHE_VERSION = 5
+# v6: 问题排查优先按「错误分类」预归类，新增 IP配置错误/人工取消/无时间信息/网络波动
+_DIAG_CACHE_VERSION = 6
 
 
 def _load_diagnose_cache(bugid: str) -> dict:

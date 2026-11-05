@@ -153,6 +153,7 @@ def _extract_record_row(fields: dict, cfg: dict) -> dict:
         "分析完成时间": done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else _bitable_text(fields.get("分析完成时间", "")),
         "分析问题时间": _bitable_text(fields.get("分析问题时间", "")),
         "错误信息": _pick_error_info(fields),
+        "错误分类": _bitable_text(fields.get("错误分类", "")),
         "人工审核结果": _bitable_text(fields.get("人工审核结果", "")),
         "飞书报告链接": report_link,
     }
@@ -294,6 +295,7 @@ def search_by_keyword(keyword: str) -> dict:
             "分析完成时间": done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else "",
             "分析问题时间": _bitable_text(fields.get("分析问题时间", "")),
             "错误信息": _pick_error_info(fields),
+            "错误分类": _bitable_text(fields.get("错误分类", "")),
             "人工审核结果": _bitable_text(fields.get("人工审核结果", "")),
         })
 
@@ -430,62 +432,115 @@ _SKIP_ANALYSIS_CATEGORIES = {
     "待后端开发排查", "磁盘空间不足", "服务关闭",
     "并发过多", "IT侧服务停止", "接口连接问题", "接口响应问题",
     "分析任务执行超时，跳过排查", "问题重复", "问题未复现",
-    "无gmlogger",
+    "无gmlogger", "无gmlogger文件",
+    "IP配置错误", "人工取消", "无时间信息", "网络波动", "待人工排查",
 }
 
 
-def _diag_pre_classify(err_msg: str) -> str:
-    """根据失败原因文本预归类，无法判定时返回空串"""
-    import re
-    msg = err_msg or ""
-    # 无错误信息 → 服务关闭
+def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
+    """优先按表格「错误分类」预归类，缺失时回退「错误信息」文本。
+
+    返回空串表示需要走正常深度分析。
+    """
+    msg = (err_msg or "").strip()
+    ec = (error_class or "").strip()
+
+    if ec:
+        # 时间过滤为空：归类为触发时间问题，但仍走正常深度分析
+        if "时间过滤后日志为空" in ec:
+            return "触发时间问题"
+        # 处理后没有有效日志包：预处理无gmlogger，不深度分析
+        if "处理后未找到有效的日志文件" in ec:
+            return "无gmlogger"
+        # 解压后未找到可识别日志：仍走深度分析确认
+        if "解压后未找到可识别的日志文件" in ec:
+            return ""
+        # JIRA 分析超时 / adjudication / reasoning：转人工，查 app.log
+        if "JIRA 分析任务执行超时" in ec or "JIRA 网关分析任务执行超时" in ec:
+            return "待人工排查"
+        if "adjudication" in ec or ("reasoning 第" in ec and "LLM 调用失败" in ec):
+            return "待人工排查"
+        # 504/502/503/500：IP 配置错误
+        if any(k in ec for k in ("504 Gateway Timeout", "502 Bad Gateway",
+                                 "503 Service Unavailable", "500 Internal Server Error",
+                                 "HTTP 504", "HTTP 502", "HTTP 503", "HTTP 500")):
+            return "IP配置错误"
+        if "分析任务被取消" in ec:
+            return "人工取消"
+        if "未找到问题时间" in ec:
+            return "无时间信息"
+        if "网络通信失败" in ec or "网络连接超时" in ec:
+            return "网络波动"
+        # 分卷不完整：走正常深度分析
+        if "分卷压缩包不完整" in ec:
+            return ""
+        if "没有可下载的日志附件" in ec:
+            return "无gmlogger"
+        if "分析报告生成失败" in ec:
+            return "并发过多"
+        if ec == "服务有报错":
+            return "服务关闭"
+        if "All connection attempts failed" in ec or "Server disconnected" in ec:
+            return "服务关闭"
+        if "No space left on device" in ec or "Errno 28" in ec:
+            return "磁盘空间不足"
+        if "模型调用失败" in ec:
+            return "IT侧服务停止"
+        if "分析任务执行超时" in ec:
+            return "并发过多"
+        # 未识别的错误分类：继续用错误信息兜底
+        if not msg:
+            return "待人工排查"
+
     if not msg:
-        return "服务关闭"
+        # 失败记录但错误分类和错误信息都为空：不能默认“服务关闭”
+        return "待人工排查"
     if "未找到问题时间" in msg:
-        return "触发时间问题"
+        return "无时间信息"
     if "没有可下载的日志附件" in msg:
         return "无gmlogger"
-    # JIRA/网关超时 → 分析任务执行超时（区别于并发过多）
-    if ("JIRA 分析任务执行超时" in msg or "JIRA 网关分析任务执行超时" in msg):
-        return "分析任务执行超时，跳过排查"
-    # 普通分析任务超时 → 并发过多
-    if "分析任务执行超时" in msg or "分析任务被取消" in msg:
-        return "并发过多"
-    # reasoning 第N轮 LLM 调用失败 → 并发过多
-    if "reasoning 第" in msg and "轮 LLM 调用失败" in msg:
+    # JIRA/网关超时 / adjudication / reasoning → 待人工排查（查 app.log）
+    if "JIRA 分析任务执行超时" in msg or "JIRA 网关分析任务执行超时" in msg:
+        return "待人工排查"
+    if "adjudication" in msg or ("reasoning 第" in msg and "轮 LLM 调用失败" in msg):
+        return "待人工排查"
+    if "分析任务被取消" in msg:
+        return "人工取消"
+    if "网络通信失败" in msg or "网络连接超时" in msg:
+        return "网络波动"
+    if "分析任务执行超时" in msg:
         return "并发过多"
     if "no space left on device" in msg.lower() or "Errno 28" in msg:
         return "磁盘空间不足"
-    # 模型调用失败 → 服务停止
     if msg.startswith("模型调用失败"):
         return "IT侧服务停止"
-    # adjudication 失败 / 分析报告生成失败 / LLM调用失败 → 并发过多
-    if ("adjudication" in msg or "未获取有效响应" in msg or "LLM 调用失败" in msg
-            or "分析报告生成失败" in msg):
+    if "分析报告生成失败" in msg:
         return "并发过多"
-    # 504/502 网关错误 → 并发过多（支持多种格式）
-    if ("504 Gateway Timeout" in msg or "502 Bad Gateway" in msg
-            or "HTTP 504" in msg or "HTTP 502" in msg or "HTTP 503" in msg):
-        return "并发过多"
-    # server disconnected → 服务关闭
+    # 504/502/503/500 → IP 配置错误
+    if any(k in msg for k in ("504 Gateway Timeout", "502 Bad Gateway",
+                              "503 Service Unavailable", "500 Internal Server Error",
+                              "HTTP 504", "HTTP 502", "HTTP 503", "HTTP 500")):
+        return "IP配置错误"
     if "server disconnected" in msg.lower() or "disconnected without sending" in msg.lower():
         return "服务关闭"
-    # 服务有报错 → 服务关闭
     if msg == "服务有报错":
         return "服务关闭"
     low = msg.lower()
     if ("all connection attempts failed" in low or "connecterror" in low
             or "连接失败" in msg or "无法连接" in msg or "connection refused" in low):
         return "服务关闭"
-    # HTTPStatusError → 待后端开发排查
     if "HTTPStatusError" in msg:
         return "待后端开发排查"
-    if "时间过滤后日志为空" in msg or "未找到有效的日志文件" in msg:
-        return ""  # 需下载附件比对时间后才能判定
-    # 解压后未找到可识别日志 → 可能是格式问题，需深度诊断下载附件确认
+    # 时间过滤为空：触发时间问题，走正常深度分析
+    if "时间过滤后日志为空" in msg:
+        return "触发时间问题"
+    # 处理后未找到有效日志：预处理无gmlogger
+    if "处理后未找到有效的日志文件" in msg:
+        return "无gmlogger"
+    # 解压后未找到可识别日志：需要深度分析确认
     if "解压后未找到可识别的日志文件" in msg:
-        return ""  # 不代表无日志，可能是压缩格式不支持
-    return ""  # 未匹配已知规则，走正常深度分析流程
+        return ""
+    return ""
 
 
 def batch_pre_classify(records: list[dict]) -> dict:
@@ -498,6 +553,7 @@ def batch_pre_classify(records: list[dict]) -> dict:
     for rec in records:
         bugid = rec.get("bugid", "")
         err_msg = rec.get("err_msg", "") or ""
+        error_class = rec.get("error_class", "") or rec.get("错误分类", "") or ""
         human_review = rec.get("human_review", "") or ""
         done_time = rec.get("done_time", "")
         problem_time = rec.get("problem_time", "")
@@ -511,6 +567,7 @@ def batch_pre_classify(records: list[dict]) -> dict:
                 "done_time": done_time or cached.get("done_time", ""),
                 "problem_time": problem_time or cached.get("problem_time", ""),
                 "err_msg": err_msg[:200],
+                "error_class": error_class[:100],
                 "report": cached.get("report", {}),
                 "detail": cached.get("detail", ""),
                 "needs_analysis": cached_cat not in _SKIP_ANALYSIS_CATEGORIES,
@@ -523,13 +580,10 @@ def batch_pre_classify(records: list[dict]) -> dict:
             else:
                 need_list.append(entry)
             continue
-        # 1. 无报错信息或"服务有报错" → 服务关闭
-        if not err_msg or err_msg == "服务有报错":
-            category = "服务关闭"
-        # 2. 错误信息预归类（优先级最高，按文档规则直接匹配）
-        if not category:
-            category = _diag_pre_classify(err_msg)
-        # 3. 人工审核结果倒推（仅在错误信息未命中时兑底）
+        # 1. 优先用「错误分类」字段，空值不再默认服务关闭
+        if err_msg or error_class:
+            category = _diag_pre_classify(err_msg, error_class)
+        # 2. 错误信息/错误分类都没命中时，人工审核结果兜底
         if not category and human_review and human_review not in ("-", "None"):
             if "并发过多" in human_review or "接口拥堵" in human_review or "手动中断" in human_review:
                 category = "并发过多"
@@ -563,8 +617,11 @@ def batch_pre_classify(records: list[dict]) -> dict:
                 category = "解压问题"
             elif "分析can信号" in human_review:
                 category = "分析can信号导致超时"
+        if not category and not err_msg and not error_class:
+            category = "待人工排查"
         entry = {"bugid": bugid, "category": category or "", "done_time": done_time,
                  "problem_time": problem_time, "err_msg": err_msg[:200],
+                 "error_class": error_class[:100],
                  "existing_review": human_review or ""}
         # 结论明确的归类自动生成报告并跳过深度诊断
         if category and category in _SKIP_ANALYSIS_CATEGORIES:
