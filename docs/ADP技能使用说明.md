@@ -191,3 +191,10 @@ python tools/skills/log-review-pan-scan/scripts/record_lookup.py <traceid> --day
 |---|---|
 | `GET /api/test/adp_report?jira_key=...` | 打开完整分析报告（本地回退） |
 | `GET /api/test/adp_trace_report?jira_key=...` | 打开 traceid 排查报告（本地回退） |
+
+## 输出内容安全拦截（460502）
+
+- 平台对 Agent 输出做内容审核，命中敏感字段会返回 460502。
+- 不是永久失败：代码会自动在同一会话发送脱敏继续指令，最多 2 次。
+- 自动指令要求：不输出完整 VIN、手机号、账号、Token、Cookie、SN、地址；只给结论、根因、模块、触发条件、修复建议，并生成报告。
+- 若仍失败，说明输出内容持续敏感，需要人工检查输入附件/提示词并脱敏后重跑。

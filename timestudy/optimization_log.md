@@ -1790,3 +1790,19 @@ flowchart TD
 - **实现文件**：`models/ppocrv5/rapidocr_v5.yaml`
 
 </details>
+
+<details>
+<summary><b>132. ADP 460502 输出内容安全拦截改为脱敏续接（2026-11-05）</b></summary>
+
+- **问题**：460502 原属致命错误，直接终止并标“分析失败”；实际是平台输出内容审核，LLM 重新生成可能通过。
+- **修复**：
+  1. 将 460502 从 `FATAL_ERROR_CODES` 移出，新增 `CONTENT_SAFETY_CODES`；
+  2. 首轮命中 460502 → 同会话发送脱敏继续指令，最多 2 次；
+  3. 续接循环再次命中 → 继续发脱敏指令，累计最多 2 次；
+  4. 仍失败才归因 `输出内容安全拦截(460502，已重试2次)`；
+  5. 脱敏指令要求不输出 VIN/手机号/账号/Token/Cookie/SN/地址，只给结论/根因/模块/触发条件/修复建议。
+- **文档**：更新 `docs/ADP接口问题判别与处理策略.md`、`docs/ADP平台调用逻辑说明文档.md`、`docs/ADP技能使用说明.md`。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`
+
+</details>

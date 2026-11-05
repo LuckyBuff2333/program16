@@ -28,8 +28,17 @@ _KNOWN_EVENT_TYPES = {
 # 致命错误码：配置/账号级问题，发"继续"无效，应立即终止
 FATAL_ERROR_CODES = {
     "4505004", "460001", "460004", "460026", "460048",
-    "460501", "460502", "460032", "460702",
+    "460501", "460032", "460702",
 }
+
+# 输出内容安全拦截：不是永久失败，先在同一会话发脱敏继续指令
+CONTENT_SAFETY_CODES = {"460502"}
+CONTENT_SAFETY_CONTINUE_PROMPT = (
+    "上一条输出被平台内容安全策略拦截，请继续完成分析，不要重复输出被拦截的原文。"
+    "后续只输出脱敏结论，不要输出完整 VIN、手机号、账号、Token、Cookie、SN、地址等敏感信息。"
+    "如需引用日志，只保留字段名、行号、模块、时间和 traceid，敏感值用 *** 代替。"
+    "请输出：结论、根因、影响模块、触发条件、修复建议，并生成 HTML 报告。"
+)
 
 # 并发限流码：原样重发原始请求（会话是空的）
 RATE_LIMIT_CODES = {"460011", "460031"}
@@ -1079,6 +1088,10 @@ def classify_adp_failure(error: str = "", full_text: str = "", attachment_count:
         }
         return "ADP平台配置错误: %s(%s)" % (code_map.get(error_code, "未知"), error_code)
 
+    # ---- 1b. 输出内容安全拦截（可脱敏续接）----
+    if error_code in CONTENT_SAFETY_CODES:
+        return "输出内容安全拦截(460502，可脱敏续接)"
+
     # ---- 2. 限流错误（并发/容量超限）----
     if error_code in RATE_LIMIT_CODES:
         return "ADP并发限流(%s)" % error_code
@@ -1535,6 +1548,42 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     out["trace_id"] = trace_id
     # 致命错误/限流早判：无需进入提取流程
     err_code = signal_info.get("error_code", "")
+    # 输出内容安全拦截：先在同一会话发脱敏继续指令，最多 2 次
+    if err_code in CONTENT_SAFETY_CODES:
+        _conv_safety = signal_info.get("conversation_id") or trace_id
+        for _safe_try in range(2):
+            logger.warning("ADP 输出内容安全拦截，发脱敏继续指令（第 %d/2 次）: %s",
+                           _safe_try + 1, jira_key)
+            _progress("adp_continue", "running", f"内容安全拦截，脱敏继续（第{_safe_try+1}次）")
+            try:
+                _st, _su, _sc, _ss, _se, _stid, _ssig = call_adp_sse_stream(
+                    CONTENT_SAFETY_CONTINUE_PROMPT,
+                    keepalive_cb=keepalive_cb, stop_event=stop_event,
+                    conversation_id=_conv_safety)
+            except Exception as _safe_e:
+                logger.warning("ADP 内容安全续接失败: %s", _safe_e)
+                break
+            if _st:
+                full_text = (_st + "\n" + full_text).strip()
+                file_urls = list(file_urls or []) + list(_su or [])
+            if _sc:
+                closeout_data = _sc
+            if _stid:
+                trace_id = _stid
+            signal_info.update({k: v for k, v in (_ssig or {}).items() if k in
+                                ("error_code", "error_msg", "reply_method", "response_status",
+                                 "has_cards", "request_ack", "stream_exc", "conversation_id")})
+            err_code = (_ssig or {}).get("error_code", "")
+            if err_code not in CONTENT_SAFETY_CODES and full_text:
+                break
+        if err_code in CONTENT_SAFETY_CODES and not full_text:
+            fail_reason = "输出内容安全拦截(460502，已尝试脱敏续接)"
+            out["error"] = fail_reason
+            out["results"] = {"完成状态": "分析失败", "分析失败归因": fail_reason}
+            out["fail_type"] = fail_reason
+            _progress("adp_analysis", "fail", fail_reason)
+            _stamp_elapsed()
+            return out
     if err_code in FATAL_ERROR_CODES:
         fail_reason = classify_adp_failure(error="", full_text="", signal_info=signal_info)
         out["error"] = fail_reason
@@ -1587,7 +1636,15 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         _questionnaire_replied = False
         _no_progress_rounds = 0
         _force_final = False
+        _content_safety_rounds = 0
         for cont_idx in range(max_continues):
+            if err_code in CONTENT_SAFETY_CODES:
+                _content_safety_rounds += 1
+                if _content_safety_rounds > 2:
+                    results["完成状态"] = "分析失败"
+                    results["分析失败归因"] = "输出内容安全拦截(460502，已重试2次)"
+                    logger.warning("ADP 内容安全拦截连续失败，停止续接: %s", jira_key)
+                    break
             # 前置判断：没有任何报告链接 → 视为"可疑未完成"，参与续接决策
             _no_report = not results.get("_report_url")
             _has_closing = any(k in full_text for k in COMPLETE_SECTION_MARKERS)
@@ -1606,6 +1663,8 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 _continue_prompt = "请把当前结论生成 HTML 分析报告，并给出下载链接"
             if _force_final:
                 _continue_prompt = "停止继续取证，基于已收集证据直接输出最终结论和 HTML 报告"
+            if err_code in CONTENT_SAFETY_CODES:
+                _continue_prompt = CONTENT_SAFETY_CONTINUE_PROMPT
             need_continue = (
                 results.get("完成状态") == "分析失败"
                 and results.get("分析失败归因") in (
@@ -1617,6 +1676,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 or (not _clarify and _no_report and _looks_like_process_narration(full_text))
                 or _short_no_report
                 or err_code in RETRYABLE_ERROR_CODES
+                or err_code in CONTENT_SAFETY_CODES
             )
             need_resend = (
                 err_code in RATE_LIMIT_CODES
