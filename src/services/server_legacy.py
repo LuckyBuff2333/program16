@@ -4606,6 +4606,7 @@ def _ocr_frame_regions(frame) -> str:
         h, w = frame.shape[:2]
         regions = [
             (0, 0, w, max(1, int(h * 0.10))),                 # 顶部状态栏
+            (0, 0, int(w * 0.55), int(h * 0.55)),             # 左上 HUD 区域（时间+日期，如 1:15 Mon. | Oct.26）
             (int(w * 0.55), int(h * 0.75), w, h),             # 右下任务栏（上移到 75%，避免漏掉 17:51 这类任务栏时间）
             (int(w * 0.40), int(h * 0.18), w, int(h * 0.70)), # 中控屏/车机屏（16:21 这类画面内时间）
         ]
@@ -5550,6 +5551,14 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
     if _key in _MANUAL_TIME_OVERRIDES:
         return _MANUAL_TIME_OVERRIDES[_key]
 
+    # 视频 OCR 时间与压缩包文件名时间 ≤5 分钟：直接采用，避免被评论区/文件名兜底覆盖
+    _archive_refs = [d for _, d in _diag_archive_filename_times(attachments) if d]
+    _archive_match = bool(_archive_refs) and any(
+        abs((dt - r).total_seconds()) <= 300 for r in _archive_refs)
+    if _archive_match:
+        logger.info("视频时间纠偏：与压缩包文件名时间相差≤5分钟，保持 %s", ts)
+        return ts
+
     # Closed 的 Jira 分析已完成，评论区时间优先（其他状态日志可能未传完，继续以视频为准）
     _cdt2 = _closed_comment_dt(issue, created)
     if _cdt2 and abs((_cdt2 - dt).total_seconds()) >= 60:
@@ -5679,6 +5688,8 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
     from src.clients.jira_client import _parse_datetime_string
     # 1. 解析 gmlogger 压缩包文件名时间（不解压，外层日期）
     gm_times = _diag_gmlogger_times(attachments)
+    # 1b. 非 gmlogger 压缩包也解析文件名时间（如 nop_2026_10_26_1_18_31.zip.001）
+    _archive_times = _diag_archive_filename_times(attachments)
     # 2. 直接上传的 main.log 文件（已解压，内层日期）
     _inner_times = []
     for att in attachments:
@@ -5750,6 +5761,12 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
     # 构建 ref_pool
     gm_dates = [(dt.year, dt.month, dt.day) for _, dt in gm_times]
     ref_pool = [dt for _, dt in gm_times]
+    for _ats, _adt in _archive_times:
+        _ad = (_adt.year, _adt.month, _adt.day)
+        if _ad not in gm_dates:
+            gm_dates.append(_ad)
+        if _adt not in ref_pool:
+            ref_pool.append(_adt)
     _has_inner_dates = False
     if _inner_times:
         _has_inner_dates = True
@@ -5820,7 +5837,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
         # 同期性约束：视频文件名带完整日期时间时，只接受与之相差 ≤6h 的日志包参考。
         # 否则说明这个视频是“事后复现”，与日志包不是同一时段，不能拿来当触发时间。
         _vfn_str = _parse_video_filename_datetime(video_name)
-        if _vfn_str:
+        if _vfn_str and not _archive_times:
             _vfn_parsed = _parse_datetime_string(_vfn_str)
             if _vfn_parsed:
                 _vfn_dt = _vfn_parsed[1]
@@ -6026,6 +6043,16 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                         _corr_ref = (closest_gm[0]["filename_time"] if closest_gm and closest_gm[0]["filename_time"] else gm_ref_dt)
                         if _corr_ref:
                             time_str = _correct_ocr_by_reference(time_str, _corr_ref)
+                        # 英文日期（Oct.26）与时间（1:15）分开识别时，在这里合并
+                        _en_md = _parse_ocr_english_date(all_text)
+                        if _en_md:
+                            _en_month, _en_day = _en_md
+                            if closest_date:
+                                _en_year = closest_date[0]
+                            else:
+                                _up = _ts_parse_datetime(str(video_att.get("created") or "")[:19])
+                                _en_year = _up.year if _up else datetime.now().year
+                            closest_date = (_en_year, _en_month, _en_day)
                         if closest_date:
                             y, mo, d = closest_date
                             full_orig = f"{y:04d}-{mo:02d}-{d:02d} {time_str}"
@@ -6949,6 +6976,44 @@ def _hm_of_time_text(text: str) -> str:
     return f"{int(m.group(1)):02d}:{m.group(2)}"
 
 
+_MONTH_NAMES = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def _parse_ocr_english_date(text: str):
+    """解析视频 OCR 里的英文日期，如 Oct.26 / Oct 26。返回 (month, day) 或 None。"""
+    m = re.search(r"\b(" + "|".join(_MONTH_NAMES) + r")[a-z]*\.?\s*(\d{1,2})\b",
+                  str(text or ""), re.I)
+    if not m:
+        return None
+    month = _MONTH_NAMES.get(m.group(1).lower()[:3])
+    day = int(m.group(2))
+    if month and 1 <= day <= 31:
+        return month, day
+    return None
+
+
+def _diag_archive_filename_times(attachments: list) -> list:
+    """从压缩包文件名解析日期时间（不解压），如 nop_2026_10_26_1_18_31.zip.001。"""
+    out = []
+    for att in (attachments or []):
+        fn = str(att.get("filename") or "")
+        if not re.search(r"\.(zip|7z|rar|tar|gz|tgz|bz2|xz|zst)(\.\d+)?$", fn, re.I):
+            continue
+        m = re.search(r"(20\d{2})[_-](\d{1,2})[_-](\d{1,2})[_-](\d{1,2})[_-](\d{1,2})(?:[_-](\d{1,2}))?", fn)
+        if not m:
+            continue
+        try:
+            dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                          int(m.group(4)), int(m.group(5)), int(m.group(6) or 0))
+            out.append((dt.strftime("%Y-%m-%d %H:%M:%S"), dt))
+        except ValueError:
+            continue
+    return out
+
+
 def _apply_diag_time_bounds(suggested_time: str, video_time: str, attachments: list,
                             now=None) -> tuple:
     """问题排查建议时间的硬约束，返回 (调整后时间, 说明)。
@@ -7579,6 +7644,34 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                        "verify_status": "", "suggested_time": "", "report": report, "done_time": done_time}
             _save_diagnose_cache(bugid, result)
             return _ok(result, f"{bugid} 诊断完成：{category}")
+    # —— 不解压快速确认：视频 OCR 时间与压缩包文件名时间相差 ≤5 分钟 ——
+    _archive_fn_times = _diag_archive_filename_times(attachments)
+    _has_video_att = any(str(a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES)
+                         for a in attachments)
+    if _archive_fn_times and _has_video_att:
+        try:
+            _video_quick = _diag_extract_time_from_video_simple(issue)
+            _vdt = _ts_parse_datetime(_video_quick)
+            if _vdt:
+                _diff = min(abs((_vdt - _adt).total_seconds()) for _, _adt in _archive_fn_times)
+                if _diff <= 300:
+                    category = "触发时间问题"
+                    detail = _build_simple_detail(
+                        "", _video_quick, "",
+                        f"视频OCR与压缩包文件名相差{int(_diff)}秒，未解压直接确认")
+                    report = _generate_troubleshoot_report(
+                        bugid, category, err_msg, detail, problem_time,
+                        "success", _video_quick)
+                    result = {"bugid": bugid, "category": category, "problem_time": problem_time,
+                              "archive_files": [], "detail": detail, "main_entries": [],
+                              "verify_status": "success", "suggested_time": _video_quick,
+                              "report": report, "done_time": done_time}
+                    _save_diagnose_cache(bugid, result)
+                    logger.info("诊断 %s: 视频与压缩包文件名相差 %ds，跳过解压直接确认 %s",
+                                bugid, int(_diff), _video_quick)
+                    return _ok(result, f"{bugid} 诊断完成：{category}（未解压快速确认）")
+        except Exception as e:
+            logger.warning("诊断 %s: 视频快速确认失败: %s", bugid, e)
     # —— 识别 gmlogger 附件（智能检测：文件名含 gmlogger 或压缩包内含 main.log）——
     if not _has_gmlogger_logs(attachments, bugid):
         # 附件存在但未被识别为日志 → 不能直接判“无gmlogger”，避免误伤
