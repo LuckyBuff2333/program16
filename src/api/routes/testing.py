@@ -6166,11 +6166,18 @@ async def test_adp_lookup(request: Request):
             # 批次总耗时：批次表写本批次，数据表写累计；全失败批次不记录
             try:
                 from src.services.adp_ops import apply_adp_batch_total, _get_adp_cfg
-                _master_id = _get_adp_cfg().get("bitable_table_id", "")
+                _master_id = _get_adp_cfg().get("bitable_master_table_id", "")
                 _batch_ok = any(bool(r.get("ok")) for r in all_results)
+                _batch_minutes = 0.0
+                for _r in all_results:
+                    _rd = _r.get("results") or {}
+                    try:
+                        _batch_minutes += float(_rd.get("耗时(分)") or 0)
+                    except (TypeError, ValueError):
+                        pass
                 await loop.run_in_executor(
                     None, lambda: apply_adp_batch_total(
-                        app_token, table_id, _master_id, _lookup_elapsed / 60, _batch_ok))
+                        app_token, table_id, _master_id, _batch_minutes, _batch_ok))
             except Exception:
                 logger.warning("ADP lookup 批次总耗时写入失败", exc_info=True)
         except Exception as e:

@@ -96,6 +96,7 @@ def _get_adp_cfg() -> dict:
         "bitable_app_token": cfg.get("bitable_app_token", ""),
         "bitable_table_id": cfg.get("bitable_table_id", ""),
         "bitable_table_name": cfg.get("bitable_table_name", ""),
+        "bitable_master_table_id": cfg.get("bitable_master_table_id", "") or "tblVezjvVi4oxh2a",
         "bitable_view_id": cfg.get("bitable_view_id", ""),
         "jira_field": cfg.get("jira_field", "Jira链接"),
         "save_dir": cfg.get("save_dir", "docs/adp_results"),
@@ -1419,10 +1420,11 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
                 write_fields["分析失败归因"] = (existing + suffix).strip()
         feishu_client.update_bitable_records(app_token, table_id,
                                               [{"record_id": record_id, "fields": write_fields}])
-        # 单条流程：成功时把本条耗时累计到数据表总耗时
+        # 单条流程：成功时把本条耗时累计到数据表总耗时（不回写批次表）
         if fields_dict.get("完成状态") == "完成":
             _minutes = _parse_total_minutes(fields_dict.get("耗时(分)"))
-            apply_adp_batch_total(app_token, table_id, table_id, _minutes, True)
+            _master_id = _get_adp_cfg().get("bitable_master_table_id", "")
+            apply_adp_batch_total(app_token, "", _master_id, _minutes, True)
         logger.info("ADP 飞书写入成功: %s -> %s", jira_key, list(write_fields.keys()))
         return {"ok": True, "record_id": record_id, "message": "写入成功", "fields": write_fields}
     except Exception as e:
