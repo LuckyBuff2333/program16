@@ -20,6 +20,7 @@ from src.clients import ai_log_client, bug_source, jira_client
 from src.clients import diana_client as _diana_client
 from src.config import get_path, load_config, setup_logger, PROJECT_ROOT
 from src.core import doc_generator
+from src.services.version_filter import is_chinese_version
 
 # 从共享模块导入公共工具和状态
 from src.api.routes.shared import (
@@ -303,6 +304,9 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
                 completed = _bitable_text(fields.get("分析完成时间", "")).strip()
                 if not completed or completed[:10] not in date_set:
                     continue
+                version = _bitable_text(fields.get("版本号", "")).strip()
+                if is_chinese_version(version):
+                    continue
                 row = _flatten_bitable_record_all(fields, report_field)
                 row["jira号"] = _bitable_text(fields.get(bugid_field, "")) or row.get("jira号", "")
                 row["分析完成时间"] = completed[:19]
@@ -497,6 +501,8 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
                 bf = success_records[0]  # 有成功优先取成功
             else:
                 bf = candidates[-1]  # 全失败取最后一次
+            if is_chinese_version(bf.get("版本号", "")):
+                continue
             row.update(bf)
             # 保留批次记录中的原始触发来源，不被多维表格字段覆盖
             original_source = exec_info.get("触发来源", "")

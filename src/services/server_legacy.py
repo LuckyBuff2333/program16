@@ -129,6 +129,7 @@ from src.services.troubleshoot_service import (
     _SKIP_ANALYSIS_CATEGORIES,
     _diag_pre_classify,
 )
+from src.services.version_filter import is_chinese_version
 
 logger = setup_logger("server_legacy")
 
@@ -2503,6 +2504,9 @@ def _morning_briefing(chat_id: str) -> bool:
                 app_token, table_id, filter_expr=filter_expr, timeout=60)
             for rec in records:
                 fields = rec.get("fields", {})
+                version = _bt(fields.get("版本号", ""))
+                if is_chinese_version(version):
+                    continue
                 done_time = _bt(fields.get("分析完成时间", ""))
                 if not done_time or not done_time.startswith(yesterday):
                     continue

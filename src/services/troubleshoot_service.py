@@ -10,6 +10,7 @@ from typing import Optional
 
 from src.config import load_config, PROJECT_ROOT, setup_logger
 from src.clients import feishu_client
+from src.services.version_filter import is_chinese_version
 
 logger = setup_logger("service.troubleshoot")
 
@@ -149,6 +150,7 @@ def _extract_record_row(fields: dict, cfg: dict) -> dict:
     return {
         "jira号": _bitable_text(fields.get(_resolve_bugid_field(cfg, fields), "")),
         "分析结果": _bitable_text(fields.get("分析结果", "")),
+        "版本号": _bitable_text(fields.get("版本号", "")),
         "触发来源": _bitable_text(fields.get("触发来源", "")),
         "分析完成时间": done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else _bitable_text(fields.get("分析完成时间", "")),
         "分析问题时间": _bitable_text(fields.get("分析问题时间", "")),
@@ -213,6 +215,8 @@ def query_records(
             continue
         # 先收集人工审核标记，不受结果/来源筛选影响
         row = _extract_record_row(fields, cfg)
+        if is_chinese_version(row.get("版本号", "")):
+            continue
         if row["人工审核结果"]:
             reviewed_jiras.add(jira_no)
         result_status = _bitable_text(fields.get("分析结果", ""))
@@ -256,6 +260,8 @@ def query_by_bugids(bugids: list[str]) -> dict:
         if not jira_no or jira_no not in target_set:
             continue
         row = _extract_record_row(fields, cfg)
+        if is_chinese_version(row.get("版本号", "")):
+            continue
         prev = picked.get(jira_no)
         if prev is None or row["分析完成时间"] > prev["分析完成时间"]:
             picked[jira_no] = row
@@ -289,9 +295,13 @@ def search_by_keyword(keyword: str) -> dict:
         if not jira_no or keyword_upper not in jira_no:
             continue
         done_dt = _ts_parse_datetime(fields.get("分析完成时间", ""))
+        version = _bitable_text(fields.get("版本号", ""))
+        if is_chinese_version(version):
+            continue
         rows.append({
             "jira号": _bitable_text(fields.get(bugid_field, "")),
             "分析结果": _bitable_text(fields.get("分析结果", "")),
+            "版本号": version,
             "分析完成时间": done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else "",
             "分析问题时间": _bitable_text(fields.get("分析问题时间", "")),
             "错误信息": _pick_error_info(fields),
