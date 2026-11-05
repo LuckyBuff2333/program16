@@ -2589,9 +2589,29 @@ def _morning_briefing_scheduler_loop():
                     _morning_briefing_stop.wait(60)
                     continue
 
+                # 跨机器幂等：同一群、同一天只允许一台机器发送
+                claim_state, claim_id = "unavailable", ""
+                try:
+                    from src.services import broadcast_state
+                    claim_state, claim_id = broadcast_state.claim(
+                        chat_id, f"morning:{cur_date}", cur_time)
+                except Exception as e:
+                    logger.warning("待执行播报: 云端抢占失败，回退本地锁: %s", e)
+                if claim_state == "exists":
+                    logger.info("跳过待执行播报(%s): chat=%s 已由其他机器发送",
+                                cur_date, chat_id[:12])
+                    _morning_briefing_stop.wait(60)
+                    continue
+
                 # 执行播报
-                logger.info("触发待执行播报: chat=%s, date=%s", chat_id[:12], cur_date)
-                _morning_briefing(chat_id)
+                logger.info("触发待执行播报: chat=%s, date=%s, claim=%s",
+                            chat_id[:12], cur_date, claim_state)
+                sent = _morning_briefing(chat_id)
+                if claim_id:
+                    try:
+                        broadcast_state.finish(claim_id, bool(sent), "morning briefing")
+                    except Exception as e:
+                        logger.warning("待执行播报: 写入播报状态失败: %s", e)
 
         except Exception as e:
             logger.warning("待执行播报调度器异常: %s", e)
