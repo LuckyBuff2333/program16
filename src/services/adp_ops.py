@@ -1374,7 +1374,6 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
                 fv_text = str(fv)
             if jira_key in fv_text:
                 record_id = item.get("record_id", "")
-                prev_duration = item.get("fields", {}).get("耗时(分)", "")
                 break
         # 不存在则新建
         if not record_id:
@@ -1392,12 +1391,11 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         adp_rc = write_fields.get("agent分析的root cause", "")
         if adp_rc:
             write_fields["root cause"] = adp_rc
-        # 同一 Jira 多次重试：本次耗时累加到表格已有耗时上
+        # 只记录本次分析耗时，不叠加历史值，避免耗时越滚越大
         _cur_dur = write_fields.get("耗时(分)")
         if _cur_dur not in (None, ""):
             try:
-                _prev = float(prev_duration) if prev_duration not in (None, "") else 0.0
-                write_fields["耗时(分)"] = str(round(_prev + float(_cur_dur), 1))
+                write_fields["耗时(分)"] = str(round(float(_cur_dur), 1))
             except (TypeError, ValueError):
                 pass
         # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
