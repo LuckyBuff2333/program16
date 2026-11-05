@@ -158,9 +158,9 @@
     "download_concurrency": 2,
     "logagent_version": "1.0.0",
     "model": "deepseek-v-pro",
-    "ocr_parallel": 2,
+    "ocr_parallel": 6,
     "project_name": "Jira日志分析工具",
-    "trigger_parallel": 8,
+    "trigger_parallel": 6,
     "trigger_source": "线上",
     "version": "1.0.2"
   },

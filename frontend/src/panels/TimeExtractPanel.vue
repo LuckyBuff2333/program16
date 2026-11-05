@@ -503,9 +503,15 @@ export default {
         this.statusMsg = evt.message || '已停止';
       }
     },
-    stopExtract() {
-      // 调用后端停止接口 + 前端中止
-      fetch('/api/trigger/batch_extract_time/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    async stopExtract() {
+      // 先确保后端收到停止信号，再断开 SSE
+      try {
+        const res = await api('/api/trigger/batch_extract_time/stop', { method: 'POST', body: '{}' });
+        if (res?.ok) ElMessage.success(res.message || '停止信号已发送，当前条目完成后停止');
+        else ElMessage.warning(res?.message || '停止信号发送失败');
+      } catch (e) {
+        ElMessage.error('停止请求失败: ' + (e.message || e));
+      }
       if (this.abortCtrl) this.abortCtrl.abort();
     },
     // ===== 表格提取相关 =====

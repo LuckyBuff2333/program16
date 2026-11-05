@@ -618,7 +618,11 @@ async def test_batch_ai_extract_times(request: Request):
             _WRITE_BATCH_SIZE = 20
             if need_fetch:
                 from src.clients import jira_client as _jc
-                _ocr_sem = asyncio.Semaphore(2)  # OCR 并发限制：最多 2 路同时 GPU 推理，避免显存争抢
+                try:
+                    _ocr_limit = max(1, min(8, int(load_config().get("params", {}).get("ocr_parallel", 2))))
+                except Exception:
+                    _ocr_limit = 2
+                _ocr_sem = asyncio.Semaphore(_ocr_limit)  # OCR 并发限制（config.params.ocr_parallel）
 
                 def _lookup_ref_local(bid):
                     from src.services.trigger_ops import _lookup_ref as _lr

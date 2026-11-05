@@ -5912,6 +5912,9 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                 
                 _prev_sig = None
                 for sec, frame in frames:
+                    if stop_event and stop_event.is_set():
+                        logger.info("视频兜底提取(%s)：收到停止信号，中断当前视频", video_label)
+                        return ""
                     # 静帧跳过：与上一帧几乎相同就不重复 OCR（静态画面常见）
                     _sig = _frame_signature(frame)
                     if _prev_sig is not None and _same_frame(_sig, _prev_sig):

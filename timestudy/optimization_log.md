@@ -1766,3 +1766,16 @@ flowchart TD
 
 </details>
 
+<details>
+<summary><b>130. 时间批量提取并发配置化 + 停止立即生效（2026-11-05）</b></summary>
+
+- **并发**：提取并发 2 → 6（`params.trigger_parallel`，限制 1~8）；下载并发 3；OCR 并发 2 → 6（`params.ocr_parallel`，接入 `_ocr_sem`）。
+- **停止修复**：
+  1. 前端 `stopExtract` 改为 await 后端停止接口，失败有提示，成功后再断 SSE；
+  2. 视频帧循环每帧检查 `stop_event`，不再等整个视频 11 帧跑完；
+  3. 停止时取消未开始任务，已完成的先写云端。
+- **效果**：点击停止后当前帧结束即中断，不再继续整段视频/整批排队。
+- **验证**：全量 **116 passed**；前端构建通过。
+- **实现文件**：`src/api/routes/trigger.py`、`src/api/routes/testing.py`、`src/services/server_legacy.py`、`frontend/src/panels/TimeExtractPanel.vue`、`config/core_settings.json`、`config/config.enc`
+
+</details>

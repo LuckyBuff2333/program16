@@ -407,6 +407,12 @@ async def batch_extract_time(request: Request):
 
     _stop_event.clear()
     _begin_attach_batch()  # 新批次：重置附件下载预算
+    # 提取并发：默认 4，可在 config.params.trigger_parallel 调整，限制 1~8
+    try:
+        _extract_workers = max(1, min(8, int(load_config().get("params", {}).get("trigger_parallel", 4))))
+    except Exception:
+        _extract_workers = 4
+    logger.info("时间批量提取并发数: %d", _extract_workers)
 
     def event_generator():
         # 跳过已有缓存时，预加载云端缓存
@@ -526,8 +532,8 @@ async def batch_extract_time(request: Request):
             except Exception as e:
                 return bugid, "", "error", str(e)
 
-        # 并行提取（max_workers=2）
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        # 并行提取（并发数由 config.params.trigger_parallel 控制）
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=_extract_workers)
         try:
             futures = {pool.submit(extract_one, b): b for b in to_extract}
             for future in concurrent.futures.as_completed(futures):
