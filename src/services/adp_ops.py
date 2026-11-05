@@ -1365,7 +1365,6 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 查找已有记录
         records = feishu_client.list_bitable_records(app_token, table_id)
         record_id = None
-        prev_duration = ""
         for item in records:
             fv = item.get("fields", {}).get(jira_field, "")
             if isinstance(fv, list) and fv:
