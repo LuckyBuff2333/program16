@@ -5271,8 +5271,9 @@ def _save_video_time_cache():
             # 写入前先清理过期/超限条目（调用内部方法，避免重复加锁导致死锁）
             _clean_video_time_cache_locked()
             # 先写同目录临时文件，再原子替换，避免并发/中断产生半截文件
+            _cache_snapshot = dict(_video_time_cache)  # 拷贝快照，防止其他线程修改导致 iteration 异常
             with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(_video_time_cache, f, ensure_ascii=False, indent=2)
+                json.dump(_cache_snapshot, f, ensure_ascii=False, indent=2)
             os.replace(tmp_path, cache_path)
         except Exception as e:
             logger.warning("视频时间缓存保存失败: %s", e)
@@ -6921,6 +6922,11 @@ def _confirm_time_with_bound(candidate: str, bound_dt=None, ref_times: list = No
     dt = _ts_parse_datetime(str(candidate or ""))
     if not dt:
         return "", ""
+    # 统一剥离时区信息，防止 naive/aware 比较异常
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    if bound_dt is not None and bound_dt.tzinfo is not None:
+        bound_dt = bound_dt.astimezone().replace(tzinfo=None)
     now = datetime.now()
     if bound_dt and dt > bound_dt:
         dt = dt - timedelta(days=1)
@@ -6928,7 +6934,8 @@ def _confirm_time_with_bound(candidate: str, bound_dt=None, ref_times: list = No
         return "", ""
     note = ""
     if ref_times:
-        _nearest = min((abs((dt - r).total_seconds()) for r in ref_times if r), default=None)
+        _naive_refs = [r.astimezone().replace(tzinfo=None) if r and r.tzinfo else r for r in ref_times if r]
+        _nearest = min((abs((dt - r).total_seconds()) for r in _naive_refs), default=None)
         if _nearest is not None and _nearest <= 300:
             note = "与main.log时间相差≤5分钟"
     return dt.strftime("%Y-%m-%d %H:%M:%S"), note
@@ -7434,6 +7441,7 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
         _completed[_k]["confirmations"] += 1
     # C2: 仅时间候选匹配日期提供者来补全（视频OCR+视频文件名自洽额外加分）
     for _hm, _hm_src in _time_only_candidates:
+        _hm = f"{int(_hm.split(':')[0]):02d}:{int(_hm.split(':')[1]):02d}" if ':' in _hm else _hm
         _best_dp_score = 0.0
         _best_dp_key = ""
         for _dp_dt, _dp_src, _dp_str in _date_providers:
@@ -7513,6 +7521,7 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
         _fallback_srcs = {"gmlogger兑底", "包内main"}
         if _date_providers and _time_only_candidates:
             for _hm, _hm_src in _time_only_candidates:
+                _hm = f"{int(_hm.split(':')[0]):02d}:{int(_hm.split(':')[1]):02d}" if ':' in _hm else _hm
                 _best_dp_score2 = 0.0
                 _best_dp_key2 = ""
                 for _dp_dt, _dp_src, _dp_str in _date_providers:
@@ -7732,6 +7741,7 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
         _completed[_k]["confirmations"] += 1
     # C2: 仅时间候选匹配日期提供者来补全（视频OCR+视频文件名自洽额外加分）
     for _hm, _hm_src in _time_only_candidates:
+        _hm = f"{int(_hm.split(':')[0]):02d}:{int(_hm.split(':')[1]):02d}" if ':' in _hm else _hm
         _best_dp_score = 0.0
         _best_dp_key = ""
         for _dp_dt, _dp_src, _dp_str in _date_providers:
@@ -7824,6 +7834,7 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
         _fallback_srcs = {"包内main"} if _has_main_ref else {"gmlogger兜底"}
         if _date_providers and _time_only_candidates:
             for _hm, _hm_src in _time_only_candidates:
+                _hm = f"{int(_hm.split(':')[0]):02d}:{int(_hm.split(':')[1]):02d}" if ':' in _hm else _hm
                 _best_dp_score2 = 0.0
                 _best_dp_key2 = ""
                 _best_diff2 = None
