@@ -2635,6 +2635,88 @@ def _init_morning_briefing_scheduler():
         logger.info("待执行播报调度器已初始化")
 
 
+# ── 数据看板定时刷新（每天 00:05 / 12:05，两个半天各一次） ──
+_dashboard_refresh_stop = threading.Event()
+_dashboard_refresh_thread = None
+
+
+def _dashboard_refresh_slot(now: datetime) -> tuple:
+    """返回 (slot, 本半天应刷新时间)。"""
+    if now.hour < 12:
+        return "am", "00:05"
+    return "pm", "12:05"
+
+
+def _dashboard_refresh_once():
+    """刷新当天数据看板；云端 claim 保证多台机器同一半天只刷新一次。"""
+    now = datetime.now()
+    slot, target = _dashboard_refresh_slot(now)
+    if now.strftime("%H:%M") < target:
+        return
+    date_str = now.strftime("%Y-%m-%d")
+    key = f"dashboard:{date_str}:{slot}"
+
+    # 本机文件锁，避免同一台机器多进程重复刷新
+    lock_dir = os.path.join(PROJECT_ROOT, "data")
+    os.makedirs(lock_dir, exist_ok=True)
+    lock_file = os.path.join(lock_dir, f".dashboard_refresh_{date_str}_{slot}")
+    try:
+        fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, now.strftime("%H:%M").encode())
+        os.close(fd)
+    except FileExistsError:
+        return
+
+    claim_id = ""
+    try:
+        from src.services import broadcast_state
+        state, claim_id = broadcast_state.claim("dashboard", key, now.strftime("%H:%M"))
+        if state == "exists":
+            logger.info("跳过数据看板刷新(%s): 已由其他机器完成", key)
+            return
+        logger.info("开始刷新数据看板(%s): claim=%s", key, state)
+    except Exception as e:
+        logger.warning("数据看板刷新云端抢占失败，使用本机锁: %s", e)
+
+    ok = False
+    try:
+        from src.api.routes.report import _dashboard_data_sync
+        data = _dashboard_data_sync(date_str, force=True)
+        ok = bool(data)
+        logger.info("数据看板刷新完成(%s): %s", key, "成功" if ok else "无数据")
+    except Exception as e:
+        logger.error("数据看板刷新失败(%s): %s", key, e, exc_info=True)
+    finally:
+        if claim_id:
+            try:
+                from src.services import broadcast_state
+                broadcast_state.finish(claim_id, ok, "dashboard refresh")
+            except Exception:
+                pass
+
+
+def _dashboard_refresh_scheduler_loop():
+    logger.info("数据看板刷新调度器已启动（每天 00:05 / 12:05）")
+    while not _dashboard_refresh_stop.is_set():
+        try:
+            _dashboard_refresh_once()
+        except Exception as e:
+            logger.warning("数据看板刷新调度器异常: %s", e)
+        _dashboard_refresh_stop.wait(30)
+    logger.info("数据看板刷新调度器已停止")
+
+
+def _init_dashboard_refresh_scheduler():
+    global _dashboard_refresh_thread
+    _dashboard_refresh_stop.clear()
+    _dashboard_refresh_thread = threading.Thread(
+        target=_dashboard_refresh_scheduler_loop,
+        name="dashboard-refresh-scheduler",
+        daemon=True,
+    )
+    _dashboard_refresh_thread.start()
+
+
 
 def _bot_run_single_execute(chat_id: str, bugids: list, exec_mode: str = "pc"):
     """功能6.2后台执行：提取触发时间→根据执行模式调用对应接口
