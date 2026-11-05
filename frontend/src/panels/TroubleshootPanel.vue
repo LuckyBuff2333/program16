@@ -210,84 +210,18 @@
       </template>
       <div v-if="getFilteredDiagResults().length" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 8px">
         <el-tag size="small" type="info">本次诊断 {{ getFilteredDiagResults().length }} 条</el-tag>
-        <el-tag size="small" type="success">正常 {{ diagTimeStats()['正常'] || 0 }}</el-tag>
-        <el-tag size="small" type="warning">待确认 {{ diagTimeStats()['待确认'] || 0 }}</el-tag>
-        <el-tag size="small" type="danger">不可用 {{ diagTimeStats()['不可用'] || 0 }}</el-tag>
-        <el-tag size="small">无参考 {{ diagTimeStats()['无参考'] || 0 }}</el-tag>
       </div>
       <el-table :data="getFilteredDiagResults()" size="small" stripe border max-height="320" row-key="bugid">
-        <el-table-column type="index" label="#" width="45"></el-table-column>
         <el-table-column prop="bugid" label="Jira号" width="120"></el-table-column>
         <el-table-column prop="category" label="问题归类" width="170">
           <template #default="{row}"><el-tag :type="diagCategoryTagType(row.category)" size="small">{{ row.category }}</el-tag></template>
         </el-table-column>
-        <el-table-column prop="done_time" label="分析完成时间" width="160"></el-table-column>
-        <el-table-column label="当前触发时间" width="200">
+        <el-table-column label="当前触发时间" width="180">
           <template #default="{row}">
             <span>{{ formatMinute(row.problem_time) || '-' }}</span>
-            <el-tag v-if="row.time_check && row.time_check.current && row.time_check.current.status"
-              size="mini" style="margin-left:6px" :type="timeStatusTagType(row.time_check.current.status)">
-              {{ row.time_check.current.status }}
-            </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="建议时间" width="190">
-          <template #default="{row}">
-            <span v-if="row.suggested_time">{{ formatMinute(row.suggested_time) }}</span>
-            <span v-else style="color:#c0c4cc">-</span>
-            <span v-if="row.time_check && row.time_check.change_sec !== null && row.time_check.change_sec !== undefined"
-              style="margin-left:6px;font-size:12px;color:#909399">{{ formatChange(row.time_check) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="抓包时间" width="150">
-          <template #default="{row}">{{ formatMinute((row.time_check && row.time_check.ref_time) || '') || '-' }}</template>
-        </el-table-column>
-        <el-table-column label="差秒" width="90">
-          <template #default="{row}">
-            <span v-if="row.time_check && row.time_check.delta_sec !== null && row.time_check.delta_sec !== undefined"
-              :style="{color: (row.time_check.status==='不可用') ? '#f56c6c' : ((row.time_check.status==='待确认') ? '#e6a23c' : '#67c23a')}">
-              {{ formatDelta(row.time_check) }}
-            </span>
-            <span v-else style="color:#c0c4cc">-</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="时间判定" width="100">
-          <template #default="{row}">
-            <el-tag v-if="row.time_check && row.time_check.status" size="small" :type="timeStatusTagType(row.time_check.status)">
-              {{ row.time_check.status }}
-            </el-tag>
-            <span v-else style="color:#c0c4cc">-</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="依据" width="150">
-          <template #default="{row}">
-            <el-popover v-if="row.time_check && row.time_check.evidence && row.time_check.evidence.length"
-              placement="left" :width="380" trigger="click">
-              <template #reference>
-                <el-button size="small" link type="primary" style="font-size:12px">
-                  {{ row.time_check.evidence.map(e => e['来源']).join(' / ') }}
-                </el-button>
-              </template>
-              <el-table :data="row.time_check.evidence" size="mini" border>
-                <el-table-column prop="来源" label="来源" width="110"></el-table-column>
-                <el-table-column prop="时间" label="时间" width="150"></el-table-column>
-                <el-table-column label="与抓包差" width="100">
-                  <template #default="{row: ev}">{{ formatDelta({ delta_sec: ev['与抓包差秒'] }) }}</template>
-                </el-table-column>
-              </el-table>
-            </el-popover>
-            <span v-else style="color:#c0c4cc">-</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="诊断详情" min-width="260">
-          <template #default="{row}">
-            <div v-if="isNewDetailFormat(row.detail)" style="white-space:pre-wrap;line-height:1.4;font-size:13px">
-              <div v-for="(line, idx) in row.detail.split('\n')" :key="idx" :style="getDetailLineStyle(line)">{{ line }}</div>
-            </div>
-            <span v-else>{{ row.detail }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="人工审核结果" min-width="200" show-overflow-tooltip>
+        <el-table-column label="人工审核结果" min-width="220" show-overflow-tooltip>
           <template #default="{row}">
             <div v-if="troubleshoot.editingSkipBugid === row.bugid" style="display:flex;align-items:center;gap:4px">
               <el-autocomplete v-model="troubleshoot.editingSkipReason" size="small"
@@ -311,19 +245,28 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="解压后文件名" width="130" align="center">
+        <el-table-column label="详情" width="90" align="center">
           <template #default="{row}">
-            <el-popover v-if="getDiagEntries(row).length" placement="left" :width="420" trigger="click">
-              <template #reference><el-button size="small" link type="primary">查看 {{ getDiagEntries(row).length }} 个</el-button></template>
-              <div style="max-height:320px;overflow:auto;font-size:12px;user-select:text">
-                <div v-for="(e,i) in getDiagEntries(row)" :key="i"
-                  :style="e.matched?'color:#67c23a;font-weight:700':''">{{ e.name }}{{ e.matched ? ' ✔命中错误时间' : '' }}</div>
+            <el-popover v-if="row.time_check || row.detail || (row.report && row.report.human_reason)" placement="left" :width="440" trigger="click">
+              <template #reference>
+                <el-button size="small" link type="primary" style="font-size:12px">查看</el-button>
+              </template>
+              <div style="line-height:1.7;font-size:12px">
+                <div v-if="row.done_time">分析完成：{{ row.done_time }}</div>
+                <div v-if="row.suggested_time">建议时间：{{ formatMinute(row.suggested_time) }}</div>
+                <div v-if="row.time_check && row.time_check.ref_time">抓包参考：{{ formatMinute(row.time_check.ref_time) }}</div>
+                <div v-for="(ev, idx) in ((row.time_check && row.time_check.evidence) || [])" :key="idx">
+                  {{ ev['来源'] }}：{{ ev['时间'] }}
+                </div>
+                <div v-if="row.report && row.report.human_reason">人工审核：{{ formatHumanReason(row.report.human_reason) }}</div>
+                <div v-if="row.detail" style="margin-top:6px;padding-top:6px;border-top:1px solid #eee;white-space:pre-wrap;color:#606266">
+                  {{ row.detail }}
+                </div>
               </div>
             </el-popover>
-            <span v-else>-</span>
+            <span v-else style="color:#c0c4cc">-</span>
           </template>
         </el-table-column>
-
       </el-table>
     </el-card>
 
@@ -585,6 +528,9 @@ export default {
     },
     timeStatusTagType(s) {
       return s === '正常' ? 'success' : (s === '待确认' ? 'warning' : (s === '不可用' ? 'danger' : 'info'));
+    },
+    diagStatusLabel(s) {
+      return s === '不可用' ? '需修正' : (s || '无参考');
     },
     diagCategoryTagType,
     formatMinute,

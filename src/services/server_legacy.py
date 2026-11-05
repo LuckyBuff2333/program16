@@ -6789,16 +6789,43 @@ def _time_in_gmlogger_segment(t, refs) -> bool:
 
 def _video_upload_datetime(attachments: list):
     """视频附件上传时间；多个视频取最早的上传时间，保证建议早于所有视频"""
+    return _attachment_upload_datetime(attachments, _VIDEO_SUFFIXES)
+
+
+def _attachment_upload_datetime(attachments: list, suffixes: tuple):
+    """指定类型附件的最早上传时间。"""
     uploads = []
     for att in (attachments or []):
         fn = str(att.get("filename") or "").lower()
-        if fn.endswith(_VIDEO_SUFFIXES):
+        if fn.endswith(suffixes):
             dt = _ts_parse_datetime(att.get("created") or "")
             if dt:
                 if dt.tzinfo is not None:
                     dt = dt.astimezone().replace(tzinfo=None)
                 uploads.append(dt)
     return min(uploads) if uploads else None
+
+
+def _confirm_time_with_bound(candidate: str, bound_dt=None, ref_times: list = None) -> tuple:
+    """简化确认：候选时间晚于上传时间则只提前 1 天；通过上传/当前时间约束即确认。
+
+    视频/图片与 main.log 参考时间相差 ≤5 分钟时直接视为确认。
+    """
+    from datetime import timedelta
+    dt = _ts_parse_datetime(str(candidate or ""))
+    if not dt:
+        return "", ""
+    now = datetime.now()
+    if bound_dt and dt > bound_dt:
+        dt = dt - timedelta(days=1)
+    if dt > now or (bound_dt and dt > bound_dt):
+        return "", ""
+    note = ""
+    if ref_times:
+        _nearest = min((abs((dt - r).total_seconds()) for r in ref_times if r), default=None)
+        if _nearest is not None and _nearest <= 300:
+            note = "与main.log时间相差≤5分钟"
+    return dt.strftime("%Y-%m-%d %H:%M:%S"), note
 
 
 def _hm_of_time_text(text: str) -> str:
@@ -7525,6 +7552,25 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                 _hm = _dt.strftime("%H:%M")
                 if _hm not in _full_hm_set:  # 过滤已包含在完整日期时间中的 time-only
                     _text_time_only_hm.append((_hm, _txt_label))
+    # A1b: 评论区最新时间（评论时间不能晚于该评论创建时间）
+    _comment_time = ""
+    _comment_upload = None
+    _comment_time_only = ""
+    try:
+        _raw_comments = ((_fields.get("comment") or {}).get("comments") or [])
+        _comment_dts = [_ts_parse_datetime(c.get("created") or "") for c in _raw_comments]
+        _comment_dts = [d for d in _comment_dts if d]
+        if _comment_dts:
+            _comment_upload = max(_comment_dts)
+        _comment_time = _jc.extract_latest_comment_time(issue) or ""
+        _cdt = _ts_parse_datetime(_comment_time)
+        if _comment_time and _cdt:
+            if len(_comment_time) >= 16:
+                _date_providers.append((_cdt, "评论", _comment_time))
+            else:
+                _comment_time_only = _comment_time[:5]
+    except Exception:
+        pass
     # A2: 视频文件名（仅用于与视频OCR时间组合补全，不作为独立候选）
     _vid_fn_date = None  # (year, month, day)
     _vid_fn_dt_str = ""
@@ -7562,6 +7608,9 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
     # B3: 图片 OCR（如果结果是仅时间）
     if img_time_str and len(img_time_str) <= 8:
         _time_only_candidates.append((img_time_str[:5], "图片OCR"))
+    # B4: 评论区时间（如果只有时分）
+    if _comment_time_only:
+        _time_only_candidates.append((_comment_time_only, "评论"))
     # ── C. 补全：为每个仅时间候选找最佳日期提供者来补全 ──
     _completed = {}  # {"YYYY-MM-DD HH:MM": {"score": float, "sources": [], "confirmations": int}}
     def _ensure_key(key):
@@ -7722,20 +7771,56 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
     verify_status = ""
     suggested_time = ""
     vdetail = ""
+    _bound_failed = False
     if _best_time:
         vdetail = f"多源置信度: {'+'.join(_best_sources)}={_best_score}分"
-        _bounded, _bound_note = _apply_diag_time_bounds(_best_time, video_time, attachments)
-        if _bound_note:
-            logger.info("诊断 %s: 建议时间约束: %s", bugid, _bound_note)
-            vdetail = f"{vdetail}；{_bound_note}" if vdetail else _bound_note
-        if _bounded:
-            suggested_time = _bounded
-            verify_status = "success" if _best_score >= 2.0 else "manual"
-            # 如果视频提取的是仅时间，且最终结果来自视频源，显示组合后的完整时间
-            if video_time and len(video_time) <= 8 and any("视频" in s for s in _best_sources):
-                video_time = f"{video_time}（结合视频日期 → {suggested_time}）"
-        else:
-            _best_time = ""
+        _src_text = " ".join(str(s) for s in _best_sources)
+        _bound = None
+        if "视频" in _src_text:
+            _bound = _video_upload_datetime(attachments)
+        elif "图片" in _src_text:
+            _bound = _attachment_upload_datetime(attachments, _IMAGE_SUFFIXES)
+        elif "评论" in _src_text:
+            _bound = _comment_upload
+        _simple_confirmed = False
+        _bound_failed = False
+        if _bound or "视频" in _src_text or "图片" in _src_text or "评论" in _src_text:
+            _confirmed, _confirm_note = _confirm_time_with_bound(
+                _best_time, _bound, [dt for _, dt in (gm_times or [])])
+            if _confirmed:
+                suggested_time = _confirmed
+                verify_status = "success"
+                _best_time = _confirmed
+                _simple_confirmed = True
+                _note = _confirm_note or ("上传时间前1天修正后通过" if _bound else "确认通过")
+                vdetail = f"{vdetail}；{_note}"
+                logger.info("诊断 %s: 简化确认成功 %s（%s）", bugid, suggested_time, _note)
+            else:
+                _bound_failed = True
+                _best_time = ""
+        if _best_time and not _simple_confirmed:
+            _bounded, _bound_note = _apply_diag_time_bounds(_best_time, video_time, attachments)
+            if _bound_note:
+                logger.info("诊断 %s: 建议时间约束: %s", bugid, _bound_note)
+                vdetail = f"{vdetail}；{_bound_note}" if vdetail else _bound_note
+            if _bounded:
+                suggested_time = _bounded
+                verify_status = "success" if _best_score >= 2.0 else "manual"
+            else:
+                _best_time = ""
+        if verify_status == "success" and video_time and len(video_time) <= 8 and any("视频" in s for s in _best_sources):
+            video_time = f"{video_time}（结合视频日期 → {suggested_time}）"
+    if _bound_failed:
+        category = "待人工排查"
+        detail = _build_simple_detail(comment_time, video_time, img_time_str,
+                                      "视频/图片/评论时间晚于上传时间，提前1天仍不通过")
+        report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time)
+        result = {"bugid": bugid, "category": category, "problem_time": problem_time,
+                  "archive_files": [], "detail": detail, "main_entries": [],
+                  "verify_status": "", "suggested_time": "", "report": report,
+                  "done_time": done_time}
+        _save_diagnose_cache(bugid, result)
+        return _ok(result, f"{bugid} 诊断完成：{category}")
     if verify_status == "success":
         category = "触发时间问题"
         # 根据置信度评分结果生成描述
@@ -7744,8 +7829,7 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
         report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time)
         _tc = _diag_time_check(issue, suggested_time or problem_time, gm_times, None, None,
                                video_time or "", current_time=problem_time)
-        if _tc["status"] == "不可用" and verify_status == "success":
-            verify_status = "manual"
+        # 简化口径：不再用旧阈值（30s/300s/15min/60min）反向降级人工
         result = {"bugid": bugid, "category": category, "problem_time": problem_time,
                    "archive_files": [], "detail": detail, "main_entries": [],
                    "verify_status": verify_status, "suggested_time": suggested_time,
