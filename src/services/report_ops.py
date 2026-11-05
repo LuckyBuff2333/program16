@@ -473,6 +473,15 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
         return "待人工排查"
     if err_info == "服务有报错":
         return "服务关闭"
+    # JIRA API 调用失败：人工审核多数为并发过多
+    if "JIRA API 调用失败" in err_info:
+        return "并发过多"
+    # 未预期的错误：人工审核归后端开发排查
+    if "未预期的错误" in err_info:
+        return "待后端开发排查"
+    # 分析完成但包含部分错误：人工审核为空，转人工
+    if "分析完成但包含部分错误" in err_info:
+        return "待人工排查"
     # JIRA 分析/网关超时、adjudication、reasoning → 待人工排查
     if "JIRA 分析任务执行超时" in err_info or "JIRA 网关分析任务执行超时" in err_info:
         return "待人工排查"

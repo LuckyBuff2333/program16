@@ -476,6 +476,13 @@ def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
             return ""
         if "没有可下载的日志附件" in ec:
             return "无gmlogger"
+        # 依据人工审核结果：JIRA API 失败绝大多数为并发过多；未预期错误转后端；部分错误待人工
+        if "JIRA API 调用失败" in ec:
+            return "并发过多"
+        if "未预期的错误" in ec:
+            return "待后端开发排查"
+        if "分析完成但包含部分错误" in ec:
+            return "待人工排查"
         if "分析报告生成失败" in ec:
             return "并发过多"
         if ec == "服务有报错":
@@ -499,6 +506,12 @@ def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
         return "无时间信息"
     if "没有可下载的日志附件" in msg:
         return "无gmlogger"
+    if "JIRA API 调用失败" in msg:
+        return "并发过多"
+    if "未预期的错误" in msg:
+        return "待后端开发排查"
+    if "分析完成但包含部分错误" in msg:
+        return "待人工排查"
     # JIRA/网关超时 / adjudication / reasoning → 待人工排查（查 app.log）
     if "JIRA 分析任务执行超时" in msg or "JIRA 网关分析任务执行超时" in msg:
         return "待人工排查"
