@@ -7014,6 +7014,21 @@ def _diag_archive_filename_times(attachments: list) -> list:
     return out
 
 
+def _latest_log_archive_datetime(attachments: list):
+    """最近上传的日志/压缩包/txt 时间，用于优先选择同日的视频/图片。"""
+    latest = None
+    for att in (attachments or []):
+        fn = str(att.get("filename") or "").lower()
+        is_log = ("gmlogger" in fn or "bllog" in fn or "log" in fn or "txt" in fn
+                  or re.search(r"\.(zip|7z|rar|tar|gz|tgz|bz2|xz|zst)(\.\d+)?$", fn))
+        if not is_log:
+            continue
+        dt = _ts_parse_datetime(str(att.get("created") or "")[:19])
+        if dt and (latest is None or dt > latest):
+            latest = dt
+    return latest
+
+
 def _apply_diag_time_bounds(suggested_time: str, video_time: str, attachments: list,
                             now=None) -> tuple:
     """问题排查建议时间的硬约束，返回 (调整后时间, 说明)。
@@ -7648,7 +7663,20 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
     _archive_fn_times = _diag_archive_filename_times(attachments)
     _has_video_att = any(str(a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES)
                          for a in attachments)
-    if _archive_fn_times and _has_video_att:
+    # 如果图片上传日期比 gmlogger 更新，优先走图片 OCR，不先用旧 gmlogger 配视频
+    _latest_gm_dt = None
+    _latest_img_dt = None
+    for _a in attachments:
+        _fn = str(_a.get("filename") or "").lower()
+        _dt = _ts_parse_datetime(str(_a.get("created") or "")[:19])
+        if not _dt:
+            continue
+        if "gmlogger" in _fn and (_latest_gm_dt is None or _dt > _latest_gm_dt):
+            _latest_gm_dt = _dt
+        if _fn.endswith(_IMAGE_SUFFIXES) and (_latest_img_dt is None or _dt > _latest_img_dt):
+            _latest_img_dt = _dt
+    _prefer_newer_image = bool(_latest_gm_dt and _latest_img_dt and _latest_img_dt > _latest_gm_dt)
+    if _archive_fn_times and _has_video_att and not _prefer_newer_image:
         try:
             _video_quick = _diag_extract_time_from_video_simple(issue)
             _vdt = _ts_parse_datetime(_video_quick)
@@ -7672,6 +7700,42 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                     return _ok(result, f"{bugid} 诊断完成：{category}（未解压快速确认）")
         except Exception as e:
             logger.warning("诊断 %s: 视频快速确认失败: %s", bugid, e)
+    # —— 最新日志包优先：同一天上传的图片，优先 OCR 图片里的完整时间 ——
+    _latest_archive_dt = _latest_log_archive_datetime(attachments)
+    if _latest_archive_dt:
+        _latest_day = _latest_archive_dt.strftime("%Y-%m-%d")
+        _day_images = []
+        for _a in attachments:
+            _fn = str(_a.get("filename") or "").lower()
+            _created = str(_a.get("created") or "")[:10]
+            if _fn.endswith(_IMAGE_SUFFIXES) and _created == _latest_day:
+                _day_images.append(_a)
+        if _day_images:
+            try:
+                _img_time, _img_detail = _diag_extract_time_from_images(
+                    issue, headers, att_timeout, bugid)
+                _img_dt = _ts_parse_datetime(_img_time)
+                if _img_dt:
+                    _img_upload = _attachment_upload_datetime(_day_images, _IMAGE_SUFFIXES)
+                    _confirmed, _confirm_note = _confirm_time_with_bound(_img_time, _img_upload)
+                    if _confirmed:
+                        category = "触发时间问题"
+                        detail = _build_simple_detail(
+                            "", "", _confirmed,
+                            f"最新日志包日期{_latest_day}，优先采用同日图片OCR时间")
+                        report = _generate_troubleshoot_report(
+                            bugid, category, err_msg, detail, problem_time,
+                            "success", _confirmed)
+                        result = {"bugid": bugid, "category": category, "problem_time": problem_time,
+                                  "archive_files": [], "detail": detail, "main_entries": [],
+                                  "verify_status": "success", "suggested_time": _confirmed,
+                                  "report": report, "done_time": done_time}
+                        _save_diagnose_cache(bugid, result)
+                        logger.info("诊断 %s: 最新日志包 %s，优先图片 OCR 确认 %s",
+                                    bugid, _latest_day, _confirmed)
+                        return _ok(result, f"{bugid} 诊断完成：{category}（图片优先）")
+            except Exception as e:
+                logger.warning("诊断 %s: 最新图片优先 OCR 失败: %s", bugid, e)
     # —— 识别 gmlogger 附件（智能检测：文件名含 gmlogger 或压缩包内含 main.log）——
     if not _has_gmlogger_logs(attachments, bugid):
         # 附件存在但未被识别为日志 → 不能直接判“无gmlogger”，避免误伤
