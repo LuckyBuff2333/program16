@@ -598,7 +598,7 @@ def batch_pre_classify(records: list[dict]) -> dict:
             elif "JIRA Server" in human_review or "过载" in human_review or "网络抖动" in human_review:
                 category = "并发过多"
             elif "执行超时" in human_review or "JIRA 分析任务执行超时" in human_review:
-                category = "分析任务执行超时，跳过排查"
+                category = "待人工排查"
             elif "问题重复" in human_review:
                 category = "问题重复"
             elif "未复现" in human_review or "不复现" in human_review:

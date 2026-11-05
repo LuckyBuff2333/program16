@@ -468,16 +468,35 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
         return cached["category"]
     import re
     err_info = (bf.get("错误信息", "") or "").strip()
-    # 无错误信息或服务有报错 → 服务关闭
-    if not err_info or err_info == "服务有报错":
+    # 无错误信息 → 待人工排查（不能默认服务关闭）
+    if not err_info:
+        return "待人工排查"
+    if err_info == "服务有报错":
         return "服务关闭"
-    # 504/502/503/500 网关错误 → 并发过多
+    # JIRA 分析/网关超时、adjudication、reasoning → 待人工排查
+    if "JIRA 分析任务执行超时" in err_info or "JIRA 网关分析任务执行超时" in err_info:
+        return "待人工排查"
+    if "adjudication" in err_info or ("reasoning 第" in err_info and "轮 LLM 调用失败" in err_info):
+        return "待人工排查"
+    # 504/502/503/500 网关错误 → IP配置错误
     if any(code in err_info for code in ("504 Gateway Timeout", "502 Bad Gateway",
                                          "503 Service Unavailable", "500 Internal Server Error",
                                          "Gateway Timeout", "Service Unavailable")):
-        return "并发过多"
-    # reasoning 第N轮 LLM 调用失败 → 并发过多
-    if "reasoning 第" in err_info and "轮 LLM 调用失败" in err_info:
+        return "IP配置错误"
+    # 分析任务被取消 → 人工取消
+    if "分析任务被取消" in err_info:
+        return "人工取消"
+    # 未找到问题时间 → 无时间信息
+    if "未找到问题时间" in err_info:
+        return "无时间信息"
+    # 网络通信失败/超时 → 网络波动
+    if "网络通信失败" in err_info or "网络连接超时" in err_info:
+        return "网络波动"
+    # 没有可下载的日志附件 → 无gmlogger
+    if "没有可下载的日志附件" in err_info:
+        return "无gmlogger"
+    # 分析报告生成失败 → 并发过多
+    if "分析报告生成失败" in err_info:
         return "并发过多"
     # 模型调用失败 → IT侧服务停止
     if err_info.startswith("模型调用失败"):
@@ -514,7 +533,15 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
     if "JIRA Server" in review or "过载" in review or "网络抖动" in review:
         return "并发过多"
     if "执行超时" in review or "JIRA 分析任务执行超时" in review:
-        return "分析任务执行超时，跳过排查"
+        return "待人工排查"
+    if "人工取消" in review:
+        return "人工取消"
+    if "无时间信息" in review or "未找到问题时间" in review:
+        return "无时间信息"
+    if "网络波动" in review or "网络通信失败" in review or "网络连接超时" in review:
+        return "网络波动"
+    if "IP配置错误" in review:
+        return "IP配置错误"
     if "问题重复" in review:
         return "问题重复"
     if "未复现" in review or "不复现" in review:

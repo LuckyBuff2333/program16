@@ -1766,20 +1766,3 @@ flowchart TD
 
 </details>
 
-<details>
-<summary><b>132. 问题排查改为优先按「错误分类」字段预归类（2026-11-05）</b></summary>
-
-- **背景**：数据沉淀表已有「错误分类」字段；之前问题排查仍按「错误信息」文本正则判断。
-- **规则**：
-  1. 优先读 `错误分类`，空或未识别再回退 `错误信息`；
-  2. 时间过滤后日志为空 → `触发时间问题`，仍走正常深度分析；
-  3. 处理后未找到有效的日志文件、没有可下载的日志附件 → `无gmlogger`（合并 `无gmlogger` / `无gmlogger文件`）；
-  4. JIRA 分析/网关超时、adjudication、reasoning 第N轮 → `待人工排查`，不自动分析；
-  5. 504/502/503/500 → `IP配置错误`；分析任务被取消 → `人工取消`；未找到问题时间 → `无时间信息`；网络通信失败/超时 → `网络波动`；
-  6. 分卷压缩包不完整 → 保留深度分析；解压后未找到可识别日志 → 保留深度分析；
-  7. 失败记录的错误分类和错误信息都为空 → `待人工排查`，不再默认服务关闭；
-  8. 诊断缓存版本 `5 → 6`。
-- **验证**：批量预归类用例：时间过滤→触发时间问题(needs_analysis=True)，处理后→无gmlogger，JIRA超时→待人工排查，504→IP配置错误，取消→人工取消，无时间→无时间信息，网络→网络波动，分卷→空(needs_analysis=True)。
-- **实现文件**：`src/services/troubleshoot_service.py`、`src/services/server_legacy.py`、`src/services/report_ops.py`、`src/api/routes/troubleshoot.py`、`src/schemas/troubleshoot.py`、`frontend/src/panels/TroubleshootPanel.vue`
-
-</details>
