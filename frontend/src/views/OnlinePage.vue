@@ -32,7 +32,7 @@
         </div>
         <div class="to-card to-click" :class="{ 'is-active': activeCat === 'investigate' }" style="--accent:#dc2626;--bg:linear-gradient(135deg,#fef2f2,#fee2e2)" @click="selectCategory('investigate')">
           <div class="to-icon">🔍</div>
-          <div class="to-body"><div class="to-value" style="color:#dc2626">{{ taskOv.investigate.count }}</div><div class="to-label">待排查</div></div>
+          <div class="to-body"><div class="to-value" style="color:#dc2626">{{ taskOv.investigate.count }}</div><div class="to-label">待办</div></div>
           <div class="to-foot">执行失败且分析失败</div>
         </div>
         <div class="to-card to-click" :class="{ 'is-active': activeCat === 'retry' }" style="--accent:#7c3aed;--bg:linear-gradient(135deg,#f5f3ff,#ede9fe)" @click="selectCategory('retry')">
@@ -70,7 +70,7 @@
             <el-table-column prop="exec_time" label="执行时间" width="180" />
             <el-table-column prop="trigger_time" label="触发时间" min-width="180" />
           </template>
-          <!-- 待排查：分析完成时间、错误信息 -->
+          <!-- 待办：分析完成时间、错误信息 -->
           <template v-else-if="activeCat === 'investigate'">
             <el-table-column prop="done_time" label="分析完成时间" width="180" />
             <el-table-column prop="error_info" label="错误信息" min-width="260" show-overflow-tooltip />
@@ -364,7 +364,7 @@ export default {
       return (this.taskOv[this.activeCat] && this.taskOv[this.activeCat].rows) || [];
     },
     activeCatTitle() {
-      const map = { total: this.toMode === 'today' ? '今日执行总数' : '昨日执行总数', success: '成功数量', analyzing: '分析中', investigate: '待排查', retry: '待重试' } as Record<string, string>;
+      const map = { total: this.toMode === 'today' ? '今日执行总数' : '昨日执行总数', success: '成功数量', analyzing: '分析中', investigate: '待办', retry: '待重试' } as Record<string, string>;
       return map[this.activeCat] || '';
     },
     tableMaxHeight() {

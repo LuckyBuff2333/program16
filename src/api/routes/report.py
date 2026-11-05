@@ -961,7 +961,7 @@ def dashboard_task_overview(
     date: str = Query(default=None, description="日期 YYYY-MM-DD，默认今天"),
     force: bool = Query(default=False, description="强制刷新缓存"),
 ):
-    """任务总览：5 维度统计（执行总数/成功/分析中/待排查/待重试）"""
+    """任务总览：5 维度统计（执行总数/成功/分析中/待办/待重试）"""
     from src.api.routes.shared import bitable_text as _bt, ok as _ok
     date_str = date or datetime.now().strftime("%Y-%m-%d")
     # ── 缓存检查 ──
@@ -1060,7 +1060,7 @@ def dashboard_task_overview(
     }
     with _task_overview_lock:
         _task_overview_cache[date_str] = {"ts": time.time(), "data": result}
-    logger.info("任务总览: %s, 总数=%d 成功=%d 分析中=%d 待排查=%d 待重试=%d",
+    logger.info("任务总览: %s, 总数=%d 成功=%d 分析中=%d 待办=%d 待重试=%d",
                 date_str, len(all_ids), len(success_rows),
                 len(analyzing_rows), len(investigate_rows), len(retry_rows))
     return _ok(result)
