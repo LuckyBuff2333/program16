@@ -7748,8 +7748,53 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             category = "解压问题"
             detail = _build_simple_detail("", "", "", f"附件中存在压缩包/日志，但未识别出可用 gmlogger（共 {len(attachments)} 个附件）")
         else:
-            category = "无参考"
-            detail = _build_simple_detail("", "", "", f"附件中无 gmlogger/日志文件（共 {len(attachments)} 个附件，视频/图片已跳过）")
+            # 没有日志包，只有视频/图片：先实际 OCR，确认确实没有时间才判“无时间信息”
+            _media_time = ""
+            try:
+                _has_video = any(str(a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES)
+                                 for a in attachments)
+                _has_image = any(str(a.get("filename", "") or "").lower().endswith(_IMAGE_SUFFIXES)
+                                 for a in attachments)
+                if _has_video:
+                    _media_time = _diag_extract_time_from_video_simple(issue) or ""
+                if not _media_time and _has_image:
+                    _media_time, _ = _diag_extract_time_from_images(issue, headers, att_timeout, bugid)
+                    _media_time = _media_time or ""
+                if not _media_time:
+                    _media_time = jira_client.extract_latest_comment_time(issue) or ""
+            except Exception as e:
+                logger.warning("诊断 %s: 无日志时视频/图片 OCR 失败: %s", bugid, e)
+            # 视频文件名兜底不算“视频里真的有时间”
+            if _media_time:
+                for _a in attachments:
+                    _fn = str(_a.get("filename") or "")
+                    if not _fn.lower().endswith(_VIDEO_SUFFIXES):
+                        continue
+                    _vfn_time = _parse_video_filename_datetime(_fn)
+                    if _vfn_time and str(_media_time)[:19] == str(_vfn_time)[:19]:
+                        _media_time = ""
+                        break
+            if _media_time:
+                _media_upload = (_video_upload_datetime(attachments)
+                                 or _attachment_upload_datetime(attachments, _IMAGE_SUFFIXES))
+                _confirmed, _ = _confirm_time_with_bound(_media_time, _media_upload)
+                if _confirmed:
+                    category = "触发时间问题"
+                    detail = _build_simple_detail("", "", _confirmed,
+                                                  f"视频/图片 OCR 提取到时间（共 {len(attachments)} 个附件）")
+                    report = _generate_troubleshoot_report(
+                        bugid, category, err_msg, detail, problem_time, "success", _confirmed)
+                    result = {"bugid": bugid, "category": category, "problem_time": problem_time,
+                              "archive_files": [], "detail": detail, "main_entries": [],
+                              "verify_status": "success", "suggested_time": _confirmed,
+                              "report": report, "done_time": done_time}
+                    _save_diagnose_cache(bugid, result)
+                    return _ok(result, f"{bugid} 诊断完成：{category}")
+                category = "无参考"
+                detail = _build_simple_detail("", "", "", f"提取到时间但无参考时间（共 {len(attachments)} 个附件）")
+            else:
+                category = "无时间信息"
+                detail = _build_simple_detail("", "", "", f"视频/图片/评论区均无时间信息（共 {len(attachments)} 个附件）")
         verify_status, suggested_time = "", ""
         archive_results = []
         report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time, archive_results)
@@ -8301,6 +8346,17 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             elif category in ("无参考", "解压问题") and not suggested_time:
                 verify_status = ""
                 vdetail = f"{vdetail}（无参考/解压问题，无需人工改时间）" if vdetail else "无参考/解压问题，无需人工改时间"
+        if not comment_time:
+            try:
+                comment_time = jira_client.extract_latest_comment_time(issue) or ""
+            except Exception:
+                comment_time = ""
+        # 视频/图片/评论区都没有时间：归“无时间信息”，不要再用“无参考”
+        if category == "无参考" and not (video_time or img_time_str or comment_time):
+            category = "无时间信息"
+            verify_status = ""
+            suggested_time = ""
+            final_msg = "视频/图片/评论区均无时间信息"
         detail = _build_simple_detail(comment_time, video_time, img_time_str, final_msg)
     report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time, archive_results)
     result = {"bugid": bugid, "category": category, "problem_time": problem_time,
