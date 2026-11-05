@@ -3733,18 +3733,12 @@ def _align_time_to_gmlogger_impl(issue: dict, tt: str, attachments: list) -> str
     gm_sorted = sorted(gm, key=lambda x: x[1])
     latest = gm_sorted[-1][1]
     if not tt:
-        return (latest - timedelta(seconds=180)).strftime("%Y-%m-%d %H:%M:%S")
+        return latest.strftime("%Y-%m-%d %H:%M:%S")
     dt = _ts_parse_datetime(str(tt))
     if not dt:
         # 只有时分：用最近抓包的日期补全
         return _fill_time_with_ref_date(str(tt), gm_sorted) or tt
-    nearest = min(gm_sorted, key=lambda x: abs((x[1] - dt).total_seconds()))
-    # 事件应在抓包之前；等于抓包或只早不到 1 分钟时，向前留 3 分钟窗口
-    delta_before = (nearest[1] - dt).total_seconds()
-    if delta_before < 60:
-        return (nearest[1] - timedelta(seconds=180)).strftime("%Y-%m-%d %H:%M:%S")
-    if abs(delta_before) > 1800:
-        return (nearest[1] - timedelta(seconds=180)).strftime("%Y-%m-%d %H:%M:%S")
+    # 提取时间优先原样保留，不做“往前减 3 分钟”的对齐
     return tt
 
 

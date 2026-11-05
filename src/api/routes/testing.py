@@ -6130,6 +6130,15 @@ async def test_adp_lookup(request: Request):
                     continue
                 write_fields = {k: v for k, v in results_dict.items()
                                 if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
+                # 同一 Jira 多次重试：本次耗时累加到表格已有耗时上
+                _prev_dur = (rec.get("fields") or {}).get("耗时(分)")
+                _cur_dur = write_fields.get("耗时(分)")
+                if _cur_dur not in (None, ""):
+                    try:
+                        _prev = float(_prev_dur) if _prev_dur not in (None, "") else 0.0
+                        write_fields["耗时(分)"] = str(round(_prev + float(_cur_dur), 1))
+                    except (TypeError, ValueError):
+                        pass
                 # 确保 root cause 字段也被填充（与 agent分析的root cause 同步）
                 adp_rc = write_fields.get("agent分析的root cause", "")
                 if adp_rc:

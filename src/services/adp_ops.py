@@ -1318,6 +1318,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 查找已有记录
         records = feishu_client.list_bitable_records(app_token, table_id)
         record_id = None
+        prev_duration = ""
         for item in records:
             fv = item.get("fields", {}).get(jira_field, "")
             if isinstance(fv, list) and fv:
@@ -1326,6 +1327,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
                 fv_text = str(fv)
             if jira_key in fv_text:
                 record_id = item.get("record_id", "")
+                prev_duration = item.get("fields", {}).get("耗时(分)", "")
                 break
         # 不存在则新建
         if not record_id:
@@ -1343,6 +1345,14 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         adp_rc = write_fields.get("agent分析的root cause", "")
         if adp_rc:
             write_fields["root cause"] = adp_rc
+        # 同一 Jira 多次重试：本次耗时累加到表格已有耗时上
+        _cur_dur = write_fields.get("耗时(分)")
+        if _cur_dur not in (None, ""):
+            try:
+                _prev = float(prev_duration) if prev_duration not in (None, "") else 0.0
+                write_fields["耗时(分)"] = str(round(_prev + float(_cur_dur), 1))
+            except (TypeError, ValueError):
+                pass
         # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
         tid_check = write_fields.get("traceid排查", "")
         if tid_check and isinstance(tid_check, str) and tid_check.startswith("http"):
@@ -1416,6 +1426,15 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     out = {"ok": False, "jira_key": jira_key, "description": description, "trigger_time": trigger_time}
     signal_info = {}  # SSE 判别信号（reply_method / response_status 等），失败时写入 error 便于排查
 
+    def _stamp_elapsed():
+        # 单次 Jira 的累计耗时：所有早退分支也要带上，写回时才能累加
+        _e = round(time.time() - t0, 1)
+        out["elapsed_sec"] = _e
+        out["total_elapsed"] = _e
+        _r = out.get("results")
+        if isinstance(_r, dict):
+            _r["耗时(分)"] = str(round(_e / 60, 1))
+
     def _progress(step, status, detail=""):
         if progress_cb:
             progress_cb(step, status, detail)
@@ -1429,6 +1448,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         out["results"] = {"完成状态": "分析失败", "分析失败归因": "ADP附件接口异常"}
         out["fail_type"] = "ADP附件接口异常"
         _progress("attachments", "fail", "附件接口异常")
+        _stamp_elapsed()
         return out
     out["attachment_count"] = len(attachments)
     # 确实没有附件：无法分析，不重试，直接下一条
@@ -1437,6 +1457,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         out["results"] = {"完成状态": "无法分析", "分析失败归因": "无日志附件"}
         out["fail_type"] = "无日志附件"
         _progress("attachments", "fail", "无日志附件")
+        _stamp_elapsed()
         return out
     # 检查过滤后是否有有效日志附件
     valid_atts = [a for a in attachments if _is_valid_attachment(a)]
@@ -1446,6 +1467,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         out["results"] = {"完成状态": "无法分析", "分析失败归因": "无日志附件"}
         out["fail_type"] = "无日志附件"
         _progress("attachments", "fail", f"无日志附件（已有: {', '.join(file_names[:5])}）")
+        _stamp_elapsed()
         return out
     _progress("attachments", "done", f"{len(valid_atts)} 个有效附件（共 {len(attachments)} 个）")
 
@@ -1463,6 +1485,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         out["results"] = {"完成状态": "分析失败", "分析失败归因": fail_reason}
         out["fail_type"] = fail_reason
         _progress("adp_analysis", "fail", fail_reason)
+        _stamp_elapsed()
         return out
     if not full_text:
         out["error"] = "ADP 无返回（待重试）"
@@ -1470,6 +1493,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         out["results"] = {"完成状态": "分析失败", "分析失败归因": "ADP 无返回"}
         out["fail_type"] = "ADP 无返回"
         _progress("adp_analysis", "fail", "无返回，已记录待重试")
+        _stamp_elapsed()
         return out
     elapsed_sec = (end_ts - start_ts) / 1000 if start_ts and end_ts else 0
     out["elapsed_sec"] = round(elapsed_sec, 1)
@@ -1588,6 +1612,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 while _waited < backoff:
                     if stop_event is not None and stop_event.is_set():
                         logger.info("ADP 限流退避等待中被停止")
+                        _stamp_elapsed()
                         return out
                     time.sleep(min(0.5, backoff - _waited))
                     _waited += 0.5
@@ -1655,9 +1680,15 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 while _waited < _backoff:
                     if stop_event is not None and stop_event.is_set():
                         logger.info("ADP 限流退避等待中被停止")
+                        _stamp_elapsed()
                         return out
                     time.sleep(min(0.5, _backoff - _waited))
                     _waited += 0.5
+        # 本次 Jira 从开始到当前的总耗时（含 SSE 重试、续接轮次），写回表格
+        _total_elapsed_sec = round(time.time() - t0, 1)
+        out["elapsed_sec"] = _total_elapsed_sec
+        results["耗时(分)"] = str(round(_total_elapsed_sec / 60, 1))
+
         # 续接后仍无报告：按截断/收口细分
         if not results.get("_report_url") and results.get("完成状态") == "分析失败":
             if _trunc_mid:
@@ -1844,7 +1875,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         _prev_err = out.get("error") or ""
         out["error"] = (f"{_prev_err}（{_sig_dbg}）" if _prev_err else _sig_dbg)
 
-    out["total_elapsed"] = round(time.time() - t0, 1)
+    _stamp_elapsed()
     return out
 
 
