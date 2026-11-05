@@ -8,7 +8,7 @@ import json
 import os
 import re
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import yaml
@@ -369,10 +369,26 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
                         or "待人工排查" in human_review):
                     is_todo = True
             if is_todo:
+                # 执行时间=分析开始时间：分析完成时间 - 分析耗时
+                _done = str(row.get("分析完成时间", "") or "")
+                _dur_raw = str(row.get("分析耗时", "") or row.get("总耗时", "")).strip()
+                if _dur_raw.replace(".", "", 1).isdigit():
+                    # 数据沉淀里的纯数字耗时单位为分钟
+                    _dur = float(_dur_raw) * 60
+                else:
+                    _dur = _parse_dur_sec(_dur_raw)
+                _start = _done
+                if _done and _dur > 0:
+                    try:
+                        _start = (datetime.strptime(_done[:19], "%Y-%m-%d %H:%M:%S")
+                                  - timedelta(seconds=_dur)).strftime("%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        pass
                 todo_items.append({
                     "jira号": row.get("jira号", ""),
                     "reason": f"分析失败: {cat}",
                     "触发时间": row.get("触发时间", "") or row.get("分析问题时间", ""),
+                    "执行时间": _start,
                     "人工审核": human_review or "(未审核)",
                 })
         else:
@@ -554,6 +570,7 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
                 if is_todo:
                     todo_items.append({"jira号": jira_no, "reason": f"分析失败: {cat}",
                                        "触发时间": exec_info.get("触发时间", ""),
+                                       "执行时间": exec_info.get("执行时间", ""),
                                        "人工审核": human_review or "(未审核)"})
         else:
             # 执行成功但多维表格无记录 → 计入统计，标记为"分析中"
@@ -877,18 +894,32 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
         for cat, cnt in failures.items():
             lines.append(f"- {cat}：{cnt} 条")
         lines.append("")
-    # 待办跟进
+    # 待办跟进：普通待办只展示 Jira号 + 执行时间；触发时间问题额外展示触发时间
     todo_items = report.get("todo_items", [])
     if todo_items:
         lines.append("## 待办跟进")
         lines.append("")
         lines.append(f"共 {len(todo_items)} 项待处理：")
         lines.append("")
-        lines.append("| Jira号 | 原因 | 人工审核 | 触发时间 |")
-        lines.append("|--------|------|----------|----------|")
-        for item in todo_items:
-            lines.append(f"| {item['jira号']} | {item['reason']} | {item.get('人工审核', '')} | {item['触发时间']} |")
-        lines.append("")
+        trigger_todos = [it for it in todo_items if "触发时间问题" in str(it.get("reason", ""))]
+        other_todos = [it for it in todo_items if it not in trigger_todos]
+        if trigger_todos:
+            lines.append("### 触发时间问题")
+            lines.append("")
+            lines.append("| Jira号 | 触发时间 | 执行时间 |")
+            lines.append("|--------|----------|----------|")
+            for item in trigger_todos:
+                lines.append(f"| {item['jira号']} | {item.get('触发时间', '')} | {item.get('执行时间', '')} |")
+            lines.append("")
+        if other_todos:
+            if trigger_todos:
+                lines.append("### 其他待办")
+                lines.append("")
+            lines.append("| Jira号 | 执行时间 |")
+            lines.append("|--------|----------|")
+            for item in other_todos:
+                lines.append(f"| {item['jira号']} | {item.get('执行时间', '')} |")
+            lines.append("")
     # 执行详情（分四个模块：分析失败、待开发排查、耗时过长、分析成功）
     lines.append("## 执行详情")
     lines.append("")
