@@ -6163,6 +6163,16 @@ async def test_adp_lookup(request: Request):
                 await loop.run_in_executor(
                     None, lambda: feishu_client.update_bitable_records(app_token, table_id, update_records))
                 logger.info("ADP lookup 批量写回成功: %d 条（总耗时 %s）", len(update_records), _elapsed_str)
+            # 批次总耗时：批次表写本批次，数据表写累计；全失败批次不记录
+            try:
+                from src.services.adp_ops import apply_adp_batch_total, _get_adp_cfg
+                _master_id = _get_adp_cfg().get("bitable_table_id", "")
+                _batch_ok = any(bool(r.get("ok")) for r in all_results)
+                await loop.run_in_executor(
+                    None, lambda: apply_adp_batch_total(
+                        app_token, table_id, _master_id, _lookup_elapsed / 60, _batch_ok))
+            except Exception:
+                logger.warning("ADP lookup 批次总耗时写入失败", exc_info=True)
         except Exception as e:
             logger.error("ADP lookup 批量写回失败: %s", e)
 

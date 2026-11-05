@@ -1305,6 +1305,52 @@ def download_adp_report(jira_key: str, report_url: str, html_file: str) -> dict:
 
 # ===== Step 5: 写入飞书多维表格（独立 ADP 表格）=====
 
+def _parse_total_minutes(value) -> float:
+    try:
+        return float(str(value or "").strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _update_all_records_field(app_token: str, table_id: str, field_name: str, value: str):
+    """把整张表的一个字段统一写成 value（分批 100 条）。"""
+    from src.clients import feishu_client
+    records = feishu_client.list_bitable_records(app_token, table_id)
+    updates = [{"record_id": r.get("record_id"), "fields": {field_name: value}}
+               for r in records if r.get("record_id")]
+    for i in range(0, len(updates), 100):
+        feishu_client.update_bitable_records(app_token, table_id, updates[i:i + 100])
+
+
+def apply_adp_batch_total(app_token: str, selected_table_id: str, master_table_id: str,
+                          batch_minutes: float, batch_has_success: bool):
+    """记录一次批次的耗时。
+
+    - 批次表：整表写本批次总耗时；
+    - 数据表：整表写累计总耗时（已有总耗时 + 本批次）；
+    - 全失败批次不记录。
+    """
+    if not batch_has_success or batch_minutes <= 0:
+        return
+    from src.clients import feishu_client
+    minutes = round(float(batch_minutes), 1)
+    try:
+        if selected_table_id and selected_table_id != master_table_id:
+            _update_all_records_field(app_token, selected_table_id, "总耗时(分)", f"{minutes:.1f}")
+        if master_table_id:
+            records = feishu_client.list_bitable_records(app_token, master_table_id)
+            base = max((_parse_total_minutes((r.get("fields") or {}).get("总耗时(分)"))
+                        for r in records), default=0.0)
+            total = round(base + minutes, 1)
+            updates = [{"record_id": r.get("record_id"), "fields": {"总耗时(分)": f"{total:.1f}"}}
+                       for r in records if r.get("record_id")]
+            for i in range(0, len(updates), 100):
+                feishu_client.update_bitable_records(app_token, master_table_id, updates[i:i + 100])
+            logger.info("ADP 总耗时更新: 本批次 %.1f 分，数据表累计 %.1f 分", minutes, total)
+    except Exception as e:
+        logger.warning("ADP 总耗时写入失败: %s", e)
+
+
 def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
     """写入 ADP 独立多维表格，返回 {ok, record_id, message}"""
     from src.clients import feishu_client
@@ -1373,6 +1419,10 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
                 write_fields["分析失败归因"] = (existing + suffix).strip()
         feishu_client.update_bitable_records(app_token, table_id,
                                               [{"record_id": record_id, "fields": write_fields}])
+        # 单条流程：成功时把本条耗时累计到数据表总耗时
+        if fields_dict.get("完成状态") == "完成":
+            _minutes = _parse_total_minutes(fields_dict.get("耗时(分)"))
+            apply_adp_batch_total(app_token, table_id, table_id, _minutes, True)
         logger.info("ADP 飞书写入成功: %s -> %s", jira_key, list(write_fields.keys()))
         return {"ok": True, "record_id": record_id, "message": "写入成功", "fields": write_fields}
     except Exception as e:
