@@ -267,6 +267,152 @@ def _format_dur(sec: float) -> str:
     return f"{m}分{s}秒" if m else f"{s}秒"
 
 
+def _generate_daily_report_from_table(date_str: str) -> dict:
+    """每日播报：直接统计数据沉淀中分析完成时间落在报告日期范围内的记录。
+
+    不再依赖批量执行记录里的 Jira 号；失败与待分析统一计入失败数。
+    """
+    report_dates = _get_report_date_range(date_str)
+    date_set = set(report_dates)
+
+    yesterday_new = 0
+    yesterday_done = 0
+    try:
+        from src.clients import jira_client as _jc
+        jql = 'issuetype = bug AND created >= startOfDay(\'-1d\') AND created <= endOfDay(\'-1d\')'
+        issues = _jc.search_issues(jql, max_results=1000, fields="customfield_13714")
+        yesterday_new = len(issues)
+        for iss in issues:
+            f = (iss.get("fields") or {}).get("customfield_13714")
+            if f and str(f).strip() and str(f).strip().lower() not in ("none", "null"):
+                yesterday_done += 1
+    except Exception as e:
+        logger.warning("每日播报：昨日新增Bug查询失败: %s", e)
+
+    from src.clients import feishu_client
+    cfg = load_config().get("feishu_bitable", {})
+    app_token, table_id = cfg.get("app_token", ""), cfg.get("table_id", "")
+    bugid_field = cfg.get("bugid_field", "jira号")
+    report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
+    rows = []
+    if app_token and table_id:
+        try:
+            records = feishu_client.list_bitable_records(app_token, table_id)
+            for rec in records:
+                fields = rec.get("fields", {})
+                completed = _bitable_text(fields.get("分析完成时间", "")).strip()
+                if not completed or completed[:10] not in date_set:
+                    continue
+                row = _flatten_bitable_record_all(fields, report_field)
+                row["jira号"] = _bitable_text(fields.get(bugid_field, "")) or row.get("jira号", "")
+                row["分析完成时间"] = completed[:19]
+                rows.append(row)
+        except Exception as e:
+            logger.warning("每日播报：数据沉淀查询失败: %s", e)
+
+    if not rows:
+        return {"total": 0, "regression": 0, "success": 0, "fail": 0,
+                "pending": 0, "failures": {}, "failure_jiras": {}, "todo_items": [],
+                "too_long": 0, "avg_total_duration": "-", "avg_analysis_duration": "-",
+                "report_dates": report_dates, "rows": [], "dedup": 0,
+                "pc_count": 0, "online_count": 0, "pc_dup": 0, "online_dup": 0,
+                "pc_meta": {}, "online_meta": {}, "yesterday_new": yesterday_new,
+                "yesterday_done": yesterday_done}
+
+    success_count = 0
+    fail_actual = 0
+    pending_count = 0
+    fail_cats = {}
+    fail_jiras = {}
+    todo_items = []
+    durations = []
+    analysis_durations = []
+    too_long_count = 0
+    too_long_threshold = 900  # 15分钟
+
+    for row in rows:
+        result = (row.get("分析结果", "") or "").strip()
+        raw_dur = row.get("总耗时", "")
+        dur_sec = _parse_dur_sec(raw_dur)
+        if dur_sec > 0:
+            durations.append(dur_sec)
+        raw_analysis = row.get("分析耗时", "")
+        analysis_sec = _parse_dur_sec(raw_analysis)
+        if analysis_sec > 0:
+            analysis_durations.append(analysis_sec)
+            if analysis_sec > too_long_threshold:
+                too_long_count += 1
+
+        if result == "成功":
+            success_count += 1
+        elif result == "失败":
+            fail_actual += 1
+            cat = _classify_failure(row.get("jira号", ""), row)
+            row["失败分类"] = cat
+            fail_cats[cat] = fail_cats.get(cat, 0) + 1
+            fail_jiras.setdefault(cat, []).append({
+                "jira号": row.get("jira号", ""),
+                "错误信息": (_bitable_text(row.get("错误信息", "")) or "")[:80],
+            })
+            # 待办只保留两类：触发时间问题、待人工排查；
+            # 待人工排查被人工改成其他结论后不再计入待办。
+            human_review = _bitable_text(row.get("人工审核结果", "")) or ""
+            is_todo = False
+            if cat == "触发时间问题":
+                is_todo = True
+            elif cat == "待人工排查":
+                if (not human_review or human_review in ("-", "None")
+                        or "待人工排查" in human_review):
+                    is_todo = True
+            if is_todo:
+                todo_items.append({
+                    "jira号": row.get("jira号", ""),
+                    "reason": f"分析失败: {cat}",
+                    "触发时间": row.get("触发时间", "") or row.get("分析问题时间", ""),
+                    "人工审核": human_review or "(未审核)",
+                })
+        else:
+            # 待分析/空结果：计入失败总数，但不参与失败原因分类
+            pending_count += 1
+
+    rows.sort(key=lambda r: r.get("jira号", ""))
+    total = len(rows)
+    fail_count = fail_actual + pending_count
+    regression_count = total
+
+    counted = total or 1
+    avg_total_duration = _format_dur(sum(durations) / counted) if durations else "-"
+    avg_analysis_duration = _format_dur(sum(analysis_durations) / counted) if analysis_durations else "-"
+
+    online_rows = [r for r in rows if r.get("触发来源", "") == "parseFullTicket"]
+    pc_rows = [r for r in rows if r not in online_rows]
+
+    def _collect_meta(group_rows: list) -> dict:
+        if not group_rows:
+            return {}
+        r = group_rows[0]
+        return {
+            "分析并发数": r.get("分析并发数", "") or "-",
+            "下载并发数": r.get("下载并发数", "") or "-",
+            "模型": r.get("模型", "") or "-",
+            "版本": r.get("版本号", "") or "-",
+        }
+
+    return {
+        "total": total, "regression": regression_count,
+        "success": success_count, "fail": fail_count,
+        "pending": pending_count, "failures": fail_cats, "failure_jiras": fail_jiras,
+        "todo_items": todo_items, "too_long": too_long_count,
+        "avg_total_duration": avg_total_duration,
+        "avg_analysis_duration": avg_analysis_duration,
+        "pc_count": len(pc_rows), "online_count": len(online_rows),
+        "pc_dup": 0, "online_dup": 0,
+        "pc_meta": _collect_meta(pc_rows), "online_meta": _collect_meta(online_rows),
+        "report_dates": report_dates, "rows": rows, "dedup": 0,
+        "yesterday_new": yesterday_new, "yesterday_done": yesterday_done,
+    }
+
+
 def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: tuple = None) -> dict:
     """生成指定工作日的结论汇总，自动扩展到后续非工作日（含周末/法定假日）
 
@@ -274,6 +420,9 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
     :param bt_map: 可选，预查询的多维表格数据 {jira_no: [records]}，避免重复查询
     :param preloaded_batch: 可选，预读取的批次记录 (jira_exec, dedup_count)，避免重复读取
     """
+    # 每日播报（不传批量预读数据）直接统计数据沉淀
+    if bt_map is None and preloaded_batch is None:
+        return _generate_daily_report_from_table(date_str)
     # 计算播报覆盖的日期范围（工作日 + 后续非工作日）
     report_dates = _get_report_date_range(date_str)
     # 昨日新增Bug / 昨日已完成（有AI初步分析结果 customfield_13714）
@@ -462,7 +611,16 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
 
 
 def _classify_failure(jira_no: str, bf: dict) -> str:
-    """失败分类：优先诊断缓存，其次错误信息，最后人工审核结果倒推"""
+    """失败分类：优先错误分类字段，其次诊断缓存/错误信息，最后人工审核结果倒推"""
+    error_class = _bitable_text(bf.get("错误分类", "")).strip()
+    if error_class:
+        try:
+            from src.services.troubleshoot_service import _diag_pre_classify
+            cat = _diag_pre_classify("", error_class)
+            if cat:
+                return cat
+        except Exception:
+            pass
     cached = _load_diagnose_cache(jira_no)
     if cached and cached.get("category"):
         return cached["category"]
@@ -573,7 +731,7 @@ def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -
         yd = report.get("yesterday_done", 0)
         if yn or yd:
             msg += f"📝 昨日新增Bug：{yn} | 昨日已完成：{yd}\n\n"
-        msg += "当日无批量执行记录"
+        msg += "当日无分析记录"
         return msg
     rate = f"{success / total * 100:.0f}%" if total > 0 else "0%"
     # 日期标签：多天时显示范围
@@ -618,8 +776,6 @@ def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -
     msg += f"🔁 回归：{report.get('regression', 0)}\n"
     msg += f"✅ 成功：{success}\n"
     msg += f"❌ 失败：{fail}\n"
-    if pending:
-        msg += f"⏳ 待分析：{pending}\n"
     dedup = report.get("dedup", 0)
     if dedup:
         msg += f"🔀 去重：{dedup}\n"
@@ -703,7 +859,6 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
              f"- 回归：{report.get('regression', 0)}",
              f"- 成功：{success}",
              f"- 失败：{fail}",
-             f"- 待分析：{report.get('pending', 0)}",
              f"- 去重：{report.get('dedup', 0)}",
              f"- 成功率：{rate}",
              f"- 平均总耗时：{report.get('avg_total_duration', '-')}",
@@ -758,10 +913,15 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
     # 各模块表格表头
     detail_header = ["| Jira号 | 触发时间 | 执行时间 | 分析耗时 | 分析结果 |",
                      "|--------|----------|----------|----------|----------|"]
+    detail_header_no_trigger = ["| Jira号 | 执行时间 | 分析耗时 | 分析结果 |",
+                                "|--------|----------|----------|----------|"]
     def _detail_row(r):
         return (f"| {r.get('jira号', '')} | {r.get('触发时间', '')} | "
                 f"{r.get('执行时间', '')} | {r.get('分析耗时', '')} | "
                 f"{r.get('分析结果', '') or r.get('备注', '')[:50]} |")
+    def _detail_row_no_trigger(r):
+        return (f"| {r.get('jira号', '')} | {r.get('执行时间', '')} | "
+                f"{r.get('分析耗时', '')} | {r.get('分析结果', '') or r.get('备注', '')[:50]} |")
     # 模块 1：分析失败（按失败分类归类）
     lines.append(f"### 分析失败（{len(failed_rows)}条）")
     lines.append("")
@@ -775,15 +935,20 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
         for cat, group_rows in sorted(fail_groups.items(), key=lambda x: -len(x[1])):
             lines.append(f"#### {cat}（{len(group_rows)}条）")
             lines.append("")
-            lines.extend(detail_header)
-            for r in group_rows:
-                lines.append(_detail_row(r))
+            if cat == "触发时间问题":
+                lines.extend(detail_header_no_trigger)
+                for r in group_rows:
+                    lines.append(_detail_row_no_trigger(r))
+            else:
+                lines.extend(detail_header)
+                for r in group_rows:
+                    lines.append(_detail_row(r))
             lines.append("")
     else:
         lines.append("无")
     lines.append("")
-    # 模块 2：待开发排查
-    lines.append(f"### 待开发排查（{len(pending_rows)}条）")
+    # 模块 2：待分析（已计入失败总数）
+    lines.append(f"### 待分析（已计入失败，{len(pending_rows)}条）")
     lines.append("")
     if pending_rows:
         lines.extend(detail_header)
