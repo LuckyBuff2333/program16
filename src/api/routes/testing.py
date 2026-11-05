@@ -6130,9 +6130,15 @@ async def test_adp_lookup(request: Request):
                     continue
                 write_fields = {k: v for k, v in results_dict.items()
                                 if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
-                # 只记录本次分析耗时，不叠加历史值
+                # 只记录本次分析耗时；已有成功记录时，后续失败不覆盖成功耗时
                 _cur_dur = write_fields.get("耗时(分)")
-                if _cur_dur not in (None, ""):
+                _prev_fields = rec.get("fields") or {}
+                _prev_status = str(_prev_fields.get("完成状态", "") or "")
+                if _prev_status == "完成" and str(write_fields.get("完成状态", "")) != "完成":
+                    _prev_dur = _prev_fields.get("耗时(分)", "")
+                    if _prev_dur not in (None, ""):
+                        write_fields["耗时(分)"] = str(_prev_dur)
+                elif _cur_dur not in (None, ""):
                     try:
                         write_fields["耗时(分)"] = str(round(float(_cur_dur), 1))
                     except (TypeError, ValueError):

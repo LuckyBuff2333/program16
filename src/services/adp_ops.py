@@ -1365,6 +1365,8 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 查找已有记录
         records = feishu_client.list_bitable_records(app_token, table_id)
         record_id = None
+        prev_status = ""
+        prev_duration = ""
         for item in records:
             fv = item.get("fields", {}).get(jira_field, "")
             if isinstance(fv, list) and fv:
@@ -1373,6 +1375,8 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
                 fv_text = str(fv)
             if jira_key in fv_text:
                 record_id = item.get("record_id", "")
+                prev_status = str(item.get("fields", {}).get("完成状态", "") or "")
+                prev_duration = item.get("fields", {}).get("耗时(分)", "")
                 break
         # 不存在则新建
         if not record_id:
@@ -1390,9 +1394,12 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         adp_rc = write_fields.get("agent分析的root cause", "")
         if adp_rc:
             write_fields["root cause"] = adp_rc
-        # 只记录本次分析耗时，不叠加历史值，避免耗时越滚越大
+        # 只记录本次分析耗时；已有成功记录时，后续失败不覆盖成功耗时
         _cur_dur = write_fields.get("耗时(分)")
-        if _cur_dur not in (None, ""):
+        if prev_status == "完成" and str(write_fields.get("完成状态", "")) != "完成":
+            if prev_duration not in (None, ""):
+                write_fields["耗时(分)"] = str(prev_duration)
+        elif _cur_dur not in (None, ""):
             try:
                 write_fields["耗时(分)"] = str(round(float(_cur_dur), 1))
             except (TypeError, ValueError):
