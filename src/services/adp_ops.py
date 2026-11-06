@@ -1850,14 +1850,19 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             html_module = _extract_module_from_html(local_path)
             if html_module:
                 results["agent分析的问题模块"] = html_module
+            # 拿到 HTML 但报告里没有断点模块/现象承载模块 → 降级完成
+            if file_token and not html_module:
+                results["完成状态"] = "降级完成"
             _progress("download_report", "done" if file_token else "fail")
         elif is_sandbox:
-            # 沙箱 URL 不可下载（401），保持完成状态，链接追加到 root cause 文本末尾
+            # 沙箱 URL 不可下载：没有实际拿到 HTML 报告 → 分析失败
+            results["完成状态"] = "分析失败"
+            results["分析失败归因"] = "沙箱报告不可下载，未拿到 HTML 报告"
             rc = results.get("agent分析的root cause", "") or ""
             if report_url and report_url not in rc:
                 results["agent分析的root cause"] = (rc + f"\n报告链接: {report_url}").strip()
             out["_sandbox_url"] = report_url
-            _progress("download_report", "done", "沙箱链接（不可下载）")
+            _progress("download_report", "fail", "沙箱链接（不可下载）")
         else:
             # 无任何报告链接：保留已判定的截断/收口分类
             results["完成状态"] = "分析失败"
