@@ -1923,6 +1923,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         _progress("save_local", "done")
 
         # Step 5: 写入飞书（可跳过，由调用方自行写回）
+        # 失败记录也要带 traceid，后续重试以最后一次 traceid 覆盖
+        if trace_id:
+            results["traceid"] = trace_id
         if skip_feishu:
             _progress("write_feishu", "done", "跳过（由调用方写回）")
             out["feishu"] = {"ok": True, "record_id": "", "message": "跳过"}
@@ -1961,10 +1964,12 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         except Exception as _e:
             logger.warning("发布失败快照失败 %s: %s", jira_key, str(_e)[:120])
 
-    # 失败时不写 traceid；traceid排查 只放“返回内容”的报告链接
+    # 失败时同样保留 traceid，且以最后一次尝试为准
     if not out.get("ok"):
         _res = out.get("results") or {}
-        _res.pop("traceid", None)
+        _tid = str(out.get("trace_id", "") or _res.get("traceid", "")).strip()
+        if _tid:
+            _res["traceid"] = _tid
         _doc = out.get("report_doc_url") or ""
         if _doc:
             _res["traceid排查"] = _doc
