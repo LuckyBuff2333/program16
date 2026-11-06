@@ -2697,6 +2697,18 @@ async def test_prod_batch_run(request: Request):
         # 停止标志由 /api/test/prod_batch_run/stop 设置：当前在提取的 Jira 完成并写云端后，取消后续队列
         from src.api.routes.shared import prod_batch_stop_event as stop_event
         stop_event.clear()
+        # 线上批量：先探测线上分析服务，502/503 时直接报错，避免把整批 Jira 误记为分析失败
+        if exec_mode == "online":
+            try:
+                import httpx as _httpx
+                _probe = _httpx.get(_get_prod_ai_url(), timeout=10, follow_redirects=True)
+                if _probe.status_code >= 500:
+                    yield f"data: {_json.dumps({'type': 'error', 'message': f'线上分析服务不可用（{_probe.status_code} Bad Gateway），请稍后重试或联系平台恢复接口'}, ensure_ascii=False)}\n\n"
+                    return
+            except Exception as _e:
+                logger.warning("线上分析服务健康检查失败: %s", _e)
+                yield f"data: {_json.dumps({'type': 'error', 'message': f'线上分析服务不可达：{str(_e)[:160]}'}, ensure_ascii=False)}\n\n"
+                return
         batch_start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         loop = asyncio.get_event_loop()
         run_bugids = list(bugids)  # 局部副本，避免闭包变量赋值冲突
