@@ -285,3 +285,11 @@ reports/adp/{KEY}/*.html      HTML 原件
 - 报告链接是附件字段，必须 `file_token`；
 - SSE 超时 3600s、心跳 30s、无报告且流超 5 分钟续接 2 轮（各 5 分钟）。
 - 460502 输出内容安全拦截：自动在同会话发脱敏继续指令，累计最多 2 次。
+
+## sessionid 回填
+
+- 每次 ADP 执行拿到 `conversation_id` 后，会作为 `sessionid` 写入结果表。
+- 写入前自动检查目标表是否存在 `sessionid` 字段，不存在则创建。
+- ADP lookup 批量写回同样会补齐 `sessionid`，无需手工加列。
+- 失败但已建立 ADP 会话的记录也会带上 sessionid，便于后续按会话复盘。
+

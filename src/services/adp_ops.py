@@ -1368,6 +1368,21 @@ def apply_adp_batch_total(app_token: str, selected_table_id: str, master_table_i
         logger.warning("ADP 总耗时写入失败: %s", e)
 
 
+def ensure_adp_field(app_token: str, table_id: str, field_name: str, field_type: int = 1) -> bool:
+    """确保多维表格存在指定字段（不存在则创建），用于 sessionid 等新增字段。"""
+    try:
+        from src.clients import feishu_client
+        names = {str(f.get("field_name") or "") for f in feishu_client.list_bitable_fields(app_token, table_id)}
+        if field_name in names:
+            return True
+        feishu_client.create_bitable_field(app_token, table_id, field_name, field_type)
+        logger.info("ADP 表格字段已创建: %s.%s", table_id, field_name)
+        return True
+    except Exception as e:
+        logger.warning("ADP 表格字段检查/创建失败 %s.%s: %s", table_id, field_name, e)
+        return False
+
+
 def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
     """写入 ADP 独立多维表格，返回 {ok, record_id, message}"""
     from src.clients import feishu_client
@@ -1378,6 +1393,9 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
     if not app_token or not table_id:
         return {"ok": False, "record_id": "", "message": "ADP 多维表格未配置"}
     try:
+        # 确保 sessionid 字段存在（老表没有该列时自动补）
+        if fields_dict.get("sessionid"):
+            ensure_adp_field(app_token, table_id, "sessionid", 1)
         # 查找已有记录：优先按 jira号 + 本次 traceid 精确匹配
         records = feishu_client.list_bitable_records(app_token, table_id)
         record_id = None
@@ -1415,7 +1433,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause", "root cause",
-                    "置信度", "分析失败归因", "原因", "traceid", "traceid排查"]
+                    "置信度", "分析失败归因", "原因", "traceid", "sessionid", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         # 确保 root cause 字段也被填充（与 agent分析的root cause 同步）
         adp_rc = write_fields.get("agent分析的root cause", "")
@@ -1575,6 +1593,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     full_text, file_urls, closeout_data, start_ts, end_ts, trace_id, signal_info = call_adp_sse_stream(
         message, keepalive_cb=keepalive_cb, stop_event=stop_event)
     out["trace_id"] = trace_id
+    _session_id = str(signal_info.get("conversation_id") or "")
+    if _session_id:
+        out["sessionid"] = _session_id
     # 致命错误/限流早判：无需进入提取流程
     err_code = signal_info.get("error_code", "")
     # 输出内容安全拦截：先在同一会话发脱敏继续指令，最多 2 次
@@ -1964,6 +1985,10 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
 
         # Step 5: 写入飞书（可跳过，由调用方自行写回）
         # 写表前统一刷新最终 wall time，确保表格拿到的是完整执行耗时
+        _session_id = str(signal_info.get("conversation_id") or out.get("sessionid") or "")
+        if _session_id:
+            results["sessionid"] = _session_id
+            out["sessionid"] = _session_id
         _stamp_elapsed()
         # 失败记录也要带 traceid，后续重试以最后一次 traceid 覆盖
         if trace_id:

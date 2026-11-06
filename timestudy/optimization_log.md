@@ -1806,3 +1806,17 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`
 
 </details>
+
+<details>
+<summary><b>133. ADP 执行结果自动回填 sessionid（2026-11-06）</b></summary>
+
+- **需求**：ADP 每次执行完，把会话 ID 回填到表格，便于后续按 session 复盘耗时。
+- **实现**：
+  1. `run_adp_single` 从 `signal_info.conversation_id` 取 sessionid，写入 results；
+  2. `write_adp_to_feishu` 允许写 `sessionid`，并自动检查/创建目标表字段；
+  3. ADP lookup 批量写回前确保批次表存在 `sessionid` 列；
+  4. 续接/失败但已建立会话的记录同样保留 sessionid。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>
