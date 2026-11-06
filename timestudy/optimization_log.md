@@ -1949,3 +1949,14 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>144. 失败记录的 traceid排查 改为云端 ADP 报告链接（2026-11-06）</b></summary>
+
+- **规则**：分析失败不再生成 traceid 排查报告；`traceid排查` 字段写云端“ADP 分析报告”内容链接。
+- **实现**：失败不调用 `_run_trace_skill`；完整分析发布飞书文档后，把 `report_doc_url` 写入 `results["traceid排查"]`。
+- **数据**：VCU-521324、VCU-490754、VCU-525573 已改为对应 ADP 报告链接；VCU-553576 无会话保持空。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>

@@ -348,3 +348,9 @@ reports/adp/{KEY}/*.html      HTML 原件
 - 失败记录的 `traceid排查` 字段写入排查报告链接，作为主要交付物。
 - 无 ADP 会话（无法分析）的记录没有 traceid，不生成。
 
+## 失败记录的 traceid排查 字段
+
+- 分析失败不再生成 traceid 排查报告。
+- 失败记录的 `traceid排查` 字段写入云端“ADP 分析报告”内容链接（完整分析文本）。
+- 成功记录仍写 traceid 排查报告链接。
+

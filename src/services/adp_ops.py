@@ -2012,13 +2012,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 )
             results.pop("报告链接（分析报告、可观测报告）", None)
 
-        # traceid 排查：成功和失败都尝试生成；失败时 traceid 排查就是主要交付物
+        # traceid 排查：仅成功记录生成；失败记录改用云端 ADP 报告链接
         _trace_report, _trace_err, _trace_doc = ("", "", "")
-        _need_trace = bool(trace_id) and (
-            results.get("_report_file_token")
-            or results.get("完成状态") in ("分析失败", "无法分析")
-        )
-        if _need_trace:
+        if results.get("_report_file_token"):
             _trace_report, _trace_err, _trace_doc = _run_trace_skill(jira_key, trace_id)
         if _trace_report:
             _base = str((_get_adp_cfg().get("trace_report_base") or "http://127.0.0.1:8060")).rstrip("/")
@@ -2053,6 +2049,8 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                     _full_md = f.read()
                 _rfolder = str(_get_adp_cfg().get("report_folder") or "")
                 out["report_doc_url"] = _publish_md_to_feishu(f"{jira_key} ADP 分析报告", _full_md, folder_token=_rfolder)
+                if out.get("report_doc_url") and results.get("完成状态") in ("分析失败", "无法分析"):
+                    results["traceid排查"] = out["report_doc_url"]
         except Exception as _e:
             logger.warning("发布完整分析报告失败 %s: %s", jira_key, str(_e)[:120])
         _progress("save_local", "done")
