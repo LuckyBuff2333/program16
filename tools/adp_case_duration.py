@@ -63,8 +63,8 @@ def calc(jira):
     if not sessions:
         return None
     sid, srecs = max(sessions.items(), key=lambda kv: max(int(x.get("create_time") or 0) for x in kv[1]))
-    m = call(["messages", "--conversation-id", sid, "--direction", "3",
-              "--limit", "50", "--json"])
+    m = call(["messages", "--conversation-id", sid, "--type", "5",
+              "--direction", "3", "--limit", "50", "--json"])
     msgs = []
     for x in (m.get("message_list") or []):
         ex = x.get("extra_info") or {}

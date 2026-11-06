@@ -191,6 +191,8 @@ VCU-564329 等 Jira 在数据沉淀中存在两条记录：
 | `bf953164` | 后续失败不覆盖已有成功耗时 |
 | `cc4415fc` | 已有成功记录时，后续失败/取消整条跳过；修正 458373/525937 数据 |
 | `53560fa3` | 无断点模块/现象承载模块记“降级完成”，无 HTML 记“分析失败” |
+| `e23d2a88` | 耗时改用 ADP 返回起止时间差，并保留第一次开始到续接结束 |
+| `33439b2f` | 新增 ADP 会话耗时计算脚本 |
 
 ---
 
@@ -198,9 +200,148 @@ VCU-564329 等 Jira 在数据沉淀中存在两条记录：
 
 - [ ] 写回按 `jira号 + traceid` 定位，避免同一 Jira 多尝试共用一个槽位；
 - [x] 成功记录整体优先，失败/取消不得覆盖状态、traceid、报告链接、耗时；
-- [ ] 写表前统一计算最终执行耗时；
-- [ ] 明确 token 耗时 ≠ 执行耗时；
+- [x] 写表前统一计算最终执行耗时；
+- [x] 明确 token 耗时 ≠ 执行耗时；
 - [ ] 批次总耗时只统计成功记录；
-- [ ] 数据沉淀去重，保留成功记录；
-- [ ] 审计脚本先判成功/失败/取消，再取时间，最后原子更新状态+traceid+耗时；
-- [ ] 增加一致性校验：完成状态必须有报告/耗时，耗时不得超过批次起止差。
+- [x] 数据沉淀去重，保留成功记录；
+- [x] 审计脚本先判成功/失败/取消，再取时间，最后原子更新状态+traceid+耗时；
+- [x] 增加一致性校验：完成状态必须有报告/耗时，耗时不得超过批次起止差。
+
+---
+
+## 七、2026-11-06 最新逻辑与实测方法
+
+### 7.1 最终耗时口径
+
+从 `e23d2a88` 开始，ADP 耗时不再取批次排队时间，也不再使用最后一次 wall time 覆盖。
+
+现在优先级：
+
+```text
+ADP 返回的 start_ts / end_ts 差值
+> 没有起止时间时才回退到本次 wall time
+```
+
+`start_ts` / `end_ts` 来自 ADP SSE 的 `response.created` 到最后一个事件的时间戳。
+
+### 7.2 续接会话的处理
+
+一次 case 有多次“继续/续接”时：
+
+```text
+start_ts = 第一次 response.created 的时间
+end_ts   = 最后一次续接结束的时间
+耗时     = (end_ts - start_ts) / 60000
+```
+
+这样得到的是“第一次开始分析 → 最后一次续接完成”的总时间，不包含入队前的排队时间。
+
+如果发生会话冲突、换了新会话，则起点改为新会话的第一次开始时间。
+
+### 7.3 写表时的保护
+
+`_stamp_elapsed()` 现在只有在没有 ADP 起止时间时才写入 wall time。
+
+已有 `_adp_elapsed_min` 时，不会被后面的 wall time 覆盖。
+
+### 7.4 traceid 规则
+
+```text
+成功：写最后一次 traceid
+失败：也写最后一次 traceid
+已有成功记录：后续失败/取消整条跳过
+```
+
+写入时优先按 `Jira号 + traceid` 精确匹配；找不到精确 traceid 时才回退到该 Jira 的记录。
+
+### 7.5 完成状态规则
+
+```text
+拿到 HTML 且有断点模块/现象承载模块 → 完成
+拿到 HTML 但没有模块 → 降级完成
+没有拿到 HTML/沙箱不可下载 → 分析失败
+```
+
+### 7.6 两套耗时计算方法
+
+#### 方法一：AI 读取 ADP 返回字段相减
+
+读取 ADP 消息的：
+
+```text
+extra_info.start_time
+extra_info.end_time
+```
+
+按最新 traceid 对应的会话计算：
+
+```text
+耗时2-Ai拿到字段自行相减计算
+```
+
+#### 方法二：脚本计算
+
+脚本：
+
+```text
+tools/adp_case_duration.py
+```
+
+计算逻辑与方法一一致，写入：
+
+```text
+耗时3-AI写脚本，两字段相减
+```
+
+### 7.7 方法一/二共用的查询链路
+
+```text
+Jira号
+→ 查 ADP records
+→ 按 traceid 找 record
+→ 取 session_id
+→ messages --conversation-id <sid> --type 5
+→ 第一条 start_time / 最后一条 end_time
+→ 相减
+```
+
+关键点：
+
+- `messages` 必须显式传 `type=5`（API 接入会话），自动探测可能失败；
+- 历史会话可能返回 `460010 会话不存在或没有操作权限`；
+- `messages` 单次最多 50 条，长会话的开始时间用 session 最早 record `create_time` 兜底；
+- 如果 CSV 中的 traceid 只是 assistant 最终回复的 trace，`records` 里可能找不到它，无法反查 session。
+
+### 7.8 批量实测结果（298 条）
+
+```text
+总数：298
+成功拿到耗时 + sessionid：238
+traceid 在 ADP records 中找不到：56
+找到 session 但消息接口仍失败：4
+```
+
+结果文件：
+
+```text
+data/data_table_jira_duration_sessionid.csv
+data/data_table_jira_duration_failures.csv
+```
+
+4 条消息接口失败：
+
+```text
+VCU-522895
+VCU-523934
+VCU-525199
+VCU-525381
+```
+
+56 条 traceid 找不到主要是：CSV 里存的是 assistant 最终回复 trace，而 records 里存的是请求 trace，不能直接反查 session。
+
+### 7.9 仍需注意
+
+- 当前 ADP MCP 的 `messages` 查询对部分历史会话没有权限；
+- `type=5` 只能解决“类型探测失败”，不能解决归档/权限问题；
+- 批次总耗时本次未改（按确认跳过第 4 条）；
+- 全量耗时字段仍需要一次统一回填，才能让 `耗时(分)`、`耗时2`、`耗时3` 完全同口径。
