@@ -6134,6 +6134,8 @@ async def test_adp_lookup(request: Request):
                 if write_fields.get("分析失败归因"):
                     from src.services.adp_ops import short_failure_category as _short_reason
                     write_fields["分析失败归因"] = _short_reason(write_fields["分析失败归因"])
+                if str(write_fields.get("完成状态", "")) in ("分析失败", "无法分析"):
+                    write_fields.pop("置信度", None)
                 # 只记录本次分析耗时；已有成功记录时，后续失败/取消不得覆盖成功记录
                 _cur_dur = write_fields.get("耗时(分)")
                 _prev_fields = rec.get("fields") or {}

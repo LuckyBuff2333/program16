@@ -1487,6 +1487,8 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             write_fields.pop("root cause", None)
         if write_fields.get("分析失败归因"):
             write_fields["分析失败归因"] = short_failure_category(write_fields["分析失败归因"])
+        if str(write_fields.get("完成状态", "")) in ("分析失败", "无法分析"):
+            write_fields.pop("置信度", None)
         # root cause 只来自查附件链接接口；已有值时不覆盖
         # 一致性校验：完成必须有模块和 HTML 报告，否则按降级/失败落状态
         if str(write_fields.get("完成状态", "")) == "完成":
@@ -2125,6 +2127,8 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         # 失败时始终覆盖为本次最新原因；分析失败归因直接用短分类，不再写“原因”字段
         _res["分析失败归因"] = short_failure_category(_ft) if _ft else "待人工排查"
         _res.pop("原因", None)
+        if _res.get("完成状态") in ("分析失败", "无法分析"):
+            _res.pop("置信度", None)
         out["results"] = _res
 
     # 失败时记录 SSE 判别信号（reply_method / response_status），便于区分正常收口与异常断开

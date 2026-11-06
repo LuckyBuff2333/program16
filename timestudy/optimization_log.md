@@ -1890,3 +1890,17 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>139. 失败记录不再写置信度（2026-11-06）</b></summary>
+
+- **规则**：`分析失败` / `无法分析` 不写 `置信度`；成功/降级完成正常写。
+- **修复**：
+  1. `run_adp_single` 失败归一化时移除 `置信度`；
+  2. `write_adp_to_feishu` 与 ADP Lookup 写回前，失败状态移除 `置信度`；
+  3. 数据表历史失败记录 VCU-490754 的 0.8 已清空。
+- **说明**：VCU-525615 成功但置信度为空，是 ADP 本身未返回，不是写入失败。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>
