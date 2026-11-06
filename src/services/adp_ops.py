@@ -1196,6 +1196,8 @@ def extract_adp_results(full_text: str, closeout_data: dict, start_ts: int, end_
     if start_ts and end_ts:
         elapsed_min = round((end_ts - start_ts) / 1000 / 60, 1)
         result["耗时(分)"] = str(elapsed_min)
+        # 仅作为模型阶段耗时留存，不写入表格字段
+        result["_model_elapsed_sec"] = round((end_ts - start_ts) / 1000, 1)
     # 问题模块 + root cause
     problem_module = _extract_problem_module(full_text)
     result["agent分析的问题模块"] = problem_module
@@ -1375,11 +1377,12 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
     if not app_token or not table_id:
         return {"ok": False, "record_id": "", "message": "ADP 多维表格未配置"}
     try:
-        # 查找已有记录
+        # 查找已有记录：优先按 jira号 + 本次 traceid 精确匹配
         records = feishu_client.list_bitable_records(app_token, table_id)
         record_id = None
         prev_status = ""
         prev_duration = ""
+        matches = []
         for item in records:
             fv = item.get("fields", {}).get(jira_field, "")
             if isinstance(fv, list) and fv:
@@ -1387,10 +1390,20 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             else:
                 fv_text = str(fv)
             if jira_key in fv_text:
-                record_id = item.get("record_id", "")
-                prev_status = str(item.get("fields", {}).get("完成状态", "") or "")
-                prev_duration = item.get("fields", {}).get("耗时(分)", "")
-                break
+                matches.append(item)
+        if matches:
+            target_tid = str(fields_dict.get("traceid", "") or "").strip()
+            chosen = None
+            if target_tid:
+                for item in matches:
+                    if str(item.get("fields", {}).get("traceid", "") or "").strip() == target_tid:
+                        chosen = item
+                        break
+            if chosen is None:
+                chosen = matches[0]
+            record_id = chosen.get("record_id", "")
+            prev_status = str(chosen.get("fields", {}).get("完成状态", "") or "")
+            prev_duration = chosen.get("fields", {}).get("耗时(分)", "")
         # 不存在则新建
         if not record_id:
             created = feishu_client.batch_create_records(app_token, table_id, [{"fields": {jira_field: jira_key}}])
@@ -1407,6 +1420,19 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         adp_rc = write_fields.get("agent分析的root cause", "")
         if adp_rc:
             write_fields["root cause"] = adp_rc
+        # 一致性校验：完成必须有模块和 HTML 报告，否则按降级/失败落状态
+        if str(write_fields.get("完成状态", "")) == "完成":
+            _module = str(write_fields.get("agent分析的问题模块", "") or "").strip()
+            _has_report = bool(fields_dict.get("_report_file_token"))
+            _report_val = write_fields.get("报告链接（分析报告、可观测报告）")
+            if isinstance(_report_val, list):
+                _has_report = _has_report or any(
+                    isinstance(x, dict) and x.get("file_token") for x in _report_val)
+            if not _has_report:
+                write_fields["完成状态"] = "分析失败"
+                write_fields.setdefault("分析失败归因", "未拿到 HTML 报告")
+            elif not _module:
+                write_fields["完成状态"] = "降级完成"
         # 已有成功记录时，后续失败/取消尝试不得覆盖成功记录的任何字段
         if prev_status == "完成" and str(write_fields.get("完成状态", "")) != "完成":
             logger.info("ADP %s 已有成功记录，忽略本次失败/取消结果，保留成功耗时与 traceid", jira_key)
@@ -1923,6 +1949,8 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         _progress("save_local", "done")
 
         # Step 5: 写入飞书（可跳过，由调用方自行写回）
+        # 写表前统一刷新最终 wall time，确保表格拿到的是完整执行耗时
+        _stamp_elapsed()
         # 失败记录也要带 traceid，后续重试以最后一次 traceid 覆盖
         if trace_id:
             results["traceid"] = trace_id
