@@ -111,43 +111,19 @@ def _filter_recently_executed(keys: list) -> tuple:
 
 
 def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
-    """读取本地+云端批量执行记录，返回指定来源的已执行Jira号集合
+    """读取云端批量执行记录，返回指定来源的已执行Jira号集合
 
     用于同来源去重：线上执行时只排除线上已执行的，PC执行时只排除PC已执行的。
     PC和线上允许重复（不同来源）。
     同时检查今天和昨天的记录，支持跨天持续执行场景。
+    仅查云端飞书文档，不查本地CSV，避免本地文件残留导致误去重。
     """
-    import os, csv
-    from src.config import load_config, get_path
-    from src.services.report_ops import _read_csv_rows
+    from src.config import load_config
     executed = set()
     today = datetime.now()
     yesterday = today - timedelta(days=1)
     check_dates = [today.strftime("%Y-%m-%d"), yesterday.strftime("%Y-%m-%d")]
-    # 路径1：本地 PC 批量执行记录 docs/日期/batch_*.csv
-    doc_dir = get_path("doc_dir")
-    for date_str in check_dates:
-        day_dir = os.path.join(doc_dir, date_str)
-        if os.path.isdir(day_dir):
-            for fname in sorted(os.listdir(day_dir)):
-                if fname.lower().startswith("batch_") and fname.lower().endswith(".csv"):
-                    for row in _read_csv_rows(os.path.join(day_dir, fname)):
-                        jira = (row.get("jira号") or row.get("Jira号") or "").strip()
-                        src = (row.get("触发来源") or "").strip()
-                        if jira and (not source or src == source):
-                            executed.add(jira)
-    # 路径2：本地上线批量执行记录 data/unanalyzed/prod_batch_{日期}_*.csv
-    unanalyzed_dir = os.path.join(PROJECT_ROOT, "data", "unanalyzed")
-    if os.path.isdir(unanalyzed_dir):
-        for date_str in check_dates:
-            prefix = f"prod_batch_{date_str}_"
-            for fname in sorted(os.listdir(unanalyzed_dir)):
-                if fname.startswith(prefix) and fname.endswith(".csv"):
-                    for row in _read_csv_rows(os.path.join(unanalyzed_dir, fname)):
-                        jira = (row.get("jira号") or row.get("Jira号") or "").strip()
-                        if jira:
-                            executed.add(jira)
-    # 路径3：云端批次执行记录
+    # 云端批次执行记录
     try:
         from src.clients import feishu_client
         folder_token = load_config().get("feishu_bitable", {}).get("batch_folder_token", "")
