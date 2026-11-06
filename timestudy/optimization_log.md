@@ -1915,3 +1915,15 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>141. 修正 ADP 批次报错、空返回重试时间与总耗时（2026-11-06）</b></summary>
+
+- **执行报错**：不再把 `reply_method=...` 当错误内容；优先写 ADP `error_msg`、响应尾部或失败归因。
+- **空返回重试**：重试项使用新会话的 `start_time`/`end_time`，不再沿用首次开始时间或留空。
+- **总耗时**：当前批次表 `总耗时(分)` 统一写本批次总耗时，整表一致；独立数据表才写累计。
+- **数据清理**：删除表中无 Jira 的空行，13 条记录；`总耗时(分)` 全部写 107.0。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>

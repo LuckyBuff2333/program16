@@ -1402,9 +1402,11 @@ def apply_adp_batch_total(app_token: str, selected_table_id: str, master_table_i
     from src.clients import feishu_client
     minutes = round(float(batch_minutes), 1)
     try:
-        if selected_table_id and selected_table_id != master_table_id:
+        # 当前批次表：整表统一写本批次总耗时，不累加历史
+        if selected_table_id:
             _update_all_records_field(app_token, selected_table_id, "总耗时(分)", f"{minutes:.1f}")
-        if master_table_id:
+        # 单独的数据表：写累计总耗时（仅当它不是当前批次表）
+        if master_table_id and master_table_id != selected_table_id:
             records = feishu_client.list_bitable_records(app_token, master_table_id)
             base = max((_parse_total_minutes((r.get("fields") or {}).get("总耗时(分)"))
                         for r in records), default=0.0)
@@ -2146,8 +2148,14 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         _sig_dbg = "reply_method=%s; response_status=%s" % (
             signal_info.get("reply_method", ""), signal_info.get("response_status", ""))
         out["signal_debug"] = _sig_dbg
+        # 执行报错优先写 ADP 接口返回的错误/响应内容，而不是内部 signal 调试串
         _prev_err = out.get("error") or ""
-        out["error"] = (f"{_prev_err}（{_sig_dbg}）" if _prev_err else _sig_dbg)
+        if not _prev_err:
+            _api_msg = str(signal_info.get("error_msg") or "").strip()
+            _resp_tail = str(full_text or "").strip()
+            _resp_tail = _resp_tail[-500:] if _resp_tail else ""
+            _reason = str((out.get("results") or {}).get("分析失败归因") or "").strip()
+            out["error"] = (_api_msg or _resp_tail or _reason or _sig_dbg)[:500]
 
     _stamp_elapsed()
     return out

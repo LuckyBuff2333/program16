@@ -6050,6 +6050,7 @@ async def test_adp_lookup(request: Request):
             logger.info("ADP lookup 空返回重试: %d 条", len(_empty_retry))
             for _old in list(_empty_retry):
                 bugid = _old.get("jira_key", "")
+                _retry_start_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': bugid, 'retry': 'empty'}, ensure_ascii=False)}\n\n"
                 try:
                     rr = await loop.run_in_executor(None, _run_one_adp, bugid)
@@ -6074,6 +6075,8 @@ async def test_adp_lookup(request: Request):
                     "time_source": "bitable" if info.get("bt_time") else ("api" if info.get("tt") else "none"),
                     "fail_type": _adp_fail_type(result),
                     "report_doc_url": result.get("report_doc_url", ""),
+                    "start_time": _retry_start_str,
+                    "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     **_adp_text_payload(result), "file_urls": result.get("file_urls", []),
                 }
                 batch_results.remove(_old)
