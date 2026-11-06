@@ -1196,6 +1196,7 @@ def extract_adp_results(full_text: str, closeout_data: dict, start_ts: int, end_
     if start_ts and end_ts:
         elapsed_min = round((end_ts - start_ts) / 1000 / 60, 1)
         result["耗时(分)"] = str(elapsed_min)
+        result["_adp_elapsed_min"] = str(elapsed_min)
         # 仅作为模型阶段耗时留存，不写入表格字段
         result["_model_elapsed_sec"] = round((end_ts - start_ts) / 1000, 1)
     # 问题模块 + root cause
@@ -1529,7 +1530,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         out["elapsed_sec"] = _e
         out["total_elapsed"] = _e
         _r = out.get("results")
-        if isinstance(_r, dict):
+        if isinstance(_r, dict) and not _r.get("_adp_elapsed_min"):
             _r["耗时(分)"] = str(round(_e / 60, 1))
 
     def _progress(step, status, detail=""):
@@ -1732,7 +1733,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 new_conv_id = uuid.uuid4().hex[:32]
                 _progress("adp_continue", "running", f"会话冲突({err_code})，换新ID重试")
                 logger.warning("ADP 会话冲突 %s，换新会话ID %s 重试", err_code, new_conv_id[:12])
-                cont_text, cont_urls, cont_close, _, _, cont_tid, cont_sig = call_adp_sse_stream(
+                cont_text, cont_urls, cont_close, cont_start, cont_end, cont_tid, cont_sig = call_adp_sse_stream(
                     message, keepalive_cb=keepalive_cb, stop_event=stop_event, conversation_id=new_conv_id)
             elif need_continue:
                 # 续接必须复用原会话：优先用 response.created 里的 ConversationId
@@ -1740,7 +1741,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 _progress("adp_continue", "running", f"第{cont_idx+1}轮续接")
                 logger.info("ADP 续接第%d次（prompt=%s, conv=%s）", cont_idx + 1,
                             _continue_prompt[:20], (_conv_use or "")[:12])
-                cont_text, cont_urls, cont_close, _, _, cont_tid, cont_sig = call_adp_sse_stream(
+                cont_text, cont_urls, cont_close, cont_start, cont_end, cont_tid, cont_sig = call_adp_sse_stream(
                     _continue_prompt, keepalive_cb=keepalive_cb, stop_event=stop_event, conversation_id=_conv_use)
             else:
                 if err_code in TPM_LIMIT_CODES:
@@ -1761,8 +1762,15 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                     time.sleep(min(0.5, backoff - _waited))
                     _waited += 0.5
                 _conv_use = signal_info.get("conversation_id") or trace_id
-                cont_text, cont_urls, cont_close, _, _, cont_tid, cont_sig = call_adp_sse_stream(
+                cont_text, cont_urls, cont_close, cont_start, cont_end, cont_tid, cont_sig = call_adp_sse_stream(
                     message, keepalive_cb=keepalive_cb, stop_event=stop_event, conversation_id=_conv_use)
+            # 续接后保留第一次开始时间，结束时间更新为最后一次返回
+            if need_new_session and cont_start:
+                start_ts = cont_start
+            elif cont_start and not start_ts:
+                start_ts = cont_start
+            if cont_end:
+                end_ts = cont_end
             # 合并结果
             _prev_len = len(full_text)
             full_text += ("\n" + cont_text) if cont_text else ""
@@ -1828,10 +1836,16 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                         return out
                     time.sleep(min(0.5, _backoff - _waited))
                     _waited += 0.5
-        # 本次 Jira 从开始到当前的总耗时（含 SSE 重试、续接轮次），写回表格
+        # 本次 Jira 从开始到当前的总耗时（含 SSE 重试、续接轮次）
         _total_elapsed_sec = round(time.time() - t0, 1)
         out["elapsed_sec"] = _total_elapsed_sec
-        results["耗时(分)"] = str(round(_total_elapsed_sec / 60, 1))
+        # 表格耗时优先使用 ADP 返回的起止时间差（第一次开始 → 最后一次结束）
+        if start_ts and end_ts and end_ts > start_ts:
+            _adp_min = round((end_ts - start_ts) / 1000 / 60, 1)
+            results["_adp_elapsed_min"] = str(_adp_min)
+            results["耗时(分)"] = str(_adp_min)
+        else:
+            results["耗时(分)"] = str(round(_total_elapsed_sec / 60, 1))
 
         # 续接后仍无报告：按截断/收口细分
         if not results.get("_report_url") and results.get("完成状态") == "分析失败":
