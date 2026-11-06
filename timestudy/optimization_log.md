@@ -1862,3 +1862,17 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`、`frontend/src/panels/AdpTestPanel.vue`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>137. ADP 结果自动回填 conversationid / recordid（2026-11-06）</b></summary>
+
+- **调研**：ADP SSE `response.created` 的 `Response.RecordId` 就是记录 ID；`ConversationId` 就是会话 ID。
+- **实现**：
+  1. `call_adp_sse_stream` 捕获 `RecordId`，写入 `signal_info.record_id`；
+  2. `run_adp_single` 写入 `results["conversationid"]` / `results["recordid"]`；
+  3. `write_adp_to_feishu` 自动创建并写回两列；
+  4. ADP Lookup 批量写回同样确保两列存在。
+- **验证**：实测返回 `conversation_id=bef55...`、`record_id=rcd_cdcf...`；全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>

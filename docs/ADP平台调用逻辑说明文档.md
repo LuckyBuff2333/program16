@@ -306,3 +306,10 @@ reports/adp/{KEY}/*.html      HTML 原件
 - 短分类统一为：`输出截断`、`流式中断`、`附件接口异常`、`无日志附件`、`报告未产出`、`报告下载失败`、`输入内容安全`、`输出内容安全`、`平台限流`、`平台配置错误`、`会话冲突`、`模型超时`、`网络异常`、`待人工排查`。
 - `原因` 字段不再写入。
 
+## conversationid / recordid 回填
+
+- `conversationid` 等于 ADP 会话 ID，与 `sessionid` 同值。
+- `recordid` 取 ADP SSE `response.created` 中的 `RecordId`。
+- 两者都会写入结果表；目标表不存在对应列时自动创建。
+- 历史记录若没有 sessionid/recordid，需要先按 session 查 ADP 才能补。
+

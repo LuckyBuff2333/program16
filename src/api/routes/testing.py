@@ -6109,13 +6109,14 @@ async def test_adp_lookup(request: Request):
         _elapsed_hours, _elapsed_mins = divmod(_elapsed_mins, 60)
         _elapsed_str = f"{_elapsed_hours}时{_elapsed_mins:02d}分{_elapsed_secs:02d}秒" if _elapsed_hours else f"{_elapsed_mins}分{_elapsed_secs:02d}秒"
         try:
-            # 确保目标批次表存在 sessionid 列（老表自动补）
-            if any((r.get("results") or {}).get("sessionid") for r in all_results):
-                try:
-                    from src.services.adp_ops import ensure_adp_field as _ensure_field
-                    _ensure_field(app_token, table_id, "sessionid", 1)
-                except Exception as _e:
-                    logger.warning("ADP lookup sessionid 字段检查失败: %s", _e)
+            # 确保目标批次表存在 sessionid/conversationid/recordid 列（老表自动补）
+            try:
+                from src.services.adp_ops import ensure_adp_field as _ensure_field
+                for _fn in ("sessionid", "conversationid", "recordid"):
+                    if any((r.get("results") or {}).get(_fn) for r in all_results):
+                        _ensure_field(app_token, table_id, _fn, 1)
+            except Exception as _e:
+                logger.warning("ADP lookup 会话字段检查失败: %s", _e)
             update_records = []
             for r in all_results:
                 bugid = r.get("jira_key", "")

@@ -346,7 +346,7 @@ def query_attachments(jira_key: str):
 
 def _build_signal(error_code: str, error_msg: str, reply_method: str,
                   response_status: str, has_cards: bool, request_ack: bool,
-                  stream_exc: str, conversation_id: str = "") -> dict:
+                  stream_exc: str, conversation_id: str = "", record_id: str = "") -> dict:
     """构造信号信息字典（SSE 流中采集的各类判别信号）"""
     return {
         "error_code": error_code,
@@ -357,6 +357,7 @@ def _build_signal(error_code: str, error_msg: str, reply_method: str,
         "request_ack": request_ack,
         "stream_exc": stream_exc,
         "conversation_id": conversation_id,
+        "record_id": record_id,
     }
 
 
@@ -446,6 +447,7 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
     logged_unknown = set()
     trace_id = ""
     conv_seen = ""  # response.created 里的 ConversationId（续接必须复用）
+    record_seen = ""  # response.created 里的 RecordId（表格 recordid）
     # 信号采集变量（跨尝试累计，不重置）
     error_code = ""
     error_msg = ""
@@ -476,18 +478,18 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
                     logger.error("ADP SSE HTTP %d", resp.status_code)
                     return "", [], None, 0, 0, trace_id, _build_signal(
                         error_code, error_msg, reply_method, response_status, has_cards,
-                        request_ack, f"HTTP {resp.status_code}", conversation_id=conv_seen)
+                        request_ack, f"HTTP {resp.status_code}", conversation_id=conv_seen, record_id=record_seen)
                 if _should_stop():
                     logger.info("ADP SSE 收到停止信号，中止读取")
                     return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id, _build_signal(
                         error_code, error_msg, reply_method, response_status, has_cards,
-                        request_ack, stream_exc, conversation_id=conv_seen)
+                        request_ack, stream_exc, conversation_id=conv_seen, record_id=record_seen)
                 for line in resp.iter_lines():
                     if _should_stop():
                         logger.info("ADP SSE 收到停止信号，中止读取")
                         return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id, _build_signal(
                             error_code, error_msg, reply_method, response_status, has_cards,
-                            request_ack, stream_exc, conversation_id=conv_seen)
+                            request_ack, stream_exc, conversation_id=conv_seen, record_id=record_seen)
                     # 心跳回调
                     now = time.time()
                     if keepalive_cb and now - last_keepalive >= 30:
@@ -521,6 +523,9 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
                         _conv = str(_resp.get("ConversationId") or "")
                         if _conv:
                             conv_seen = _conv
+                        _rid = str(_resp.get("RecordId") or "")
+                        if _rid:
+                            record_seen = _rid
                         _extra = _resp.get("ExtraInfo") or {}
                         _tid = str(_extra.get("TraceId") or "").split(" / ")[0].strip()
                         # 以最后一次 response.created 的 traceid 为准
@@ -612,7 +617,7 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
             else:
                 logger.warning("ADP SSE 读超时（60s 无新数据），已收集 %d 字符", len(full_text))
             return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id, _build_signal(
-                error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen)
+                error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen, record_id=record_seen)
         except Exception as e:
             last_err = e
             stream_exc = "%s: %s" % (type(e).__name__, e)
@@ -626,11 +631,11 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
                 if _interruptible_sleep(wait):
                     logger.info("ADP SSE 重试等待中被停止")
                     return "", [], None, 0, 0, trace_id, _build_signal(
-                        error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen)
+                        error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen, record_id=record_seen)
                 continue
             logger.error("ADP SSE 流式读取异常: %s", e)
             return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id, _build_signal(
-                error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen)
+                error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen, record_id=record_seen)
         # 成功完成，跳出重试循环
         break
     else:
@@ -638,7 +643,7 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
         stream_exc = "连接失败，已重试 %d 次: %s" % (max_retries, last_err)
         logger.error("ADP SSE %s", stream_exc)
         return "", [], None, 0, 0, trace_id, _build_signal(
-            error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen)
+            error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen, record_id=record_seen)
     # closeout 兜底
     if closeout_data is None:
         for pattern in [r'\{[^{}]*"ok"\s*:\s*true[^{}]*"html"[^{}]*\}', r'\{[^{}]*"case_id"[^{}]*\}']:
@@ -754,7 +759,7 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
     logger.info("ADP 分析完成: %d 字符, 耗时 %.0fs, trace_id=%s, SSE 事件类型: %s",
                 len(full_text), elapsed_sec, trace_id, sorted(event_types_seen))
     return full_text, file_urls, closeout_data, start_ts, end_ts, trace_id, _build_signal(
-        error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen)
+        error_code, error_msg, reply_method, response_status, has_cards, request_ack, stream_exc, conversation_id=conv_seen, record_id=record_seen)
 
 
 def call_adp_sse(message: str) -> tuple:
@@ -1433,6 +1438,10 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 确保 sessionid 字段存在（老表没有该列时自动补）
         if fields_dict.get("sessionid"):
             ensure_adp_field(app_token, table_id, "sessionid", 1)
+        if fields_dict.get("conversationid"):
+            ensure_adp_field(app_token, table_id, "conversationid", 1)
+        if fields_dict.get("recordid"):
+            ensure_adp_field(app_token, table_id, "recordid", 1)
         # 查找已有记录：优先按 jira号 + 本次 traceid 精确匹配
         records = feishu_client.list_bitable_records(app_token, table_id)
         record_id = None
@@ -1472,7 +1481,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause", "root cause",
-                    "置信度", "分析失败归因", "traceid", "sessionid", "traceid排查"]
+                    "置信度", "分析失败归因", "traceid", "sessionid", "conversationid", "recordid", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         if prev_root:
             write_fields.pop("root cause", None)
@@ -1639,6 +1648,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     _session_id = str(signal_info.get("conversation_id") or "")
     if _session_id:
         out["sessionid"] = _session_id
+    _record_id = str(signal_info.get("record_id") or "")
+    if _record_id:
+        out["recordid"] = _record_id
     # 致命错误/限流早判：无需进入提取流程
     err_code = signal_info.get("error_code", "")
     # 输出内容安全拦截：先在同一会话发脱敏继续指令，最多 2 次
@@ -2034,7 +2046,13 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         _session_id = str(signal_info.get("conversation_id") or out.get("sessionid") or "")
         if _session_id:
             results["sessionid"] = _session_id
+            results["conversationid"] = _session_id
             out["sessionid"] = _session_id
+            out["conversationid"] = _session_id
+        _record_id = str(signal_info.get("record_id") or out.get("recordid") or "")
+        if _record_id:
+            results["recordid"] = _record_id
+            out["recordid"] = _record_id
         _stamp_elapsed()
         # 失败记录也要带 traceid，后续重试以最后一次 traceid 覆盖
         if trace_id:
