@@ -1851,3 +1851,14 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>136. ADP 默认并发改为 6（2026-11-06）</b></summary>
+
+- **背景**：TPM 上限翻倍，短请求并发探测 2/4/6/8/10/12 路全部正常，无 460011/460031/460701/460721。
+- **调整**：ADP 批量与 ADP Lookup 默认 `batch_size` 从 2 改为 **6**；前端默认并发同步改为 6。
+- **说明**：短请求只验证连接/RPM，TPM 仍需按完整分析观察 `460701`；如频繁触发再降速。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/api/routes/testing.py`、`frontend/src/panels/AdpTestPanel.vue`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>

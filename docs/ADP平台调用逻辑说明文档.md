@@ -170,7 +170,7 @@ Content-Type: application/json
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 |---|---|---|---|---|
 | `items` | array | ✅ | - | 待执行项列表 `[{bugid, description?, trigger_time?}]` |
-| `batch_size` | int | ❌ | 2 | 每批并发数 |
+| `batch_size` | int | ❌ | **6** | 每批并发数（TPM 上限翻倍后默认） |
 | `continuous` | bool | ❌ | false | `true`=连续执行所有批；`false`=只跑第一批 |
 
 **示例：**
@@ -180,7 +180,7 @@ Content-Type: application/json
     {"bugid": "VCU-554052", "description": "OTA升级失败", "trigger_time": "2026-06-04 03:00:00"},
     {"bugid": "VCU-495999"}
   ],
-  "batch_size": 2,
+  "batch_size": 6,
   "continuous": true
 }
 ```
@@ -200,11 +200,11 @@ Content-Type: application/json
 | `mode` | string | ❌ | `manual` | `manual`=手动传 bugids；`auto`=从多维表格自动捞未执行的 |
 | `bugids` | array | mode=manual 时必填 | - | Jira 号列表 |
 | `limit` | int | ❌ | 10 | auto 模式下每次最多取几条 |
-| `batch_size` | int | ❌ | 2 | 并发数 |
+| `batch_size` | int | ❌ | **6** | 并发数（TPM 上限翻倍后默认） |
 
 **示例：**
 ```json
-{ "mode": "auto", "limit": 10, "batch_size": 2 }
+{ "mode": "auto", "limit": 10, "batch_size": 6 }
 ```
 ```json
 { "mode": "manual", "bugids": ["VCU-554052", "VCU-495999"] }
