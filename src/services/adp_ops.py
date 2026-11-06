@@ -1068,20 +1068,25 @@ def _looks_like_process_narration(reply: str) -> bool:
 
 
 # 错误分类（对外统一写入的短分类，避免长句影响筛选/统计）
-FAILURE_CATEGORIES = ["澄清", "拒答", "分析超时", "分析未完成", "无日志附件",
-                      "附件接口异常", "报告未产出", "平台限流", "平台配置错误",
-                      "会话冲突", "网络异常", "分析失败"]
+FAILURE_CATEGORIES = ["澄清", "拒答", "模型超时", "输出截断", "流式中断",
+                      "无日志附件", "附件接口异常", "报告未产出", "报告下载失败",
+                      "输入内容安全", "输出内容安全", "平台限流", "平台配置错误",
+                      "会话冲突", "网络异常", "待人工排查"]
 
 _CATEGORY_RULES = [
     (("追问", "澄清"), "澄清"),
     (("拒答",), "拒答"),
-    (("模型超时", "分析超时", "超时自动取消"), "分析超时"),
-    (("截断", "分析过程未完成", "流异常", "未完成", "收口无报告"), "分析未完成"),
+    (("输入内容安全",), "输入内容安全"),
+    (("输出内容安全",), "输出内容安全"),
+    (("模型超时", "分析超时", "超时自动取消"), "模型超时"),
+    (("截断", "工具调用", "MaxTokens", "max_tokens", "分析输出被截断"), "输出截断"),
+    (("流异常", "流式中断", "SSE", "未完成", "疑似流中断"), "流式中断"),
     (("无日志附件",), "无日志附件"),
-    (("附件接口异常",), "附件接口异常"),
-    (("报告渲染", "未产出HTML", "报告链接", "下载链接失效"), "报告未产出"),
+    (("附件接口异常", "dpportal"), "附件接口异常"),
+    (("报告下载失败", "下载失败", "404", "链接已失效", "沙箱"), "报告下载失败"),
+    (("报告渲染", "未产出HTML", "报告链接", "收口无报告", "未拿到 HTML"), "报告未产出"),
     (("限流", "并发超限", "容量"), "平台限流"),
-    (("配置错误", "安全拦截", "余额"), "平台配置错误"),
+    (("配置错误", "余额"), "平台配置错误"),
     (("会话冲突",), "会话冲突"),
     (("连接超时", "网络异常"), "网络异常"),
 ]
@@ -1093,7 +1098,7 @@ def short_failure_category(detail: str) -> str:
     for keywords, category in _CATEGORY_RULES:
         if any(k in text for k in keywords):
             return category
-    return "分析失败"
+    return "待人工排查"
 
 
 def classify_adp_failure(error: str = "", full_text: str = "", attachment_count: int = 0,
@@ -1467,10 +1472,12 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause", "root cause",
-                    "置信度", "分析失败归因", "原因", "traceid", "sessionid", "traceid排查"]
+                    "置信度", "分析失败归因", "traceid", "sessionid", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         if prev_root:
             write_fields.pop("root cause", None)
+        if write_fields.get("分析失败归因"):
+            write_fields["分析失败归因"] = short_failure_category(write_fields["分析失败归因"])
         # root cause 只来自查附件链接接口；已有值时不覆盖
         # 一致性校验：完成必须有模块和 HTML 报告，否则按降级/失败落状态
         if str(write_fields.get("完成状态", "")) == "完成":
@@ -1597,7 +1604,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     # 接口异常（非 JSON/网关错误）：不是“无附件”，标分析失败，交由人工/下次重跑
     if attachments is None:
         out["error"] = "ADP附件接口异常"
-        out["results"] = {"完成状态": "分析失败", "分析失败归因": "ADP附件接口异常"}
+        out["results"] = {"完成状态": "分析失败", "分析失败归因": "附件接口异常"}
         out["fail_type"] = "ADP附件接口异常"
         _progress("attachments", "fail", "附件接口异常")
         _stamp_elapsed()
@@ -1681,7 +1688,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     if not full_text:
         out["error"] = "ADP 无返回（待重试）"
         out["retry_empty"] = True
-        out["results"] = {"完成状态": "分析失败", "分析失败归因": "ADP 无返回"}
+        out["results"] = {"完成状态": "分析失败", "分析失败归因": "流式中断"}
         out["fail_type"] = "ADP 无返回"
         _progress("adp_analysis", "fail", "无返回，已记录待重试")
         _stamp_elapsed()
@@ -1728,7 +1735,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 _content_safety_rounds += 1
                 if _content_safety_rounds > 2:
                     results["完成状态"] = "分析失败"
-                    results["分析失败归因"] = "输出内容安全拦截(460502，已重试2次)"
+                    results["分析失败归因"] = "输出内容安全"
                     logger.warning("ADP 内容安全拦截连续失败，停止续接: %s", jira_key)
                     break
             # 前置判断：没有任何报告链接 → 视为"可疑未完成"，参与续接决策
@@ -2096,9 +2103,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 _ft = classify_adp_failure(error=out.get("error", ""), full_text=full_text,
                                            attachment_count=len(attachments), signal_info=signal_info)
         out["fail_type"] = _ft
-        # 失败时始终覆盖为本次最新原因，避免重复失败保留旧值
-        _res["分析失败归因"] = _ft
-        _res["原因"] = short_failure_category(_ft) if _ft else ""
+        # 失败时始终覆盖为本次最新原因；分析失败归因直接用短分类，不再写“原因”字段
+        _res["分析失败归因"] = short_failure_category(_ft) if _ft else "待人工排查"
+        _res.pop("原因", None)
         out["results"] = _res
 
     # 失败时记录 SSE 判别信号（reply_method / response_status），便于区分正常收口与异常断开

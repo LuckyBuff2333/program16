@@ -1835,3 +1835,19 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>135. 失败归因改为短分类并停写“原因”字段（2026-11-06）</b></summary>
+
+- **规则**：失败时 `分析失败归因` 直接写短分类，不再写详细长句；`原因` 字段不再写入。
+- **短分类**：输出截断、流式中断、附件接口异常、无日志附件、报告未产出、报告下载失败、输入内容安全、输出内容安全、平台限流、平台配置错误、会话冲突、模型超时、网络异常、待人工排查。
+- **实现**：
+  1. `short_failure_category` 规则改为上述短分类；
+  2. `run_adp_single` 失败归一化改为短分类，并移除 `原因`；
+  3. `write_adp_to_feishu` 白名单移除 `原因`，写回前统一归一化；
+  4. ADP lookup 批量写回同样移除 `原因` 并归一化；
+  5. 数据表 24 条历史失败记录改为短分类，`原因` 清空。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>
