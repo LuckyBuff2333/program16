@@ -1749,7 +1749,8 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             logger.info("ADP 无报告链接，进入可疑未完成分支（%d 字）", len(full_text or ""))
 
         # Step 3.3: 续接机制（截断/无报告/过程叙述 → 发"继续"；限流/首轮未开工 → 重发原始消息）
-        max_continues = 6
+        # 续接上限：单条最多 10 轮；仍受 90 分钟单条超时保护
+        max_continues = int(_get_adp_cfg().get("max_continues", 10))
         _trunc_mid = False
         _concluded = False
         _report_requested = False

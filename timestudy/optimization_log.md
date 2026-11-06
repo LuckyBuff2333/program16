@@ -1960,3 +1960,14 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>145. ADP 续接上限从 6 提高到 10（2026-11-07）</b></summary>
+
+- **背景**：VCU-525573 等案例 6 轮续接后仍被截断，但已接近结论。
+- **调整**：`max_continues` 从 6 改为 10，可通过 `adp.max_continues` 配置覆盖。
+- **保护**：单条 90 分钟超时；连续 2 轮无进展切换“直接输出最终结论/报告”。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>
