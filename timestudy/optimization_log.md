@@ -1876,3 +1876,17 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>138. 修复 ADP Lookup 写回 NumberFieldConvFail（2026-11-06）</b></summary>
+
+- **现象**：ADP Lookup 批量写回 13 条失败，`code=1254061 NumberFieldConvFail`。
+- **根因**：`耗时(分)` 是多维表格数字字段，代码把 `"20.8"` 这样的字符串写入，飞书拒绝。
+- **修复**：
+  1. `write_adp_to_feishu` 与 ADP Lookup 写回统一把 `耗时(分)` 转成 `float`；
+  2. 转换失败则跳过该字段，不阻塞其他字段；
+  3. 用 batch 19 的 12 份 raw_data + 日志附件 token 重新写回 13 条。
+- **结果**：9 完成（含报告附件）、3 分析失败、1 无法分析；耗时写入 12 条。
+- **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>

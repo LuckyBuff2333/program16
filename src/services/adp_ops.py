@@ -1510,9 +1510,10 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         _cur_dur = write_fields.get("耗时(分)")
         if _cur_dur not in (None, ""):
             try:
-                write_fields["耗时(分)"] = str(round(float(_cur_dur), 1))
+                # 多维表格“耗时(分)”是数字字段，必须传 number，传字符串会 NumberFieldConvFail
+                write_fields["耗时(分)"] = round(float(_cur_dur), 1)
             except (TypeError, ValueError):
-                pass
+                write_fields.pop("耗时(分)", None)
         # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
         tid_check = write_fields.get("traceid排查", "")
         if tid_check and isinstance(tid_check, str) and tid_check.startswith("http"):

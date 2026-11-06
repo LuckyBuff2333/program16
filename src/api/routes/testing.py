@@ -6142,9 +6142,10 @@ async def test_adp_lookup(request: Request):
                     continue
                 if _cur_dur not in (None, ""):
                     try:
-                        write_fields["耗时(分)"] = str(round(float(_cur_dur), 1))
+                        # 数字字段必须传 number；字符串会触发 NumberFieldConvFail
+                        write_fields["耗时(分)"] = round(float(_cur_dur), 1)
                     except (TypeError, ValueError):
-                        pass
+                        write_fields.pop("耗时(分)", None)
                 # root cause 只来自查附件链接接口；表里已有值时不覆盖
                 _prev_root = str(_prev_fields.get("root cause", "") or "").strip()
                 if _prev_root:

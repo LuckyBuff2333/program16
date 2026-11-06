@@ -313,3 +313,9 @@ reports/adp/{KEY}/*.html      HTML 原件
 - 两者都会写入结果表；目标表不存在对应列时自动创建。
 - 历史记录若没有 sessionid/recordid，需要先按 session 查 ADP 才能补。
 
+## 数字字段写入
+
+- `耗时(分)` 是多维表格数字字段，写回时必须传 number，不能传字符串。
+- 传 `"20.8"` 会触发 `NumberFieldConvFail (1254061)`。
+- 代码已统一用 `round(float(...), 1)` 写入；转换失败则跳过该字段。
+
