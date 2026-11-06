@@ -293,3 +293,10 @@ reports/adp/{KEY}/*.html      HTML 原件
 - ADP lookup 批量写回同样会补齐 `sessionid`，无需手工加列。
 - 失败但已建立 ADP 会话的记录也会带上 sessionid，便于后续按会话复盘。
 
+## root cause 写入规则
+
+- `root cause` 只使用查附件链接接口返回的根因值，不再从 ADP 报告文本反推。
+- 兼容字段：`rootCause` / `root_cause` / `rootcause` / `rootCauseDesc` 等。
+- 目标表已有 `root cause` 值时，本次执行不覆盖该字段。
+- `agent分析的root cause` 仍单独保留 ADP 报告里的根因，两者互不覆盖。
+

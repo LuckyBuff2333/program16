@@ -6140,10 +6140,10 @@ async def test_adp_lookup(request: Request):
                         write_fields["耗时(分)"] = str(round(float(_cur_dur), 1))
                     except (TypeError, ValueError):
                         pass
-                # 确保 root cause 字段也被填充（与 agent分析的root cause 同步）
-                adp_rc = write_fields.get("agent分析的root cause", "")
-                if adp_rc:
-                    write_fields["root cause"] = adp_rc
+                # root cause 只来自查附件链接接口；表里已有值时不覆盖
+                _prev_root = str(_prev_fields.get("root cause", "") or "").strip()
+                if _prev_root:
+                    write_fields.pop("root cause", None)
                 # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
                 tid_check = write_fields.get("traceid排查", "")
                 if tid_check and isinstance(tid_check, str) and tid_check.startswith("http"):

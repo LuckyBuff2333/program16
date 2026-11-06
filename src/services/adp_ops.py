@@ -248,7 +248,38 @@ def _run_trace_skill(jira_key: str, trace_id: str):
 # ===== Step 1: dpportal 查询附件 =====
 
 _ATTACH_CACHE = {}
+_ATTACH_ROOT_CACHE = {}
 _ATTACH_CACHE_LOCK = __import__("threading").Lock()
+
+
+def _pick_attach_root_cause(payload) -> str:
+    """从查附件链接接口响应中提取 rootcause（兼容常见字段名）。"""
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("rootCause", "root_cause", "rootcause", "rootCauseDesc",
+                "root_cause_desc", "rootCauseText"):
+        val = payload.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    for key in ("data", "result"):
+        val = payload.get(key)
+        if isinstance(val, dict):
+            got = _pick_attach_root_cause(val)
+            if got:
+                return got
+    return ""
+
+
+def get_attach_root_cause(jira_key: str) -> str:
+    with _ATTACH_CACHE_LOCK:
+        return str(_ATTACH_ROOT_CACHE.get(jira_key) or "")
+
+
+def _cache_attach_root_cause(jira_key: str, payload) -> None:
+    root = _pick_attach_root_cause(payload)
+    if root:
+        with _ATTACH_CACHE_LOCK:
+            _ATTACH_ROOT_CACHE[jira_key] = root
 
 
 def query_attachments(jira_key: str):
@@ -290,6 +321,7 @@ def query_attachments(jira_key: str):
             if data.get("code") != 0:
                 logger.warning("dpportal 附件查询业务错误: %s -> %s", jira_key, body_head)
                 return []
+            _cache_attach_root_cause(jira_key, data)
             attachments = data.get("data", {}).get("attachments", [])
             logger.info("dpportal 附件查询: %s 找到 %d 个附件", jira_key, len(attachments))
             with _ATTACH_CACHE_LOCK:
@@ -1401,6 +1433,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         record_id = None
         prev_status = ""
         prev_duration = ""
+        prev_root = ""
         matches = []
         for item in records:
             fv = item.get("fields", {}).get(jira_field, "")
@@ -1423,6 +1456,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             record_id = chosen.get("record_id", "")
             prev_status = str(chosen.get("fields", {}).get("完成状态", "") or "")
             prev_duration = chosen.get("fields", {}).get("耗时(分)", "")
+            prev_root = str(chosen.get("fields", {}).get("root cause", "") or "").strip()
         # 不存在则新建
         if not record_id:
             created = feishu_client.batch_create_records(app_token, table_id, [{"fields": {jira_field: jira_key}}])
@@ -1435,10 +1469,9 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
                     "agent分析的问题模块", "agent分析的root cause", "root cause",
                     "置信度", "分析失败归因", "原因", "traceid", "sessionid", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
-        # 确保 root cause 字段也被填充（与 agent分析的root cause 同步）
-        adp_rc = write_fields.get("agent分析的root cause", "")
-        if adp_rc:
-            write_fields["root cause"] = adp_rc
+        if prev_root:
+            write_fields.pop("root cause", None)
+        # root cause 只来自查附件链接接口；已有值时不覆盖
         # 一致性校验：完成必须有模块和 HTML 报告，否则按降级/失败落状态
         if str(write_fields.get("完成状态", "")) == "完成":
             _module = str(write_fields.get("agent分析的问题模块", "") or "").strip()
@@ -1558,6 +1591,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
     # Step 1: 查附件
     _progress("attachments", "running")
     attachments = query_attachments(jira_key)
+    _attach_root_cause = get_attach_root_cause(jira_key)
+    if _attach_root_cause:
+        out["attach_root_cause"] = _attach_root_cause
     # 接口异常（非 JSON/网关错误）：不是“无附件”，标分析失败，交由人工/下次重跑
     if attachments is None:
         out["error"] = "ADP附件接口异常"
@@ -1985,6 +2021,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
 
         # Step 5: 写入飞书（可跳过，由调用方自行写回）
         # 写表前统一刷新最终 wall time，确保表格拿到的是完整执行耗时
+        _attach_root_cause = out.get("attach_root_cause") or get_attach_root_cause(jira_key)
+        if _attach_root_cause:
+            results["root cause"] = _attach_root_cause
         _session_id = str(signal_info.get("conversation_id") or out.get("sessionid") or "")
         if _session_id:
             results["sessionid"] = _session_id

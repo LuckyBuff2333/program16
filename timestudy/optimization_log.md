@@ -1820,3 +1820,18 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>134. root cause 改为附件接口来源且已有值不覆盖（2026-11-06）</b></summary>
+
+- **规则**：`root cause` 只使用查附件链接接口返回的根因；表里已有值时跳过写入。
+- **实现**：
+  1. 附件接口响应增加 `rootCause`/`root_cause`/`rootcause` 等字段提取并缓存；
+  2. `run_adp_single` 将附件根因写入 `results["root cause"]`；
+  3. `write_adp_to_feishu` 不再用 `agent分析的root cause` 覆盖 `root cause`；
+  4. 写入前读取已有记录，`root cause` 非空则从写回字段中移除；
+  5. ADP lookup 批量写回同样保留已有 root cause。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>
