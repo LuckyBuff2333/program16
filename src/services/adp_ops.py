@@ -2012,9 +2012,13 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 )
             results.pop("报告链接（分析报告、可观测报告）", None)
 
-        # traceid 排查：仅成功（已拿到报告附件）时调用技能；失败时留空/用返回内容报告
+        # traceid 排查：成功和失败都尝试生成；失败时 traceid 排查就是主要交付物
         _trace_report, _trace_err, _trace_doc = ("", "", "")
-        if results.get("_report_file_token"):
+        _need_trace = bool(trace_id) and (
+            results.get("_report_file_token")
+            or results.get("完成状态") in ("分析失败", "无法分析")
+        )
+        if _need_trace:
             _trace_report, _trace_err, _trace_doc = _run_trace_skill(jira_key, trace_id)
         if _trace_report:
             _base = str((_get_adp_cfg().get("trace_report_base") or "http://127.0.0.1:8060")).rstrip("/")

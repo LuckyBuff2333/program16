@@ -1938,3 +1938,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>143. 分析失败也生成 traceid 排查报告（2026-11-06）</b></summary>
+
+- **规则**：失败记录也执行 traceid 排查技能，`traceid排查` 字段写排查报告链接。
+- **实现**：`run_adp_single` 只要拿到 traceid 且状态为分析失败/无法分析，也调用 `_run_trace_skill`。
+- **数据**：VCU-521324、VCU-490754、VCU-525573 已补 traceid 排查链接；VCU-553576 无 ADP 会话，保持空。
+- **验证**：三份排查报告生成成功；全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>
