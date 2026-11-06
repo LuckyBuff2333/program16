@@ -1407,12 +1407,14 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         adp_rc = write_fields.get("agent分析的root cause", "")
         if adp_rc:
             write_fields["root cause"] = adp_rc
-        # 只记录本次分析耗时；已有成功记录时，后续失败不覆盖成功耗时
-        _cur_dur = write_fields.get("耗时(分)")
+        # 已有成功记录时，后续失败/取消尝试不得覆盖成功记录的任何字段
         if prev_status == "完成" and str(write_fields.get("完成状态", "")) != "完成":
-            if prev_duration not in (None, ""):
-                write_fields["耗时(分)"] = str(prev_duration)
-        elif _cur_dur not in (None, ""):
+            logger.info("ADP %s 已有成功记录，忽略本次失败/取消结果，保留成功耗时与 traceid", jira_key)
+            return {"ok": True, "record_id": record_id,
+                    "message": "保留已有成功记录，忽略失败/取消结果"}
+        # 只记录本次分析耗时，不叠加历史值
+        _cur_dur = write_fields.get("耗时(分)")
+        if _cur_dur not in (None, ""):
             try:
                 write_fields["耗时(分)"] = str(round(float(_cur_dur), 1))
             except (TypeError, ValueError):
