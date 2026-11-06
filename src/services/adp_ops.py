@@ -1753,7 +1753,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         max_continues = int(_get_adp_cfg().get("max_continues", 10))
         _trunc_mid = False
         _concluded = False
-        _report_requested = False
+        _report_requested = 0  # 已请求补报告的轮数，允许连续追链接
         _questionnaire_replied = False
         _no_progress_rounds = 0
         _force_final = False
@@ -1775,13 +1775,20 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             _concluded = bool(_no_report and _looks_concluded(full_text))
             _continue_prompt = "继续"
             if _concluded:
-                if _report_requested:
+                if _report_requested >= 3:
                     results["完成状态"] = "分析失败"
                     results["分析失败归因"] = "智能体收口无报告"
-                    logger.warning("ADP 已收口且补报告请求仍无报告: %s", jira_key)
+                    logger.warning("ADP 已收口且连续 3 次补报告仍无链接: %s", jira_key)
                     break
-                _report_requested = True
-                _continue_prompt = "请把当前结论生成 HTML 分析报告，并给出下载链接"
+                _report_requested += 1
+                _html_m = re.search(r"(report_(?:full|degraded|sanitized)[^\s<>`]*\.html)", full_text or "")
+                if _html_m:
+                    _continue_prompt = (
+                        f"报告文件 {_html_m.group(1)} 已生成，请只执行 FileToURL 上传该文件并返回下载链接，"
+                        "不要重新分析，不要重复生成报告"
+                    )
+                else:
+                    _continue_prompt = "请把当前结论生成 HTML 分析报告，并给出下载链接"
             if _force_final:
                 _continue_prompt = "停止继续取证，基于已收集证据直接输出最终结论和 HTML 报告"
             if err_code in CONTENT_SAFETY_CODES:

@@ -1971,3 +1971,17 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>146. 修复报告已渲染但补链接一次就失败（2026-11-07）</b></summary>
+
+- **现象**：智能体已说“HTML 报告已渲染”，随后只执行 `ls out`，没返回 FileToURL 下载链接；旧逻辑第二次收口直接判失败。
+- **根因**：`_report_requested` 是布尔值，补报告请求只允许 1 次；第二次 `_concluded` 立即失败。
+- **修复**：
+  1. `_report_requested` 改为计数，最多连续追 3 次链接；
+  2. 从文本识别 `report_full_*.html`，明确要求只执行 FileToURL 上传该文件并返回链接；
+  3. 配合 `max_continues=10`，保留 90 分钟单条超时。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>
