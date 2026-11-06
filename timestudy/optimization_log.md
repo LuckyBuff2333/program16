@@ -1904,3 +1904,14 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>140. agent分析的问题模块去掉 pid（2026-11-06）</b></summary>
+
+- **规则**：模块字段只保留模块名，不写 `（pid 2489）` / `(pid 2489)` / `pid=2489`。
+- **实现**：新增 `_strip_module_pid`；文本提取、HTML 提取、结果写入、ADP Lookup 批量写回统一清理。
+- **数据**：`回归测试新类型调试` 表 9 条模块已清理 pid。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>

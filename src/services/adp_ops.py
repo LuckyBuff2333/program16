@@ -769,6 +769,14 @@ def call_adp_sse(message: str) -> tuple:
 
 # ===== Step 3: 提取分析结果 =====
 
+def _strip_module_pid(value: str) -> str:
+    """去掉模块名里的 pid 信息，例如 GmDeviceConnectionPlan（pid 2489）。"""
+    text = str(value or "")
+    text = re.sub(r"\s*[（(]\s*pid\s*[:=]?\s*\d+\s*[）)]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*pid\s*[:=]\s*\d+", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip(" ，,;；")
+
+
 def _extract_problem_module(text: str) -> str:
     """从分析文本中提取问题模块（归位/问题所在域）"""
     # ADP 专有模式：全文搜索取最后匹配（高度特异，不会误匹配中间文本）
@@ -778,7 +786,7 @@ def _extract_problem_module(text: str) -> str:
     for p in adp_patterns:
         matches = re.findall(p, text, re.IGNORECASE)
         if matches:
-            return matches[-1].strip("*").strip()
+            return _strip_module_pid(matches[-1].strip("*").strip())
     # 通用模式：仅搜索末尾 5000 字符（避免误匹配中间分析文本）
     tail = text[-5000:] if len(text) > 5000 else text
     generic_patterns = [
@@ -793,7 +801,7 @@ def _extract_problem_module(text: str) -> str:
     for p in generic_patterns:
         m = re.search(p, tail, re.IGNORECASE)
         if m:
-            return m.group(1).strip("*").strip()
+            return _strip_module_pid(m.group(1).strip("*").strip())
     return ""
 
 
@@ -812,14 +820,14 @@ def _extract_module_from_html(html_path: str) -> str:
             if m:
                 val = re.sub(r'<[^>]+>', '', m.group(1)).strip()
                 if val:
-                    return val
+                    return _strip_module_pid(val)
         # 降级纯文本匹配
         for kw in ("断点模块", "现象承载模块"):
             m = re.search(rf'{kw}[：:：]\s*(.+?)(?:\n|$)', content)
             if m:
                 val = re.sub(r'<[^>]+>', '', m.group(1)).strip()
                 if val:
-                    return val
+                    return _strip_module_pid(val)
     except Exception:
         pass
     return ""
@@ -1243,7 +1251,7 @@ def extract_adp_results(full_text: str, closeout_data: dict, start_ts: int, end_
         result["_model_elapsed_sec"] = round((end_ts - start_ts) / 1000, 1)
     # 问题模块 + root cause
     problem_module = _extract_problem_module(full_text)
-    result["agent分析的问题模块"] = problem_module
+    result["agent分析的问题模块"] = _strip_module_pid(problem_module)
     result["agent分析的root cause"] = _extract_root_cause(full_text)
     # 额外返回报告直链（供前端展示，不写入飞书）
     result["_report_url"] = report_url
@@ -1485,6 +1493,8 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         if prev_root:
             write_fields.pop("root cause", None)
+        if write_fields.get("agent分析的问题模块"):
+            write_fields["agent分析的问题模块"] = _strip_module_pid(write_fields["agent分析的问题模块"])
         if write_fields.get("分析失败归因"):
             write_fields["分析失败归因"] = short_failure_category(write_fields["分析失败归因"])
         if str(write_fields.get("完成状态", "")) in ("分析失败", "无法分析"):

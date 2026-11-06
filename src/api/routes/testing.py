@@ -6131,6 +6131,9 @@ async def test_adp_lookup(request: Request):
                 write_fields = {k: v for k, v in results_dict.items()
                                 if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
                 write_fields.pop("原因", None)
+                if write_fields.get("agent分析的问题模块"):
+                    from src.services.adp_ops import _strip_module_pid as _strip_pid
+                    write_fields["agent分析的问题模块"] = _strip_pid(write_fields["agent分析的问题模块"])
                 if write_fields.get("分析失败归因"):
                     from src.services.adp_ops import short_failure_category as _short_reason
                     write_fields["分析失败归因"] = _short_reason(write_fields["分析失败归因"])
