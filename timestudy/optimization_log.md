@@ -1927,3 +1927,14 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>142. ADP 空返回重试改为覆盖原行（2026-11-06）</b></summary>
+
+- **规则**：空返回重试结果填回原 Jira 行，不新增一行。
+- **实现**：`batch_results.remove(_old); append(item)` 改为按原索引替换。
+- **数据**：`adp_batch_19.csv` 的 VCU-525615 开始时间补为 `2026-11-06 22:02:00`，结束 `22:35:30`；表内仍为 1 行。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/api/routes/testing.py`、`docs/ADP平台调用逻辑说明文档.md`
+
+</details>

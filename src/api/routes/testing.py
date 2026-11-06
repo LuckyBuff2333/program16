@@ -6079,8 +6079,9 @@ async def test_adp_lookup(request: Request):
                     "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     **_adp_text_payload(result), "file_urls": result.get("file_urls", []),
                 }
-                batch_results.remove(_old)
-                batch_results.append(item)
+                # 重试结果覆盖原行，不新增一行（批次记录/表格保持原顺序）
+                _old_idx = batch_results.index(_old)
+                batch_results[_old_idx] = item
                 yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
 
         all_results.extend(batch_results)
