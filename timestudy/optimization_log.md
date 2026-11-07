@@ -1996,3 +1996,13 @@ flowchart TD
 - **实现文件**：`src/services/trigger_ops.py`、`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>148. 时间提取进度批量推送与 ADP 5 条写回（2026-11-07）</b></summary>
+
+- **时间提取**：`/api/trigger/batch_extract_time` 进度改为每 20 条推送一次 `progress_batch`，并同步增量写云端；前端兼容旧 `progress`。
+- **ADP Lookup**：批量写回改为每 5 条调用一次多维表格更新；空返回待重试项不进入写回，重试后再写最终结果。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/api/routes/trigger.py`、`src/api/routes/testing.py`、`frontend/src/panels/TimeExtractPanel.vue`、`docs/AI日志分析批量执行方法说明.md`
+
+</details>

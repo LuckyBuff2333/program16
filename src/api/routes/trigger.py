@@ -477,6 +477,7 @@ async def batch_extract_time(request: Request):
         hit_count = 0
         batch_buf = {}  # 缓冲 20 条后批量写入
         sources_buf = {}  # 缓冲触发时间来源
+        progress_buf = []  # 每 20 条进度一次推送
 
         def extract_one(bugid: str):
             """单个 bugid 的提取链路：视频 → 评论/描述 → 图片优先级"""
@@ -541,6 +542,9 @@ async def batch_extract_time(request: Request):
                     # 取消未开始的任务
                     cancelled = sum(1 for f in futures if f.cancel())
                     # 把当前已完成的先批量写入，然后退出
+                    if progress_buf:
+                        yield f"data: {_json.dumps({'type': 'progress_batch', 'current': done_count, 'total': total, 'hit': hit_count, 'items': progress_buf}, ensure_ascii=False)}\n\n"
+                        progress_buf = []
                     if batch_buf:
                         _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
                         yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
@@ -570,16 +574,28 @@ async def batch_extract_time(request: Request):
                         yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
                         batch_buf.clear()
                         sources_buf.clear()
-                evt = {
-                    'type': 'progress', 'current': done_count, 'total': total,
-                    'hit': hit_count, 'bugid': bugid, 'time': tt or '',
+                progress_buf.append({
+                    'bugid': bugid, 'time': tt or '',
                     'source': source, 'error': error or '',
-                }
-                yield f"data: {_json.dumps(evt, ensure_ascii=False)}\n\n"
+                })
+                # 每 20 条进度推送一次，避免逐条 SSE
+                if len(progress_buf) >= 20:
+                    yield f"data: {_json.dumps({'type': 'progress_batch', 'current': done_count, 'total': total, 'hit': hit_count, 'items': progress_buf}, ensure_ascii=False)}\n\n"
+                    progress_buf = []
+                    # 进度每 20 条同步落一次云端，避免只在全部结束时写
+                    if batch_buf:
+                        _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
+                        yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
+                        batch_buf.clear()
+                        sources_buf.clear()
         finally:
             # 等待工作线程真正结束，避免页面已显示完成、后台仍在提取/写云端
             pool.shutdown(wait=True, cancel_futures=True)
 
+        # 余量进度
+        if progress_buf:
+            yield f"data: {_json.dumps({'type': 'progress_batch', 'current': done_count, 'total': total, 'hit': hit_count, 'items': progress_buf}, ensure_ascii=False)}\n\n"
+            progress_buf = []
         # 余量写入
         if batch_buf:
             _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)

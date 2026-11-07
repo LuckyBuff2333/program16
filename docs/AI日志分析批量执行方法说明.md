@@ -275,3 +275,15 @@ for _ in range(interval_min * 60):
 | 机器人持续执行 | `server_legacy.py` | `_bot_run_batch_ai_continuous()` |
 | 机器人单轮执行 | `server_legacy.py` | `_bot_run_batch_ai_single_round()` |
 | 内存级去重标记 | `testing.py` | `_mark_executed()` / `_get_same_source_executed_keys()` |
+
+## 触发时间提取推送与落库
+
+- 进度按 **20 条一批** 推送 `progress_batch`，不再逐条推送。
+- 每批进度同时把已命中的触发时间增量写入云端，不等全部结束。
+- 前端兼容旧的单条 `progress` 事件。
+
+## ADP Lookup 写回
+
+- 写回按 **5 条一批** 调用多维表格更新。
+- 空返回待重试项不进入写回批次；重试结束后才写最终结果。
+

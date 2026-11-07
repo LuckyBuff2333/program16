@@ -485,6 +485,15 @@ export default {
         this.aiSkippedCount = evt.ai_skipped || 0;
         this.cacheSkippedCount = evt.cache_skipped || 0;
         this.statusMsg = evt.message || `共 ${evt.total} 条待提取，并行 2 个...`;
+      } else if (evt.type === 'progress_batch') {
+        this.doneCount = evt.current;
+        this.hitCount = evt.hit;
+        this.statusMsg = `提取中 ${evt.current}/${evt.total}`;
+        for (const item of (evt.items || [])) {
+          this.rows.push({
+            bugid: item.bugid, time: item.time || '', source: item.source || '', error: item.error || '',
+          });
+        }
       } else if (evt.type === 'progress') {
         this.doneCount = evt.current;
         this.hitCount = evt.hit;

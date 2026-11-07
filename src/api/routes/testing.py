@@ -6079,9 +6079,8 @@ async def test_adp_lookup(request: Request):
                     "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     **_adp_text_payload(result), "file_urls": result.get("file_urls", []),
                 }
-                # 重试结果覆盖原行，不新增一行（批次记录/表格保持原顺序）
-                _old_idx = batch_results.index(_old)
-                batch_results[_old_idx] = item
+                # 重试结果直接并入原行对象：保留原行，只补结果字段，不新增/替换
+                _old.update(item)
                 yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
 
         all_results.extend(batch_results)
@@ -6176,8 +6175,12 @@ async def test_adp_lookup(request: Request):
                 if record_id and write_fields:
                     update_records.append({"record_id": record_id, "fields": write_fields})
             if update_records:
-                await loop.run_in_executor(
-                    None, lambda: feishu_client.update_bitable_records(app_token, table_id, update_records))
+                # 每 5 条写回一次；空返回待重试项不在 update_records 中
+                for _i in range(0, len(update_records), 5):
+                    _chunk = update_records[_i:_i + 5]
+                    await loop.run_in_executor(
+                        None, lambda _c=_chunk: feishu_client.update_bitable_records(app_token, table_id, _c))
+                    logger.info("ADP lookup 写回: %d/%d 条", min(_i + 5, len(update_records)), len(update_records))
                 logger.info("ADP lookup 批量写回成功: %d 条（总耗时 %s）", len(update_records), _elapsed_str)
             # 批次总耗时：批次表写本批次，数据表写累计；全失败批次不记录
             try:
