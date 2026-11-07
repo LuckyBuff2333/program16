@@ -2208,3 +2208,13 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/BatchAiPanel.vue`、`docs/AI日志分析批量执行方法说明.md`
 
 </details>
+
+<details>
+<summary><b>167. 压缩包文件名兜底时间加标签（2026-11-07）</b></summary>
+
+- **规则**：最终建议时间直接来自 gmlogger/压缩包文件名时保留该时间，但增加 `fallback_tag=压缩包文件名`。
+- **展示**：诊断详情追加兜底说明；前端问题归类旁显示“压缩包文件名”黄色标签。
+- **验证**：全量 **116 passed**；前端重新构建。
+- **实现文件**：`src/services/server_legacy.py`、`frontend/src/panels/TroubleshootPanel.vue`
+
+</details>

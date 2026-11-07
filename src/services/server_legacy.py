@@ -8383,10 +8383,21 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             suggested_time = ""
             final_msg = "视频/图片/评论区均无时间信息"
         detail = _build_simple_detail(comment_time, video_time, img_time_str, final_msg)
+    # 兜底标签：最终建议时间直接取自 gmlogger/压缩包文件名时，标记出来便于后续排查
+    fallback_tag = ""
+    if suggested_time and gm_times:
+        _sug_key = str(suggested_time)[:19].replace("T", " ")
+        for _gm_name, _gm_dt in gm_times:
+            if str(_gm_name)[:19].replace("T", " ") == _sug_key:
+                fallback_tag = "压缩包文件名"
+                break
+    if fallback_tag:
+        detail = (detail + f"（兜底标签：{fallback_tag}）").strip()
     report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time, archive_results)
     result = {"bugid": bugid, "category": category, "problem_time": problem_time,
                "archive_files": archive_results, "detail": detail, "main_entries": main_entries,
                "verify_status": verify_status, "suggested_time": suggested_time,
+               "fallback_tag": fallback_tag,
                "time_check": locals().get("time_check"), "report": report, "done_time": done_time}
     _save_diagnose_cache(bugid, result)
     logger.info("诊断 %s: 最终分类=%s, verify_status=%s", bugid, category, verify_status or "N/A")

@@ -168,7 +168,10 @@
         <el-table-column type="index" label="#" width="45"></el-table-column>
         <el-table-column prop="bugid" label="Jira号" width="120"></el-table-column>
         <el-table-column prop="category" label="问题归类" width="170">
-          <template #default="{row}"><el-tag :type="diagCategoryTagType(row.category)" size="small">{{ row.category }}</el-tag></template>
+          <template #default="{row}">
+            <el-tag :type="diagCategoryTagType(row.category)" size="small">{{ row.category }}</el-tag>
+            <el-tag v-if="row.fallback_tag" type="warning" size="small" style="margin-left:4px">{{ row.fallback_tag }}</el-tag>
+          </template>
         </el-table-column>
         <el-table-column prop="err_msg" label="错误信息" min-width="200" show-overflow-tooltip>
           <template #default="{row}">
@@ -237,7 +240,10 @@
       <el-table :data="getFilteredDiagResults()" size="small" stripe border max-height="320" row-key="bugid">
         <el-table-column prop="bugid" label="Jira号" width="120"></el-table-column>
         <el-table-column prop="category" label="问题归类" width="170">
-          <template #default="{row}"><el-tag :type="diagCategoryTagType(row.category)" size="small">{{ row.category }}</el-tag></template>
+          <template #default="{row}">
+            <el-tag :type="diagCategoryTagType(row.category)" size="small">{{ row.category }}</el-tag>
+            <el-tag v-if="row.fallback_tag" type="warning" size="small" style="margin-left:4px">{{ row.fallback_tag }}</el-tag>
+          </template>
         </el-table-column>
         <el-table-column label="当前触发时间" width="180">
           <template #default="{row}">
