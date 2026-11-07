@@ -317,3 +317,9 @@ for _ in range(interval_min * 60):
 - 直接使用 JQL 返回字段（summary/status/created/AI字段/rootcause），不再逐条拉详情，避免 5000 条时超慢。
 - 纯 Jira 号输入仍逐条拉详情。
 
+## 功能测试立即停止
+
+- 停止按钮先调用 `/api/test/batch_ai_run/stop` 设置停止事件，再 abort 前端 SSE。
+- 后端轮询队列每 1 秒检查停止事件，取消未开始的 future，不再等待当前任务全部完成。
+- 已经发给 AI 接口的异步任务无法撤回，但不会继续提交后续 Jira。
+

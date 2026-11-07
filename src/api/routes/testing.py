@@ -93,6 +93,7 @@ import time as _time_mod
 _recently_executed = {}  # jira_key -> timestamp
 _EXECUTED_TTL = 2 * 3600  # 2小时过期
 _EXECUTED_KEYS_CACHE = {}  # {(source, date): (ts, set)}
+_batch_ai_run_stop_event = threading.Event()
 _EXECUTED_KEYS_TTL = 30
 
 
@@ -1273,6 +1274,7 @@ async def test_batch_ai_run(request: Request):
     async def event_generator():
         import threading
         stop_event = threading.Event()
+        _batch_ai_run_stop_event.clear()
         batch_start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         yield f"data: {_json.dumps({'type': 'start', 'total': len(bugids)}, ensure_ascii=False)}\n\n"
         result_queue = queue.Queue()
@@ -1280,7 +1282,7 @@ async def test_batch_ai_run(request: Request):
 
         def _run_one(bugid):
             """在线程池中执行单个 AI 分析：支持 stop_event 中断"""
-            if stop_event.is_set():
+            if stop_event.is_set() or _batch_ai_run_stop_event.is_set():
                 return
             from src.clients.base import http_post
             # 无触发时间的 Jira 号跳过
@@ -1297,7 +1299,7 @@ async def test_batch_ai_run(request: Request):
                 if cfg.get("trigger_time_field"):
                     payload[cfg["trigger_time_field"]] = exec_time
                 resp = http_post(cfg["url"], payload, timeout=min(int(cfg.get("timeout", 60)), 30))
-                if stop_event.is_set():
+                if stop_event.is_set() or _batch_ai_run_stop_event.is_set():
                     return
                 # 判断是否异步启动成功：code=200 且 msg 包含异步关键词
                 resp_code = resp.get("code") if isinstance(resp, dict) else None
@@ -1322,13 +1324,20 @@ async def test_batch_ai_run(request: Request):
                                   "执行时间": batch_start_time,
                                   "分析执行时间": batch_start_time})
 
-        # 并行启动所有任务
+        # 并行启动所有任务；保留 future 以便停止时取消未开始的
+        futures = []
         for bugid in bugids:
-            loop.run_in_executor(None, _run_one, bugid)
+            futures.append(loop.run_in_executor(None, _run_one, bugid))
 
         # 轮询队列，实时推送完成事件
         results = []
         while len(results) < len(bugids):
+            if _batch_ai_run_stop_event.is_set():
+                stop_event.set()
+                for f in futures:
+                    f.cancel()
+                logger.info("收到功能测试批量停止信号，立即停止（已完成 %d/%d）", len(results), len(bugids))
+                break
             if await request.is_disconnected():
                 stop_event.set()
                 logger.info("客户端已断开，停止批量执行（已完成 %d/%d）", len(results), len(bugids))
@@ -6250,6 +6259,14 @@ async def test_adp_lookup(request: Request):
     _job = _JOBS.create("adp_lookup", "ADP 表格查找作业")
     return StreamingResponse(_job_stream(_job, event_generator, _job_stop), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/api/test/batch_ai_run/stop")
+def stop_batch_ai_run():
+    """立即停止功能测试批量执行。"""
+    _batch_ai_run_stop_event.set()
+    logger.info("收到功能测试批量执行停止信号")
+    return _ok(None, "已发送立即停止信号")
 
 
 @router.post("/api/test/adp_lookup/stop")

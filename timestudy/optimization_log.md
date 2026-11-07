@@ -2075,3 +2075,17 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`
 
 </details>
+
+<details>
+<summary><b>155. 功能测试批量执行支持立即停止（2026-11-07）</b></summary>
+
+- **问题**：停止只 abort 前端 SSE，后端已提交全部 Jira，仍继续执行；按钮提示等待当前任务完成。
+- **修复**：
+  1. 新增 `_batch_ai_run_stop_event` 与 `/api/test/batch_ai_run/stop`；
+  2. 队列轮询检查停止事件，立即取消未开始的 future 并退出；
+  3. worker 提交前/请求后检查停止事件；
+  4. 前端停止按钮先调后端停止接口，再 abort SSE，提示改为“正在立即停止”。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/api/routes/testing.py`、`frontend/src/panels/BatchAiPanel.vue`
+
+</details>

@@ -670,10 +670,11 @@ export default {
     stopBatchOneClick() {
       if (this.batchAi.stopRequested) return;
       this.batchAi.stopRequested = true;
-      this.batchAi.oneClickMsg = '正在停止：等待当前正在提取的 Jira 完成并写入云端，后续队列取消...';
+      this.batchAi.oneClickMsg = '正在立即停止...';
       this.batchAi.oneClickError = false;
-      // 通知后端：抽样提取队列和线上批量预提取都停止；已提取完的会先写云端
+      // 通知后端：抽样提取、线上批量、PC 批量立即停止
       fetch('/api/test/batch_ai_extract_times/stop', { method: 'POST' }).catch(() => {});
+      fetch('/api/test/batch_ai_run/stop', { method: 'POST' }).catch(() => {});
       fetch('/api/test/prod_batch_run/stop', { method: 'POST' }).catch(() => {});
       // PC 模式执行阶段没有服务端提取队列，直接中止当前分析请求；线上模式等后端优雅返回
       if (this.batchAi.execMode !== 'online' && this.batchAiAbort) this.batchAiAbort.abort();
