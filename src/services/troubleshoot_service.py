@@ -239,8 +239,16 @@ def query_records(
     filtered_success_count = 0
     if exclude_same_source_success:
         # 同 Jira + 同触发来源存在成功记录时，失败行移到“已有成功”表
+        # 成功记录可能早于本次查询时间窗口，单独按“分析结果=成功”拉取
+        try:
+            success_records = _query_bitable_records(
+                filter_expr='CurrentValue.[分析结果] = "成功"')
+            logger.info("同来源成功过滤: 全量成功记录 %d 条", len(success_records))
+        except Exception as _e:
+            logger.warning("同来源成功过滤拉取成功记录失败，回退时间窗口内记录: %s", _e)
+            success_records = records
         success_keys = set()
-        for rec in records:
+        for rec in success_records:
             f = rec.get("fields", {})
             if _bitable_text(f.get("分析结果", "")) != "成功":
                 continue

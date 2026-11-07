@@ -2120,3 +2120,13 @@ flowchart TD
 - **实现文件**：`src/services/troubleshoot_service.py`、`src/api/routes/troubleshoot.py`、`src/schemas/troubleshoot.py`、`frontend/src/panels/TroubleshootPanel.vue`
 
 </details>
+
+<details>
+<summary><b>159. 同来源成功过滤改为全量成功记录（2026-11-07）</b></summary>
+
+- **修正**：成功记录单独按 `分析结果=成功` 全量查询，避免成功记录早于本次时间窗口时漏过滤。
+- **代价**：查询约增加一次全量成功记录拉取，实测该查询总耗时约 42 秒。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/troubleshoot_service.py`
+
+</details>
