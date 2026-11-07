@@ -895,3 +895,12 @@
 - **实现文件**：`data/backup/ocr_eval_80_roi_result.json`
 
 </details>
+
+<details>
+<summary><b>194. 少量 Jira 触发时间直接按条件搜索（2026-11-07）</b></summary>
+
+- **问题**：只提取 1 条 Jira 时也会全量加载 27 个触发表和主表 7983 条。
+- **修复**：`keys <= 5` 时直接调用 `_search_trigger_time_batch(keys)`，不再 `_load_cloud_trigger_cache`；同时移除 `_ensure_trigger_time_bugid_cache` 全量预加载。
+- **实现文件**：`src/api/routes/testing.py`
+
+</details>

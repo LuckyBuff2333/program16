@@ -613,11 +613,18 @@ async def test_batch_ai_extract_times(request: Request):
         try:
             _batch_extract_stop_event.clear()  # 新批次开始时清除停止标志
             _begin_attach_batch()              # 新批次：重置附件下载预算
-            # 加载云端已有时间 + 所有已处理的 jira 号 + 成功分析记录（用于缓存过期判断，合并加载避免两次全量拉取）
-            (cloud_times, cloud_keys), success_jiras = await asyncio.gather(
-                loop.run_in_executor(None, _load_cloud_trigger_cache),
-                loop.run_in_executor(None, _load_bitable_success_jiras),
-            )
+            # 少量 Jira 直接按 Jira 号过滤搜索，不拉取 27 个触发表全量
+            if len(keys) <= 5:
+                from src.services.trigger_ops import _search_trigger_time_batch
+                cloud_times = await loop.run_in_executor(None, _search_trigger_time_batch, keys)
+                cloud_keys = set(cloud_times)
+                success_jiras = set()
+                logger.info("少量 Jira 直接搜索触发时间: %d 条", len(keys))
+            else:
+                (cloud_times, cloud_keys), success_jiras = await asyncio.gather(
+                    loop.run_in_executor(None, _load_cloud_trigger_cache),
+                    loop.run_in_executor(None, _load_bitable_success_jiras),
+                )
             # 过滤多维表格中已有数据（不论成功/失败，只要出现过就排除）
             bitable_exclude = set()
             if filter_existing:
@@ -697,8 +704,7 @@ async def test_batch_ai_extract_times(request: Request):
             empty_count = 0
             skip_no_gmlogger = 0
             interrupted = False
-            # 预加载 bugid 缓存 + 初始化批量写入缓冲区（避免逐条写入和重复加载云端表）
-            await loop.run_in_executor(None, _ensure_trigger_time_bugid_cache)
+            # 批量写入缓冲区；云端写入已改为增量搜索，不再全量预加载触发表
             _write_buffer = []  # [(bugid, trigger_time)] 缓冲 20 条批量写入
             _WRITE_BATCH_SIZE = 20
             if need_fetch:
