@@ -2319,3 +2319,13 @@ flowchart TD
 - **实现文件**：`src/api/routes/trigger.py`
 
 </details>
+
+<details>
+<summary><b>177. 降低时间批量提取并发（2026-11-07）</b></summary>
+
+- **现象**：时间批量提取时 CPU 约 59%、内存 13.2/23.4GB，系统明显卡顿；GPU 仅 7%，瓶颈在 CPU/下载/OCR 调度而非 GPU。
+- **配置调整**：`params.trigger_parallel` 6→2，`params.ocr_parallel` 6→2。
+- **说明**：`load_config` 有进程内缓存，需重启后端后生效；配置文件不入库。
+- **实现文件**：`config/config.yaml`（本地配置）
+
+</details>
