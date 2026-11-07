@@ -37,9 +37,15 @@
           <div class="continuous-bar">
             <el-checkbox v-model="batchAi.continuous">持续执行</el-checkbox>
             <template v-if="batchAi.continuous">
-              <span class="param-label">间隔</span>
+              <span class="param-label">等待方式</span>
+              <el-radio-group v-model="batchAi.waitMode" size="small">
+                <el-radio-button label="fixed">固定等待</el-radio-button>
+                <el-radio-button label="dynamic">动态等待</el-radio-button>
+              </el-radio-group>
+              <span class="param-label">{{ batchAi.waitMode === 'fixed' ? '间隔' : '最长等待' }}</span>
               <el-input-number v-model="batchAi.interval" :min="1" :max="120" size="small" style="width:90px" controls-position="right"></el-input-number>
               <span class="param-hint">min</span>
+              <span v-if="batchAi.waitMode === 'dynamic'" class="param-hint">上一批写入数据沉淀后立即下一轮</span>
               <span class="param-label">轮数</span>
               <el-input-number v-model="batchAi.rounds" :min="2" :max="100" size="small" style="width:90px" controls-position="right"></el-input-number>
             </template>
@@ -381,7 +387,7 @@ export default {
         running: false, abortController: null, currentRound: 0,
         results: [], noTimeJiras: [], sampleStats: null, doneMsg: '', doneError: false,
       },
-      batchAi: { jql: 'issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', jqlPresets: ['issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND created >= startOfDay(-1d) AND created <= endOfDay(-1d) AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC', 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND status != closed AND created >= "2026/10/01" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'], jqlLabels: ['今日新增Bug', '昨日新增Bug', '本周新增Bug', '10月新增未关闭', '远控', 'coreservice', '导航'], sampleCount: 5, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, filterExistingSuccess: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '', envSavedMsg: '', rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, filterCounts: null, filterDeduped: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, stopRequested: false, preSample: null },
+      batchAi: { jql: 'issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', jqlPresets: ['issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND created >= startOfDay(-1d) AND created <= endOfDay(-1d) AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC', 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND status != closed AND created >= "2026/10/01" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'], jqlLabels: ['今日新增Bug', '昨日新增Bug', '本周新增Bug', '10月新增未关闭', '远控', 'coreservice', '导航'], sampleCount: 5, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, filterExistingSuccess: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '', envSavedMsg: '', rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, filterCounts: null, filterDeduped: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, waitMode: 'fixed', interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, stopRequested: false, preSample: null },
     };
   },
   mounted() {
@@ -472,7 +478,7 @@ export default {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ bugids: this.batchAi.selected, trigger_times: this.batchAi.triggerTimes,
             analysis_concurrency: this.batchAi.analysisConcurrency, download_concurrency: this.batchAi.downloadConcurrency,
-            model: this.batchAi.model, trigger_source: this.batchAi.triggerSource, software_version: this.batchAi.softwareVersion }),
+            model: this.batchAi.model, trigger_source: this.batchAi.triggerSource, software_version: this.batchAi.softwareVersion, continuous: this.batchAi.continuous }),
           signal: this.batchAiAbort.signal,
         });
         const reader = resp.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
@@ -509,7 +515,7 @@ export default {
           body: JSON.stringify({ bugids: this.batchAi.selected, trigger_times: this.batchAi.triggerTimes, skip_existing: false,
             exec_mode: this.batchAi.execMode,
             analysis_concurrency: this.batchAi.analysisConcurrency, download_concurrency: this.batchAi.downloadConcurrency,
-            model: this.batchAi.model, trigger_source: this.batchAi.triggerSource, software_version: this.batchAi.softwareVersion }),
+            model: this.batchAi.model, trigger_source: this.batchAi.triggerSource, software_version: this.batchAi.softwareVersion, continuous: this.batchAi.continuous }),
           signal: this.batchAiAbort.signal,
         });
         const reader = resp.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
@@ -550,6 +556,7 @@ export default {
         model: this.batchAi.model,
         triggerSource: this.batchAi.triggerSource,
         softwareVersion: this.batchAi.softwareVersion,
+        waitMode: this.batchAi.waitMode,
       };
       localStorage.setItem(`envSettings_${mode}`, JSON.stringify(data));
       // 软件版本持久化到后端配置，换浏览器/换机器也能读到
@@ -577,7 +584,14 @@ export default {
         if (data.model) this[target].model = data.model;
         if (data.triggerSource) this[target].triggerSource = data.triggerSource;
         if (data.softwareVersion) this[target].softwareVersion = data.softwareVersion;
+        if (data.waitMode) this[target].waitMode = data.waitMode;
       } catch (e) { /* ignore */ }
+    },
+    async checkBatchDone(ids, source) {
+      const body = await api('/api/test/batch_done_status', {
+        method: 'POST', body: JSON.stringify({ bugids: ids, source }),
+      });
+      return body.data || {};
     },
     async batchAiOneClick() {
       this.running.batchOneClick = true;
@@ -626,6 +640,8 @@ export default {
           for (let i = 2; i <= totalRounds; i++) {
             if (this.batchAi.stopRequested || (this.batchAiAbort && this.batchAiAbort.signal.aborted)) { this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 2}/${totalRounds} 轮）`; this.batchAi.oneClickError = false; break; }
             this.batchAi.preSample = { ready: false, selected: [], trigger_times: {}, sampleStats: null, error: null };
+            const prevBatchIds = [...this.batchAi.selected];
+            const prevSource = this.batchAi.execMode === 'online' ? 'parseFullTicket' : 'jira_analyze';
             const remaining = this.batchAi.filteredKeys.length;
             this.batchAi.oneClickMsg = `第 ${i - 1} 轮完成 | 剩余 ${remaining} 个候选 | 正在预提取第 ${i}/${totalRounds} 轮触发时间...`;
             const preSamplePromise = this.batchAiSample(true).then(result => {
@@ -633,13 +649,27 @@ export default {
               else { this.batchAi.preSample = { ready: false, selected: [], trigger_times: {}, sampleStats: null, error: '预提取失败' }; }
             });
             const waitUntil = Date.now() + intervalMs;
+            const waitMode = this.batchAi.waitMode || 'fixed';
             let aborted = false;
+            let doneCount = 0;
+            let lastDoneCheck = 0;
             while (Date.now() < waitUntil) {
               if (this.batchAi.stopRequested || (this.batchAiAbort && this.batchAiAbort.signal.aborted)) { aborted = true; break; }
+              if (waitMode === 'dynamic' && prevBatchIds.length && Date.now() - lastDoneCheck >= 10000) {
+                lastDoneCheck = Date.now();
+                try {
+                  const st = await this.checkBatchDone(prevBatchIds, prevSource);
+                  doneCount = st.done_count || 0;
+                  if (st.all_done) break;
+                } catch (e) { /* 查询失败继续等到最长等待 */ }
+              }
               const remainSec = Math.ceil((waitUntil - Date.now()) / 1000);
               const mm = Math.floor(remainSec / 60); const ss = remainSec % 60;
               const preStatus = this.batchAi.preSample.ready ? '✅ 就绪' : (this.batchAi.preSample.error ? '❌ 失败' : '⏳ 提取中');
-              this.batchAi.oneClickMsg = `等待间隔（${mm}:${String(ss).padStart(2, '0')}）| 剩余 ${remaining} 个候选 | 第 ${i} 轮预提取: ${preStatus}`;
+              const waitLabel = waitMode === 'dynamic'
+                ? `动态等待：上一批已写入 ${doneCount}/${prevBatchIds.length}，最长剩余`
+                : '等待间隔';
+              this.batchAi.oneClickMsg = `${waitLabel}（${mm}:${String(ss).padStart(2, '0')}）| 剩余 ${remaining} 个候选 | 第 ${i} 轮预提取: ${preStatus}`;
               await new Promise(r => setTimeout(r, 1000));
             }
             if (aborted) { this.batchAi.oneClickMsg = `持续执行已停止（完成 ${i - 1}/${totalRounds} 轮）`; this.batchAi.oneClickError = false; break; }

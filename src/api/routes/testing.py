@@ -106,11 +106,12 @@ def _mark_executed(keys: list):
     for k in keys:
         _recently_executed[k] = now
 
-def _filter_recently_executed(keys: list) -> tuple:
+def _filter_recently_executed(keys: list, ttl_seconds: int = None) -> tuple:
     """ 过滤掉最近已执行的 JIRA 号，返回 (过滤后列表, 排除数量) """
     now = _time_mod.time()
+    ttl = _EXECUTED_TTL if ttl_seconds is None else ttl_seconds
     # 清理过期记录
-    expired = [k for k, t in _recently_executed.items() if now - t > _EXECUTED_TTL]
+    expired = [k for k, t in _recently_executed.items() if now - t > ttl]
     for k in expired:
         del _recently_executed[k]
     # 过滤
@@ -174,6 +175,25 @@ def refresh_executed_keys_cache():
     """强制刷新跨批次去重缓存。"""
     _invalidate_executed_keys_cache()
     return _ok(None, "去重缓存已刷新")
+
+
+@router.post("/api/test/batch_done_status", response_model=ApiResponse)
+async def batch_done_status(request: Request):
+    """动态等待：检查上一批 Jira 是否已写入数据沉淀。"""
+    body = await request.json() or {}
+    bugids = [str(b).strip() for b in (body.get("bugids") or []) if str(b).strip()]
+    source = str(body.get("source") or "").strip()
+    if not bugids:
+        return _fail("bugids 为空")
+    try:
+        executed = await _run_blocking(_get_same_source_executed_keys, source)
+        done = [b for b in bugids if b in executed]
+        pending = [b for b in bugids if b not in executed]
+        return _ok({"done": done, "pending": pending, "done_count": len(done),
+                    "total": len(bugids), "all_done": not pending},
+                   f"已写入 {len(done)}/{len(bugids)} 条")
+    except Exception as e:
+        return _fail(f"检查数据沉淀失败: {e}")
 
 
 @router.post("/api/test/ai_analyze", response_model=ApiResponse)
@@ -1244,6 +1264,14 @@ async def test_batch_ai_run(request: Request):
     from src.services.trigger_ops import _load_trigger_times_from_cloud
     body = await request.json() or {}
     bugids = body.get("bugids") or []
+    # 持续执行：用内存最近执行集合兜底，防止多维表格尚未同步时被另一轮/另一页面重复选中
+    if bool(body.get("continuous")):
+        bugids, _mem_skipped = _filter_recently_executed(bugids, ttl_seconds=3600)
+        if _mem_skipped:
+            logger.info("持续执行内存去重: 排除 %d 条最近已执行 Jira", _mem_skipped)
+        if not bugids:
+            return _fail("持续执行去重后无待执行 Jira")
+        _mark_executed(bugids)
     trigger_times = body.get("trigger_times") or {}
     # 批量执行元数据（分析并发数、下载并发数、模型、触发来源）
     _batch_meta = {
@@ -2643,6 +2671,7 @@ async def test_prod_batch_run(request: Request):
     csv_files = body.get("csv_files") or []
     direct_bugids = body.get("bugids") or []
     skip_existing = body.get("skip_existing", True)  # 是否过滤已执行成功的 Jira 号
+    _continuous_run = bool(body.get("continuous"))
     skip_cloud_cache = body.get("skip_cloud_cache", False)  # 跳过云端缓存，强制重新提取触发时间
     filter_pc_only = body.get("filter_pc_only", False)  # 仅过滤PC来源的正确+通用失败
     filter_online_only = body.get("filter_online_only", False)  # 仅过滤线上来源的正确+通用失败
@@ -2684,6 +2713,13 @@ async def test_prod_batch_run(request: Request):
             seen.add(b)
             bugids.append(b)
     dedup_count = len(all_bugids) - len(bugids)
+    if _continuous_run:
+        bugids, _mem_skipped = _filter_recently_executed(bugids, ttl_seconds=3600)
+        if _mem_skipped:
+            logger.info("持续执行内存去重: 排除 %d 条最近已执行 Jira", _mem_skipped)
+        if not bugids:
+            return _fail("持续执行去重后无待执行 Jira")
+        _mark_executed(bugids)
     # 重复过滤：查询多维表格，跳过已执行成功或人工审核确认为无效bug的 Jira 号
     # 支持 skip_existing（全量过滤）和 filter_pc_only/filter_online_only（按来源过滤）
     any_filter = skip_existing or filter_pc_only or filter_online_only

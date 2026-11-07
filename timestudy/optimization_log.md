@@ -2218,3 +2218,14 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`、`frontend/src/panels/TroubleshootPanel.vue`
 
 </details>
+
+<details>
+<summary><b>168. 持续执行支持固定/动态等待（2026-11-07）</b></summary>
+
+- **UI**：持续执行增加“固定等待 / 动态等待”选择；间隔在动态模式下作为最长等待。
+- **动态逻辑**：每 10 秒调用 `/api/test/batch_done_status` 检查上一批 Jira 是否已写入数据沉淀，全部完成立即下一轮。
+- **兜底**：达到最长等待仍继续，避免个别 Jira 无结果导致永久卡住。
+- **验证**：前端 `npm run build` 成功。
+- **实现文件**：`frontend/src/panels/BatchAiPanel.vue`、`src/api/routes/testing.py`、`docs/AI日志分析批量执行方法说明.md`
+
+</details>
