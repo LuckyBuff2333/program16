@@ -3510,7 +3510,7 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
     return False
 
 
-def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid: str = "", filename: str = "") -> dict:
+def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid: str = "", filename: str = "", stop_event=None) -> dict:
     """下载压缩包附件并列出解压后的文件名（支持 zip/tar 系，其余标记不支持）
 
     :param filename: 原始附件文件名，用于分卷 zip 等格式的正确识别
@@ -3532,7 +3532,8 @@ def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid:
             # 流式下载：体积上限 / 磁盘水位 / 单bug预算 / 附件缓存由 attachment_guard 统一负责
             total_size = _stream_download(
                 att_url, headers, src_path, timeout=timeout, bugid=bugid,
-                filename=safe_name, max_bytes=_MAX_ATTACHMENT_BYTES)
+                filename=safe_name, max_bytes=_MAX_ATTACHMENT_BYTES,
+                stop_event=stop_event)
             logger.info("%s附件下载完成: size=%d bytes", _label, total_size)
             ok, names = _diag_archive_names(src_path)
             if not ok:
@@ -5761,7 +5762,11 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
             # 跳过超大包
             if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
                 continue
-            res = _diag_list_archive_entries(att.get("content", ""), headers, _timeout, bugid, filename=att.get("filename", ""))
+            if stop_event and stop_event.is_set():
+                logger.info("视频兜底提取(%s)：收到停止信号，中断压缩包探测", bugid)
+                return ""
+            res = _diag_list_archive_entries(att.get("content", ""), headers, _timeout, bugid,
+                                             filename=att.get("filename", ""), stop_event=stop_event)
             if not res.get("ok"):
                 continue
             for entry in res.get("entries", []):

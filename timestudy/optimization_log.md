@@ -2276,3 +2276,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/trigger.py`、`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>173. 时间提取停止信号传入压缩包下载（2026-11-07）</b></summary>
+
+- **问题**：停止按钮只在视频之间检查，压缩包探测/大附件下载期间无法中断；Ctrl+C 也要等 worker 下载完。
+- **修复**：`_diag_list_archive_entries` 增加 `stop_event`，透传给 `_stream_download`；压缩包探测前检查停止信号。
+- **限制**：单个 OCR 帧、外部 7z 解压进程仍不可抢占，需要当前调用返回。
+- **验证**：`py_compile` 通过。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>
