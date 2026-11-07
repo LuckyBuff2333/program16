@@ -476,7 +476,7 @@ async def batch_extract_time(request: Request):
 
         done_count = 0
         hit_count = 0
-        batch_buf = {}  # 缓冲 20 条后批量写入
+        batch_buf = {}  # 每提取成功 1 条立即写入云端，供批量执行阶段立即读取
         sources_buf = {}  # 缓冲触发时间来源
         progress_buf = []  # 每 20 条进度一次推送
 
@@ -583,7 +583,7 @@ async def batch_extract_time(request: Request):
                     if source:
                         sources_buf[bugid] = source
                     # 缓冲 20 条后批量写入
-                    if len(batch_buf) >= 20:
+                    if len(batch_buf) >= 1:
                         _saved = dict(batch_buf)
                         _ok = _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
                         if _ok:

@@ -2371,3 +2371,14 @@ flowchart TD
 - **建议**：`trigger_parallel` 保持 2；OCR 内部线程 1；不要指望通过加大 OCR 并发提速。
 
 </details>
+
+<details>
+<summary><b>182. 时间提取改为6帧并逐条上传（2026-11-07）</b></summary>
+
+- **帧数**：视频 OCR 从 11 帧改为 6 帧（0/1/2/3/5/8 秒）。
+- **上传**：每成功提取 1 条 Jira 就立即写入云端触发时间表，不再等 20 条或整批分析结束。
+- **原因**：批次上传是为了批量执行阶段能立即读取触发时间，不能等分析完才分批写入。
+- **验证**：`py_compile` 通过。
+- **实现文件**：`src/services/server_legacy.py`、`src/api/routes/trigger.py`
+
+</details>

@@ -5933,7 +5933,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
         try:
             # 步骤1：一次性截帧：0~8 秒每秒 1 帧 + 10/15 秒兜底帧
             # 依据 2026-10-27 实测：时钟最晚在第 5 秒出现，且单帧 OCR 不稳定（相邻帧时有时无）
-            video_positions = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 15]
+            video_positions = [0, 1, 2, 3, 5, 8]
             frames = _extract_video_frames_gpu(video_path, positions=video_positions, use_gpu=True) or []
             if not frames:
                 logger.warning("视频兜底提取：无法提取视频帧 %s，尝试下一个", video_label)

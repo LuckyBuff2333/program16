@@ -284,3 +284,9 @@ Jira 查询  = 看范围、看剩余
 - 服务启动时设置 `OMP_NUM_THREADS=1`、`OPENBLAS_NUM_THREADS=1`、`MKL_NUM_THREADS=1`、`NUMEXPR_NUM_THREADS=1`。
 - RapidOCR 调用前 `cv2.setNumThreads(1)`，避免单个 Jira 提取占满多核。
 
+## 时间提取帧数与云端写入
+
+- 视频 OCR 帧固定为 6 帧：`0、1、2、3、5、8` 秒。
+- 时间批量提取每成功 1 条 Jira 就立即写入云端触发时间表，不再等 20 条或整批结束。
+- 这样批量执行阶段可以边提取边读取到最新触发时间。
+
