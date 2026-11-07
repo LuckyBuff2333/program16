@@ -2337,3 +2337,14 @@ flowchart TD
 - 重启后端后生效；配置文件不入库。
 
 </details>
+
+<details>
+<summary><b>179. 时间提取进度改为逐条推送（2026-11-07）</b></summary>
+
+- **问题**：后端进度缓冲每 20 条才推一次，提取并发 3 时前端长时间看不到更新。
+- **修复**：`progress_buf` 阈值 20→1，每完成一个 Jira 就推送；云端写表仍按 20 条批量。
+- **负载定位**：`python.exe` 进程 CPU 约 797%（多核累计），是提取 OCR/下载的主要负载；Chrome/DeepSeek 不是主因。
+- **验证**：`py_compile` 通过；需重启后端生效。
+- **实现文件**：`src/api/routes/trigger.py`
+
+</details>

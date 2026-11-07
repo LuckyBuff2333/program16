@@ -597,7 +597,7 @@ async def batch_extract_time(request: Request):
                     'source': source, 'error': error or '',
                 })
                 # 每 20 条进度推送一次，避免逐条 SSE
-                if len(progress_buf) >= 20:
+                if len(progress_buf) >= 1:
                     yield f"data: {_json.dumps({'type': 'progress_batch', 'current': done_count, 'total': total, 'hit': hit_count, 'items': progress_buf}, ensure_ascii=False)}\n\n"
                     progress_buf = []
                     # 进度每 20 条同步落一次云端，避免只在全部结束时写
