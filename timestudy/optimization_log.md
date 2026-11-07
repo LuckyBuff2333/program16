@@ -2098,3 +2098,13 @@ flowchart TD
 - **实现文件**：`frontend/src/views/RegressionPage.vue`、`frontend/src/panels/TroubleshootPanel.vue`
 
 </details>
+
+<details>
+<summary><b>157. 线上分析服务健康检查加超时重试（2026-11-07）</b></summary>
+
+- **问题**：线上批量前 `httpx.get(timeout=10)` 单次探测，read timeout 直接中断整批。
+- **修复**：超时改为 30 秒，最多 3 次（首次+2 重试，间隔 3 秒）；区分 HTTP 5xx 与网络/超时；错误提示标注已重试。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/api/routes/testing.py`、`docs/AI日志分析批量执行方法说明.md`
+
+</details>
