@@ -2030,3 +2030,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/trigger.py`、`docs/AI日志分析批量执行方法说明.md`
 
 </details>
+
+<details>
+<summary><b>151. 回归测试新增数据更新 Tab（2026-11-07）</b></summary>
+
+- **功能**：按分析开始时间范围 + 来源（线上/PC）筛选数据沉淀；找出失败后又成功的同 Jira 记录；展示错误分类/人工审核结果；支持勾选/全选删除失败行。
+- **后端**：新增 `/api/test/data_cleanup_preview`、`/api/test/data_cleanup_delete`。
+- **前端**：新增 `DataCleanupPanel.vue`，挂到问题排查的“数据更新”Tab。
+- **验证**：接口实测返回 2 条；全量 **116 passed**。
+- **实现文件**：`src/api/routes/testing.py`、`frontend/src/panels/DataCleanupPanel.vue`、`frontend/src/panels/TroubleshootPanel.vue`
+
+</details>

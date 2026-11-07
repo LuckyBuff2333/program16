@@ -10,6 +10,7 @@ import threading
 
 from src import pipeline
 from src.config import PROJECT_ROOT, get_path, load_config, setup_logger
+from src.clients import feishu_client
 from src.core.attachment_guard import begin_batch as _begin_attach_batch
 from src.core import doc_generator
 from src.schemas.common import ApiResponse
@@ -6220,4 +6221,108 @@ def stop_adp_lookup():
     _stop_event.set()
     logger.info("收到 ADP lookup 停止信号")
     return _ok(None, "停止信号已发送")
+
+@router.post("/api/test/data_cleanup_preview")
+async def data_cleanup_preview(request: Request):
+    """数据沉淀清理预览：按分析开始时间/来源，找失败后又有成功的 Jira 失败记录。"""
+    from datetime import datetime as _dt
+    body = await request.json()
+    start_s = str(body.get("start") or "").strip()
+    end_s = str(body.get("end") or "").strip()
+    source = str(body.get("source") or "").strip()
+    cfg = load_config().get("feishu_bitable", {})
+    app_token = cfg.get("app_token", "")
+    table_id = cfg.get("table_id", "")
+    if not app_token or not table_id:
+        return _ok({"rows": [], "total": 0}, "未配置数据沉淀表")
+
+    def _txt(v):
+        if isinstance(v, list):
+            return " ".join(str((i.get("text") or i.get("link") or "")) for i in v if isinstance(i, dict))
+        if isinstance(v, dict):
+            return str(v.get("text") or v.get("link") or "")
+        return str(v or "")
+
+    def _parse(v):
+        s = _txt(v).strip()[:19]
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return _dt.strptime(s, fmt)
+            except ValueError:
+                pass
+        return None
+
+    start = _parse(start_s)
+    end = _parse(end_s)
+    if not start or not end or start > end:
+        return _ok({"rows": [], "total": 0}, "时间范围不合法")
+    try:
+        records = await __import__("asyncio").get_running_loop().run_in_executor(
+            None, lambda: feishu_client.list_bitable_records(app_token, table_id))
+    except Exception as e:
+        return _ok({"rows": [], "total": 0}, f"读取数据沉淀失败: {str(e)[:120]}")
+
+    # 同 Jira + 同来源的线上/PC成功完成时间
+    success = {}
+    for r in records:
+        f = r.get("fields") or {}
+        if _txt(f.get("分析结果")).strip() != "成功":
+            continue
+        src = _txt(f.get("触发来源")).strip()
+        if source and src != source:
+            continue
+        t = _parse(f.get("分析完成时间"))
+        j = _txt(f.get("jira号")).strip()
+        if t and j:
+            success[(j, src)] = max(success.get((j, src), t), t)
+
+    rows = []
+    for r in records:
+        f = r.get("fields") or {}
+        if _txt(f.get("分析结果")).strip() != "失败":
+            continue
+        src = _txt(f.get("触发来源")).strip()
+        if source and src != source:
+            continue
+        st = _parse(f.get("分析开始时间"))
+        ft = _parse(f.get("分析完成时间"))
+        j = _txt(f.get("jira号")).strip()
+        if not j or not st or st < start or st > end:
+            continue
+        ok_t = success.get((j, src))
+        if not ok_t or not ft or ok_t <= ft:
+            continue
+        rows.append({
+            "record_id": r.get("record_id", ""),
+            "jira号": j,
+            "触发来源": src,
+            "分析开始时间": _txt(f.get("分析开始时间")),
+            "分析完成时间": _txt(f.get("分析完成时间")),
+            "后续成功时间": ok_t.strftime("%Y-%m-%d %H:%M:%S"),
+            "错误分类": _txt(f.get("错误分类")) or _txt(f.get("错误信息")),
+            "人工审核结果": _txt(f.get("人工审核结果")),
+        })
+    rows.sort(key=lambda x: (x["jira号"], x["分析开始时间"]))
+    return _ok({"rows": rows, "total": len(rows)}, f"找到 {len(rows)} 条可清理失败记录")
+
+
+@router.post("/api/test/data_cleanup_delete")
+async def data_cleanup_delete(request: Request):
+    """删除选中的数据沉淀失败记录（前端已确认）。"""
+    body = await request.json()
+    ids = [str(x) for x in (body.get("record_ids") or []) if str(x)]
+    if not ids:
+        return _ok({"deleted": 0}, "未选择记录")
+    cfg = load_config().get("feishu_bitable", {})
+    app_token, table_id = cfg.get("app_token", ""), cfg.get("table_id", "")
+    if not app_token or not table_id:
+        return _ok({"deleted": 0}, "未配置数据沉淀表")
+    try:
+        resp = await __import__("asyncio").get_running_loop().run_in_executor(
+            None, lambda: feishu_client.batch_delete_records(app_token, table_id, ids))
+        deleted = len(ids) if (resp or {}).get("code") == 0 else 0
+        return _ok({"deleted": deleted}, f"已删除 {deleted} 条")
+    except Exception as e:
+        logger.warning("数据沉淀删除失败: %s", e)
+        return _ok({"deleted": 0}, f"删除失败: {str(e)[:120]}")
 

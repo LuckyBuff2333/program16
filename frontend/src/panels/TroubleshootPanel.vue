@@ -424,6 +424,10 @@
           </template>
         </el-dialog>
       </el-tab-pane>
+
+      <el-tab-pane label="数据更新" name="data_cleanup">
+        <DataCleanupPanel />
+      </el-tab-pane>
     </el-tabs>
 
     <!-- 修正建议编辑对话框 -->
@@ -466,9 +470,10 @@
 // @ts-nocheck
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, diagCategoryTagType, formatMinute, formatHumanReason } from '../composables/utils';
+import DataCleanupPanel from './DataCleanupPanel.vue';
 export default {
   name: 'TroubleshootPanel',
-  components: {},
+  components: { DataCleanupPanel },
   data() {
     return {
       troubleshootTab: 'batch',
