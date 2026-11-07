@@ -476,7 +476,7 @@ async def batch_extract_time(request: Request):
 
         done_count = 0
         hit_count = 0
-        batch_buf = {}  # 每提取成功 1 条立即写入云端，供批量执行阶段立即读取
+        batch_buf = {}  # 每 20 条批量写入云端，供批量执行阶段读取
         sources_buf = {}  # 缓冲触发时间来源
         progress_buf = []  # 每 20 条进度一次推送
 
@@ -583,7 +583,7 @@ async def batch_extract_time(request: Request):
                     if source:
                         sources_buf[bugid] = source
                     # 缓冲 20 条后批量写入
-                    if len(batch_buf) >= 5:
+                    if len(batch_buf) >= 20:
                         _saved = dict(batch_buf)
                         _ok = _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
                         if _ok:
@@ -600,7 +600,7 @@ async def batch_extract_time(request: Request):
                 if len(progress_buf) >= 1:
                     yield f"data: {_json.dumps({'type': 'progress_batch', 'current': done_count, 'total': total, 'hit': hit_count, 'items': progress_buf}, ensure_ascii=False)}\n\n"
                     progress_buf = []
-                    # 云端写入由上面的 5 条阈值统一触发；进度仍逐条推送
+                    # 云端写入由上面的 20 条阈值统一触发；进度仍逐条推送
         finally:
             # 等待工作线程真正结束，避免页面已显示完成、后台仍在提取/写云端
             pool.shutdown(wait=True, cancel_futures=True)
