@@ -379,6 +379,7 @@ async def batch_extract_time(request: Request):
     from src.services.trigger_ops import (
         _load_trigger_times_from_cloud,
         _batch_save_trigger_times_to_cloud,
+        _save_trigger_time_to_csv,
     )
     body = await request.json() or {}
     jql = str(body.get("jql", "")).strip()

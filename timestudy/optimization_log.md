@@ -2264,3 +2264,15 @@ flowchart TD
 - **实现文件**：`src/api/routes/report.py`、`docs/每日Jira分析工作流程.md`
 
 </details>
+
+<details>
+<summary><b>172. 修复触发时间 NameError 并优化 OCR 质量（2026-11-07）</b></summary>
+
+- **NameError**：`trigger.py` 的批量提取作用域只导入了 `_batch_save_trigger_times_to_cloud`，漏导入 `_save_trigger_time_to_csv`；补齐后不再 500。
+- **中文路径**：新增 `_cv_imread_unicode`（`np.fromfile + cv2.imdecode`），替代 `cv2.imread`，解决 `需求.png/UI与UE不一致.png` 等读取失败。
+- **数字纠错**：普通场景最多 1 位，12h 场景最多 2 位，禁止 3 位纠正（如 `05:00→17:30`）。
+- **低置信保留**：OCR 候选未通过日志包校验时不再直接丢弃，返回低置信兜底并打 `ocr_low_confidence` 标记。
+- **验证**：`py_compile` 通过。
+- **实现文件**：`src/api/routes/trigger.py`、`src/services/server_legacy.py`
+
+</details>

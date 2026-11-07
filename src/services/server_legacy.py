@@ -4950,6 +4950,23 @@ def _parse_video_filename_datetime(filename: str) -> str:
     return ""
 
 
+def _cv_imread_unicode(img_path: str):
+    """读取图片：Windows 中文路径 cv2.imread 会失败，优先用 imdecode。"""
+    try:
+        import cv2
+        import numpy as np
+        data = np.fromfile(img_path, dtype=np.uint8)
+        if data.size:
+            return cv2.imdecode(data, cv2.IMREAD_COLOR)
+    except Exception:
+        pass
+    try:
+        import cv2
+        return cv2.imread(img_path)
+    except Exception:
+        return None
+
+
 def _correct_ocr_by_reference(time_str: str, ref_dt) -> str:
     """参照 gmlogger 时间纠正 OCR 数字混淆（如 07:10 被识别为 19:19）
     在参考时间±5分钟范围内生成候选，选择与 OCR 结果数字差异最少的候选。
@@ -4983,7 +5000,7 @@ def _correct_ocr_by_reference(time_str: str, ref_dt) -> str:
         # 普通场景最多1位差异；12h偏移(AM/PM混淆)允许3位
         hour_diff = abs(ch - ocr_hh)
         is_12h_confusion = 10 <= hour_diff <= 14
-        max_diff = 3 if is_12h_confusion else 1
+        max_diff = 2 if is_12h_confusion else 1
         if diff_count > max_diff:
             continue
         time_diff = abs(offset)
@@ -6203,12 +6220,13 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
     if best_12h_cand:
         logger.info("视频兜底提取(%s)：12h 候选 %s 差值 %.0f 秒超过容差 %d，丢弃",
                     bugid, best_12h_cand[0], best_12h_diff, _match_tolerance)
-    # 未通过日志包校验的候选一律不返回，交由文本提取兜底（避免把错误日期写进触发时间）
+    # 未通过日志包校验：保留为低置信候选，不再直接变成“无时间”
     if best_partial:
-        logger.info("视频兜底提取(%s)：候选 %s 未通过日志包校验，丢弃", bugid, best_partial)
-        _timestudy_update_ctx(bugid, error_type="time_no_match_gmlogger",
-                              error_detail=f"未通过日志包校验: {best_partial}")
-        _timestudy_trace(bugid, "partial:rejected")
+        logger.info("视频兜底提取(%s)：候选 %s 未通过日志包校验，保留为低置信兜底", bugid, best_partial)
+        _timestudy_update_ctx(bugid, source="video_ocr_partial", error_type="ocr_low_confidence",
+                              error_detail=f"未通过日志包校验，低置信保留: {best_partial}")
+        _timestudy_trace(bugid, "partial:kept")
+        return best_partial
     logger.info("视频兜底提取(%s)：所有视频封面及前6帧均未识别到时间", bugid)
     _timestudy_update_ctx(bugid, error_type="ocr_no_time_pattern", error_detail="所有视频OCR均未识别到时间")
     _timestudy_trace(bugid, "ocr:no_pattern")
@@ -6663,7 +6681,7 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
                                  filename=fname or "image.bin", use_cache=False,
                                  stop_event=stop_event)
                 # OCR 识别（返回 bbox + 文字 + 置信度）
-                img = cv2.imread(img_path)
+                img = _cv_imread_unicode(img_path)
                 if img is None:
                     logger.warning("%s图片 OCR: cv2.imread 失败 %s", f"{bugid} " if bugid else "", fname)
                     continue
