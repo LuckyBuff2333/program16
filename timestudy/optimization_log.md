@@ -2348,3 +2348,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/trigger.py`
 
 </details>
+
+<details>
+<summary><b>180. 限制 OCR 内部线程并确认端口启动方式（2026-11-07）</b></summary>
+
+- **问题**：`trigger_parallel=1` 仍可能吃多核，因为 OpenCV/OpenMP 内部线程不受 Jira 并发控制。
+- **修复**：启动时设置 OMP/OpenBLAS/MKL/NUMEXPR 线程为 1；RapidOCR 调用前 `cv2.setNumThreads(1)`。
+- **启动端口**：`python -m src.main web --port 8061`（默认 8060）。
+- **验证**：`py_compile` 通过。
+- **实现文件**：`src/main.py`、`src/services/server_legacy.py`、`docs/每日Jira分析工作流程.md`
+
+</details>

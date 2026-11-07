@@ -4439,6 +4439,10 @@ def _rapid_ocr_readtext(image, _already_enhanced: bool = False):
     import numpy as np
     import cv2
     import time as _time
+    try:
+        cv2.setNumThreads(1)
+    except Exception:
+        pass
 
     # ── OOM 冷却期：直接使用 CPU 引擎 ──
     if _time.time() < _ocr_oom_cooldown_until:

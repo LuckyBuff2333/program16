@@ -6,6 +6,10 @@
 import argparse
 import os
 import sys
+
+# 限制 OCR/OpenCV/数学库内部线程，避免单个 Jira 提取也吃满多核
+for _env_key in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_env_key, "1")
 from datetime import datetime
 
 # 确保项目根目录在 sys.path 中，支持 python src/main.py 直接运行

@@ -278,3 +278,9 @@ Jira 查询  = 看范围、看剩余
 - 每完成 1 个 Jira 就推送 `progress_batch` 到前端，不再等 20 条。
 - 云端批量写入仍按 20 条一批，互不影响。
 
+## 启动与 OCR 线程限制
+
+- 启动可指定端口：`.venv\Scripts\python.exe -m src.main web --port 8061`
+- 服务启动时设置 `OMP_NUM_THREADS=1`、`OPENBLAS_NUM_THREADS=1`、`MKL_NUM_THREADS=1`、`NUMEXPR_NUM_THREADS=1`。
+- RapidOCR 调用前 `cv2.setNumThreads(1)`，避免单个 Jira 提取占满多核。
+
