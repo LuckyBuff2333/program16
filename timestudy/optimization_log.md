@@ -2421,3 +2421,13 @@ flowchart TD
 - **实现文件**：`src/services/trigger_ops.py`
 
 </details>
+
+<details>
+<summary><b>187. 默认关闭 uvicorn 热重载（2026-11-07）</b></summary>
+
+- **现象**：每次保存代码触发 StatReload，服务重启，启动预热看板又拉 24 个文档，日志像在反复查询。
+- **修复**：`web` 默认 `reload=False`；需要开发热重载时显式加 `--reload`。
+- **效果**：改代码不再自动重启服务，也不会反复触发看板预热。
+- **实现文件**：`src/main.py`、`docs/每日Jira分析工作流程.md`
+
+</details>

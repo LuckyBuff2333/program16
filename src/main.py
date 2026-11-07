@@ -217,9 +217,14 @@ def cmd_web(args):
         uvicorn.run("src.api.app:app", host="127.0.0.1", port=args.port,
                     log_level="info")
     else:
-        print(f"前端页面已启动: {url}（代码修改自动重载，在终端按 Ctrl+C 停止服务）")
-        uvicorn.run("src.api.app:app", host="127.0.0.1", port=args.port,
-                    log_level="info", reload=True, reload_dirs=["src"])
+        if args.reload:
+            print(f"前端页面已启动: {url}（开发模式：代码修改自动重载，按 Ctrl+C 停止）")
+            uvicorn.run("src.api.app:app", host="127.0.0.1", port=args.port,
+                        log_level="info", reload=True, reload_dirs=["src"])
+        else:
+            print(f"前端页面已启动: {url}（按 Ctrl+C 停止服务）")
+            uvicorn.run("src.api.app:app", host="127.0.0.1", port=args.port,
+                        log_level="info", reload=False)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -257,6 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_web = sub.add_parser("web", help="启动前端可视化页面（流程可视化/接口设置/数据看板）")
     p_web.add_argument("--port", type=int, default=8060, help="服务端口，默认 8060")
+    p_web.add_argument("--reload", action="store_true", help="开发模式：代码修改自动重载（默认关闭）")
     p_web.set_defaults(func=cmd_web)
     return parser
 

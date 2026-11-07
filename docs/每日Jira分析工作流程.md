@@ -289,3 +289,12 @@ Jira 查询  = 看范围、看剩余
 - 视频 OCR 帧固定为 6 帧：`0、1、2、3、5、8` 秒。
 - 时间批量提取每成功 20 条 Jira 写一次云端触发时间表；缓存未命中的 Jira 只用 filter 增量搜索，不再全表加载；首次写入也不预加载整表。
 - 这样批量执行阶段可以边提取边读取到最新触发时间。
+
+## 启动热重载
+
+- 默认**关闭** uvicorn 自动重载，避免每次改代码就重启服务并重新拉取 24 个看板文档。
+- 开发调试需要热重载时：
+  `.venv\Scripts\python.exe -m src.main web --reload`
+- 指定端口：
+  `.venv\Scripts\python.exe -m src.main web --port 8061`
+
