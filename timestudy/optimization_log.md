@@ -2396,8 +2396,19 @@ flowchart TD
 <details>
 <summary><b>184. 时间提取云端写入调整为20条一批（2026-11-07）</b></summary>
 
-- 云端触发时间写入从 5 条一批改为 20 条一批。
+- 云端触发时间写入从 5 条一批改为 20 条一批；未命中项改为 filter 增量搜索，不再全表加载。
 - SSE 进度仍逐条推送；停止/结束写剩余 buffer。
 - **实现文件**：`src/api/routes/trigger.py`
+
+</details>
+
+<details>
+<summary><b>185. 触发时间云端写入改为增量搜索（2026-11-07）</b></summary>
+
+- **问题**：20 条一批中只要有一个新 Jira，旧代码就会把所有触发表全量加载一遍，导致提取卡顿。
+- **修复**：缓存未命中项先调用 `_search_trigger_time_batch` 用 filter OR 搜索；查到就更新，查不到才作为新记录插入。
+- **效果**：不再为每批 20 条全表读取；新增记录仍按表容量写入。
+- **验证**：`py_compile` 通过。
+- **实现文件**：`src/services/trigger_ops.py`
 
 </details>

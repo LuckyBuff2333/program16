@@ -897,60 +897,29 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
                 })
             else:
                 uncached[bugid] = trigger_time
-        # —— 第二步：对缓存未命中的项，加载表数据查找 ——
+        # —— 第二步：缓存未命中项只用 filter 增量搜索，不再全表加载 ——
         if uncached:
-            logger.info("批量写入: %d 项缓存命中, %d 项需全表扫描", len(items) - len(uncached), len(uncached))
-            all_records = {}
-            table_counts = {}
-            valid_tids = []
-            jira_index = {}
-            for tid in table_ids:
-                try:
-                    records = feishu_client.list_bitable_records(app_token, tid)
-                    all_records[tid] = records
-                    table_counts[tid] = len(records)
-                    valid_tids.append(tid)
-                    for rec in records:
-                        fields = rec.get("fields", {})
-                        jira_no = _bitable_text(fields.get("jira号", ""))
-                        if jira_no:
-                            jira_index[jira_no] = (tid, rec)
-                except Exception as e:
-                    if "TableIdNotFound" in str(e) or "1254041" in str(e):
-                        logger.warning("触发时间子表已不存在，已跳过: %s", tid)
-                    else:
-                        logger.warning("加载触发时间表 %s 失败，已跳过: %s", tid, e)
-            # 清理无效 table_id
-            invalid_tids = [tid for tid in table_ids if tid not in valid_tids]
-            if invalid_tids and valid_tids:
-                _trigger_time_table_cache["table_ids"] = valid_tids
-                _update_config_table_ids(app_token, valid_tids)
-            table_ids = valid_tids
-            # 对未命中项分类
+            logger.info("批量写入: %d 项缓存命中, %d 项需增量搜索", len(items) - len(uncached), len(uncached))
+            try:
+                _search_trigger_time_batch(list(uncached.keys()))
+            except Exception as e:
+                logger.warning("增量搜索触发时间失败，仅处理可确认记录: %s", e)
+            table_counts = _refresh_table_counts()
             for bugid, trigger_time in uncached.items():
-                if not trigger_time and bugid in jira_index:
-                    tid_check, rec_check = jira_index[bugid]
-                    existing_tt = _bitable_text(rec_check.get("fields", {}).get("触发时间", ""))
-                    if existing_tt:
+                cached = _trigger_time_bugid_cache.get(bugid)
+                if cached and isinstance(cached, tuple) and len(cached) >= 3:
+                    tid, rec_id, existing_tt = cached
+                    if not trigger_time and existing_tt:
                         logger.warning("跳过空值写入，bugid=%s 云端已有触发时间: %s", bugid, existing_tt)
                         continue
-                if not trigger_time and _last_cache_load_partial:
-                    logger.warning("跳过空值写入，bugid=%s 云端缓存为部分加载", bugid)
-                    continue
-                if bugid in jira_index:
-                    tid, rec = jira_index[bugid]
                     upd_fields = {"触发时间": trigger_time, **_trigger_time_meta(
                         trigger_time, sources.get(bugid, ""), _lookup_ref(bugid, ref_times))}
                     updates_by_table.setdefault(tid, []).append({
-                        "record_id": rec["record_id"],
+                        "record_id": rec_id,
                         "fields": upd_fields
                     })
-                else:
+                elif trigger_time:
                     new_items.append((bugid, trigger_time))
-            # 回填缓存
-            for b, (t, r) in jira_index.items():
-                if b not in _trigger_time_bugid_cache:
-                    _trigger_time_bugid_cache[b] = (t, r.get("record_id", ""), _bitable_text(r.get("fields", {}).get("触发时间", "")))
         else:
             table_counts = {}
             for tid in table_ids:
