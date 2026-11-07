@@ -535,7 +535,7 @@ def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
         # 分卷不完整：走正常深度分析
         if "分卷压缩包不完整" in ec:
             return ""
-        if "没有可下载的日志附件" in ec:
+        if "没有可下载的日志附件" in ec or "无日志附件" in ec:
             return "无gmlogger"
         # 依据人工审核结果：JIRA API 失败 30/31 为并发过多；未预期错误也按并发过多
         if "JIRA API 调用失败" in ec:
@@ -566,7 +566,7 @@ def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
         return "服务关闭"
     if "未找到问题时间" in msg:
         return "无时间信息"
-    if "没有可下载的日志附件" in msg:
+    if "没有可下载的日志附件" in msg or "无日志附件" in msg:
         return "无gmlogger"
     if "JIRA API 调用失败" in msg:
         return "并发过多"
@@ -612,7 +612,7 @@ def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
         return "无gmlogger"
     # 解压后未找到可识别日志：需要深度分析确认
     if "解压后未找到可识别的日志文件" in msg:
-        return ""
+        return "无gmlogger"
     return ""
 
 
@@ -623,6 +623,7 @@ def batch_pre_classify(records: list[dict]) -> dict:
     if not records:
         return {"skip": [], "need_analysis": [], "message": "无记录"}
     skip_list, need_list = [], []
+    auto_review = []
     for rec in records:
         bugid = rec.get("bugid", "")
         err_msg = rec.get("err_msg", "") or ""
@@ -714,9 +715,18 @@ def batch_pre_classify(records: list[dict]) -> dict:
                     "verify_status": "", "suggested_time": "", "report": report, "done_time": done_time,
                 })
             skip_list.append(entry)
+            if category == "无gmlogger" and not human_review:
+                auto_review.append({"bugid": bugid, "done_time": done_time,
+                                    "human_reason": "无gmlogger文件"})
         else:
             entry["needs_analysis"] = True
             need_list.append(entry)
+    if auto_review:
+        try:
+            _wr = batch_write_review(auto_review, only_empty_review=True)
+            logger.info("无gmlogger 自动写入人工审核: %s", _wr.get("message"))
+        except Exception as _e:
+            logger.warning("无gmlogger 自动写入人工审核失败: %s", _e)
     logger.info("批量预归类: 共 %d 条 → 跳过 %d 条, 需分析 %d 条", len(records), len(skip_list), len(need_list))
     return {"skip": skip_list, "need_analysis": need_list,
             "message": f"预归类完成: 跳过 {len(skip_list)} 条, 需分析 {len(need_list)} 条"}

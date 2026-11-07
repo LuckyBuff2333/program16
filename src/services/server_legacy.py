@@ -3484,8 +3484,9 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
     """
     names = [(a.get("filename", "") or "").lower() for a in attachments]
     # 有直接的 gmlogger/gmlog 文件、main.log 或任意 .log/.txt 文件就算有，不需要解压
-    if any("gmlogger" in n or "gmlog" in n or "logcat" in n or "dltlog" in n or "bllog" in n
-           or "logger" in n or "pataclogger" in n or "log_" in n or "logs.zip" in n
+    # 只认 gmlogger/gmlog、明确的 .log/.txt，或后续压缩包探测；
+    # 无扩展名的 logcat/bllog/dltlog 等不再当作可用日志，避免误判为可分析。
+    if any("gmlogger" in n or "gmlog" in n
            or "main.log" in n or n.endswith(".log") or n.endswith(".txt") for n in names):
         return True
     headers, timeout = _jira_att_auth()

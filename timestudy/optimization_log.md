@@ -2186,3 +2186,14 @@ flowchart TD
 - **实现文件**：`src/services/troubleshoot_service.py`、`src/services/server_legacy.py`、`frontend/src/panels/TroubleshootPanel.vue`
 
 </details>
+
+<details>
+<summary><b>165. 无日志统一归为无gmlogger并自动写人工审核（2026-11-07）</b></summary>
+
+- **规则**：无日志/无日志附件/无gmlogger/处理后无有效日志/解压后无可识别日志 → 统一 `无gmlogger`。
+- **处理**：预归类时对空人工审核记录自动写入 `无gmlogger文件`（`only_empty_review=True`）。
+- **扩展名**：`logcat` 等无扩展名附件不再当作可用日志，直接判无gmlogger。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/troubleshoot_service.py`、`src/services/server_legacy.py`、`docs/每日Jira分析工作流程.md`
+
+</details>
