@@ -2155,3 +2155,14 @@ flowchart TD
 - **实现文件**：`src/services/troubleshoot_service.py`、`docs/每日Jira分析工作流程.md`
 
 </details>
+
+<details>
+<summary><b>162. 批量写入人工审核改为按 Jira 搜索（2026-11-07）</b></summary>
+
+- **问题**：`batch_write_review` 每次先拉整张数据沉淀表（7000+ 条）再匹配，20 条写入也要等全表。
+- **修复**：按待写入 Jira 分组（每组 20 个）用飞书过滤表达式 `OR(CurrentValue.[jira号] = ...)` 搜索；搜索失败回退全表。
+- **效果**：20 条及以下只查相关记录，不再读整表。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/troubleshoot_service.py`、`docs/每日Jira分析工作流程.md`
+
+</details>

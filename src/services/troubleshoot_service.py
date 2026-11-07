@@ -362,7 +362,23 @@ def batch_write_review(items: list[dict], only_empty_review: bool = False) -> di
     bugid_field = _resolve_bugid_field(cfg)
     review_field = cfg.get("review_field", "人工审核结果")
 
-    records = feishu_client.list_bitable_records(app_token, table_id)
+    # 只按待写入 Jira 搜索记录，避免为 20 条写入把整表 7000+ 条全部拉回
+    _bugids = []
+    for _it in items:
+        _b = str(_it.get("bugid", "")).strip()
+        if _b and _b not in _bugids:
+            _bugids.append(_b)
+    records = []
+    try:
+        for _i in range(0, len(_bugids), 20):
+            _chunk = _bugids[_i:_i + 20]
+            _expr = "OR(" + ",".join(
+                f'CurrentValue.[{bugid_field}] = "{_b}"' for _b in _chunk) + ")"
+            records.extend(_query_bitable_records(filter_expr=_expr))
+        logger.info("batch_write_review: 按 %d 个 Jira 搜索到 %d 条记录", len(_bugids), len(records))
+    except Exception as _e:
+        logger.warning("batch_write_review: 按 Jira 搜索失败，回退全表: %s", _e)
+        records = feishu_client.list_bitable_records(app_token, table_id)
     index = {}
     # 同时建立 bugid -> [record_ids] 索引用于兑底匹配
     bugid_index = {}
