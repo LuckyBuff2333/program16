@@ -525,6 +525,15 @@ async def batch_extract_time(request: Request):
                     if img_tt:
                         tt = img_tt
                         source = "图片OCR"
+                # 4. 附件文件名（最后兜底，必须带标签）
+                if not tt:
+                    try:
+                        att_tt = _jc.extract_attachment_time(issue)
+                    except Exception:
+                        att_tt = ""
+                    if att_tt:
+                        tt = att_tt
+                        source = "附件名兜底"
                 if tt:
                     if not isinstance(tt, str):
                         tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)

@@ -2287,3 +2287,13 @@ flowchart TD
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>174. 附件名兜底时间增加标签（2026-11-07）</b></summary>
+
+- **批量提取**：图片 OCR 后仍无时间时，最后尝试附件文件名；命中后来源标记为 `附件名兜底`。
+- **诊断结果**：视频内容未识别、最终时间来自附件/视频文件名时，`fallback_tag=附件名`，详情追加兜底说明。
+- **验证**：`py_compile` 通过。
+- **实现文件**：`src/api/routes/trigger.py`、`src/services/server_legacy.py`
+
+</details>

@@ -8414,6 +8414,8 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             if str(_gm_name)[:19].replace("T", " ") == _sug_key:
                 fallback_tag = "压缩包文件名"
                 break
+    if not fallback_tag and suggested_time and not _vid_from_content and video_time:
+        fallback_tag = "附件名"
     if fallback_tag:
         detail = (detail + f"（兜底标签：{fallback_tag}）").strip()
     report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time, archive_results)
