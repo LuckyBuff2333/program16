@@ -635,6 +635,8 @@ def batch_pre_classify(records: list[dict]) -> dict:
         cached = _load_diagnose_cache(bugid) if bugid else None
         if cached and cached.get("category"):
             cached_cat = cached["category"]
+            if "无时间信息" in str(human_review or ""):
+                cached_cat = "无时间信息"
             entry = {
                 "bugid": bugid, "category": cached_cat,
                 "done_time": done_time or cached.get("done_time", ""),
@@ -684,6 +686,8 @@ def batch_pre_classify(records: list[dict]) -> dict:
                 category = "日志过滤逻辑"
             elif "磁盘空间不足" in human_review:
                 category = "磁盘空间不足"
+            elif "无时间信息" in human_review:
+                category = "无时间信息"
             elif "时间添加" in human_review or "时间异常" in human_review:
                 category = "触发时间问题"
             elif "解压" in human_review or "unrar" in human_review or "RAR5" in human_review:

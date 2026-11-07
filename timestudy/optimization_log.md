@@ -2176,3 +2176,13 @@ flowchart TD
 - **实现文件**：`src/schemas/troubleshoot.py`、`src/api/routes/troubleshoot.py`、`src/services/server_legacy.py`、`frontend/src/panels/TroubleshootPanel.vue`
 
 </details>
+
+<details>
+<summary><b>164. 人工审核“无时间信息”自动覆盖分类（2026-11-07）</b></summary>
+
+- **规则**：人工审核结果含“无时间信息”时，预归类/诊断/前端展示统一归为 `无时间信息`，不再显示“正常”。
+- **实现**：预归类人工审核分支增加无时间信息；缓存路径同样覆盖；前端收到诊断结果后按人工审核归一化。
+- **验证**：全量 **116 passed**；前端重新构建。
+- **实现文件**：`src/services/troubleshoot_service.py`、`src/services/server_legacy.py`、`frontend/src/panels/TroubleshootPanel.vue`
+
+</details>

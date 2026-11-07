@@ -646,6 +646,7 @@ export default {
           signal,
         });
         const d = body.data || {};
+        this.normalizeDiagReview([d]);
         const idx = this.troubleshoot.diagResults.findIndex(r => r.bugid === bugid);
         if (idx >= 0) { this.troubleshoot.diagResults.splice(idx, 1, d); }
         else { this.troubleshoot.diagResults.push(d); }
@@ -993,6 +994,18 @@ export default {
       if (line.startsWith('最终结果')) return 'font-weight:700;color:#303133';
       return '';
     },
+    normalizeDiagReview(rows) {
+      const list = rows || [];
+      for (const r of list) {
+        const rec = (this.troubleshoot.records || []).find(x => x['jira号'] === r.bugid);
+        const review = String((rec && rec['人工审核结果']) || '').trim();
+        if (review.includes('无时间信息')) {
+          r.category = '无时间信息';
+          r.needs_analysis = false;
+        }
+      }
+      return list;
+    },
     // 跳过排查的记录（needs_analysis === false）
     getSkipDiagResults() {
       return (this.troubleshoot.diagResults || []).filter(r => r.needs_analysis === false);
@@ -1146,7 +1159,7 @@ export default {
         const skipList = data.skip || [];
         const needList = data.need_analysis || [];
         // 将跳过和需分析的结果合并到 diagResults
-        this.troubleshoot.diagResults = [...skipList, ...needList];
+        this.troubleshoot.diagResults = this.normalizeDiagReview([...skipList, ...needList]);
         ElMessage.success(body.message || `预归类完成: 跳过 ${skipList.length} 条, 需分析 ${needList.length} 条`);
       } catch (e) { /* 已提示 */ }
       finally { this.troubleshoot.preClassifying = false; }
