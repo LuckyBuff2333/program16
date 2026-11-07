@@ -2064,3 +2064,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`、`frontend/src/panels/BatchAiPanel.vue`
 
 </details>
+
+<details>
+<summary><b>154. Jira 查询 500 上限修复并改为字段直取（2026-11-07）</b></summary>
+
+- **问题**：`/api/test/jira_lookup` 的 JQL 查询写死 `max_results=500`，所以总数永远最多 500。
+- **修复**：上限改为 5000；JQL 直接取 `summary/status/created/customfield_13714/root_cause_field`，不再对每条 Jira 发详情请求。
+- **收益**：能显示完整周 Bug 数；5000 条时也不会因逐条详情而卡死。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/api/routes/testing.py`
+
+</details>

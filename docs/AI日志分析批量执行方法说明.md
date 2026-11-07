@@ -311,3 +311,9 @@ for _ in range(interval_min * 60):
 - 每次批量执行结束清缓存；前端提供“强制刷新去重”按钮。
 - 跨天自动换 key，PC/线上分开缓存。
 
+## Jira 查询上限
+
+- JQL 查询上限从 500 提高到 **5000**。
+- 直接使用 JQL 返回字段（summary/status/created/AI字段/rootcause），不再逐条拉详情，避免 5000 条时超慢。
+- 纯 Jira 号输入仍逐条拉详情。
+

@@ -396,16 +396,30 @@ async def test_jira_lookup(request: Request):
 
         if is_jql:
             try:
-                issues = await _run_blocking(jira_client.search_issues, raw, max_results=500)
-                bugids = [(i.get("key") or "").strip() for i in issues if i.get("key")]
-                bugids = [b for b in bugids if b]
-                # 并行拉取详情（8路并发，避免对 Jira 服务器造成过大压力）
-                with _cf.ThreadPoolExecutor(max_workers=8) as pool:
-                    for row, err in pool.map(_fetch_one, bugids):
-                        if row:
-                            rows.append(row)
-                        if err:
-                            failed.append(err)
+                from src.config import load_config as _load_cfg
+                _rc_field = str((_load_cfg().get("jira_api", {}) or {}).get("root_cause_field") or "").strip()
+                _fields = "summary,status,created,customfield_13714"
+                if _rc_field and _rc_field not in _fields:
+                    _fields += "," + _rc_field
+                issues = await _run_blocking(
+                    jira_client.search_issues, raw,
+                    max_results=5000, fields=_fields)
+                # 直接使用 JQL 返回字段，避免对每条 Jira 再发详情请求（5000 条会非常慢）
+                for issue in issues:
+                    key = (issue.get("key") or "").strip()
+                    if not key:
+                        continue
+                    f = issue.get("fields") or {}
+                    _ai_f = f.get("customfield_13714")
+                    _has_ai = bool(_ai_f and str(_ai_f).strip() and str(_ai_f).strip().lower() not in ("none", "null"))
+                    rows.append({
+                        "key": key,
+                        "summary": (f.get("summary") or "")[:200] or "（无概要）",
+                        "status": ((f.get("status") or {}).get("name") or "") or "-",
+                        "created": (f.get("created") or "")[:10] or "-",
+                        "root_cause": jira_client.extract_rootcause(issue) or "（未填写）",
+                        "has_ai_preliminary": _has_ai,
+                    })
             except Exception as e:
                 return _fail(f"JQL 查询失败: {e}")
         else:
