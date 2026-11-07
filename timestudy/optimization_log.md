@@ -2089,3 +2089,12 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`、`frontend/src/panels/BatchAiPanel.vue`
 
 </details>
+
+<details>
+<summary><b>156. 数据更新 Tab 移到回归测试（2026-11-07）</b></summary>
+
+- **调整**：`DataCleanupPanel` 从“问题排查”移到“回归测试”页签，位于批次测试/日期测试之后。
+- **前端构建**：`npm run build` 成功，dist 已更新。
+- **实现文件**：`frontend/src/views/RegressionPage.vue`、`frontend/src/panels/TroubleshootPanel.vue`
+
+</details>

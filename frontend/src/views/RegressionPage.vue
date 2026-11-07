@@ -221,6 +221,10 @@
           </div>
         </el-card>
       </el-tab-pane>
+
+      <el-tab-pane label="数据更新" name="data_cleanup">
+        <DataCleanupPanel />
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -229,9 +233,11 @@
 // @ts-nocheck
 import { ElMessage } from 'element-plus';
 import { api } from '../composables/utils';
+import DataCleanupPanel from '../panels/DataCleanupPanel.vue';
 
 export default {
   name: 'RegressionPage',
+  components: { DataCleanupPanel },
   data() {
     return {
       activeTab: 'batch',
