@@ -305,3 +305,9 @@ for _ in range(interval_min * 60):
 - filter 已去重时，sample 请求带 `prefiltered=true`，不再重复扫 docs/云端执行记录。
 - 实测触发时间全量加载约 5.3 秒。
 
+## 去重集合 TTL（P1）
+
+- `_get_same_source_executed_keys` 结果缓存 30 秒，key 为 `source + 日期`。
+- 每次批量执行结束清缓存；前端提供“强制刷新去重”按钮。
+- 跨天自动换 key，PC/线上分开缓存。
+

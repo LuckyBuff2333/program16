@@ -92,6 +92,12 @@ router = APIRouter()
 import time as _time_mod
 _recently_executed = {}  # jira_key -> timestamp
 _EXECUTED_TTL = 2 * 3600  # 2小时过期
+_EXECUTED_KEYS_CACHE = {}  # {(source, date): (ts, set)}
+_EXECUTED_KEYS_TTL = 30
+
+
+def _invalidate_executed_keys_cache():
+    _EXECUTED_KEYS_CACHE.clear()
 
 def _mark_executed(keys: list):
     """ 标记一批 JIRA 号为已执行 """
@@ -120,8 +126,13 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
     仅查云端飞书文档，不查本地CSV，避免本地文件残留导致误去重。
     """
     from src.config import load_config
-    executed = set()
+    import time as _t
     today = datetime.now()
+    _cache_key = (source, today.strftime("%Y-%m-%d"))
+    _cached = _EXECUTED_KEYS_CACHE.get(_cache_key)
+    if _cached and _t.time() - _cached[0] < _EXECUTED_KEYS_TTL:
+        return set(_cached[1])
+    executed = set()
     yesterday = today - timedelta(days=1)
     check_dates = [today.strftime("%Y-%m-%d"), yesterday.strftime("%Y-%m-%d")]
     # 云端批次执行记录
@@ -153,7 +164,15 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
                     logger.warning("云端批次记录读取失败 %s: %s", doc_name, e)
     except Exception as e:
         logger.warning("读取云端批量执行记录失败: %s", e)
+    _EXECUTED_KEYS_CACHE[_cache_key] = (_t.time(), set(executed))
     return executed
+
+
+@router.post("/api/test/executed_keys/refresh", response_model=ApiResponse)
+def refresh_executed_keys_cache():
+    """强制刷新跨批次去重缓存。"""
+    _invalidate_executed_keys_cache()
+    return _ok(None, "去重缓存已刷新")
 
 
 @router.post("/api/test/ai_analyze", response_model=ApiResponse)
@@ -1345,6 +1364,7 @@ async def test_batch_ai_run(request: Request):
         done_msg = f"执行完成：成功 {success_count} 条，失败 {fail_count} 条"
         if skipped_jiras:
             done_msg += f"，已跳过 {len(skipped_jiras)} 条（多维表格已成功）"
+        _invalidate_executed_keys_cache()
         yield f"data: {_json.dumps({'type': 'done', 'total': len(results), 'success': success_count, 'fail': fail_count, 'skipped': len(skipped_jiras), 'message': done_msg, 'csv_path': batch_csv, 'cloud_url': cloud_url}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",
@@ -3013,6 +3033,7 @@ async def test_prod_batch_run(request: Request):
             cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
         except Exception as e:
             logger.warning("线上批量执行记录上传云端失败: %s", e)
+        _invalidate_executed_keys_cache()
         yield f"data: {_json.dumps({'type': 'done', 'total': len(results), 'success': success_count, 'fail': fail_count, 'dedup': dedup_count, 'skipped': skipped_count, 'csv_path': batch_csv, 'cloud_url': cloud_url, 'message': done_msg}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream",

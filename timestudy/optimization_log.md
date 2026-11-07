@@ -2052,3 +2052,15 @@ flowchart TD
 - **实现文件**：`src/services/trigger_ops.py`、`src/api/routes/testing.py`、`frontend/src/panels/BatchAiPanel.vue`
 
 </details>
+
+<details>
+<summary><b>153. 去重集合增加 30 秒 TTL 缓存（2026-11-07）</b></summary>
+
+- **实现**：`_get_same_source_executed_keys` 增加 `(source, 日期)` 维度 30 秒 TTL 缓存。
+- **失效**：`batch_ai_run` / `prod_batch_run` 结束主动清缓存；新增 `/api/test/executed_keys/refresh` 强制刷新。
+- **前端**：过滤区新增“强制刷新去重”按钮，刷新后自动重新过滤。
+- **安全**：跨天自动换 key；PC/线上分开；未做“部分表缓存”。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/api/routes/testing.py`、`frontend/src/panels/BatchAiPanel.vue`
+
+</details>
