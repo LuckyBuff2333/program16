@@ -2145,3 +2145,13 @@ flowchart TD
 - **实现文件**：`src/api/routes/data.py`、`frontend/src/panels/TroubleshootPanel.vue`
 
 </details>
+
+<details>
+<summary><b>161. 待人工排查改为直接深度分析（2026-11-07）</b></summary>
+
+- **问题**：`_SKIP_ANALYSIS_CATEGORIES` 包含“待人工排查”，批量诊断把它当跳过项，只展示不分析。
+- **修复**：从跳过集合移除“待人工排查”，`needs_analysis` 为真，进入深度分析。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/troubleshoot_service.py`、`docs/每日Jira分析工作流程.md`
+
+</details>
