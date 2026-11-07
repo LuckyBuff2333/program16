@@ -871,8 +871,6 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
         return True
     try:
         app_token, table_ids = _get_trigger_time_table_cfg()
-        # 确保缓存已加载
-        _ensure_trigger_time_bugid_cache()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         # —— 第一步：用缓存快速分类（更新 vs 新建）——
         updates_by_table = {}  # {tid: [{"record_id":..., "fields":...}]}
@@ -904,7 +902,8 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
                 _search_trigger_time_batch(list(uncached.keys()))
             except Exception as e:
                 logger.warning("增量搜索触发时间失败，仅处理可确认记录: %s", e)
-            table_counts = _refresh_table_counts()
+            # 只有缓存已有数据时才从缓存统计表容量；缓存为空时不做全表加载
+            table_counts = _refresh_table_counts() if _trigger_time_bugid_cache else {}
             for bugid, trigger_time in uncached.items():
                 cached = _trigger_time_bugid_cache.get(bugid)
                 if cached and isinstance(cached, tuple) and len(cached) >= 3:

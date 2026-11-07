@@ -2412,3 +2412,12 @@ flowchart TD
 - **实现文件**：`src/services/trigger_ops.py`
 
 </details>
+
+<details>
+<summary><b>186. 触发时间写入取消首次全表预加载（2026-11-07）</b></summary>
+
+- 移除 `_batch_save_trigger_times_to_cloud` 开头的 `_ensure_trigger_time_bugid_cache()`，避免第一次写入就加载全部触发表。
+- 缓存未命中项只做 filter 增量搜索；表容量仅在缓存已有数据时从缓存统计。
+- **实现文件**：`src/services/trigger_ops.py`
+
+</details>
