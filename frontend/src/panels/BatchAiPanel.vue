@@ -660,7 +660,7 @@ export default {
             } catch (e) { submitFail += 1; }
           }
           this.batchAi.oneClickMsg = `动态队列：在途 ${inflight.length} | 已完成 ${doneTotal} | 待执行 ${pending.length}${submitFail ? ` | 提交失败 ${submitFail}` : ''}${timeoutCount ? ` | 超时 ${timeoutCount}` : ''}`;
-          await new Promise(r => setTimeout(r, 15000));
+          await new Promise(r => setTimeout(r, 30000));
         }
         this.batchAi.oneClickMsg = this.batchAi.stopRequested
           ? `动态队列已停止：已完成 ${doneTotal}，在途 ${inflight.length}，待执行 ${pending.length}`

@@ -2525,3 +2525,12 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`、`docs/AI日志分析批量执行方法说明.md`
 
 </details>
+
+<details>
+<summary><b>197. 动态队列轮询放宽并确认飞书超时性质（2026-11-07）</b></summary>
+
+- 动态队列完成检查轮询 15 秒→30 秒，减少 27 个触发表过滤请求。
+- `Bitable 过滤查询 ReadTimeout` 是飞书单次查询超时并自动重试；本机到飞书 DNS/TLS 正常，不是本地断网。
+- **实现文件**：`frontend/src/panels/BatchAiPanel.vue`
+
+</details>
