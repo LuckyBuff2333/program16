@@ -2563,3 +2563,12 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`
 
 </details>
+
+<details>
+<summary><b>201. 恢复线上批量前置健康检查（2026-11-07）</b></summary>
+
+- 重新加入线上分析服务探测：超时 30 秒，最多 3 次，间隔 10 秒、20 秒退避。
+- 保留单条提交 3 次重试与连续 3 条失败熔断。
+- **实现文件**：`src/api/routes/testing.py`、`docs/AI日志分析批量执行方法说明.md`
+
+</details>
