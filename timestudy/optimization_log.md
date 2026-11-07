@@ -2452,3 +2452,13 @@ flowchart TD
 - **实现文件**：`data/backup/ocr_eval_100_with_video.json`、`data/backup/ocr_eval_100_result.json`
 
 </details>
+
+<details>
+<summary><b>190. 时间批量提取展示失败原因（2026-11-07）</b></summary>
+
+- **失败分类**：无有效附件 / 有附件但未提取到时间。
+- **前端**：备注列显示原因，来源标签适配 `视频拼接/评论/文本/图片拼接/附件名兜底/人工修改`。
+- **验证**：前端 `npm run build` 成功。
+- **实现文件**：`src/api/routes/trigger.py`、`frontend/src/panels/TimeExtractPanel.vue`
+
+</details>

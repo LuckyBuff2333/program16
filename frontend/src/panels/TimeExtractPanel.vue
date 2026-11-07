@@ -68,8 +68,12 @@
             <el-tag v-else-if="row.source === 'custom_field'" type="success" size="small">字段</el-tag>
             <el-tag v-else-if="row.source === 'description'" type="success" size="small">描述</el-tag>
             <el-tag v-else-if="row.source === 'attachment_name'" type="success" size="small">附件名</el-tag>
-            <el-tag v-else-if="row.source === 'video_ocr'" type="warning" size="small">视频OCR</el-tag>
-            <el-tag v-else-if="row.source === 'image_ocr'" size="small">图片OCR</el-tag>
+            <el-tag v-else-if="row.source === 'video_ocr' || row.source === '视频拼接'" type="warning" size="small">视频拼接</el-tag>
+            <el-tag v-else-if="row.source === 'image_ocr' || row.source === '图片拼接'" size="small">图片拼接</el-tag>
+            <el-tag v-else-if="row.source === '评论'" type="success" size="small">评论</el-tag>
+            <el-tag v-else-if="row.source === '文本'" type="info" size="small">文本</el-tag>
+            <el-tag v-else-if="row.source === '附件名兜底'" type="warning" size="small">附件名兜底</el-tag>
+            <el-tag v-else-if="row.source === '人工修改'" type="info" size="small">人工修改</el-tag>
             <el-tag v-else-if="row.source === 'ai_analyzed'" type="info" size="small" style="color:#409eff">AI已分析</el-tag>
             <el-tag v-else-if="row.source === 'no_gmlogger'" type="info" size="small">无gmlogger</el-tag>
             <el-tag v-else-if="row.source === 'failed'" type="danger" size="small">提取失败</el-tag>

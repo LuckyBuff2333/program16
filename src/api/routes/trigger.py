@@ -20,6 +20,18 @@ logger = setup_logger("web.trigger")
 router = APIRouter()
 
 
+def _extract_failure_reason(attachments: list) -> str:
+    """区分“无有效附件”和“有附件但没提取到时间”。"""
+    names = [(a.get("filename", "") or "").lower() for a in (attachments or [])]
+    has_video = any(n.endswith((".mp4", ".mov", ".avi", ".mkv")) for n in names)
+    has_image = any(n.endswith((".png", ".jpg", ".jpeg", ".bmp", ".webp")) for n in names)
+    has_log = any(("gmlogger" in n or ".log" in n or ".txt" in n or
+                   n.endswith((".zip", ".rar", ".7z", ".tar.gz"))) for n in names)
+    if not (has_video or has_image or has_log):
+        return "无有效附件（无视频/图片/日志包）"
+    return "未提取到时间（视频/图片/文本均未命中）"
+
+
 def _to_minute(ts: str) -> str:
     """人工保存触发时间时统一到分：秒补 00（云端提取缓存仍保留原始秒）"""
     import re
@@ -539,7 +551,7 @@ async def batch_extract_time(request: Request):
                         tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
                     tt = _align_time_to_gmlogger(issue, tt, attachments)
                     return bugid, tt, source, None
-                return bugid, "", "failed", "优先级提取未获取到时间"
+                return bugid, "", "failed", _extract_failure_reason(attachments)
             except Exception as e:
                 return bugid, "", "error", str(e)
 
@@ -921,7 +933,7 @@ async def compare_extract_time(file: UploadFile = File(...), filter_statuses: st
                     if not isinstance(tt, str):
                         tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
                     return bugid, tt, source, desc, None, _ref, _created
-                return bugid, "", "failed", desc, "未提取到时间", _ref, _created
+                return bugid, "", "failed", desc, _extract_failure_reason(attachments), _ref, _created
             except Exception as e:
                 return bugid, "", "error", "", str(e), None, None
 
