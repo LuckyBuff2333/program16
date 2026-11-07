@@ -2229,3 +2229,16 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/BatchAiPanel.vue`、`src/api/routes/testing.py`、`docs/AI日志分析批量执行方法说明.md`
 
 </details>
+
+<details>
+<summary><b>169. 持续执行新增动态队列（2026-11-07）</b></summary>
+
+- **入口**：抽取数量旁新增“动态队列”勾选，仅在持续执行开启时可用。
+- **队列**：筛选后的候选池只建一次；首轮 25 条，之后数据沉淀每完成一条补一条，在途上限 25。
+- **校验**：`batch_done_status` 只检查本队列在途 Jira，避免把其他批次结果当本次完成。
+- **兜底**：在途超过 55 分钟未写入数据沉淀按超时移出；单条提交失败不阻塞后续。
+- **接口**：`/api/test/batch_ai_single`、`/api/test/batch_done_status`。
+- **验证**：前端 `npm run build` 成功。
+- **实现文件**：`frontend/src/panels/BatchAiPanel.vue`、`src/api/routes/testing.py`、`docs/AI日志分析批量执行方法说明.md`
+
+</details>

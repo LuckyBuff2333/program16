@@ -177,6 +177,45 @@ def refresh_executed_keys_cache():
     return _ok(None, "去重缓存已刷新")
 
 
+@router.post("/api/test/batch_ai_single", response_model=ApiResponse)
+async def batch_ai_single(request: Request):
+    """动态队列：提交单条 Jira 到 AI 分析接口。"""
+    body = await request.json() or {}
+    bugid = str(body.get("bugid") or "").strip()
+    exec_time = str(body.get("trigger_time") or "").strip()
+    exec_mode = str(body.get("exec_mode") or "online").strip()
+    if not bugid:
+        return _fail("bugid 为空")
+    if not exec_time:
+        return _fail("trigger_time 为空")
+    try:
+        import asyncio
+        from src.clients.base import http_post
+        loop = asyncio.get_event_loop()
+        if exec_mode == "online":
+            payload = _build_prod_ai_payload(bugid, exec_time)
+            resp = await loop.run_in_executor(
+                None, lambda: http_post(_get_prod_ai_url(), payload, timeout=_get_prod_ai_cfg()["timeout"]))
+        else:
+            cfg = load_config()["ai_log_api"]
+            payload = {cfg["bugid_field"]: bugid}
+            if cfg.get("trigger_time_field"):
+                payload[cfg["trigger_time_field"]] = exec_time
+            resp = await loop.run_in_executor(
+                None, lambda: http_post(cfg["url"], payload, timeout=int(cfg.get("timeout", 60))))
+        code = resp.get("code") if isinstance(resp, dict) else None
+        msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
+        ok_flag = code in (0, 200, "0", "200")
+        if ok_flag and exec_mode != "online":
+            ok_flag = any(k in msg for k in ("分析任务已启动", "后台处理", "正在分析"))
+        if ok_flag:
+            _mark_executed([bugid])
+            return _ok({"bugid": bugid, "msg": msg[:200]}, f"{bugid} 已提交")
+        return _fail(f"{bugid} 提交失败: {msg[:160]}")
+    except Exception as e:
+        return _fail(f"{bugid} 提交异常: {str(e)[:160]}")
+
+
 @router.post("/api/test/batch_done_status", response_model=ApiResponse)
 async def batch_done_status(request: Request):
     """动态等待：检查上一批 Jira 是否已写入数据沉淀。"""

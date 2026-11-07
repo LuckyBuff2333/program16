@@ -32,6 +32,7 @@
               <el-divider direction="vertical" />
               <el-input-number v-model="batchAi.sampleCount" :min="1" :max="200" size="default" style="width:110px" controls-position="right"></el-input-number>
               <span class="field-hint">抽取数量</span>
+              <el-checkbox v-model="batchAi.dynamicQueue" :disabled="!batchAi.continuous" size="small">动态队列</el-checkbox>
             </div>
           </div>
           <div class="continuous-bar">
@@ -387,7 +388,7 @@ export default {
         running: false, abortController: null, currentRound: 0,
         results: [], noTimeJiras: [], sampleStats: null, doneMsg: '', doneError: false,
       },
-      batchAi: { jql: 'issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', jqlPresets: ['issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND created >= startOfDay(-1d) AND created <= endOfDay(-1d) AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC', 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND status != closed AND created >= "2026/10/01" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'], jqlLabels: ['今日新增Bug', '昨日新增Bug', '本周新增Bug', '10月新增未关闭', '远控', 'coreservice', '导航'], sampleCount: 5, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, filterExistingSuccess: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '', envSavedMsg: '', rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, filterCounts: null, filterDeduped: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, waitMode: 'fixed', interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, stopRequested: false, preSample: null },
+      batchAi: { jql: 'issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', jqlPresets: ['issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND created >= startOfDay(-1d) AND created <= endOfDay(-1d) AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC', 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND status != closed AND created >= "2026/10/01" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'], jqlLabels: ['今日新增Bug', '昨日新增Bug', '本周新增Bug', '10月新增未关闭', '远控', 'coreservice', '导航'], sampleCount: 5, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, filterExistingSuccess: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '', envSavedMsg: '', rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, filterCounts: null, filterDeduped: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, dynamicQueue: false, waitMode: 'fixed', interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, stopRequested: false, preSample: null },
     };
   },
   mounted() {
@@ -557,6 +558,7 @@ export default {
         triggerSource: this.batchAi.triggerSource,
         softwareVersion: this.batchAi.softwareVersion,
         waitMode: this.batchAi.waitMode,
+        dynamicQueue: this.batchAi.dynamicQueue,
       };
       localStorage.setItem(`envSettings_${mode}`, JSON.stringify(data));
       // 软件版本持久化到后端配置，换浏览器/换机器也能读到
@@ -585,6 +587,7 @@ export default {
         if (data.triggerSource) this[target].triggerSource = data.triggerSource;
         if (data.softwareVersion) this[target].softwareVersion = data.softwareVersion;
         if (data.waitMode) this[target].waitMode = data.waitMode;
+        if (typeof data.dynamicQueue === 'boolean') this[target].dynamicQueue = data.dynamicQueue;
       } catch (e) { /* ignore */ }
     },
     async checkBatchDone(ids, source) {
@@ -592,6 +595,72 @@ export default {
         method: 'POST', body: JSON.stringify({ bugids: ids, source }),
       });
       return body.data || {};
+    },
+    async _singleTriggerTime(key) {
+      const body = await api('/api/test/batch_ai_sample', {
+        method: 'POST',
+        body: JSON.stringify({ keys: [key], count: 1, csv_trigger_times: this.batchAi.csvTriggerTimes, reset_stop: false, prefiltered: true }),
+      });
+      const d = body.data || {};
+      return (d.trigger_times && d.trigger_times[key]) || '';
+    },
+    async runDynamicQueue() {
+      const source = this.batchAi.execMode === 'online' ? 'parseFullTicket' : 'jira_analyze';
+      this.batchAi.continuousRunning = true;
+      let pending = [...this.batchAi.filteredKeys];
+      try {
+        await this.batchAiSample();
+        if (!this.batchAi.selected.length) throw new Error('动态队列抽样结果为空');
+        if (this.batchAi.execMode === 'online') await this.batchAiRunOnline(); else await this.batchAiRun();
+        let inflight = [...this.batchAi.selected];
+        pending = pending.filter(k => !inflight.includes(k));
+        const inflightSince = new Map();
+        const markInflight = (k) => inflightSince.set(k, Date.now());
+        inflight.forEach(markInflight);
+        this.batchAi.oneClickMsg = `动态队列启动：在途 ${inflight.length}，待执行 ${pending.length}`;
+        let doneTotal = 0;
+        let submitFail = 0;
+        let timeoutCount = 0;
+        while ((inflight.length || pending.length) && !this.batchAi.stopRequested) {
+          if (this.batchAiAbort && this.batchAiAbort.signal.aborted) break;
+          let status = {};
+          try { status = await this.checkBatchDone(inflight, source); } catch (e) { /* 下轮再查 */ }
+          const done = status.done || [];
+          if (done.length) {
+            const doneSet = new Set(done);
+            inflight = inflight.filter(k => !doneSet.has(k));
+            done.forEach(k => inflightSince.delete(k));
+            doneTotal += done.length;
+          }
+          const now = Date.now();
+          const timedOut = inflight.filter(k => now - (inflightSince.get(k) || now) > 55 * 60 * 1000);
+          if (timedOut.length) {
+            const tset = new Set(timedOut);
+            inflight = inflight.filter(k => !tset.has(k));
+            timedOut.forEach(k => inflightSince.delete(k));
+            timeoutCount += timedOut.length;
+          }
+          while (inflight.length < 25 && pending.length && !this.batchAi.stopRequested) {
+            const next = pending.shift();
+            let tt = '';
+            try { tt = await this._singleTriggerTime(next); } catch (e) { tt = ''; }
+            if (!tt) { submitFail += 1; continue; }
+            try {
+              await api('/api/test/batch_ai_single', {
+                method: 'POST',
+                body: JSON.stringify({ bugid: next, trigger_time: tt, exec_mode: this.batchAi.execMode }),
+              });
+              inflight.push(next);
+              markInflight(next);
+            } catch (e) { submitFail += 1; }
+          }
+          this.batchAi.oneClickMsg = `动态队列：在途 ${inflight.length} | 已完成 ${doneTotal} | 待执行 ${pending.length}${submitFail ? ` | 提交失败 ${submitFail}` : ''}${timeoutCount ? ` | 超时 ${timeoutCount}` : ''}`;
+          await new Promise(r => setTimeout(r, 15000));
+        }
+        this.batchAi.oneClickMsg = this.batchAi.stopRequested
+          ? `动态队列已停止：已完成 ${doneTotal}，在途 ${inflight.length}，待执行 ${pending.length}`
+          : `动态队列完成：共完成 ${doneTotal} 条`;
+      } finally { this.batchAi.continuousRunning = false; }
     },
     async batchAiOneClick() {
       this.running.batchOneClick = true;
@@ -608,6 +677,10 @@ export default {
         const hasAnyFilter = this.batchAi.filterAllExisting || this.batchAi.filterPcOnly || this.batchAi.filterOnlineOnly || this.batchAi.filterAiPreliminary || this.batchAi.filterExistingSuccess;
         if (hasAnyFilter) { await this.batchAiFilter(false); if (!this.batchAi.filteredKeys.length) throw new Error('已无未执行的内容'); }
         else { this.batchAi.filteredKeys = this.batchAi.rows.map(r => r.key); }
+        if (this.batchAi.dynamicQueue) {
+          await this.runDynamicQueue();
+          return;
+        }
         const runOneRound = async (roundLabel = '') => {
           await this.batchAiSample();
           if (this.batchAi.stopRequested) { const e = new Error('stopped'); e.name = 'AbortError'; throw e; }
