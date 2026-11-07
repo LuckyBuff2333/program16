@@ -2855,7 +2855,10 @@ async def test_prod_batch_run(request: Request):
                     _probe_err = str(_e)
                     logger.warning("线上分析服务健康检查第 %d/3 次失败: %s", _attempt + 1, _e)
                 if _attempt < 2:
-                    await asyncio.sleep(3)
+                    # 502/超时不是瞬时抖动，重试间隔按 10s、20s 退避，避免三次挤在一起
+                    _retry_delay = 10 * (2 ** _attempt)
+                    logger.info("线上分析服务健康检查将在 %d 秒后重试", _retry_delay)
+                    await asyncio.sleep(_retry_delay)
             if _probe is not None and _probe.status_code >= 500:
                 yield f"data: {_json.dumps({'type': 'error', 'message': f'线上分析服务不可用（{_probe.status_code} Bad Gateway，已重试 2 次），请稍后重试或联系平台恢复接口'}, ensure_ascii=False)}\n\n"
                 return

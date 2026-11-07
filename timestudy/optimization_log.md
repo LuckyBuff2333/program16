@@ -2516,3 +2516,12 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/TimeExtractPanel.vue`
 
 </details>
+
+<details>
+<summary><b>196. 线上健康检查重试改为10/20秒退避（2026-11-07）</b></summary>
+
+- **问题**：三次健康检查只间隔 3 秒，502 时无法等待上游恢复，日志也挤在一起。
+- **修复**：重试前等待 10 秒、20 秒；仍保留首次+2 次重试。
+- **实现文件**：`src/api/routes/testing.py`、`docs/AI日志分析批量执行方法说明.md`
+
+</details>
