@@ -2462,3 +2462,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/trigger.py`、`frontend/src/panels/TimeExtractPanel.vue`
 
 </details>
+
+<details>
+<summary><b>191. 状态栏ROI优先、15分钟容差、缓存低置信保留（2026-11-07）</b></summary>
+
+- **ROI 优先**：视频帧先 OCR 顶部状态栏/右下任务栏 ROI；命中时间则跳过整帧 OCR，减少无效识别。
+- **容差**：视频时间匹配容差统一为 900 秒（15 分钟）。
+- **缓存**：缓存时间未通过日志包校验时保留为低置信候选，不再直接丢弃。
+- **验证**：20 条新样本 15 分钟口径正确 11 条；`py_compile` 通过。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>

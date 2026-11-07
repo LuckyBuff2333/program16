@@ -4611,7 +4611,7 @@ def _vote_from_texts(texts, ref_pool, gm_ref_dt, tol):
     return cand, n
 
 
-def _ocr_frame_regions(frame) -> str:
+def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     """对状态栏/任务栏等小区域做高倍 OCR
 
     录屏时间通常出现在：手机顶部状态栏、Windows 右下角任务栏。
@@ -4623,10 +4623,15 @@ def _ocr_frame_regions(frame) -> str:
         h, w = frame.shape[:2]
         regions = [
             (0, 0, w, max(1, int(h * 0.10))),                 # 顶部状态栏
-            (0, 0, int(w * 0.55), int(h * 0.55)),             # 左上 HUD 区域（时间+日期，如 1:15 Mon. | Oct.26）
-            (int(w * 0.55), int(h * 0.75), w, h),             # 右下任务栏（上移到 75%，避免漏掉 17:51 这类任务栏时间）
-            (int(w * 0.40), int(h * 0.18), w, int(h * 0.70)), # 中控屏/车机屏（16:21 这类画面内时间）
+            (int(w * 0.55), int(h * 0.75), w, h),             # 右下任务栏
         ]
+        if not status_only:
+            regions = [
+                (0, 0, w, max(1, int(h * 0.10))),
+                (0, 0, int(w * 0.55), int(h * 0.55)),
+                (int(w * 0.55), int(h * 0.75), w, h),
+                (int(w * 0.40), int(h * 0.18), w, int(h * 0.70)),
+            ]
         for (x1, y1, x2, y2) in regions:
             if x2 - x1 < 40 or y2 - y1 < 12:
                 continue
@@ -5837,7 +5842,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
     # 匹配容差：内层日期（main文件）可用时 5 分钟，仅外层文件名日期时 10 分钟
     if not ref_pool:
         logger.info("视频兜底提取(%s)：gmlogger 和内层均无日期，仍尝试视频OCR（无参考日期校验）", bugid)
-    _match_tolerance = 300 if _has_inner_dates else 600
+    _match_tolerance = 900
     logger.info("视频兜底提取(%s)：ref_pool %d 个（外层 %d + 内层 %d），匹配容差 %ds",
                 bugid, len(ref_pool), len(gm_times), len(_inner_times), _match_tolerance)
     best_partial = ""
@@ -5903,7 +5908,10 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                         _timestudy_update_ctx(bugid, source="video_ocr")
                         _timestudy_trace(bugid, "cache:hit")
                         return ts
-                    # 缓存时间未通过日志包校验：不再当部分结果（旧逻辑会把错误日期带出来）
+                    # 缓存时间未通过日志包校验：保留为低置信候选，不再直接丢失
+                    if not best_partial:
+                        best_partial = ts
+                    logger.info("视频兜底提取：缓存 %s 未通过日志包校验，保留为低置信候选", video_label)
                 continue  # 缓存无时间，也跳过处理
         # 下载视频（流式下载，避免一次性加载到内存）
         video_path = None
@@ -5960,25 +5968,27 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                         logger.debug("视频兜底提取(%s)：第%d秒与上一帧相同，跳过 OCR", video_label, sec + 1)
                         continue
                     _prev_sig = _sig
-                    # 整帧 OCR 优先；整帧没读到时间时再用状态栏/任务栏 ROI 兜底
+                    # 状态栏 ROI 优先：只 OCR 顶部/右下小区域，命中时间就不再做整帧 OCR
+                    _roi_text = ""
                     try:
-                        results = _ocr_readtext(None, frame) or []
-                    except Exception as e:
-                        logger.warning("视频兜底提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
-                        continue
-                    all_text = " ".join(r[1] for r in results)
-                    _has_time = bool(all_text) and bool(
-                        _OCR_TIME_FULL_RE.search(all_text) or _OCR_TIME_ONLY_RE.search(all_text))
-                    _roi_has_time = False
-                    if not _has_time:
+                        _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
+                    except Exception:
+                        _roi_text = ""
+                    _roi_has_time = bool(_roi_text) and bool(
+                        _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
+                    if _roi_has_time:
+                        results = []
+                        all_text = _roi_text
+                        _has_time = True
+                    else:
                         try:
-                            _roi_text = _ocr_frame_regions(frame) or ""
-                        except Exception:
-                            _roi_text = ""
-                        if _roi_text:
-                            all_text = f"{_roi_text} {all_text}"
-                            _roi_has_time = bool(
-                                _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
+                            results = _ocr_readtext(None, frame) or []
+                        except Exception as e:
+                            logger.warning("视频兜底提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
+                            continue
+                        all_text = " ".join(r[1] for r in results)
+                        _has_time = bool(all_text) and bool(
+                            _OCR_TIME_FULL_RE.search(all_text) or _OCR_TIME_ONLY_RE.search(all_text))
                     _VIDEO_OCR_STATS["roi_frames" if _roi_has_time else "full_frames"] += 1
                     _collected_texts.append((sec, all_text))
                     # 诊断日志：打印 OCR 实际读到的原文
@@ -5991,7 +6001,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                     # OCR 质量门槛：整体置信度极低且无完整日期时跳过时间提取（手机拍屏乱码场景）
                     _avg_conf = sum((r[2] for r in results if len(r) > 2), 0) / max(len(results), 1) if results else 0
                     _has_full_dt = bool(_OCR_TIME_FULL_RE.search(all_text))
-                    if _avg_conf < 0.10 and not _has_full_dt:
+                    if _avg_conf < 0.10 and not _has_full_dt and not _roi_has_time:
                         logger.info("视频兗底提取(%s)：第%d秒 OCR 质量过低 (avg_conf=%.2f)，跳过时间提取",
                                     video_label, sec + 1, _avg_conf)
                         continue
