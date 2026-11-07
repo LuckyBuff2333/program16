@@ -520,7 +520,8 @@ def _search_trigger_time_batch(bugids: list) -> dict:
     result = {}
     # 构建 OR 过滤表达式
     conditions = [f'CurrentValue.[jira号] = "{b}"' for b in bugids]
-    filter_expr = " OR ".join(conditions) if len(conditions) == 1 else "(" + " OR ".join(conditions) + ")"
+    # 飞书过滤语法是函数式 OR(...)，不是 SQL 的中缀 OR；中缀写法会返回 1254018
+    filter_expr = conditions[0] if len(conditions) == 1 else "OR(" + ",".join(conditions) + ")"
     remaining = set(bugids)
     for tid in table_ids:
         if not remaining:

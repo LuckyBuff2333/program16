@@ -2431,3 +2431,13 @@ flowchart TD
 - **实现文件**：`src/main.py`、`docs/每日Jira分析工作流程.md`
 
 </details>
+
+<details>
+<summary><b>188. 修复触发时间批量搜索 InvalidFilter（2026-11-07）</b></summary>
+
+- **问题**：`_search_trigger_time_batch` 使用 `(cond OR cond)` 中缀语法，飞书返回 `InvalidFilter (1254018)`，导致新记录被误判为新建。
+- **修复**：改为函数式 `OR(cond1,cond2,...)`。
+- **验证**：5 个 Jira 搜索测试通过，命中 4 条。
+- **实现文件**：`src/services/trigger_ops.py`
+
+</details>

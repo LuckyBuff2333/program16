@@ -298,3 +298,8 @@ Jira 查询  = 看范围、看剩余
 - 指定端口：
   `.venv\Scripts\python.exe -m src.main web --port 8061`
 
+## 触发时间批量搜索语法
+
+- 飞书过滤必须用函数式 `OR(CurrentValue.[jira号] = "A",CurrentValue.[jira号] = "B")`。
+- 不能写 SQL 风格 `(A OR B)`，否则返回 `InvalidFilter (1254018)`。
+
