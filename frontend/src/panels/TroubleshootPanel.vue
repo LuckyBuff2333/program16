@@ -383,8 +383,11 @@
               </el-select>
               <el-input v-model="batchHistory.keyword" size="small" placeholder="搜索 Jira 号" clearable style="width:160px"></el-input>
               <el-checkbox v-model="batchHistory.manualEmpty" size="small">人工审核为空</el-checkbox>
+              <el-checkbox v-model="batchHistory.filterSameSourceSuccess" size="small">过滤同来源已成功</el-checkbox>
               <el-tag type="info" size="small">{{ getFilteredBatchHistory().length }} / {{ batchHistory.jiraRows.length }} 条</el-tag>
             </div>
+            <el-alert v-if="batchHistory.filterSameSourceSuccess" :closable="false" type="success" show-icon
+              :title="`同来源已成功过滤 ${batchHistory.filteredSuccessCount} 个`" style="margin-bottom:8px" />
             <el-table :data="getFilteredBatchHistory()" size="small" stripe max-height="400" v-loading="batchHistory.jiraLoading">
               <el-table-column type="index" label="#" width="45"></el-table-column>
               <el-table-column prop="jira号" label="jira号" width="120" sortable show-overflow-tooltip></el-table-column>
@@ -513,7 +516,8 @@ export default {
         batchList: [] as any[], batchListLoading: false, selectedBatches: [] as string[],
         previewVisible: false, previewRows: [] as any[], previewLoading: false, previewBatchLabel: '',
         selectedBatchUrl: '', assessResult: null as any, assessing: false,
-        jiraRows: [] as any[], jiraLoading: false,
+        jiraRows: [] as any[], jiraLoading: false, matchedRows: [] as any[], filteredSuccessCount: 0,
+        filterSameSourceSuccess: false,
         resultFilter: '', keyword: '', manualEmpty: false, sourceFilter: '',
       },
     };
@@ -1337,10 +1341,16 @@ export default {
       }
       this.batchHistory.jiraLoading = true;
       try {
-        const body = await api(`/api/data/history_jira?batch_token=${encodeURIComponent(tokens.join(','))}&batch_name=${encodeURIComponent(names.join(','))}&batch_created=${encodeURIComponent(createds.join(','))}`);
+        const body = await api(`/api/data/history_jira?batch_token=${encodeURIComponent(tokens.join(','))}&batch_name=${encodeURIComponent(names.join(','))}&batch_created=${encodeURIComponent(createds.join(','))}&exclude_same_source_success=${this.batchHistory.filterSameSourceSuccess ? 'true' : 'false'}`);
         this.batchHistory.jiraRows = (body.data && body.data.rows) || [];
-        ElMessage.success(body.message || `已加载 ${this.batchHistory.jiraRows.length} 条记录`);
-      } catch (_) {} finally { this.batchHistory.jiraLoading = false; }
+        this.batchHistory.matchedRows = (body.data && body.data.matched_rows) || [];
+        this.batchHistory.filteredSuccessCount = (body.data && body.data.filtered_success_count) || 0;
+        if ((body.data && body.data.matched) === 0) {
+          ElMessage.warning('批次文档已读取，但数据沉淀暂无匹配记录，请稍后刷新');
+        } else {
+          ElMessage.success(body.message || `已加载 ${this.batchHistory.jiraRows.length} 条记录`);
+        }
+      } catch (e) { ElMessage.error('批次数据查询失败: ' + ((e && e.message) || e)); } finally { this.batchHistory.jiraLoading = false; }
     },
     getFilteredBatchHistory() {
       let rows = this.batchHistory.jiraRows || [];

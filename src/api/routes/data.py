@@ -197,6 +197,7 @@ def data_history_jira(
     batch_token: str = Query(default="", description="批次文档 token"),
     batch_name: str = Query(default="", description="批次名称"),
     batch_created: str = Query(default="", description="创建时间"),
+    exclude_same_source_success: bool = Query(default=False, description="过滤同 Jira 同来源已有成功记录"),
 ):
     """数据面板：从云端文档读取批次 Jira 列表并聚合多维表格匹配记录，支持多批次（逗号分隔 token）"""
     from src.clients import feishu_client
@@ -260,6 +261,7 @@ def data_history_jira(
     bugid_field = cfg.get("bugid_field", "jira号")
     report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
     bitable_records_map = {}
+    success_keys = set()
     if app_token and table_id:
         try:
             records = feishu_client.list_bitable_records(app_token, table_id)
@@ -268,8 +270,12 @@ def data_history_jira(
                 jira_key = _bitable_text(fields.get(bugid_field, ""))
                 if jira_key and jira_key in jira_set:
                     rec_done = _bitable_text(fields.get("分析完成时间", ""))
-                    if earliest_time and (not rec_done or rec_done < earliest_time):
-                        continue
+                    # 成功记录不受当前批次时间下限限制，用于同来源成功过滤
+                    if _bitable_text(fields.get("分析结果", "")) == "成功":
+                        success_keys.add((jira_key, _bitable_text(fields.get("触发来源", ""))))
+                    # 不再按批次开始时间丢弃记录：数据沉淀可能晚于批次文档生成，
+                    # 先保留同 Jira 的最新记录，避免“批次有 Jira 但排查内容为空”。
+                    _ = earliest_time
                     bitable_records_map.setdefault(jira_key, []).append(
                         _flatten_bitable_record(fields, report_field))
         except Exception as e:
@@ -284,7 +290,7 @@ def data_history_jira(
             rows.append({
                 "jira号": jira_no, "执行结果": item["执行结果"],
                 "执行时间": item["执行时间"],
-                "分析结果": bf.get("分析结果", ""), "错误信息": bf.get("错误信息", ""),
+                "分析结果": bf.get("分析结果", ""), "错误信息": bf.get("错误信息", "") or item.get("备注", ""),
                 "飞书报告链接": bf.get("飞书报告链接", ""),
                 "分析问题时间": bf.get("分析问题时间", ""),
                 "分析完成时间": bf.get("分析完成时间", ""),
@@ -298,10 +304,24 @@ def data_history_jira(
             rows.append({
                 "jira号": jira_no, "执行结果": item["执行结果"],
                 "执行时间": item["执行时间"],
-                "分析结果": "", "错误信息": "", "飞书报告链接": "", "分析问题时间": "", "分析完成时间": "",
+                "分析结果": "", "错误信息": item.get("备注", ""), "飞书报告链接": "", "分析问题时间": "", "分析完成时间": "",
                 "触发来源": "", "rootcause": "", "AI评论总结": "", "结果置信度": "",
             })
     matched = len(jira_set & set(bitable_records_map.keys()))
+    matched_rows = []
+    filtered_success_count = 0
+    if exclude_same_source_success:
+        kept = []
+        for row in rows:
+            if row.get("分析结果") == "失败" and (row.get("jira号", ""), row.get("触发来源", "")) in success_keys:
+                matched_rows.append(row)
+            else:
+                kept.append(row)
+        rows = kept
+        filtered_success_count = len(matched_rows)
+    msg = f"云端批次: {len(jira_list)} 个 Jira，多维表格命中 {matched} 个，展开 {len(rows)} 行"
+    if exclude_same_source_success:
+        msg += f"，同来源已成功过滤 {filtered_success_count} 条"
     return _ok({"rows": rows, "count": len(rows), "matched": matched,
-               "batch_token": batch_token},
-               f"云端批次: {len(jira_list)} 个 Jira，多维表格命中 {matched} 个，展开 {len(rows)} 行")
+               "matched_rows": matched_rows, "filtered_success_count": filtered_success_count,
+               "batch_token": batch_token}, msg)

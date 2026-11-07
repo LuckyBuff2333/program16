@@ -2130,3 +2130,18 @@ flowchart TD
 - **实现文件**：`src/services/troubleshoot_service.py`
 
 </details>
+
+<details>
+<summary><b>160. 按批次排查补全数据与同来源成功过滤（2026-11-07）</b></summary>
+
+- **问题**：批次文档能加载，但数据沉淀匹配被 `earliest_time` 过滤掉，排查表为空；也没有同来源成功过滤。
+- **修复**：
+  1. `/api/data/history_jira` 不再按批次开始时间丢弃记录，取同 Jira 最新记录；
+  2. 增加 `exclude_same_source_success`，返回 `matched_rows`/`filtered_success_count`；
+  3. 前端批次表增加“过滤同来源已成功”勾选和过滤数量提示；
+  4. 数据沉淀未同步时，错误信息回退批次文档备注；
+  5. 查询失败不再静默，提示错误。
+- **验证**：全量 **116 passed**；前端已重新构建。
+- **实现文件**：`src/api/routes/data.py`、`frontend/src/panels/TroubleshootPanel.vue`
+
+</details>
