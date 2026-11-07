@@ -546,7 +546,11 @@ async def batch_extract_time(request: Request):
                         yield f"data: {_json.dumps({'type': 'progress_batch', 'current': done_count, 'total': total, 'hit': hit_count, 'items': progress_buf}, ensure_ascii=False)}\n\n"
                         progress_buf = []
                     if batch_buf:
-                        _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
+                        _saved = dict(batch_buf)
+                        _ok = _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
+                        if _ok:
+                            for _bid, _btt in _saved.items():
+                                _save_trigger_time_to_csv(_bid, _btt)
                         yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
                         batch_buf.clear()
                         sources_buf.clear()
@@ -570,7 +574,11 @@ async def batch_extract_time(request: Request):
                         sources_buf[bugid] = source
                     # 缓冲 20 条后批量写入
                     if len(batch_buf) >= 20:
-                        _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
+                        _saved = dict(batch_buf)
+                        _ok = _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
+                        if _ok:
+                            for _bid, _btt in _saved.items():
+                                _save_trigger_time_to_csv(_bid, _btt)
                         yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
                         batch_buf.clear()
                         sources_buf.clear()
@@ -584,7 +592,11 @@ async def batch_extract_time(request: Request):
                     progress_buf = []
                     # 进度每 20 条同步落一次云端，避免只在全部结束时写
                     if batch_buf:
-                        _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
+                        _saved = dict(batch_buf)
+                        _ok = _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
+                        if _ok:
+                            for _bid, _btt in _saved.items():
+                                _save_trigger_time_to_csv(_bid, _btt)
                         yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
                         batch_buf.clear()
                         sources_buf.clear()
@@ -598,7 +610,11 @@ async def batch_extract_time(request: Request):
             progress_buf = []
         # 余量写入
         if batch_buf:
-            _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
+            _saved = dict(batch_buf)
+            _ok = _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
+            if _ok:
+                for _bid, _btt in _saved.items():
+                    _save_trigger_time_to_csv(_bid, _btt)
             yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
         done_msg = f'提取完成: {hit_count}/{total} 命中'
         if ai_skip_count:

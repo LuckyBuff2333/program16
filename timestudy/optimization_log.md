@@ -2020,3 +2020,13 @@ flowchart TD
 - **实现文件**：`src/services/trigger_ops.py`、`docs/AI日志分析批量执行方法说明.md`
 
 </details>
+
+<details>
+<summary><b>150. 时间提取每 20 条同步写本地 CSV（2026-11-07）</b></summary>
+
+- **规则**：每 20 条 `progress_batch` 同时写云端和本地 CSV；结束时余量也写。
+- **实现**：云端批写成功后再逐条 `_save_trigger_time_to_csv`，避免云端失败导致本地多写。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/api/routes/trigger.py`、`docs/AI日志分析批量执行方法说明.md`
+
+</details>
