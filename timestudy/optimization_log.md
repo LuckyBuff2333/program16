@@ -2242,3 +2242,14 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/BatchAiPanel.vue`、`src/api/routes/testing.py`、`docs/AI日志分析批量执行方法说明.md`
 
 </details>
+
+<details>
+<summary><b>170. 修复动态队列空转与慢轮询（2026-11-07）</b></summary>
+
+- **现象**：页面显示在途 25、已完成 0，但 19:34 线上健康检查连续 502，之后没有 AI POST，也没有数据沉淀新行。
+- **原因**：`batchAiRunOnline` 忽略了 SSE `error` 事件，首批提交失败后仍进入动态队列空转；`batch_done_status` 每次扫全部云端批次文档，轮询很慢。
+- **修复**：SSE error 直接抛错；动态完成检查改为按当前 Jira 过滤数据沉淀，只查相关记录。
+- **验证**：前端构建成功。
+- **实现文件**：`frontend/src/panels/BatchAiPanel.vue`、`src/api/routes/testing.py`
+
+</details>

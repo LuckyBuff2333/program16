@@ -498,6 +498,8 @@ export default {
                 if (evt.skipped) doneMsg += `，已跳过 ${evt.skipped} 条`;
                 doneMsg += `，已写入 ${evt.csv_path}`;
                 this.batchAi.runDoneMsg = doneMsg;
+              } else if (evt.type === 'error') {
+                throw new Error(evt.message || '批量执行失败');
               }
             } catch (e) { /* ignore */ }
           }
@@ -532,6 +534,7 @@ export default {
                 this.batchAi.runResults.push({ 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '触发时间': evt.exec_time || '', '执行时间': evt.analysis_time || '', '备注': evt.msg || '' });
               } else if (evt.type === 'done') { this.batchAi.runDoneMsg = evt.message || '线上执行完成'; }
               else if (evt.type === 'stopped') { this.batchAi.stopRequested = true; this.batchAi.runDoneMsg = evt.message || '已停止：当前提取已保存，后续队列取消'; }
+              else if (evt.type === 'error') { throw new Error(evt.message || '线上执行失败'); }
             } catch (e) { /* ignore */ }
           }
         }

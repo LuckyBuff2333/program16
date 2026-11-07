@@ -225,9 +225,24 @@ async def batch_done_status(request: Request):
     if not bugids:
         return _fail("bugids 为空")
     try:
-        executed = await _run_blocking(_get_same_source_executed_keys, source)
-        done = [b for b in bugids if b in executed]
-        pending = [b for b in bugids if b not in executed]
+        # 只按当前队列的 Jira 搜数据沉淀，避免每次轮询都扫全部云端批次文档
+        cfg = load_config().get("feishu_bitable", {})
+        bugid_field = cfg.get("bugid_field", "jira号")
+        expr = "OR(" + ",".join(
+            f'CurrentValue.[{bugid_field}] = "{b}"' for b in bugids) + ")"
+        recs = await _run_blocking(
+            feishu_client.list_bitable_records,
+            cfg.get("app_token", ""), cfg.get("table_id", ""),
+            filter_expr=expr, timeout=60)
+        done_set = set()
+        for rec in recs:
+            fields = rec.get("fields", {})
+            j = _bitable_text(fields.get(bugid_field, "")).strip()
+            src = _bitable_text(fields.get("触发来源", "")).strip()
+            if j and (not source or src == source):
+                done_set.add(j)
+        done = [b for b in bugids if b in done_set]
+        pending = [b for b in bugids if b not in done_set]
         return _ok({"done": done, "pending": pending, "done_count": len(done),
                     "total": len(bugids), "all_done": not pending},
                    f"已写入 {len(done)}/{len(bugids)} 条")
