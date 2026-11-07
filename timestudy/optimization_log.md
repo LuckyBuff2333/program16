@@ -2329,3 +2329,11 @@ flowchart TD
 - **实现文件**：`config/config.yaml`（本地配置）
 
 </details>
+
+<details>
+<summary><b>178. 时间提取并发调整为 3（2026-11-07）</b></summary>
+
+- 根据机器实际负载，`params.trigger_parallel` 与 `ocr_parallel` 从 2 调整为 3。
+- 重启后端后生效；配置文件不入库。
+
+</details>
