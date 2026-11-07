@@ -2506,3 +2506,13 @@ flowchart TD
 - **实现文件**：`src/services/trigger_ops.py`、`src/clients/feishu_client.py`、`src/api/routes/trigger.py`
 
 </details>
+
+<details>
+<summary><b>195. 时间提取启动阶段显示准备中进度（2026-11-07）</b></summary>
+
+- **问题**：进度条 `v-if=total>0`，而 `start` 事件要等 JQL 查询、AI 过滤、云端缓存加载完才发出，期间页面只有转圈。
+- **修复**：`running || total>0` 即显示进度条；`total=0` 时使用 indeterminate 并提示“正在准备”。
+- **验证**：前端构建成功。
+- **实现文件**：`frontend/src/panels/TimeExtractPanel.vue`
+
+</details>

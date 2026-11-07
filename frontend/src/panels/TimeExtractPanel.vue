@@ -37,9 +37,12 @@
     </div>
 
     <!-- 进度条 -->
-    <div v-if="total > 0" style="margin-top:14px">
-      <el-progress :percentage="pct" :stroke-width="18" :text-inside="true" :status="progressStatus"></el-progress>
-      <div style="margin-top:6px;font-size:12px;color:#909399;display:flex;gap:16px">
+    <div v-if="running || total > 0" style="margin-top:14px">
+      <el-progress :percentage="pct" :stroke-width="18" :text-inside="true" :status="progressStatus" :indeterminate="total === 0"></el-progress>
+      <div v-if="total === 0" style="margin-top:6px;font-size:12px;color:#909399">
+        正在准备：查询 Jira、预加载云端缓存并筛选候选...
+      </div>
+      <div v-else style="margin-top:6px;font-size:12px;color:#909399;display:flex;gap:16px">
         <span>完成: {{ doneCount }}/{{ total }}</span>
         <span>命中: {{ hitCount }}</span>
         <span v-if="aiSkippedCount">AI分析跳过: {{ aiSkippedCount }}</span>
