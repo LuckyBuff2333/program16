@@ -307,7 +307,7 @@ for _ in range(interval_min * 60):
 
 ## 去重集合 TTL（P1）
 
-- `_get_same_source_executed_keys` 结果缓存 30 秒，key 为 `source + 日期`。
+- `_get_same_source_executed_keys` 结果缓存 10 分钟，key 为 `source + 日期`；一次扫描 24 个云端批次文档约 60 秒。
 - 每次批量执行结束清缓存；前端提供“强制刷新去重”按钮。
 - 跨天自动换 key，PC/线上分开缓存。
 
@@ -358,3 +358,6 @@ for _ in range(interval_min * 60):
 - 判断是否真的在执行：看是否有 `POST /api/logAnalysis/parseFullTicket`，以及数据沉淀是否出现对应 Jira；只有页面“在途”数字不代表已提交。
 
 - 健康检查重试间隔：首次失败等 10 秒，第二次失败等 20 秒，避免三次 502 集中在几秒内。
+
+- 页面打开时看到的 `飞书文档获取成功` 是批量过滤的云端执行记录去重，不是看板缓存。
+

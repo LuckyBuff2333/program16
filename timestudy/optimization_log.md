@@ -2554,3 +2554,12 @@ flowchart TD
 - **实现文件**：`src/api/app.py`、`src/api/routes/report.py`、`frontend/src/panels/DataDashboardPanel.vue`
 
 </details>
+
+<details>
+<summary><b>200. 云端批次去重缓存延长到10分钟（2026-11-07）</b></summary>
+
+- **现象**：每次过滤都拉 24 个云端批次文档，约 60 秒；把 `_EXECUTED_KEYS_TTL` 从 30 秒延长到 600 秒。
+- **说明**：这些文档是批量执行去重，不是看板缓存；批量执行结束会主动清缓存。
+- **实现文件**：`src/api/routes/testing.py`
+
+</details>

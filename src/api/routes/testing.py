@@ -94,7 +94,7 @@ _recently_executed = {}  # jira_key -> timestamp
 _EXECUTED_TTL = 2 * 3600  # 2小时过期
 _EXECUTED_KEYS_CACHE = {}  # {(source, date): (ts, set)}
 _batch_ai_run_stop_event = threading.Event()
-_EXECUTED_KEYS_TTL = 30
+_EXECUTED_KEYS_TTL = 600  # 云端批次文档扫描一次约 60s，缓存 10 分钟
 
 
 def _invalidate_executed_keys_cache():
