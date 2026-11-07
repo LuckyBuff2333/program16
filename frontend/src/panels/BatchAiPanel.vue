@@ -379,7 +379,7 @@ export default {
         running: false, abortController: null, currentRound: 0,
         results: [], noTimeJiras: [], sampleStats: null, doneMsg: '', doneError: false,
       },
-      batchAi: { jql: 'issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', jqlPresets: ['issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND created >= startOfDay(-1d) AND created <= endOfDay(-1d) AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC', 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND status != closed AND created >= "2026/10/01" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'], jqlLabels: ['今日新增Bug', '昨日新增Bug', '本周新增Bug', '10月新增未关闭', '远控', 'coreservice', '导航'], sampleCount: 5, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, filterExistingSuccess: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '', envSavedMsg: '', rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, filterCounts: null, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, stopRequested: false, preSample: null },
+      batchAi: { jql: 'issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', jqlPresets: ['issuetype = bug AND created >= startOfDay() AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND created >= startOfDay(-1d) AND created <= endOfDay(-1d) AND status != closed AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC', 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND status != closed AND created >= "2026/10/01" AND project = VCS_Info4.0_High_Platform_PATAC_Jira', 'issuetype = bug AND text ~ "远控" AND text ~ "VCU"', 'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU"', 'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU"'], jqlLabels: ['今日新增Bug', '昨日新增Bug', '本周新增Bug', '10月新增未关闭', '远控', 'coreservice', '导航'], sampleCount: 5, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false, filterExistingSuccess: false, skipTimeExtraction: false, execMode: '', analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '', envSavedMsg: '', rows: [], searchMsg: '', searchError: false, extractMsg: '', extractError: false, filteredKeys: [], filterMsg: '', filterError: false, filterCounts: null, filterDeduped: false, selected: [], sampleMsg: '', sampleError: false, sampleStats: null, triggerTimes: {}, runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '', oneClickMsg: '', oneClickError: false, extractProgress: 0, extractTotal: 0, extractLocalHit: 0, qualityAssess: null, qualityAssessErr: '', continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false, stopRequested: false, preSample: null },
     };
   },
   mounted() {
@@ -403,7 +403,7 @@ export default {
       this.running.batchSearch = true;
       this.batchAi.searchMsg = ''; this.batchAi.searchError = false;
       this.batchAi.rows = []; this.batchAi.selected = []; this.batchAi.runResults = []; this.batchAi.runDoneMsg = '';
-      this.batchAi.extractMsg = ''; this.batchAi.triggerTimes = {}; this.batchAi.csvTriggerTimes = {}; this.batchAi.filteredKeys = []; this.batchAi.filterMsg = '';
+      this.batchAi.extractMsg = ''; this.batchAi.triggerTimes = {}; this.batchAi.csvTriggerTimes = {}; this.batchAi.filteredKeys = []; this.batchAi.filterMsg = ''; this.batchAi.filterDeduped = false;
       try {
         const body = await api('/api/test/batch_ai_search', { method: 'POST', body: JSON.stringify({ jql: this.batchAi.jql }) });
         this.batchAi.rows = body.data.rows;
@@ -426,7 +426,7 @@ export default {
         }) });
         this.batchAi.filteredKeys = body.data.filtered || [];
         this.batchAi.filterMsg = body.message;
-        this.batchAi.filterCounts = body.data.counts || null;
+        this.batchAi.filterCounts = body.data.counts || null; this.batchAi.filterDeduped = true;
       } catch (e) { this.batchAi.filterMsg = e.message || '过滤失败'; this.batchAi.filterError = true; } finally { this.running.batchFilter = false; }
     },
     async batchAiSample(silent = false) {
@@ -442,7 +442,7 @@ export default {
       const sampleAbort = AbortSignal.timeout(600000);
       try {
         const keys = this.batchAi.filteredKeys.length ? this.batchAi.filteredKeys : this.batchAi.rows.map(r => r.key);
-        const body = await api('/api/test/batch_ai_sample', { method: 'POST', body: JSON.stringify({ keys, count: this.batchAi.sampleCount, csv_trigger_times: this.batchAi.csvTriggerTimes, reset_stop: !silent }), signal: sampleAbort });
+        const body = await api('/api/test/batch_ai_sample', { method: 'POST', body: JSON.stringify({ keys, count: this.batchAi.sampleCount, csv_trigger_times: this.batchAi.csvTriggerTimes, reset_stop: !silent, prefiltered: this.batchAi.filterDeduped }), signal: sampleAbort });
         const result = { selected: body.data.selected, trigger_times: body.data.trigger_times || {},
           sampleStats: { selected: body.data.selected_count || 0, cloud_picked: body.data.cloud_picked || 0, csv_hit: body.data.csv_hit || 0, new_extracted: body.data.new_extracted || 0, extract_failed: body.data.extract_failed || 0 },
           message: body.message };

@@ -2041,3 +2041,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`、`frontend/src/panels/DataCleanupPanel.vue`、`frontend/src/panels/TroubleshootPanel.vue`
 
 </details>
+
+<details>
+<summary><b>152. 功能测试批量执行 P0 提速（2026-11-07）</b></summary>
+
+- **并行读表**：`_load_cloud_trigger_cache` / `_load_trigger_times_from_cloud` 的 16 张触发时间表改为最多 6 路并行，实测全量加载约 **5.3s**。
+- **复用过滤结果**：前端 filter 成功后 sample 带 `prefiltered=true`，后端跳过 `_load_all_doc_jira_keys` 与云端执行记录重复扫描。
+- **安全**：未走 filter 或 filter 未完成时仍执行原来的全量去重。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/trigger_ops.py`、`src/api/routes/testing.py`、`frontend/src/panels/BatchAiPanel.vue`
+
+</details>

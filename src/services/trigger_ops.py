@@ -315,10 +315,22 @@ def _load_cloud_trigger_cache() -> tuple:
         times = {}
         keys = set()
         partial = False  # 部分子表加载失败标记
-        for tid in table_ids:
+
+        def _read_one(tid):
             try:
-                records = feishu_client.list_bitable_records(app_token, tid)
-                for rec in records:
+                return tid, feishu_client.list_bitable_records(app_token, tid), None
+            except Exception as e:
+                return tid, None, e
+
+        # 多张触发时间表并行读取（最多 6 路），避免串行 16 表拖慢启动
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(6, max(1, len(table_ids)))) as _pool:
+            for tid, records, err in _pool.map(_read_one, table_ids):
+                if err is not None:
+                    logger.warning("加载触发时间表 %s 失败，已跳过: %s", tid, err)
+                    partial = True
+                    continue
+                for rec in records or []:
                     fields = rec.get("fields", {})
                     jira_no = _bitable_text(fields.get("jira号", ""))
                     if not jira_no:
@@ -327,12 +339,8 @@ def _load_cloud_trigger_cache() -> tuple:
                     tt = _bitable_text(fields.get("触发时间", ""))
                     if tt:
                         times[jira_no] = tt
-                    # 同时填充 bugid 缓存，避免后续 _ensure_trigger_time_bugid_cache 重复加载
                     if not _trigger_time_bugid_cache or jira_no not in _trigger_time_bugid_cache:
                         _trigger_time_bugid_cache[jira_no] = (tid, rec.get("record_id", ""), tt)
-            except Exception as e:
-                logger.warning("加载触发时间表 %s 失败，已跳过: %s", tid, e)
-                partial = True
         logger.info("云端触发时间缓存加载完成: %d 条有触发时间, %d 条已记录%s",
                     len(times), len(keys), " (部分加载)" if partial else "")
         # 部分加载时不缓存结果，避免上层误判“云端没有”而触发空值覆盖
@@ -366,17 +374,25 @@ def _load_trigger_times_from_cloud() -> dict:
     try:
         app_token, table_ids = _get_trigger_time_table_cfg()
         result = {}
-        for tid in table_ids:
+
+        def _read_one(tid):
             try:
-                records = feishu_client.list_bitable_records(app_token, tid)
-                for rec in records:
+                return tid, feishu_client.list_bitable_records(app_token, tid), None
+            except Exception as e:
+                return tid, None, e
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(6, max(1, len(table_ids)))) as _pool:
+            for tid, records, err in _pool.map(_read_one, table_ids):
+                if err is not None:
+                    logger.warning("加载触发时间表 %s 失败，已跳过: %s", tid, err)
+                    continue
+                for rec in records or []:
                     fields = rec.get("fields", {})
                     jira_no = _bitable_text(fields.get("jira号", ""))
                     tt = _bitable_text(fields.get("触发时间", ""))
                     if jira_no and tt:
                         result[jira_no] = tt
-            except Exception as e:
-                logger.warning("加载触发时间表 %s 失败，已跳过: %s", tid, e)
         logger.info("云端触发时间加载完成: %d 条", len(result))
         _bitable_bulk_cache[_ck] = (time.time(), result)
         return result
