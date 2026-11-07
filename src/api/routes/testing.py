@@ -2834,37 +2834,6 @@ async def test_prod_batch_run(request: Request):
         # 停止标志由 /api/test/prod_batch_run/stop 设置：当前在提取的 Jira 完成并写云端后，取消后续队列
         from src.api.routes.shared import prod_batch_stop_event as stop_event
         stop_event.clear()
-        # 线上批量：先探测线上分析服务，502/503 时直接报错，避免把整批 Jira 误记为分析失败
-        if exec_mode == "online":
-            import httpx as _httpx
-            _probe = None
-            _probe_err = ""
-            _probe_url = _get_prod_ai_url()
-            _loop_probe = asyncio.get_event_loop()
-            for _attempt in range(3):  # 首次 + 2 次重试
-                try:
-                    _probe = await _loop_probe.run_in_executor(
-                        None, lambda: _httpx.get(_probe_url, timeout=30, follow_redirects=True))
-                    if _probe.status_code < 500:
-                        _probe_err = ""
-                        break
-                    _probe_err = f"HTTP {_probe.status_code}"
-                    logger.warning("线上分析服务健康检查第 %d/3 次返回 %s", _attempt + 1, _probe.status_code)
-                except Exception as _e:
-                    _probe = None
-                    _probe_err = str(_e)
-                    logger.warning("线上分析服务健康检查第 %d/3 次失败: %s", _attempt + 1, _e)
-                if _attempt < 2:
-                    # 502/超时不是瞬时抖动，重试间隔按 10s、20s 退避，避免三次挤在一起
-                    _retry_delay = 10 * (2 ** _attempt)
-                    logger.info("线上分析服务健康检查将在 %d 秒后重试", _retry_delay)
-                    await asyncio.sleep(_retry_delay)
-            if _probe is not None and _probe.status_code >= 500:
-                yield f"data: {_json.dumps({'type': 'error', 'message': f'线上分析服务不可用（{_probe.status_code} Bad Gateway，已重试 2 次），请稍后重试或联系平台恢复接口'}, ensure_ascii=False)}\n\n"
-                return
-            if _probe is None and _probe_err:
-                yield f"data: {_json.dumps({'type': 'error', 'message': f'线上分析服务不可达（已重试 2 次）：{_probe_err[:160]}'}, ensure_ascii=False)}\n\n"
-                return
         batch_start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         loop = asyncio.get_event_loop()
         run_bugids = list(bugids)  # 局部副本，避免闭包变量赋值冲突
@@ -3066,8 +3035,8 @@ async def test_prod_batch_run(request: Request):
         import threading as _th
         _exec_concurrency = int(body.get("analysis_concurrency") or 5)
         _exec_sem = _th.Semaphore(_exec_concurrency)  # 执行阶段并发控制
-        _MAX_RETRIES = 1  # 失败后重试次数
-        _RETRY_DELAY = 3  # 重试间隔（秒）
+        _MAX_RETRIES = 2  # 首次 + 2 次重试 = 最多 3 次
+        _RETRY_DELAY = 5  # 重试基础间隔（秒），按 5/10 秒退避
 
         def _run_one(bugid):
             if stop_event.is_set():
@@ -3104,17 +3073,27 @@ async def test_prod_batch_run(request: Request):
                     if is_ok and exec_mode == "pc":
                         is_ok = any(kw in resp_msg for kw in ["分析任务已启动", "后台处理", "正在分析"])
                     retry_note = f"（重试成功）" if _attempt > 0 else ""
-                    result_queue.put({"Jira号": bugid, "执行结果": "成功" if is_ok else "失败",
-                                      "备注": f"{retry_note}{resp_msg[:200]}", "触发时间": exec_time,
-                                      "执行时间": batch_start_time,
-                                      "status": "success" if is_ok else "fail", "msg": f"{retry_note}{resp_msg[:100]}"})
-                    return  # 成功或业务失败都不重试，只有异常才重试
+                    if is_ok:
+                        result_queue.put({"Jira号": bugid, "执行结果": "成功",
+                                          "备注": f"{retry_note}{resp_msg[:200]}", "触发时间": exec_time,
+                                          "执行时间": batch_start_time,
+                                          "status": "success", "msg": f"{retry_note}{resp_msg[:100]}"})
+                        return
+                    last_err = resp_msg
+                    if _attempt < _MAX_RETRIES:
+                        logger.info("%s 提交失败(第%d次)，%ds后重试: %s", bugid, _attempt + 1,
+                                    _RETRY_DELAY * (2 ** _attempt), last_err)
+                        import time as _time
+                        _time.sleep(_RETRY_DELAY * (2 ** _attempt))
+                        continue
+                    break
                 except Exception as e:
                     last_err = str(e)[:200]
                     if _attempt < _MAX_RETRIES:
-                        logger.info("%s 执行失败(第%d次)，%ds后重试: %s", bugid, _attempt + 1, _RETRY_DELAY, last_err)
+                        _delay = _RETRY_DELAY * (2 ** _attempt)
+                        logger.info("%s 执行失败(第%d次)，%ds后重试: %s", bugid, _attempt + 1, _delay, last_err)
                         import time as _time
-                        _time.sleep(_RETRY_DELAY)
+                        _time.sleep(_delay)
             # 所有重试耗尽
             retry_note = "（已重试）" if _MAX_RETRIES > 0 else ""
             result_queue.put({"Jira号": bugid, "执行结果": "失败",
@@ -3126,6 +3105,7 @@ async def test_prod_batch_run(request: Request):
             loop.run_in_executor(None, _run_one, bugid)
 
         results = []
+        consecutive_fail = 0
         while len(results) < len(run_bugids):
             if stop_event.is_set():
                 break
@@ -3135,7 +3115,12 @@ async def test_prod_batch_run(request: Request):
             try:
                 item = result_queue.get_nowait()
                 results.append(item)
+                consecutive_fail = consecutive_fail + 1 if item.get("status") == "fail" else 0
                 yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(run_bugids), 'bugid': item['Jira号'], 'status': item['status'], 'msg': item.get('msg', ''), 'exec_time': item.get('触发时间', ''), 'analysis_time': item.get('执行时间', '')}, ensure_ascii=False)}\n\n"
+                if consecutive_fail >= 3:
+                    stop_event.set()
+                    logger.warning("线上批量连续 3 条提交失败，停止后续队列")
+                    break
             except queue.Empty:
                 await asyncio.sleep(1)
         # 保存结果 CSV（同时写入 docs 目录供每日播报统计）

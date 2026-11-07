@@ -2534,3 +2534,13 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/BatchAiPanel.vue`
 
 </details>
+
+<details>
+<summary><b>198. 线上批量取消健康检查改为直接执行（2026-11-07）</b></summary>
+
+- **取消前置健康检查**：不再先 GET 探测线上分析服务，直接提交批量任务。
+- **重试**：单条提交失败等待 5 秒、10 秒后重试，最多 3 次。
+- **熔断**：连续 3 条 Jira 提交失败后停止后续队列。
+- **实现文件**：`src/api/routes/testing.py`、`docs/AI日志分析批量执行方法说明.md`
+
+</details>
