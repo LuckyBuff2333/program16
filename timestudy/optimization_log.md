@@ -2166,3 +2166,13 @@ flowchart TD
 - **实现文件**：`src/services/troubleshoot_service.py`、`docs/每日Jira分析工作流程.md`
 
 </details>
+
+<details>
+<summary><b>163. 人工审核“无时间信息”覆盖诊断分类（2026-11-07）</b></summary>
+
+- **问题**：诊断结果为“正常”，但人工审核结果是“无时间信息”，分类未跟随人工审核。
+- **修复**：诊断请求携带 `human_review`；`_troubleshoot_diagnose_impl` 检测到“无时间信息”时强制 `category=无时间信息`、`needs_analysis=False`，并更新诊断缓存。
+- **验证**：全量 **116 passed**；前端已重新构建。
+- **实现文件**：`src/schemas/troubleshoot.py`、`src/api/routes/troubleshoot.py`、`src/services/server_legacy.py`、`frontend/src/panels/TroubleshootPanel.vue`
+
+</details>

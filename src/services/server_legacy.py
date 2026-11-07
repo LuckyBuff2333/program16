@@ -7221,7 +7221,7 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
     return "manual", "", f"未能提取到新触发时间（评论区/描述/视频均无时间），待人工审核正确的时间{gm_note}", ""
 
 
-def _troubleshoot_diagnose_impl(bugid, err_msg, problem_time, done_time, force=False, error_class=""):
+def _troubleshoot_diagnose_impl(bugid, err_msg, problem_time, done_time, force=False, error_class="", human_review=""):
     """诊断实现（从 troubleshoot_diagnose 抽取，便于统一 try/finally 管理取消标志）"""
     logger.info("诊断开始: %s%s", bugid, "（强制重新执行）" if force else "")
     try:
@@ -7229,7 +7229,17 @@ def _troubleshoot_diagnose_impl(bugid, err_msg, problem_time, done_time, force=F
         # 统一注入 needs_analysis 标识（供前端拆分两张表）
         data = result.get("data") if isinstance(result, dict) else None
         if isinstance(data, dict) and "category" in data:
-            data["needs_analysis"] = data["category"] not in _SKIP_ANALYSIS_CATEGORIES
+            # 人工审核已明确“无时间信息”时，分类以人工审核为准
+            if "无时间信息" in str(human_review or ""):
+                data["category"] = "无时间信息"
+                data["needs_analysis"] = False
+                data["detail"] = (str(data.get("detail") or "") + "；人工审核：无时间信息").strip("；")
+                try:
+                    _save_diagnose_cache(bugid, data)
+                except Exception:
+                    pass
+            else:
+                data["needs_analysis"] = data["category"] not in _SKIP_ANALYSIS_CATEGORIES
         return result
     finally:
         # 线程完成时清除取消标志（无论是正常完成还是被中断）

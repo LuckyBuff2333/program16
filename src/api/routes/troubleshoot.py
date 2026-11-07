@@ -161,7 +161,7 @@ def troubleshoot_diagnose(req: DiagnoseRequest):
                     cached["needs_analysis"] = cached["category"] not in _SKIP_ANALYSIS_CATEGORIES
                 return ok(cached, f"{bugid} 诊断结果（本地缓存）")
         executor = _get_diag_executor()
-        future = executor.submit(_troubleshoot_diagnose_impl, bugid, err_msg, problem_time, done_time, force=force, error_class=error_class)
+        future = executor.submit(_troubleshoot_diagnose_impl, bugid, err_msg, problem_time, done_time, force=force, error_class=error_class, human_review=req.human_review)
         try:
             return future.result(timeout=_DIAG_TIMEOUT_SECONDS)
         except _futures.TimeoutError:
