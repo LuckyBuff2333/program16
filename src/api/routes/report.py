@@ -718,7 +718,20 @@ async def dashboard_data(date: str = Query(default=None, description="日期 YYY
                          force: bool = Query(default=False, description="强制刷新（忽略缓存）")):
     """获取指定日期的看板数据：优先云端批次，本地 CSV 作补充"""
     import asyncio
+    from src.api.routes.shared import ok as _ok
     date_str = date or datetime.now().strftime("%Y-%m-%d")
+    # 页面打开/切换日期只读缓存；没有缓存时不要自动扫 24 个云端批次，必须点“刷新”
+    if not force:
+        with _dashboard_cache_lock:
+            cached = _dashboard_cloud_cache.get(date_str)
+        if not cached or time.time() - cached["ts"] >= _cache_ttl(date_str):
+            return _ok({
+                "date": date_str, "batches": [],
+                "summary": {"total_batches": 0, "total_submit": 0, "total_ok": 0,
+                            "total_fail": 0, "pc_batches": 0, "online_batches": 0,
+                            "submit_rate": 0, "has_daily_report": False},
+                "cache_miss": True,
+            }, "看板数据未加载，请点击“刷新”")
     result = await asyncio.to_thread(_dashboard_data_sync, date_str, force)
     return result
 

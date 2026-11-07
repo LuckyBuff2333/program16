@@ -2544,3 +2544,13 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`、`docs/AI日志分析批量执行方法说明.md`
 
 </details>
+
+<details>
+<summary><b>199. 看板仅在点击刷新时加载（2026-11-07）</b></summary>
+
+- 移除 app 启动时的看板预热线程和每 2 小时增量刷新。
+- `/api/dashboard/data` 非 `force` 且无缓存时直接返回空，不扫云端 24 个批次。
+- 前端数据看板 mounted 不再调用 `loadDashboard`；仅“刷新”按钮触发 `force=1`。
+- **实现文件**：`src/api/app.py`、`src/api/routes/report.py`、`frontend/src/panels/DataDashboardPanel.vue`
+
+</details>
