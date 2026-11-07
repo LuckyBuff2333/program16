@@ -2253,3 +2253,14 @@ flowchart TD
 - **实现文件**：`frontend/src/panels/BatchAiPanel.vue`、`src/api/routes/testing.py`
 
 </details>
+
+<details>
+<summary><b>171. 修复看板启动预热与页面打开重复拉文档（2026-11-07）</b></summary>
+
+- **现象**：服务启动后 20:07 连续两遍拉取 24 个批次文档，日志显示两次“看板增量刷新”。
+- **原因**：启动后台预热与页面首次打开同时触发缓存 miss，两边各扫一遍。
+- **修复**：看板刷新增加单飞锁，一个线程计算时另一个等待；拿到锁后重新检查缓存。
+- **验证**：`py_compile` 通过。
+- **实现文件**：`src/api/routes/report.py`、`docs/每日Jira分析工作流程.md`
+
+</details>

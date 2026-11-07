@@ -17,6 +17,7 @@ router = APIRouter()
 # ── 云端看板缓存（按日期，今天 30 分钟 / 历史 24 小时）──
 _dashboard_cloud_cache = {}  # {date_str: {"ts": float, "batches": list}}
 _dashboard_cache_lock = threading.Lock()
+_dashboard_refresh_lock = threading.Lock()  # 防止启动预热和页面打开同时扫云端批次
 _DASHBOARD_CLOUD_TTL = 12 * 3600  # 今天: 12 小时（每天 00:05 / 12:05 各刷新一次）
 _DASHBOARD_HISTORY_TTL = 10 * 365 * 86400  # 历史日期: 永久（数据不会变，除非 force 或云端 JSON 被删）
 _DASHBOARD_CACHE_FOLDER = "JXbNfpdzJlJELNdv10Pc5ElVnAc"  # 看板缓存 JSON 文件夹（批次文件夹下的 dashboard_cache 子文件夹，user_access_token 创建）
@@ -737,22 +738,30 @@ def _dashboard_data_sync(date_str: str, force: bool = False):
     if not force and cached_batches and time.time() - cached["ts"] < _cache_ttl(date_str):
         cloud_batches = cached_batches
     if cloud_batches is None:
-        if is_today:
-            # 今天：已执行且分析完的批次直接复用，只刷新未完成/新增的批次
-            cloud_batches, _reused_names = _refresh_batches_incremental(date_str, cached_batches, force=force)
-        elif not force and cached_batches:
-            # 历史：内存里有就永久复用（数据不会变）
-            cloud_batches = cached_batches
-        else:
-            # 历史：云端 JSON 持久缓存 → 原始文档（force 时强制重拉）
-            if not force:
-                cloud_batches = _load_cloud_json_cache(date_str)
-            if cloud_batches is None:
-                cloud_batches = _fetch_cloud_batches_for_date(date_str)
-                if cloud_batches:
-                    _save_cloud_json_cache(date_str, cloud_batches)
-        with _dashboard_cache_lock:
-            _dashboard_cloud_cache[date_str] = {"ts": time.time(), "batches": cloud_batches}
+        # 串行化：启动预热和页面首次打开可能同时到达，避免两边各扫一遍 24 个云端文档
+        with _dashboard_refresh_lock:
+            with _dashboard_cache_lock:
+                cached = _dashboard_cloud_cache.get(date_str)
+                cached_batches = (cached or {}).get("batches")
+            if not force and cached_batches and time.time() - cached["ts"] < _cache_ttl(date_str):
+                cloud_batches = cached_batches
+            else:
+                if is_today:
+                    # 今天：已执行且分析完的批次直接复用，只刷新未完成/新增的批次
+                    cloud_batches, _reused_names = _refresh_batches_incremental(date_str, cached_batches, force=force)
+                elif not force and cached_batches:
+                    # 历史：内存里有就永久复用（数据不会变）
+                    cloud_batches = cached_batches
+                else:
+                    # 历史：云端 JSON 持久缓存 → 原始文档（force 时强制重拉）
+                    if not force:
+                        cloud_batches = _load_cloud_json_cache(date_str)
+                    if cloud_batches is None:
+                        cloud_batches = _fetch_cloud_batches_for_date(date_str)
+                        if cloud_batches:
+                            _save_cloud_json_cache(date_str, cloud_batches)
+                with _dashboard_cache_lock:
+                    _dashboard_cloud_cache[date_str] = {"ts": time.time(), "batches": cloud_batches}
     # 已完成批次的详情直接沿用（只对本次真正复用的批次生效，刷新的批次会重算）
     _prev_detail = {cb.get("name"): cb.get("_detail")
                     for cb in (cached_batches or []) if cb.get("_detail")}
