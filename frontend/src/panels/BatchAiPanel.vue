@@ -609,7 +609,9 @@ export default {
       this.batchAi.continuousRunning = true;
       let pending = [...this.batchAi.filteredKeys];
       try {
-        await this.batchAiSample();
+        const _oldSampleCount = this.batchAi.sampleCount;
+        this.batchAi.sampleCount = 25;
+        try { await this.batchAiSample(); } finally { this.batchAi.sampleCount = _oldSampleCount; }
         if (!this.batchAi.selected.length) throw new Error('动态队列抽样结果为空');
         if (this.batchAi.execMode === 'online') await this.batchAiRunOnline(); else await this.batchAiRun();
         let inflight = [...this.batchAi.selected];
