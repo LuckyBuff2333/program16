@@ -798,7 +798,14 @@ def _safe_update_records(app_token, table_id, recs, core_fields_only=lambda r: {
         feishu_client.update_bitable_records(app_token, table_id, recs)
         return True
     except Exception as e:
-        logger.warning("触发时间扩展列写入失败，退回核心字段重试: %s", e)
+        logger.warning("触发时间扩展列写入失败，检查并补列后重试: %s", e)
+        try:
+            ensure_trigger_time_fields(app_token, [table_id])
+            feishu_client.update_bitable_records(app_token, table_id, recs)
+            logger.info("触发时间补列后写入成功: %s", table_id)
+            return True
+        except Exception as e_retry:
+            logger.warning("触发时间补列后仍失败，退回核心字段: %s", e_retry)
         try:
             feishu_client.update_bitable_records(app_token, table_id, [core_fields_only(r) for r in recs])
             return True
@@ -808,13 +815,20 @@ def _safe_update_records(app_token, table_id, recs, core_fields_only=lambda r: {
 
 
 def _safe_create_records(app_token, table_id, recs):
-    """带扩展列的批量新建：失败时退回核心字段（jira号/触发时间/提取时间）重试"""
+    """带扩展列的批量新建：缺列时先补列再重试，最后才退回核心字段"""
     from src.clients import feishu_client
     try:
         feishu_client.batch_create_records(app_token, table_id, recs)
         return True
     except Exception as e:
-        logger.warning("触发时间扩展列新建失败，退回核心字段重试: %s", e)
+        logger.warning("触发时间扩展列新建失败，检查并补列后重试: %s", e)
+        try:
+            ensure_trigger_time_fields(app_token, [table_id])
+            feishu_client.batch_create_records(app_token, table_id, recs)
+            logger.info("触发时间补列后新建成功: %s", table_id)
+            return True
+        except Exception as e_retry:
+            logger.warning("触发时间补列后仍失败，退回核心字段: %s", e_retry)
         core = [{"fields": {k: v for k, v in r.get("fields", {}).items()
                             if k in ("jira号", "触发时间", "提取时间")}} for r in recs]
         try:

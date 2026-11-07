@@ -2006,3 +2006,17 @@ flowchart TD
 - **实现文件**：`src/api/routes/trigger.py`、`src/api/routes/testing.py`、`frontend/src/panels/TimeExtractPanel.vue`、`docs/AI日志分析批量执行方法说明.md`
 
 </details>
+
+<details>
+<summary><b>149. 触发时间 FieldNameNotFound 兜底补列（2026-11-07）</b></summary>
+
+- **现象**：`触发时间扩展列新建失败 ... FieldNameNotFound` 仍出现。
+- **根因**：新表/旧表扩展列缺失，写入前没有对目标表补列，直接回退核心字段。
+- **修复**：
+  1. `_safe_create_records`/`_safe_update_records` 遇错先 `ensure_trigger_time_fields` 补列，再重试完整字段；
+  2. 补列仍失败才退回核心字段；
+  3. 已对全部 27 张 `触发时间_N` 表补齐，发现 `tblo8qCe3uNRwrIG` 缺 5 列并已补。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/trigger_ops.py`、`docs/AI日志分析批量执行方法说明.md`
+
+</details>
