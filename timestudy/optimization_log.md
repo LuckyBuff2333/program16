@@ -2197,3 +2197,14 @@ flowchart TD
 - **实现文件**：`src/services/troubleshoot_service.py`、`src/services/server_legacy.py`、`docs/每日Jira分析工作流程.md`
 
 </details>
+
+<details>
+<summary><b>166. 修复持续执行重复 Jira（2026-11-07）</b></summary>
+
+- **现象**：今天数据沉淀 338 条，304 个 Jira+来源；28 个重复组合，34 条多余记录，全部是线上 parseFullTicket。
+- **根因**：P0 的 `prefiltered=true` 在持续执行后续轮次也生效，sample 跳过云端去重；前一轮已执行 Jira 被再次选中。
+- **修复**：前端仅首轮 sample 带 `prefiltered=true`；持续执行后续轮次（silent=true）强制重新去重。
+- **验证**：全量 **116 passed**；前端重新构建。
+- **实现文件**：`frontend/src/panels/BatchAiPanel.vue`、`docs/AI日志分析批量执行方法说明.md`
+
+</details>

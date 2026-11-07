@@ -451,7 +451,7 @@ export default {
       const sampleAbort = AbortSignal.timeout(600000);
       try {
         const keys = this.batchAi.filteredKeys.length ? this.batchAi.filteredKeys : this.batchAi.rows.map(r => r.key);
-        const body = await api('/api/test/batch_ai_sample', { method: 'POST', body: JSON.stringify({ keys, count: this.batchAi.sampleCount, csv_trigger_times: this.batchAi.csvTriggerTimes, reset_stop: !silent, prefiltered: this.batchAi.filterDeduped }), signal: sampleAbort });
+        const body = await api('/api/test/batch_ai_sample', { method: 'POST', body: JSON.stringify({ keys, count: this.batchAi.sampleCount, csv_trigger_times: this.batchAi.csvTriggerTimes, reset_stop: !silent, prefiltered: !silent && this.batchAi.filterDeduped }), signal: sampleAbort });
         const result = { selected: body.data.selected, trigger_times: body.data.trigger_times || {},
           sampleStats: { selected: body.data.selected_count || 0, cloud_picked: body.data.cloud_picked || 0, csv_hit: body.data.csv_hit || 0, new_extracted: body.data.new_extracted || 0, extract_failed: body.data.extract_failed || 0 },
           message: body.message };

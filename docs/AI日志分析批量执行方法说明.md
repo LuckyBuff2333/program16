@@ -329,3 +329,9 @@ for _ in range(interval_min * 60):
 - 5xx 重试后仍失败才终止；超时同样重试后报“不可达”。
 - 区分 HTTP 5xx 与网络异常/超时。
 
+## 持续执行去重
+
+- 首轮 sample 可复用 filter 去重结果（`prefiltered=true`）。
+- 持续执行的后续轮次（`silent=true`）必须重新查已执行记录，避免同 Jira 重复执行。
+- 今天重复数据集中在线上 `parseFullTicket`，与持续执行轮次重复选择有关。
+
