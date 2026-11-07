@@ -2297,3 +2297,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/trigger.py`、`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>175. 统一时间来源标签（2026-11-07）</b></summary>
+
+- **标签**：`视频拼接`、`评论`、`文本`、`图片拼接`、`附件名兜底`，写入触发时间表现有 `时间来源` 字段。
+- **覆盖**：普通批量、缓存批量两个提取入口；图片后仍无时间时统一走附件名兜底。
+- **统计**：后续可直接按 `时间来源` 聚合成功率/占比。
+- **验证**：`py_compile` 通过。
+- **实现文件**：`src/api/routes/trigger.py`
+
+</details>

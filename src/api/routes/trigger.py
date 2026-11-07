@@ -509,14 +509,14 @@ async def batch_extract_time(request: Request):
                 if has_video:
                     tt = _diag_extract_time_from_video_simple(issue, stop_event=_stop_event)
                     if tt:
-                        source = "视频+gmlogger"
+                        source = "视频拼接"
                     if _stop_event.is_set():
                         return bugid, "", "stopped", "已停止"
                 # 2. 评论/描述/标题文本提取
                 if not tt:
                     tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
                     if tt:
-                        source = "标准提取"
+                        source = "文本"
                     if _stop_event.is_set():
                         return bugid, "", "stopped", "已停止"
                 # 3. 图片 OCR（最终兜底）
@@ -524,7 +524,7 @@ async def batch_extract_time(request: Request):
                     img_tt, _ = _diag_extract_time_from_images(issue, _img_headers, img_to, bugid, stop_event=_stop_event)
                     if img_tt:
                         tt = img_tt
-                        source = "图片OCR"
+                        source = "图片拼接"
                 # 4. 附件文件名（最后兜底，必须带标签）
                 if not tt:
                     try:
@@ -900,16 +900,23 @@ async def compare_extract_time(file: UploadFile = File(...), filter_statuses: st
                 if has_video:
                     tt = _diag_extract_time_from_video_simple(issue)
                     if tt:
-                        source = "视频+gmlogger"
+                        source = "视频拼接"
                 if not tt:
                     tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
                     if tt:
-                        source = "标准提取"
+                        source = "文本"
                 if not tt and _img_headers:
                     img_tt, _ = _diag_extract_time_from_images(issue, _img_headers, img_to, bugid)
                     if img_tt:
                         tt = img_tt
-                        source = "图片OCR"
+                        source = "图片拼接"
+                if not tt:
+                    try:
+                        att_tt = _jc.extract_attachment_time(issue)
+                    except Exception:
+                        att_tt = ""
+                    if att_tt:
+                        tt, source = att_tt, "附件名兜底"
                 _created = None
                 try:
                     _c = fields.get("created")
@@ -1171,15 +1178,22 @@ async def link_compare(request: Request):
                 if has_video:
                     tt = _diag_extract_time_from_video_simple(issue)
                     if tt:
-                        source = "视频+gmlogger"
+                        source = "视频拼接"
                 if not tt:
                     tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
                     if tt:
-                        source = "标准提取"
+                        source = "文本"
                 if not tt and img_headers:
                     img_tt, _ = _diag_extract_time_from_images(issue, img_headers, img_to, bugid)
                     if img_tt:
-                        tt, source = img_tt, "图片OCR"
+                        tt, source = img_tt, "图片拼接"
+                if not tt:
+                    try:
+                        att_tt = _jc.extract_attachment_time(issue)
+                    except Exception:
+                        att_tt = ""
+                    if att_tt:
+                        tt, source = att_tt, "附件名兜底"
                 created = None
                 try:
                     c = fields.get("created")
