@@ -2441,3 +2441,14 @@ flowchart TD
 - **实现文件**：`src/services/trigger_ops.py`
 
 </details>
+
+<details>
+<summary><b>189. 100条带视频成功记录OCR抽样评估（2026-11-07）</b></summary>
+
+- **样本**：本周数据沉淀成功线上记录中取 100 个带视频 Jira。
+- **结果**：5 分钟内正确 61%；15 分钟内 75%。
+- **误差**：5~15 分钟 14 条，15~60 分钟 10 条，1 小时~1 天 6 条，>1 天 8 条，空结果 1 条。
+- **判断**：主要问题不是 OCR 放大，而是整图缩放导致状态栏小字丢失、日期/小时错、缓存候选不匹配。
+- **实现文件**：`data/backup/ocr_eval_100_with_video.json`、`data/backup/ocr_eval_100_result.json`
+
+</details>
