@@ -604,6 +604,16 @@ async def batch_extract_time(request: Request):
                         yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
                         batch_buf.clear()
                         sources_buf.clear()
+                # 每处理 20 条也落一次，避免命中不足 20 条时一直等到整批结束
+                if done_count % 20 == 0 and batch_buf:
+                    _saved = dict(batch_buf)
+                    _ok = _batch_save_trigger_times_to_cloud(batch_buf, sources_buf)
+                    if _ok:
+                        for _bid, _btt in _saved.items():
+                            _save_trigger_time_to_csv(_bid, _btt)
+                    yield f"data: {_json.dumps({'type': 'batch_saved', 'count': len(batch_buf)}, ensure_ascii=False)}\n\n"
+                    batch_buf.clear()
+                    sources_buf.clear()
                 progress_buf.append({
                     'bugid': bugid, 'time': tt or '',
                     'source': source, 'error': error or '',

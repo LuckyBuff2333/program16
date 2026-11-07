@@ -669,9 +669,12 @@ def list_bitable_records(app_token: str, table_id: str,
     log_msg = "Bitable 过滤查询" if filter_expr else "Bitable 记录查询"
     all_records = _paginate_get(url, _bitable_headers(), params, log_msg,
                                 retry_on_token_expire=True, timeout=timeout)
-    logger.info("Bitable 记录获取完成: app=%s, table=%s, 共 %d 条%s",
-                app_token, table_id, len(all_records),
-                f" (filter)" if filter_expr else "")
+    if filter_expr and not all_records:
+        logger.debug("Bitable 过滤查询无记录: table=%s", table_id)
+    else:
+        logger.info("Bitable 记录获取完成: app=%s, table=%s, 共 %d 条%s",
+                    app_token, table_id, len(all_records),
+                    f" (filter)" if filter_expr else "")
     return all_records
 
 

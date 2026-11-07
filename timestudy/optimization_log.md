@@ -2496,3 +2496,13 @@ flowchart TD
 - **实现文件**：`data/backup/ocr_eval_80_roi_result.json`
 
 </details>
+
+<details>
+<summary><b>194. 触发表并发搜索并提前落云端（2026-11-07）</b></summary>
+
+- **0 条日志**：多数触发表没有当前批次 Jira，属正常；空 filter 结果改为 debug。
+- **搜索**：27 个表从串行改为最多 6 路并发，缩短批量搜索时间。
+- **上传**：每处理 20 条也尝试落一次云端，命中不足 20 条时不再等整批结束。
+- **实现文件**：`src/services/trigger_ops.py`、`src/clients/feishu_client.py`、`src/api/routes/trigger.py`
+
+</details>

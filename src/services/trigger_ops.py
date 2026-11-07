@@ -523,12 +523,22 @@ def _search_trigger_time_batch(bugids: list) -> dict:
     # 飞书过滤语法是函数式 OR(...)，不是 SQL 的中缀 OR；中缀写法会返回 1254018
     filter_expr = conditions[0] if len(conditions) == 1 else "OR(" + ",".join(conditions) + ")"
     remaining = set(bugids)
-    for tid in table_ids:
-        if not remaining:
-            break
+    # 27 个触发表逐个 filter 查询会串行 60 秒以上；这里并发查询，命中足够即停。
+    import concurrent.futures as _cf
+    def _query_one(tid):
         try:
             records = feishu_client.list_bitable_records(
                 app_token, tid, filter_expr=filter_expr)
+            return tid, records, None
+        except Exception as e:
+            return tid, [], e
+    with _cf.ThreadPoolExecutor(max_workers=min(6, max(1, len(table_ids)))) as pool:
+        futures = {pool.submit(_query_one, tid): tid for tid in table_ids}
+        for fut in _cf.as_completed(futures):
+            tid, records, err = fut.result()
+            if err:
+                logger.warning("批量搜索触发时间失败(表 %s): %s", tid[:8], err)
+                continue
             for rec in records:
                 fields = rec.get("fields", {})
                 jira_no = _bitable_text(fields.get("jira号", ""))
@@ -538,8 +548,8 @@ def _search_trigger_time_batch(bugids: list) -> dict:
                         result[jira_no] = tt
                     _trigger_time_bugid_cache[jira_no] = (tid, rec["record_id"], tt)
                     remaining.discard(jira_no)
-        except Exception as e:
-            logger.warning("批量搜索触发时间失败(表 %s): %s", tid[:8], e)
+            if not remaining:
+                break
     found = len(bugids) - len(remaining)
     logger.info("触发时间批量搜索: %d/%d 命中", found, len(bugids))
     return result
