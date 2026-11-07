@@ -170,6 +170,7 @@ def query_records(
     source_filter: str = "",
     dedup: bool = True,
     no_manual_review: bool = False,
+    exclude_same_source_success: bool = False,
 ) -> dict:
     """按条件查询排查记录
 
@@ -234,9 +235,34 @@ def query_records(
         picked = {j: r for j, r in picked.items() if j not in reviewed_jiras}
 
     rows = sorted(picked.values(), key=lambda r: r["分析完成时间"])
+    matched_rows = []
+    filtered_success_count = 0
+    if exclude_same_source_success:
+        # 同 Jira + 同触发来源存在成功记录时，失败行移到“已有成功”表
+        success_keys = set()
+        for rec in records:
+            f = rec.get("fields", {})
+            if _bitable_text(f.get("分析结果", "")) != "成功":
+                continue
+            j = _bitable_text(f.get(bugid_field, ""))
+            src = _bitable_text(f.get("触发来源", ""))
+            if j:
+                success_keys.add((j, src))
+        kept = []
+        for r in rows:
+            if r.get("分析结果") == "失败" and (r.get("jira号", ""), r.get("触发来源", "")) in success_keys:
+                matched_rows.append(r)
+            else:
+                kept.append(r)
+        rows = kept
+        filtered_success_count = len(matched_rows)
     source_label = {"parseFullTicket": "线上", "feishu_bot": "飞书机器人", "jira_analyze": "PC"}.get(source_filter, "全部")
-    message = f"{after_time} 之后执行完成 {len(rows)} 条（结果：{result_filter or '全部'}，来源：{source_label}，去重：{'是' if dedup else '否'}）"
-    return {"rows": rows, "count": len(rows), "message": message}
+    message = f"{after_time} 之后执行完成 {len(rows)} 条（结果：{result_filter or '全部'}，来源：{source_label}，去重：{'是' if dedup else '否'}"
+    if exclude_same_source_success:
+        message += f"，同来源已成功过滤 {filtered_success_count} 条"
+    message += "）"
+    return {"rows": rows, "count": len(rows), "matched_rows": matched_rows,
+            "filtered_success_count": filtered_success_count, "message": message}
 
 
 def query_by_bugids(bugids: list[str]) -> dict:

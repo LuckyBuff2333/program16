@@ -32,8 +32,13 @@ def troubleshoot_records(req: RecordsQueryRequest):
             source_filter=req.source_filter.strip(),
             dedup=req.dedup,
             no_manual_review=req.no_manual_review,
+            exclude_same_source_success=req.exclude_same_source_success,
         )
-        return ok({"rows": result["rows"], "count": result["count"]}, result["message"])
+        return ok({
+            "rows": result["rows"], "count": result["count"],
+            "matched_rows": result.get("matched_rows", []),
+            "filtered_success_count": result.get("filtered_success_count", 0),
+        }, result["message"])
     except ValueError as e:
         return fail(str(e))
     except Exception as e:

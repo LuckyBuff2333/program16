@@ -31,12 +31,35 @@
         <el-form-item>
           <el-checkbox v-model="troubleshoot.dedup">按jira号去重</el-checkbox>
           <el-checkbox v-model="troubleshoot.noManualReview">人工审核为空</el-checkbox>
+          <el-checkbox v-model="troubleshoot.filterSameSourceSuccess">过滤同来源已成功</el-checkbox>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="troubleshoot.querying" @click="runTroubleshootQuery">查询</el-button>
           <el-button type="success" :loading="troubleshoot.queryingSuccess" :disabled="!troubleshoot.records.length" @click="querySuccessRecords">查询失败Jira号所有成功记录</el-button>
         </el-form-item>
       </el-form>
+      <el-alert v-if="troubleshoot.filterSameSourceSuccess" :closable="false" type="success" show-icon
+        :title="`同来源已成功过滤 ${troubleshoot.filteredSuccessCount} 个，已从待排查失败记录中移除`" style="margin-top:10px" />
+      <template v-if="troubleshoot.matchedRecords.length">
+        <div style="margin-top:10px;font-weight:600;color:#67c23a;font-size:13px">
+          同来源已有成功记录（{{ troubleshoot.matchedRecords.length }} 条，已从待排查中过滤）
+        </div>
+        <el-table :data="troubleshoot.matchedRecords" size="small" stripe border max-height="220" style="margin-top:4px">
+          <el-table-column type="index" label="#" width="45"></el-table-column>
+          <el-table-column prop="jira号" label="Jira号" width="120"></el-table-column>
+          <el-table-column prop="触发来源" label="来源" width="90">
+            <template #default="{row}">
+              <el-tag v-if="row['触发来源']==='parseFullTicket'" type="warning" size="small">线上</el-tag>
+              <el-tag v-else-if="row['触发来源']==='jira_analyze'" type="info" size="small">PC</el-tag>
+              <span v-else>{{ row['触发来源'] || '-' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="分析完成时间" label="分析完成时间" width="160"></el-table-column>
+          <el-table-column prop="错误分类" label="错误分类" min-width="180" show-overflow-tooltip></el-table-column>
+          <el-table-column prop="人工审核结果" label="人工审核结果" min-width="220" show-overflow-tooltip></el-table-column>
+        </el-table>
+      </template>
+      <div v-if="troubleshoot.records.length" style="margin-top:10px;font-weight:600;font-size:13px">待排查失败记录（{{ troubleshoot.records.length }} 条）</div>
       <el-table v-if="troubleshoot.records.length" :data="troubleshoot.records" size="small" stripe border max-height="280">
         <el-table-column type="index" label="#" width="45"></el-table-column>
         <el-table-column prop="jira号" label="Jira号" width="120"></el-table-column>
@@ -474,7 +497,7 @@ export default {
       troubleshootTab: 'batch',
       troubleshoot: {
         afterTime: '', resultFilter: '失败', sourceFilter: '', dedup: true, noManualReview: false,
-        querying: false, records: [], successRecords: [], queryingSuccess: false, successSearched: false,
+        querying: false, records: [], matchedRecords: [], filteredSuccessCount: 0, successRecords: [], queryingSuccess: false, successSearched: false, filterSameSourceSuccess: false,
         diagRunning: false, diagLoadingMap: {}, diagResults: [], categoryFilter: '',
         skipCategoryFilter: '', editingSkipBugid: '', editingSkipReason: '',
         writingReview: false, sendingToDeveloper: false, exportingTriggerIssues: false, batchApplyingTime: false, onlyEmptyReview: false,
@@ -548,6 +571,8 @@ export default {
       this.troubleshoot.diagResults = [];
       this.troubleshoot.successRecords = [];
       this.troubleshoot.successSearched = false;
+      this.troubleshoot.matchedRecords = [];
+      this.troubleshoot.filteredSuccessCount = 0;
       try {
         const body = await api('/api/troubleshoot/records', {
           method: 'POST',
@@ -555,9 +580,12 @@ export default {
             after_time: this.troubleshoot.afterTime, result_filter: this.troubleshoot.resultFilter,
             source_filter: this.troubleshoot.sourceFilter, dedup: this.troubleshoot.dedup,
             no_manual_review: this.troubleshoot.noManualReview,
+            exclude_same_source_success: this.troubleshoot.filterSameSourceSuccess,
           })
         });
         this.troubleshoot.records = (body.data && body.data.rows) || [];
+        this.troubleshoot.matchedRecords = (body.data && body.data.matched_rows) || [];
+        this.troubleshoot.filteredSuccessCount = (body.data && body.data.filtered_success_count) || 0;
         ElMessage.success(body.message || `查询到 ${this.troubleshoot.records.length} 条`);
       } catch (e) {
         // api() 默认 120s 超时，超时会抛 TimeoutError；此前这里静默忽略，

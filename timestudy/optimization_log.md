@@ -2108,3 +2108,15 @@ flowchart TD
 - **实现文件**：`src/api/routes/testing.py`、`docs/AI日志分析批量执行方法说明.md`
 
 </details>
+
+<details>
+<summary><b>158. 问题排查增加同来源成功自动过滤（2026-11-07）</b></summary>
+
+- **规则**：查询失败记录时，可勾选“过滤同来源已成功”；同 Jira 同触发来源已有成功的失败行单独展示，并从待排查表移除。
+- **后端**：`query_records` 增加 `exclude_same_source_success`，返回 `matched_rows` 与 `filtered_success_count`。
+- **前端**：新增勾选框、过滤成功提示、第一个“同来源已有成功”表、第二个“待排查失败”表。
+- **实测**：2026-10-30 查询过滤 24 条，待排查 176 条。
+- **验证**：全量 **116 passed**；前端已重新构建。
+- **实现文件**：`src/services/troubleshoot_service.py`、`src/api/routes/troubleshoot.py`、`src/schemas/troubleshoot.py`、`frontend/src/panels/TroubleshootPanel.vue`
+
+</details>

@@ -11,6 +11,7 @@ class RecordsQueryRequest(BaseModel):
     source_filter: str = Field(default="", description="来源过滤")
     dedup: bool = Field(default=True, description="是否去重")
     no_manual_review: bool = Field(default=False, description="排除已人工审核")
+    exclude_same_source_success: bool = Field(default=False, description="过滤同 Jira 同来源已有成功记录")
 
 
 class DirectQueryRequest(BaseModel):
