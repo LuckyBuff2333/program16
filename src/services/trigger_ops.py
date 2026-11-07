@@ -220,7 +220,10 @@ def _get_trigger_time_table_cfg() -> tuple:
         {"field_name": "jira号", "type": 1},
         {"field_name": "触发时间", "type": 1},
         {"field_name": "提取时间", "type": 1},
+        # 新建表时直接带上扩展列，避免新表缺列导致 FieldNameNotFound
     ]
+    for _name in _TRIGGER_TIME_EXTRA_FIELDS:
+        fields.append({"field_name": _name, "type": 1})
     table_id = feishu_client.create_bitable_table(app_token, "触发时间", fields)
     _delete_default_bitable_table(app_token, table_id)
     # 写回 config.yaml
@@ -1039,6 +1042,9 @@ def _create_trigger_time_subtable(app_token: str, index: int, existing_table_ids
         {"field_name": "触发时间", "type": 1},
         {"field_name": "提取时间", "type": 1},
     ]
+    # 新建表时直接带上扩展列，避免新表缺列导致 FieldNameNotFound
+    for _name in _TRIGGER_TIME_EXTRA_FIELDS:
+        fields.append({"field_name": _name, "type": 1})
     for i in range(10):  # 最多尝试10次避免死循环
         name = f"触发时间_{index + i}"
         try:

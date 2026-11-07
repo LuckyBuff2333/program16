@@ -366,3 +366,8 @@ reports/adp/{KEY}/*.html      HTML 原件
 - 最多连续追 3 次链接；若文本里能识别出 `report_full_*.html`，会明确要求只上传该文件并返回下载链接。
 - 连续 3 次仍无链接才判“智能体收口无报告”。
 
+## 触发时间扩展字段
+
+- 新建 `触发时间_N` 子表时直接创建 `时间来源/参考时间/时间差秒/窗口命中/时间状态`。
+- 已存在的子表用 `ensure_trigger_time_fields` 补齐，避免 `FieldNameNotFound`。
+

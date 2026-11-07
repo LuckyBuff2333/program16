@@ -4537,10 +4537,21 @@ def _get_ocr_reader():
             warnings.filterwarnings('ignore', message='.*pin_memory.*', module='torch')
             warnings.filterwarnings('ignore', message='.*quantize_per_tensor.*', module='torch')
             import easyocr
-            _easyocr_reader = easyocr.Reader(['en', 'ch_sim'], gpu=True, verbose=False)
-            logger.info("easyocr Reader 初始化完成（en + ch_sim）")
+            import tempfile as _tempfile
+            # 不要使用用户目录 .EasyOCR（可能无写权限）；改用可写的临时目录
+            _model_dir = os.path.join(_tempfile.gettempdir(), "dsh_easyocr_models")
+            os.makedirs(_model_dir, exist_ok=True)
+            try:
+                import torch as _torch
+                _use_gpu = bool(_torch.cuda.is_available())
+            except Exception:
+                _use_gpu = False
+            _easyocr_reader = easyocr.Reader(
+                ['en', 'ch_sim'], gpu=_use_gpu, verbose=False,
+                model_storage_directory=_model_dir)
+            logger.info("easyocr Reader 初始化完成（en + ch_sim，gpu=%s）", _use_gpu)
         except Exception as e:
-            logger.warning("easyocr 初始化失败（模型下载超时或网络不可用），视频 OCR 功能已禁用: %s", e)
+            logger.warning("easyocr 回退不可用（模型下载超时/网络不可用；RapidOCR 仍可用）: %s", e)
             _easyocr_reader = _OCR_UNAVAILABLE
             return None
     return _easyocr_reader

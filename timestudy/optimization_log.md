@@ -1985,3 +1985,14 @@ flowchart TD
 - **实现文件**：`src/services/adp_ops.py`、`docs/ADP平台调用逻辑说明文档.md`
 
 </details>
+
+<details>
+<summary><b>147. 修复触发时间新表字段缺失与 EasyOCR 权限错误（2026-11-07）</b></summary>
+
+- **FieldNameNotFound**：新建 `触发时间_N` 子表只建 3 个核心字段，扩展列写入失败后回退核心字段；改为建表时直接创建 5 个扩展列，并给已存在的 `tbl4fk98JInacJey` 补齐。
+- **EasyOCR WinError 5**：`.EasyOCR` 用户目录不可写；改用临时目录 `dsh_easyocr_models`，并根据 CUDA 可用性设置 gpu；RapidOCR 仍为主引擎。
+- **日志**：EasyOCR 失败提示改为“回退不可用，RapidOCR 仍可用”，避免误读为视频 OCR 全禁用。
+- **验证**：全量 **116 passed**。
+- **实现文件**：`src/services/trigger_ops.py`、`src/services/server_legacy.py`
+
+</details>
