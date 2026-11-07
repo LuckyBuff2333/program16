@@ -2308,3 +2308,14 @@ flowchart TD
 - **实现文件**：`src/api/routes/trigger.py`
 
 </details>
+
+<details>
+<summary><b>176. 增加人工修改时间标签（2026-11-07）</b></summary>
+
+- **单条修改**：`/api/trigger_time/update` 写入 `时间来源=人工修改`。
+- **批量应用**：`/api/trigger_time/batch_update` 同样写 `人工修改`，不再使用旧“人工修正”。
+- **统计**：问题排查人工改过的时间可直接按 `时间来源=人工修改` 汇总。
+- **验证**：`py_compile` 通过。
+- **实现文件**：`src/api/routes/trigger.py`
+
+</details>

@@ -105,7 +105,7 @@ def update_trigger_time(req: UpdateTriggerTimeRequest):
     if not new_time:
         return _fail("请输入新的触发时间")
     try:
-        _save_trigger_time_to_cloud(bugid, new_time, source="人工修正")
+        _save_trigger_time_to_cloud(bugid, new_time, source="人工修改")
         cached = _load_diagnose_cache(bugid)
         if cached:
             cached["verify_status"] = "corrected"
@@ -137,7 +137,7 @@ def batch_update_trigger_time(req: BatchUpdateRequest):
     if not valid_items:
         return _fail("待应用列表为空")
     cloud_ok = _batch_save_trigger_times_to_cloud(
-        valid_items, {k: "人工修正(批量)" for k in valid_items})
+        valid_items, {k: "人工修改" for k in valid_items})
     if not cloud_ok:
         return _fail("云端写入失败")
     cache_updated = 0
