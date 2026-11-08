@@ -114,6 +114,19 @@ def search_issues(jql: str, max_results: int = 500, fields: str = "summary,statu
         elif cfg.get("username"):
             auth = (cfg["username"], token)
     search_url = cfg["url"].rsplit("/issue", 1)[0] + "/search"
+    # Jira 服务器的 startOfWeek()/startOfDay() 按服务器时区/周起始日计算，
+    # 在周日凌晨会得到 0 条；国内按周一为周起点显式换算，保证“本周”符合预期。
+    try:
+        from datetime import date as _date, timedelta as _td
+        _today = _date.today()
+        _monday = _today - _td(days=_today.weekday())
+        if "startOfWeek()" in jql:
+            jql = jql.replace("startOfWeek()", f'"{_monday.isoformat()}"')
+            logger.info("JQL startOfWeek 换算为 %s", _monday.isoformat())
+        if "startOfDay()" in jql:
+            jql = jql.replace("startOfDay()", f'"{_today.isoformat()}"')
+    except Exception:
+        pass
     logger.info("JQL 搜索: %s (max=%d)", search_url, max_results)
     all_issues = []
     start_at = 0
