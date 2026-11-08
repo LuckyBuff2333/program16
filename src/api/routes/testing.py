@@ -2861,7 +2861,7 @@ async def test_prod_batch_run(request: Request):
                     _probe_err = str(_e)
                     logger.warning("线上分析服务健康检查第 %d/3 次失败: %s", _attempt + 1, _e)
                 if _attempt < 2:
-                    _retry_delay = 10 * (2 ** _attempt)
+                    _retry_delay = 60
                     logger.info("线上分析服务健康检查将在 %d 秒后重试", _retry_delay)
                     await asyncio.sleep(_retry_delay)
             if _probe is not None and _probe.status_code >= 500:
