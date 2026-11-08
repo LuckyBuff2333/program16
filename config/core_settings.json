@@ -135,7 +135,7 @@
     "bugid_field": "",
     "mock": false,
     "root_cause_field": "customfield_10603",
-    "timeout": 30,
+    "timeout": 60,
     "url": "https://jira-patac.apps.saic-gm.com/rest/api/2/issue",
     "username": ""
   },
@@ -160,7 +160,7 @@
     "model": "deepseek-v-pro",
     "ocr_parallel": 6,
     "project_name": "Jira日志分析工具",
-    "trigger_parallel": 6,
+    "trigger_parallel": 2,
     "trigger_source": "线上",
     "version": "1.0.2"
   },

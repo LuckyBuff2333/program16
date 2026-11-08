@@ -592,7 +592,7 @@ def _find_available_table() -> str:
 
 
 # ── 触发时间扩展字段（P0-1）：时间来源 / 参考时间 / 时间差秒 / 窗口命中 / 时间状态 ──
-_TRIGGER_TIME_EXTRA_FIELDS = ["时间来源", "参考时间", "时间差秒", "窗口命中", "时间状态"]
+_TRIGGER_TIME_EXTRA_FIELDS = ["时间来源", "参考时间", "时间差秒", "窗口命中", "时间状态", "时间精度", "备注"]
 _TRIGGER_TIME_FIELDS_ENSURED = {"done": False}
 _TRIGGER_TIME_REF_CACHE = {}
 
@@ -618,6 +618,59 @@ _TIME_REJECT_SEC = 300   # 晚于抓包超过该值即「不可用」（抓包�
 _TIME_EARLY_OK_SEC = 900     # 早于抓包 ≤15 分钟：正常（事件本就发生在抓包前）
 _TIME_EARLY_WARN_SEC = 3600  # 早于抓包 15~60 分钟：待确认
 
+# ── 时间精度分级（H1/M12）：提取侧标记精度，消费侧按精度放宽窗口 ──
+_TIME_PRECISION_CACHE = {}            # {bugid: "minute"/"second"} 提取阶段登记的精度提示
+_TIME_WINDOW_SEC_MINUTE = 120        # 分钟级精度（秒位为00）时的放宽窗口
+_UNAVAILABLE_SELF_CHECK_NOTE = "时间待确认-自检不可用"  # 自检不可用时的待办标记（M11）
+
+
+def _infer_time_precision(trigger_time) -> str:
+    """按秒位推断时间精度：秒位为"00"视为分钟级(minute)，否则为秒级(second)
+
+    背景：视频 OCR 时钟普遍只显示到分钟，提取结果秒位被补 00（实测占比约 83%），
+    此类时间存在最多 ±60 秒的截断不确定度，不能按秒级精度做窗口判定。
+    """
+    s = str(trigger_time or "").strip()
+    m = re.search(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", s)
+    if not m:
+        return "minute"  # 无秒位（HH:MM 或纯日期）同样按分钟级处理
+    return "minute" if (m.group(3) or "00") == "00" else "second"
+
+
+def remember_time_precision(bugid: str, precision: str) -> None:
+    """提取阶段登记触发时间精度（"minute"/"second"），写表自检时自动采用"""
+    if not bugid or precision not in ("minute", "second"):
+        return
+    _TIME_PRECISION_CACHE[str(bugid)] = precision
+    if len(_TIME_PRECISION_CACHE) > 5000:   # 简单限长，避免长跑进程无限增长
+        for k in list(_TIME_PRECISION_CACHE)[:1000]:
+            _TIME_PRECISION_CACHE.pop(k, None)
+
+
+def _resolve_time_precision(bugid: str = "", trigger_time="") -> str:
+    """解析触发时间精度：登记值 > 视频缓存 precision 字段 > 按秒位推断（旧缓存默认 minute）"""
+    if bugid:
+        p = _TIME_PRECISION_CACHE.get(str(bugid))
+        if p in ("minute", "second"):
+            return p
+        # 回查视频缓存中的 precision 标记（M12）
+        try:
+            from src.services.server_legacy import _load_video_time_cache
+            tt = str(trigger_time or "").strip()[:19]
+            prefix = f"{bugid}:"
+            for k, v in _load_video_time_cache().items():
+                if not k.startswith(prefix) or not isinstance(v, dict):
+                    continue
+                if tt and str(v.get("time", ""))[:19] != tt:
+                    continue
+                vp = v.get("precision")
+                if vp in ("minute", "second"):
+                    return vp
+                return _infer_time_precision(v.get("time", ""))  # 旧缓存无标记：按秒位推断
+        except Exception:
+            pass
+    return _infer_time_precision(trigger_time)
+
 
 def _parse_time_text(text) -> "datetime | None":
     """宽松解析时间文本（支持 YYYY-MM-DD HH:MM:SS / HH:MM / 日期）"""
@@ -636,9 +689,12 @@ def _parse_time_text(text) -> "datetime | None":
 
 def self_check_trigger_time(trigger_time, ref_time="", warn_sec: int = None,
                             reject_sec: int = None, early_ok_sec: int = None,
-                            early_warn_sec: int = None) -> dict:
+                            early_warn_sec: int = None, precision: str = "second") -> dict:
     """触发时间自检：与日志包“抓包时间”比对（方向敏感）
 
+    :param precision: 时间精度（"second"/"minute"，H1）。分钟级精度（秒位为00）存在
+                      最多 ±60 秒截断误差，窗口命中阈值从 30s 放宽到 120s，
+                      「待确认」阈值同步放宽，避免把精度问题误判为时间错误。
     关键语义：参考时间是 gmlogger 的抓包时间，事件一定发生在抓包**之前**，
     所以“提取时间早于抓包”是正常现象（实测 139 条里中位早 156 秒），
     不能按对称偏差判错，否则会把大量正确结果标成待确认/不可用。
@@ -652,13 +708,19 @@ def self_check_trigger_time(trigger_time, ref_time="", warn_sec: int = None,
     reject_sec = _TIME_REJECT_SEC if reject_sec is None else int(reject_sec)
     early_ok = _TIME_EARLY_OK_SEC if early_ok_sec is None else int(early_ok_sec)
     early_warn = _TIME_EARLY_WARN_SEC if early_warn_sec is None else int(early_warn_sec)
+    # H1：分钟级精度自动放宽窗口（30s → 120s），仅在调用方未显式指定阈值时生效
+    window_sec = _TIME_WINDOW_SEC
+    if str(precision or "second").lower() == "minute":
+        window_sec = _TIME_WINDOW_SEC_MINUTE
+        if warn_sec == _TIME_WARN_SEC:
+            warn_sec = max(warn_sec, window_sec)
     tt = _parse_time_text(trigger_time)
     ref = _parse_time_text(ref_time)
     if tt is None or ref is None:
         return {"diff_sec": None, "window_hit": "无参考", "status": "无参考"}
     delta = int((tt - ref).total_seconds())  # >0 表示晚于抓包
     diff = abs(delta)
-    window_hit = "是" if diff <= min(_TIME_WINDOW_SEC, warn_sec) else "否"
+    window_hit = "是" if diff <= min(window_sec, warn_sec) else "否"
     if delta > reject_sec:
         status = "不可用"
     elif delta > warn_sec:
@@ -672,16 +734,34 @@ def self_check_trigger_time(trigger_time, ref_time="", warn_sec: int = None,
     return {"diff_sec": diff, "window_hit": window_hit, "status": status}
 
 
-def _trigger_time_meta(trigger_time, source: str = "", ref_time: str = "") -> dict:
-    """构造扩展列字段值（写表用）"""
-    check = self_check_trigger_time(trigger_time, ref_time)
+def _trigger_time_meta(trigger_time, source: str = "", ref_time: str = "",
+                       precision: str = "") -> dict:
+    """构造扩展列字段值（写表用）；precision 为空时按秒位自动推断（H1）"""
+    if not precision:
+        precision = _infer_time_precision(trigger_time)
+    check = self_check_trigger_time(trigger_time, ref_time, precision=precision)
     return {
         "时间来源": (source or "")[:200],
         "参考时间": (str(ref_time) if ref_time else ""),
         "时间差秒": ("" if check.get("diff_sec") is None else str(check["diff_sec"])),
         "窗口命中": check.get("window_hit", "无参考"),
         "时间状态": check.get("status", "无参考"),
+        "时间精度": precision,
     }
+
+
+def _build_trigger_write_fields(trigger_time, source: str = "", ref_time: str = "",
+                                precision: str = "") -> dict:
+    """构造写云端的字段集合（含自检反馈回路 M11）：
+    自检「不可用」的时间不写入触发时间字段，改为在备注列打待办标记，
+    避免不可用时间被下游 AI 日志分析消费（月度失败 72.4% 为时间过滤后日志为空）。
+    """
+    meta = _trigger_time_meta(trigger_time, source, ref_time, precision=precision)
+    fields = {"触发时间": trigger_time, **meta}
+    if meta.get("时间状态") == "不可用":
+        fields["触发时间"] = ""
+        fields["备注"] = _UNAVAILABLE_SELF_CHECK_NOTE
+    return fields
 
 
 def ensure_trigger_time_fields(app_token: str = "", table_ids: list = None) -> dict:
@@ -752,17 +832,21 @@ def _resolve_ref_time(bugid: str, ref_time: str = "") -> str:
 
 
 def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "", ref_time: str = "",
-                                auto_ref: bool = True):
+                                auto_ref: bool = True, precision: str = ""):
     """将单条触发时间写入云端 bitable（有则更新，无则新建），云端成功后再写本地 CSV
 
     :param source: 触发时间来源（可选），如 "text:评论第3条(100%:评论/附件名)"
     :param ref_time: 日志包参考时间（可选），用于写入自检结果（时间差秒/窗口命中/时间状态）
+    :param precision: 时间精度（可选，"minute"/"second"），缺省时按登记值/秒位自动解析
     """
     _ensure_fields_once()
     if auto_ref:
         ref_time = _resolve_ref_time(bugid, ref_time)
-    _meta = _trigger_time_meta(trigger_time, source or "未标注",
-                               _lookup_ref(bugid, {bugid: ref_time} if ref_time else None))
+    # H1/M11：精度解析 + 自检不可用时不写触发时间，改打待办标记
+    _precision = precision or _resolve_time_precision(bugid, trigger_time)
+    _wf = _build_trigger_write_fields(trigger_time, source or "未标注",
+                                      _lookup_ref(bugid, {bugid: ref_time} if ref_time else None),
+                                      precision=_precision)
     # 空值保护：不覆盖已有的非空触发时间
     if not trigger_time:
         _ensure_trigger_time_bugid_cache()
@@ -791,12 +875,11 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "",
         try:
             app_token, _ = _get_trigger_time_table_cfg()
             from src.clients import feishu_client
-            upd_fields = {"触发时间": trigger_time, **_meta}
             _safe_update_records(app_token, tid, [
-                {"record_id": rec_id, "fields": upd_fields}
+                {"record_id": rec_id, "fields": dict(_wf)}
             ])
-            # 更新缓存时间戳
-            _trigger_time_bugid_cache[bugid] = (tid, rec_id, trigger_time)
+            # 更新缓存时间戳（以实际写入值为准：自检不可用时为空）
+            _trigger_time_bugid_cache[bugid] = (tid, rec_id, _wf.get("触发时间", ""))
             logger.info("云端触发时间单条更新(缓存命中): %s -> %s", bugid, trigger_time)
             cloud_ok = True
         except Exception as e:
@@ -808,8 +891,9 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "",
         ref_dict = {bugid: ref_time} if ref_time else {}
         cloud_ok = _batch_save_trigger_times_to_cloud({bugid: trigger_time}, src_dict, ref_dict)
     # 云端成功后才写本地 CSV，避免云端失败时本地多余
-    if cloud_ok:
-        _save_trigger_time_to_csv(bugid, trigger_time)
+    # M11：自检不可用的时间未写入触发时间字段，本地 CSV 同样不落地
+    if cloud_ok and _wf.get("触发时间"):
+        _save_trigger_time_to_csv(bugid, _wf["触发时间"])
         # 清除云端触发时间批量缓存，确保后续步骤能读到最新数据
         _bitable_bulk_cache.pop("cloud_trigger_cache", None)
         _bitable_bulk_cache.pop("trigger_times_cloud", None)
@@ -857,7 +941,7 @@ def _safe_create_records(app_token, table_id, recs):
         except Exception as e_retry:
             logger.warning("触发时间补列后仍失败，退回核心字段: %s", e_retry)
         core = [{"fields": {k: v for k, v in r.get("fields", {}).items()
-                            if k in ("jira号", "触发时间", "提取时间")}} for r in recs]
+                            if k in ("jira号", "触发时间", "提取时间", "备注")}} for r in recs]
         try:
             feishu_client.batch_create_records(app_token, table_id, core)
             return True
@@ -866,16 +950,19 @@ def _safe_create_records(app_token, table_id, recs):
             return False
 
 
-def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_times: dict = None) -> bool:
+def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_times: dict = None,
+                                       precisions: dict = None) -> bool:
     """批量将触发时间写入云端 bitable，优先使用缓存，仅对未命中项加载表数据。
     items: {bugid: trigger_time}
     sources: {bugid: source_string} 可选，记录触发时间来源
     ref_times: {bugid: ref_time_string} 可选，日志包参考时间（用于自检列）
+    precisions: {bugid: "minute"/"second"} 可选，时间精度（缺省时自动解析）
 
     :return: 云端写入是否成功
     """
     sources = sources or {}
     ref_times = ref_times or {}
+    precisions = precisions or {}
     _ensure_fields_once()
     from src.clients import feishu_client
     if not items:
@@ -898,8 +985,17 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
                 if not trigger_time and _last_cache_load_partial:
                     logger.warning("跳过空值写入，bugid=%s 云端缓存为部分加载", bugid)
                     continue
-                upd_fields = {"触发时间": trigger_time, **_trigger_time_meta(
-                    trigger_time, sources.get(bugid, ""), _lookup_ref(bugid, ref_times))}
+                # H1/M11：按精度自检；不可用时不覆盖触发时间字段，仅写自检列+备注待办标记
+                _meta = _trigger_time_meta(trigger_time, sources.get(bugid, ""),
+                                           _lookup_ref(bugid, ref_times),
+                                           precision=precisions.get(bugid) or _resolve_time_precision(bugid, trigger_time))
+                upd_fields = {k: v for k, v in _meta.items() if k != "触发时间"}
+                if _meta.get("时间状态") == "不可用":
+                    upd_fields["备注"] = _UNAVAILABLE_SELF_CHECK_NOTE
+                    logger.warning("自检不可用，不写入触发时间，bugid=%s 改打待办标记: %s",
+                                   bugid, trigger_time)
+                else:
+                    upd_fields["触发时间"] = trigger_time
                 updates_by_table.setdefault(tid, []).append({
                     "record_id": rec_id,
                     "fields": upd_fields
@@ -922,8 +1018,15 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
                     if not trigger_time and existing_tt:
                         logger.warning("跳过空值写入，bugid=%s 云端已有触发时间: %s", bugid, existing_tt)
                         continue
-                    upd_fields = {"触发时间": trigger_time, **_trigger_time_meta(
-                        trigger_time, sources.get(bugid, ""), _lookup_ref(bugid, ref_times))}
+                    # H1/M11：同缓存命中分支，不可用时不覆盖触发时间字段
+                    _meta = _trigger_time_meta(trigger_time, sources.get(bugid, ""),
+                                               _lookup_ref(bugid, ref_times),
+                                               precision=precisions.get(bugid) or _resolve_time_precision(bugid, trigger_time))
+                    upd_fields = {k: v for k, v in _meta.items() if k != "触发时间"}
+                    if _meta.get("时间状态") == "不可用":
+                        upd_fields["备注"] = _UNAVAILABLE_SELF_CHECK_NOTE
+                    else:
+                        upd_fields["触发时间"] = trigger_time
                     updates_by_table.setdefault(tid, []).append({
                         "record_id": rec_id,
                         "fields": upd_fields
@@ -973,8 +1076,11 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
                 remaining = remaining[space:]
                 create_records = []
                 for bid, tt in batch:
-                    fields = {"jira号": bid, "触发时间": tt, "提取时间": now_str,
-                              **_trigger_time_meta(tt, sources.get(bid, ""), _lookup_ref(bid, ref_times))}
+                    # M11：新建记录同样走自检反馈，不可用时触发时间置空并打待办标记
+                    fields = {"jira号": bid, "提取时间": now_str,
+                              **_build_trigger_write_fields(
+                                  tt, sources.get(bid, ""), _lookup_ref(bid, ref_times),
+                                  precision=precisions.get(bid) or _resolve_time_precision(bid, tt))}
                     create_records.append({"fields": fields})
                 _safe_create_records(app_token, target_tid, create_records)
                 table_counts[target_tid] = table_counts.get(target_tid, 0) + len(batch)

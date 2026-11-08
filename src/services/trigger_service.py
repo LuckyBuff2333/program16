@@ -256,6 +256,8 @@ async def generate_extract_events(
                 is_same = (tt == old)
                 if not is_same and old:
                     try:
+                        t_new = None
+                        t_old = None
                         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
                             try:
                                 t_new = datetime.strptime(tt, fmt)

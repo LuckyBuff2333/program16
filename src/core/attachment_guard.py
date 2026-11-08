@@ -274,14 +274,16 @@ _DOWNLOAD_SEM_LOCK = threading.Lock()
 
 
 def _get_download_sem():
-    """全局下载并发信号量（默认 3，可通过 params.diag_download_concurrency 配置）"""
+    """全局下载并发信号量（默认 3，可通过 params.diag_download_concurrency 或 params.download_concurrency 配置）"""
     global _DOWNLOAD_SEM
     if _DOWNLOAD_SEM is None:
         with _DOWNLOAD_SEM_LOCK:
             if _DOWNLOAD_SEM is None:
                 n = 3
                 try:
-                    n = max(1, int(load_config().get("params", {}).get("diag_download_concurrency", 3)))
+                    params = load_config().get("params", {})
+                    # 优先读取 diag_download_concurrency，回退到 download_concurrency（保持 config.yaml 向后兼容）
+                    n = max(1, int(params.get("diag_download_concurrency", params.get("download_concurrency", 3))))
                 except Exception:
                     pass
                 _DOWNLOAD_SEM = threading.Semaphore(n)

@@ -228,9 +228,9 @@ async def _on_startup():
             def _launch_args(exe: str, url: str):
                 name = os.path.basename(exe).lower()
                 if "firefox" in name:
-                    return [exe, "-new-window", url]
+                    return [exe, "-new-tab", url]
                 if any(k in name for k in ("chrome", "msedge", "chromium", "brave", "opera")):
-                    return [exe, "--new-window", url]
+                    return [exe, "--new-tab", url]
                 return [exe, url]
 
             def _is_elevated() -> bool:
@@ -242,7 +242,7 @@ async def _on_startup():
                     return False
 
             def _open_browser(url: str):
-                """打开浏览器：直接用系统默认浏览器的可执行文件开新窗口，失败逐级回退"""
+                """打开浏览器：优先在已有窗口中新开标签页，失败逐级回退"""
                 if sys.platform != "win32":
                     try:
                         subprocess.Popen(["xdg-open", url],

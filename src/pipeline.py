@@ -120,15 +120,19 @@ def _time_check_before_analysis(issue: dict, trigger_time: str, bugid: str = "")
     reject = int(cfg.get("time_reject_offset_sec", 300))
     try:
         from src.services.server_legacy import _diag_gmlogger_times
-        from src.services.trigger_ops import self_check_trigger_time
+        from src.services.trigger_ops import self_check_trigger_time, _resolve_time_precision
         atts = ((issue or {}).get("fields") or {}).get("attachment") or []
         gm = _diag_gmlogger_times(atts) or []
         ref = ""
         if gm:
             g0 = gm[0][0] if isinstance(gm[0], tuple) else gm[0]
             ref = g0.strftime("%Y-%m-%d %H:%M:%S") if hasattr(g0, "strftime") else str(g0)[:19]
-        check = self_check_trigger_time(trigger_time, ref, warn, reject)
+        # H1：消费侧按提取精度放宽窗口——分钟级时间（秒位00）窗口从30s放宽到120s，
+        # 弥合“提取侧容差900s vs AI消费侧窗口30s”的精度错配，减少“时间过滤后日志为空”
+        _precision = _resolve_time_precision(bugid, trigger_time)
+        check = self_check_trigger_time(trigger_time, ref, warn, reject, precision=_precision)
         check["ref_time"] = ref
+        check["precision"] = _precision
         return check
     except Exception as e:
         logger.debug("bugid=%s 分析前时间自检失败: %s", bugid, e)

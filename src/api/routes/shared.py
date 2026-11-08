@@ -38,9 +38,9 @@ SERVER_BOOT_ID = uuid.uuid4().hex
 
 
 def _force_exit_after_delay():
-    """Ctrl+C 后 5 秒仍未退出则强制终止进程（兜底，防止后台线程阻塞关闭）"""
+    """Ctrl+C 后 30 秒仍未退出则强制终止进程（兜底，防止后台线程阻塞关闭）"""
     import time as _time
-    _time.sleep(5)
+    _time.sleep(30)
     os._exit(1)
 
 

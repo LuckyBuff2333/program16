@@ -44,6 +44,7 @@ from src.clients import diana_client as _diana_client
 from src.config import get_path, load_config, setup_logger, PROJECT_ROOT
 from src.core import audit as audit_module
 from src.core import doc_generator
+from src.core.text_utils import normalize_datetime_text
 from src.core.attachment_guard import (
     BUDGET as _ATTACH_BUDGET,
     AttachmentLimitError as _AttachmentLimitError,
@@ -90,6 +91,9 @@ from src.api.routes.shared import (
 from src.services.trigger_ops import (
     _timestudy_init_ctx, _timestudy_trace, _timestudy_update_ctx,
     _timestudy_get_ctx, _timestudy_record,
+    remember_time_precision as _remember_time_precision,
+    _infer_time_precision,
+    _resolve_time_precision,
     _save_trigger_time_to_csv, _load_trigger_times_from_local,
     _get_trigger_time_table_cfg, _migrate_local_trigger_times_to_cloud,
     _load_cloud_trigger_cache, _load_trigger_times_from_cloud,
@@ -214,6 +218,30 @@ _rapid_ocr_cpu_engine = None  # OOM 回退用 CPU-only 引擎
 _ocr_oom_cooldown_until = 0.0  # OOM 冷却截止时间戳
 _ocr_max_pixels = 2_000_000  # GPU 推理最大像素面积（200万像素，防止 OOM）
 
+# ── OCR 全局并发限流信号量 ──
+# 统一约束三条批量提取路径（trigger.py ThreadPoolExecutor / trigger_service.py 串行 /
+# testing.py asyncio）对 OCR 引擎的并发推理数，避免 GPU 显存争用与 OOM 级联
+_ocr_parallel_limit = 2  # 默认值，实际从配置 params.ocr_parallel 读取
+_ocr_semaphore: threading.Semaphore | None = None
+_ocr_semaphore_lock = threading.Lock()  # 防止信号量懒加载并发初始化
+
+
+def _get_ocr_semaphore() -> threading.Semaphore:
+    """懒加载 OCR 并发信号量，从配置读取 ocr_parallel 参数（线程安全，仅首次初始化）"""
+    global _ocr_semaphore, _ocr_parallel_limit
+    if _ocr_semaphore is not None:
+        return _ocr_semaphore
+    with _ocr_semaphore_lock:
+        # 双重检查：另一线程可能已完成初始化
+        if _ocr_semaphore is None:
+            try:
+                cfg = load_config()
+                _ocr_parallel_limit = int(cfg.get("params", {}).get("ocr_parallel", 2))
+            except Exception:
+                _ocr_parallel_limit = 2
+            _ocr_semaphore = threading.Semaphore(_ocr_parallel_limit)
+    return _ocr_semaphore
+
 _OCR_TIME_FULL_RE = re.compile(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2}[\s.,\-]?\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?)')
 
 _OCR_TIME_ONLY_RE = re.compile(r'(?<!\d)(\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?)(?!\d)')
@@ -240,14 +268,20 @@ def _valid_ocr_time(time_str: str) -> bool:
     过滤规则：
     - 小时 0-23，分钟 0-59，秒 0-59
     - 拒绝无效时间如 99:99、25:00
+    - 超过 3 段（如 14:30:25:99）视为无效
+    - 每段必须为纯数字（拒绝 +号、空格等 int() 宽松行为）
     """
-    parts = time_str.split(':')
-    if len(parts) < 2:
+    parts = time_str.strip().split(':')
+    if len(parts) < 2 or len(parts) > 3:
         return False
+    # 严格数字校验：拒绝 "+1"、" 1"、"1 " 等非纯数字段
+    for p in parts:
+        if not p.strip().isdigit():
+            return False
     try:
-        hh = int(parts[0])
-        mm = int(parts[1])
-        ss = int(parts[2]) if len(parts) > 2 else 0
+        hh = int(parts[0].strip())
+        mm = int(parts[1].strip())
+        ss = int(parts[2].strip()) if len(parts) > 2 else 0
     except (ValueError, IndexError):
         return False
     return 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59
@@ -255,7 +289,7 @@ def _valid_ocr_time(time_str: str) -> bool:
 
 _VIDEO_TIME_CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "video_time_cache.json")
 
-_video_time_cache = {}  # {cache_key: {"time": "...", "extracted_at": "..."}}
+_video_time_cache = {}  # {cache_key: {"time": "...", "extracted_at": "...", "precision": "minute|second"}}
 
 _VIDEO_CACHE_MAX_SIZE = 50000  # 最大缓存条目数
 
@@ -4509,6 +4543,8 @@ def _run_ocr(engine, image, _already_enhanced: bool, tag: str = ""):
         mag_ratio = 1.0
         enlarged = image
     scale = enlarged.shape[0] / h if enlarged is not image else 1.0
+    # box_thresh/text_score/use_cls 已与 rapidocr_v5.yaml 配置归位一致；
+    # 此处仍显式传递，确保 PP-OCRv4 回退路径（RapidOCR() 内置默认值偏高）同样生效
     result, elapse = engine(enlarged, box_thresh=0.3, text_score=0.15, use_cls=False)
     if not result:
         return []
@@ -4585,10 +4621,14 @@ def _same_frame(a, b, tol: float = 1.5) -> bool:
 def _vote_from_texts(texts, ref_pool, gm_ref_dt, tol):
     """多帧投票（复用已 OCR 文本）：同一 HH:MM 出现 ≥2 次且通过参考池校验才采用"""
     from collections import Counter
+    # 局部导入：_parse_datetime_string 未在模块命名空间中，缺失会抛 NameError 被外层静默吞掉
+    from src.clients.jira_client import _parse_datetime_string
     votes = Counter()
     for _sec, text in texts:
         if not text:
             continue
+        # 全角归一化（：→: 等），否则全角冒号的时间文本无法被正则匹配参与投票
+        text = normalize_datetime_text(text)
         fixed = _fix_ocr_char_confusion(_fix_ocr_missing_colon(text))
         # 扫描所有时间匹配（不仅第一个），避免视频计数器 00:00 遮挡实际时钟时间
         for m in _OCR_TIME_ONLY_RE.finditer(fixed):
@@ -4599,14 +4639,17 @@ def _vote_from_texts(texts, ref_pool, gm_ref_dt, tol):
     hm, n = votes.most_common(1)[0]
     if n < 2:
         return "", 0
-    date = ref_pool[0] if ref_pool else gm_ref_dt
+    ref_item = ref_pool[0] if ref_pool else gm_ref_dt
+    # 兼容 ref_pool 元素为 (str, datetime) 元组的情况（参考 _resolve_12h_ambiguity）
+    date = ref_item[1] if isinstance(ref_item, tuple) else ref_item
     if date is None:
         return "", 0
     cand = f"{date.year:04d}-{date.month:02d}-{date.day:02d} {hm}"
     parsed = _parse_datetime_string(cand)
     if not parsed:
         return "", 0
-    if ref_pool and not any(abs((dt - parsed[1]).total_seconds()) <= tol for dt in ref_pool):
+    # 参考池校验同样需兼容 (str, datetime) 元组元素
+    if ref_pool and not any(abs(((dt[1] if isinstance(dt, tuple) else dt) - parsed[1]).total_seconds()) <= tol for dt in ref_pool):
         return "", 0
     return cand, n
 
@@ -4663,7 +4706,9 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
     2. 水印相机区域内的时间类文本会被过滤掉（保留设备屏幕时间）
     """
     # 优先使用 RapidOCR（中文场景识别能力更强，置信度更高）
-    results = _rapid_ocr_readtext(image, _already_enhanced=_already_enhanced)
+    # 全局并发限流：仅包裹推理调用，前处理/后处理（过滤）不占用信号量
+    with _get_ocr_semaphore():
+        results = _rapid_ocr_readtext(image, _already_enhanced=_already_enhanced)
     # 类型安全：确保 conf 为数值型
     for _r in results:
         if len(_r) > 2 and not isinstance(_r[2], (int, float)):
@@ -4680,11 +4725,14 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
             logger.info("RapidOCR %s（avg_conf=%.2f），回退 EasyOCR",
                        "未识别到文本" if not results else f"质量偏低", _avg_conf)
             try:
-                easy_results = reader.readtext(image, canvas_size=2560, mag_ratio=1.5,
-                                              text_threshold=0.25, low_text=0.3)
+                # 全局并发限流：EasyOCR 回退推理同样受限
+                with _get_ocr_semaphore():
+                    easy_results = reader.readtext(image, canvas_size=2560, mag_ratio=1.5,
+                                                  text_threshold=0.25, low_text=0.3)
             except Exception as e:
                 logger.warning("EasyOCR 参数化调用失败，回退默认: %s", e)
-                easy_results = reader.readtext(image)
+                with _get_ocr_semaphore():
+                    easy_results = reader.readtext(image)
             easy_avg = sum((r[2] for r in easy_results if len(r) > 2), 0) / max(len(easy_results), 1) if easy_results else 0
             if easy_avg > _avg_conf:
                 logger.info("EasyOCR 回退成功（avg_conf=%.2f → %.2f）", _avg_conf, easy_avg)
@@ -4828,6 +4876,10 @@ def _preprocess_ocr_datetime(text: str) -> str:
     """OCR 日期时间预处理：修正年份、拆分日期与无分隔符时间
     用于正则匹配前的文本预处理，解决 6024-01-22172440 等极端 OCR 误识别
     """
+    # 全角归一化（：→: 、；→: 、——→空格 等），与文本提取路径共享同一实现
+    text = normalize_datetime_text(text)
+    # 3位年份补全：026-10-27 → 2026-10-27（OCR丢失首位数字的常见情况）
+    text = re.sub(r'(?<!\d)(\d{3})(-\d{1,2}-\d{1,2})', r'2\1\2', text)
     # 修正年份（如 6024 → 2024）
     def _fix_year(m):
         y = int(m.group(0))
@@ -4856,6 +4908,8 @@ def _preprocess_ocr_datetime(text: str) -> str:
                 return f"{date_part} {hh:02d}:{mm:02d}"
         return m.group(0)
     text = re.sub(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})(\d{4,6})(?!\d)', _split_date_digits, text)
+    # 含冒号的日期时间粘连拆分（如 2026-10-2717:15 → 2026-10-27 17:15）
+    text = re.sub(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})(\d{1,2}:\d{2})', r'\1 \2', text)
     # OCR 常把日期和时间之间的空格识别成竖线：2026-10-26|19:39:17
     text = re.sub(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})\s*[|｜]\s*(?=\d{1,2}[:：])', r'\1 ', text)
     return text
@@ -5284,6 +5338,13 @@ def _load_video_time_cache() -> dict:
             import json
             with open(_VIDEO_TIME_CACHE_FILE, "r", encoding="utf-8") as f:
                 _video_time_cache = json.load(f)
+            # 兼容旧格式：字符串值视为旧缓存，转为新结构并默认 minute 精度（M12）
+            for _k, _v in list(_video_time_cache.items()):
+                if isinstance(_v, str):
+                    _video_time_cache[_k] = {"time": _v, "precision": "minute"}
+                elif isinstance(_v, dict) and "precision" not in _v:
+                    # 无精度标记的旧结构缓存：按秒位推断（旧缓存默认 minute）
+                    _v["precision"] = _infer_time_precision(_v.get("time", ""))
             # 清理旧的空时间缓存条目（之前版本缓存的失败结果）
             empty_keys = [k for k, v in _video_time_cache.items() if not v.get("time")]
             if empty_keys:
@@ -5310,6 +5371,10 @@ def _save_video_time_cache():
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             # 写入前先清理过期/超限条目（调用内部方法，避免重复加锁导致死锁）
             _clean_video_time_cache_locked()
+            # 精度标记回填：无 precision 的旧条目按秒位推断（M12）
+            for _v in _video_time_cache.values():
+                if isinstance(_v, dict) and "precision" not in _v:
+                    _v["precision"] = _infer_time_precision(_v.get("time", ""))
             # 先写同目录临时文件，再原子替换，避免并发/中断产生半截文件
             _cache_snapshot = dict(_video_time_cache)  # 拷贝快照，防止其他线程修改导致 iteration 异常
             with open(tmp_path, "w", encoding="utf-8") as f:
@@ -5326,6 +5391,26 @@ def _save_video_time_cache():
 def _get_video_cache_key(bugid: str, video_filename: str) -> str:
     """生成视频缓存键: bugid:video_filename"""
     return f"{bugid}:{video_filename}"
+
+
+def _store_video_time_cache(cache: dict, cache_key: str, time_str: str) -> dict:
+    """写入视频时间缓存条目，自动附带精度标记（M12）
+
+    precision 判定：秒位为"00"时标记为"minute"（视频时钟普遍只显示到分钟，
+    OCR 结果秒位被补 00），否则为"second"。
+    同时把精度登记到 trigger_ops，供写表自检按精度放宽窗口（H1）。
+    """
+    precision = "minute" if str(time_str or "").strip().endswith(":00") else "second"
+    entry = {"time": time_str, "extracted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+             "precision": precision}
+    cache[cache_key] = entry
+    try:
+        _bugid = str(cache_key).split(":", 1)[0]
+        if _bugid:
+            _remember_time_precision(_bugid, precision)
+    except Exception:
+        pass  # 精度登记失败不阻断提取主流程
+    return entry
 
 
 def _build_gmlogger_info(attachments: list) -> list:
@@ -6017,7 +6102,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                             if any(abs((dt - ext_dt).total_seconds()) <= _match_tolerance for dt in video_ref_pool):
                                 logger.info("视频兜底命中(%s, 时间戳重合): %s (第%d秒)",
                                             video_label, ts, sec + 1)
-                                cache[cache_key] = {"time": ts, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                _store_video_time_cache(cache, cache_key, ts)
                                 _save_video_time_cache()
                                 _diff = min(abs((dt - ext_dt).total_seconds()) for dt in video_ref_pool) if video_ref_pool else 0
                                 _timestudy_update_ctx(bugid, source="video_ocr", match_diff=str(int(_diff)))
@@ -6032,7 +6117,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                                     parsed2 = _parse_datetime_string(ts2)
                                     if parsed2 and any(abs((dt - parsed2[1]).total_seconds()) <= _match_tolerance for dt in video_ref_pool):
                                         logger.info("视频兜底命中(%s, 纠正+包内重合): %s -> %s", video_label, ts, ts2)
-                                        cache[cache_key] = {"time": ts2, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                        _store_video_time_cache(cache, cache_key, ts2)
                                         _save_video_time_cache()
                                         return ts2
                                     ts = ts2
@@ -6046,7 +6131,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                             alt_match = any(abs((dt - dt_alt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
                             if alt_match and not orig_match:
                                 logger.info("视频兜底命中(%s, 12h转换): %s -> %s (第%d秒)", video_label, ts, ts_alt, sec + 1)
-                                cache[cache_key] = {"time": ts_alt, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                _store_video_time_cache(cache, cache_key, ts_alt)
                                 _save_video_time_cache()
                                 _timestudy_update_ctx(bugid, source="video_ocr", h12="yes")
                                 _timestudy_trace(bugid, "12h:hit")
@@ -6086,7 +6171,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                                     for dt in video_ref_pool)
                                 if (_ocr_hm == _fn_hm or (len(time_str) >= 8 and _vid_fn_dt.strftime("%H:%M:%S") == time_str[:8])) and _fn_verified:
                                     logger.info("视频兜底命中(%s, 视频文件名日期+OCR时间多级确认): %s", video_label, _vid_fn_dt_str)
-                                    cache[cache_key] = {"time": _vid_fn_dt_str, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                    _store_video_time_cache(cache, cache_key, _vid_fn_dt_str)
                                     _save_video_time_cache()
                                     _timestudy_update_ctx(bugid, source="video_ocr+filename")
                                     _timestudy_trace(bugid, "vid_fn:hit")
@@ -6121,12 +6206,12 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                                 gm_alt = gm_ref_dt and abs((gm_ref_dt - dt_alt).total_seconds()) <= _match_tolerance
                                 if (orig_match or gm_orig) and not (alt_match or gm_alt):
                                     logger.info("视频兜底命中(%s, 日期补充+包内重合): %s (第%d秒)", video_label, ts, sec + 1)
-                                    cache[cache_key] = {"time": ts, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                    _store_video_time_cache(cache, cache_key, ts)
                                     _save_video_time_cache()
                                     return ts
                                 if (alt_match or gm_alt) and not (orig_match or gm_orig):
                                     logger.info("视频兜底命中(%s, 日期补充+12h): %s (第%d秒)", video_label, ts_alt, sec + 1)
-                                    cache[cache_key] = {"time": ts_alt, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                    _store_video_time_cache(cache, cache_key, ts_alt)
                                     _save_video_time_cache()
                                     return ts_alt
                                 if not (orig_match or gm_orig) and not (alt_match or gm_alt) and video_ref_pool:
@@ -6148,7 +6233,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                     _vote_ts, _vote_n = "", 0
                 if _vote_ts:
                     logger.info("视频兜底命中(%s, 多帧投票%d票): %s", video_label, _vote_n, _vote_ts)
-                    cache[cache_key] = {"time": _vote_ts, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                    _store_video_time_cache(cache, cache_key, _vote_ts)
                     _save_video_time_cache()
                     _timestudy_trace(bugid, "vote:hit")
                     _VIDEO_OCR_STATS["vote_hits"] += 1
@@ -6200,7 +6285,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
             # 缓存当前视频的提取结果（仅成功时缓存）
             extracted_time = first_full or first_partial or ""
             if extracted_time:
-                cache[cache_key] = {"time": extracted_time, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                _store_video_time_cache(cache, cache_key, extracted_time)
                 cache_updated = True
             # 完整日期时间 → 直接返回
             if first_full:
@@ -6380,6 +6465,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     frames = other_frames
                     logger.info("视频帧提取：封面未识别到时间，继续截取前6帧")
                 
+                time_str = ""  # 初始化，防止 OCR 未匹配时 UnboundLocalError
                 for sec, frame in frames:
                     try:
                         results = _ocr_readtext(None, frame)
@@ -6419,7 +6505,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                             if validation_pool and any(abs((dt - ext_dt).total_seconds()) <= strict_tol for dt in validation_pool):
                                 detail = f"从视频{video_label}第{sec+1}秒 OCR 识别到 {extracted_time}，与 gmlogger 时间前后{strict_tol//60}分钟命中"
                                 logger.info("视频帧提取命中: %s", extracted_time)
-                                cache[cache_key] = {"time": extracted_time, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                _store_video_time_cache(cache, cache_key, extracted_time)
                                 _save_video_time_cache()
                                 return extracted_time, detail
                             # fallback 候选记录（仅未解压场景）
@@ -6439,7 +6525,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                                     if parsed2 and validation_pool and any(abs((dt - parsed2[1]).total_seconds()) <= strict_tol for dt in validation_pool):
                                         detail = f"从视频{video_label}第{sec+1}秒 OCR 纠正后识别到 {corrected_full}，与 gmlogger 时间前后{strict_tol//60}分钟命中"
                                         logger.info("视频帧提取命中(纠正): %s -> %s", extracted_time, corrected_full)
-                                        cache[cache_key] = {"time": corrected_full, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                        _store_video_time_cache(cache, cache_key, corrected_full)
                                         _save_video_time_cache()
                                         return corrected_full, detail
                                     extracted_time = corrected_full
@@ -6454,7 +6540,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                             if alt_match and not orig_match:
                                 detail = f"从视频{video_label}第{sec+1}秒 OCR 识别到 {extracted_time}，12h制转换为 {ts_alt}，与 gmlogger 时间前后{strict_tol//60}分钟命中"
                                 logger.info("视频帧提取命中(12h转换): %s -> %s", extracted_time, ts_alt)
-                                cache[cache_key] = {"time": ts_alt, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                _store_video_time_cache(cache, cache_key, ts_alt)
                                 _save_video_time_cache()
                                 return ts_alt, detail
                             if not orig_match and not alt_match and validation_pool:
@@ -6494,7 +6580,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                                 if (_ocr_hm == _fn_hm or (len(time_str) >= 5 and _vid_fn_dt.strftime("%H:%M:%S") == time_str[:8])) and _fn_verified:
                                     detail = f"从视频{video_label}第{sec+1}秒 OCR 识别到 {time_str}，视频文件名含 {_vid_fn_dt_str}，时间完全匹配"
                                     logger.info("视频帧提取命中(视频文件名日期+OCR时间): %s", _vid_fn_dt_str)
-                                    cache[cache_key] = {"time": _vid_fn_dt_str, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                    _store_video_time_cache(cache, cache_key, _vid_fn_dt_str)
                                     _save_video_time_cache()
                                     return _vid_fn_dt_str, detail
                         # 参照 gmlogger 时间纠正数字混淆
@@ -6519,14 +6605,14 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                                     detail = (f"从视频{video_label}第{sec+1}秒 OCR 识别到 {time_str}，"
                                               f"用 gmlogger 日期补充为 {extracted_time}，与 gmlogger 时间前后{strict_tol//60}分钟命中")
                                     logger.info("视频帧提取命中(日期补充): %s", extracted_time)
-                                    cache[cache_key] = {"time": extracted_time, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                    _store_video_time_cache(cache, cache_key, extracted_time)
                                     _save_video_time_cache()
                                     return extracted_time, detail
                                 if alt_match and not orig_match:
                                     detail = (f"从视频{video_label}第{sec+1}秒 OCR 识别到 {time_str}，"
                                               f"12h制转换为 {ts_alt}，与 gmlogger 时间前后{strict_tol//60}分钟命中")
                                     logger.info("视频帧提取命中(日期补充+12h): %s", ts_alt)
-                                    cache[cache_key] = {"time": ts_alt, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                    _store_video_time_cache(cache, cache_key, ts_alt)
                                     _save_video_time_cache()
                                     return ts_alt, detail
                                 # 两个均未严格命中，记录 12h 候选（仅时间差 = HH:MM:SS 差值）
@@ -6576,13 +6662,13 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                         if orig_match and not alt_match:
                             detail = f"从视频{video_label}文件名提取到时间 {fn_time}，用 gmlogger 日期补充为 {extracted_time}，与 gmlogger 时间前后{strict_tol//60}分钟命中"
                             logger.info("视频帧提取(%s, 文件名回退+命中): %s", video_label, extracted_time)
-                            cache[cache_key] = {"time": extracted_time, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                            _store_video_time_cache(cache, cache_key, extracted_time)
                             _save_video_time_cache()
                             return extracted_time, detail
                         if alt_match and not orig_match:
                             detail = f"从视频{video_label}文件名提取到时间 {fn_time}，12h制转换为 {ts_alt}，与 gmlogger 时间前后{strict_tol//60}分钟命中"
                             logger.info("视频帧提取(%s, 文件名回退+12h): %s", video_label, ts_alt)
-                            cache[cache_key] = {"time": ts_alt, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                            _store_video_time_cache(cache, cache_key, ts_alt)
                             _save_video_time_cache()
                             return ts_alt, detail
                         # 均未严格命中，记录 12h 候选（仅时间差）
@@ -6608,7 +6694,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
             # 缓存当前视频提取结果（仅成功时缓存）
             extracted_time = first_full or first_partial or ""
             if extracted_time:
-                cache[cache_key] = {"time": extracted_time, "extracted_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S")}
+                _store_video_time_cache(cache, cache_key, extracted_time)
                 cache_updated = True
             # 当前视频有完整日期时间 → 直接返回，无需验证
             if first_full:
@@ -6763,7 +6849,7 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
                             # 1. bbox 面积较大（字号大）
                             # 2. 周围像素颜色异常（红/绿）
                             try:
-                                is_marked = _check_time_marked(img_path, bbox, results)
+                                is_marked = _check_time_marked(img_path, bbox, results, img_array=img)
                             except Exception:
                                 pass
                             break
@@ -6818,43 +6904,71 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
     return "", ""
 
 
-def _check_time_marked(img_path: str, bbox: list, all_results: list) -> bool:
+def _check_time_marked(img_path: str, bbox: list, all_results: list, img_array=None) -> bool:
     """检测时间戳是否被标记（红/绿色圈出或位置独立突出）
 
     启发式规则：
     1. 颜色检测：bbox 内像素是否有明显的红/绿色调（饱和度>阈值）
     2. 位置独立性：该 bbox 与其他文本的距离是否较远（独立区域）
     3. 字号突出：该 bbox 的高度是否明显大于其他文本的平均高度
+
+    img_array: 可选的已解码图像（cv2 BGR ndarray）。调用方通常已用 cv2 解码过图片，
+               传入后直接复用做像素统计，避免 PIL 重复解码；为 None 时回退 PIL.Image.open。
     """
     try:
-        from PIL import Image
-    except ImportError:
-        return False
-    try:
-        img = Image.open(img_path).convert("RGB")
         # 获取 bbox 范围（easyocr 返回 [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]）
         xs = [p[0] for p in bbox]
         ys = [p[1] for p in bbox]
-        x_min, x_max = max(0, int(min(xs))), min(img.width, int(max(xs)))
-        y_min, y_max = max(0, int(min(ys))), min(img.height, int(max(ys)))
-        if x_max <= x_min or y_max <= y_min:
-            return False
-        # 扩展 bbox 周围 10px 用于检测圈线
-        pad = 10
-        x_min_ext = max(0, x_min - pad)
-        y_min_ext = max(0, y_min - pad)
-        x_max_ext = min(img.width, x_max + pad)
-        y_max_ext = min(img.height, y_max + pad)
-        region = img.crop((x_min_ext, y_min_ext, x_max_ext, y_max_ext))
-        # 检测红/绿色像素比例
-        pixels = list(region.getdata())
-        if not pixels:
-            return False
-        red_count = sum(1 for r, g, b in pixels if r > 180 and g < 100 and b < 100)
-        green_count = sum(1 for r, g, b in pixels if r < 100 and g > 150 and b < 100)
-        total = len(pixels)
+        pad = 10  # 扩展 bbox 周围 10px 用于检测圈线
+        if img_array is not None:
+            # 复用调用方已解码的 cv2 图像（BGR 格式），避免 PIL 重复解码
+            import numpy as np
+            img_h, img_w = img_array.shape[:2]
+            x_min, x_max = max(0, int(min(xs))), min(img_w, int(max(xs)))
+            y_min, y_max = max(0, int(min(ys))), min(img_h, int(max(ys)))
+            if x_max <= x_min or y_max <= y_min:
+                return False
+            x_min_ext = max(0, x_min - pad)
+            y_min_ext = max(0, y_min - pad)
+            x_max_ext = min(img_w, x_max + pad)
+            y_max_ext = min(img_h, y_max + pad)
+            region = img_array[y_min_ext:y_max_ext, x_min_ext:x_max_ext]
+            if region.size == 0 or region.ndim != 3 or region.shape[2] < 3:
+                # 非三通道图像无法做颜色判据，跳过颜色检测仅保留字号检测
+                red_count = green_count = total = 0
+            else:
+                # BGR 通道：0=B, 1=G, 2=R（与原 RGB 判据等价）
+                b_ch = region[:, :, 0].astype(np.int16)
+                g_ch = region[:, :, 1].astype(np.int16)
+                r_ch = region[:, :, 2].astype(np.int16)
+                red_count = int(np.count_nonzero((r_ch > 180) & (g_ch < 100) & (b_ch < 100)))
+                green_count = int(np.count_nonzero((r_ch < 100) & (g_ch > 150) & (b_ch < 100)))
+                total = int(region.shape[0] * region.shape[1])
+        else:
+            # 兜底：无已解码图像时用 PIL 重新解码
+            try:
+                from PIL import Image
+            except ImportError:
+                return False
+            img = Image.open(img_path).convert("RGB")
+            x_min, x_max = max(0, int(min(xs))), min(img.width, int(max(xs)))
+            y_min, y_max = max(0, int(min(ys))), min(img.height, int(max(ys)))
+            if x_max <= x_min or y_max <= y_min:
+                return False
+            x_min_ext = max(0, x_min - pad)
+            y_min_ext = max(0, y_min - pad)
+            x_max_ext = min(img.width, x_max + pad)
+            y_max_ext = min(img.height, y_max + pad)
+            region = img.crop((x_min_ext, y_min_ext, x_max_ext, y_max_ext))
+            # 检测红/绿色像素比例
+            pixels = list(region.getdata())
+            if not pixels:
+                return False
+            red_count = sum(1 for r, g, b in pixels if r > 180 and g < 100 and b < 100)
+            green_count = sum(1 for r, g, b in pixels if r < 100 and g > 150 and b < 100)
+            total = len(pixels)
         # 红/绿色像素占比超过 5% 视为标记
-        if (red_count + green_count) / total > 0.05:
+        if total > 0 and (red_count + green_count) / total > 0.05:
             return True
         # 字号检测：该 bbox 高度是否明显大于其他文本平均高度
         this_height = y_max - y_min
@@ -7294,6 +7408,9 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
     """
     from src.clients import jira_client as _jc
     from src.services.trigger_ops import self_check_trigger_time
+    # H1：诊断自检同样按精度放宽窗口（分钟级时间存在 ±60s 截断误差）
+    _diag_bugid = str(issue.get("key") or "")
+    _cand_precision = _resolve_time_precision(_diag_bugid, candidate)
     # 只有时分的时间（如 14:43）：用 Jira 创建日期补全，避免被当成无参考
     import re as _re3
     if candidate and not _ts_parse_datetime(str(candidate)):
@@ -7361,7 +7478,7 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
         if _vd:
             cap = _vd
     ref = cap.strftime("%Y-%m-%d %H:%M:%S") if cap else ""
-    chk = self_check_trigger_time(candidate, ref)
+    chk = self_check_trigger_time(candidate, ref, precision=_cand_precision)
     evidence = []
     def _add(src_name, t):
         if not t:
@@ -7389,7 +7506,9 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
         return int((_dt - cap).total_seconds()) if _dt else None
 
     signed_delta = _signed(candidate)
-    cur_chk = self_check_trigger_time(current_time, ref) if current_time else {}
+    cur_chk = (self_check_trigger_time(
+        current_time, ref, precision=_resolve_time_precision(_diag_bugid, current_time))
+        if current_time else {})
     cur_delta = _signed(current_time)
     # 建议时间相对当前时间的变化（正=建议更晚）
     change_sec = None

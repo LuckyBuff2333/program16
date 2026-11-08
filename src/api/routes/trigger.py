@@ -619,10 +619,10 @@ async def batch_extract_time(request: Request):
                     'source': source, 'error': error or '',
                 })
                 # 每 20 条进度推送一次，避免逐条 SSE
-                if len(progress_buf) >= 1:
+                if len(progress_buf) >= 20:
                     yield f"data: {_json.dumps({'type': 'progress_batch', 'current': done_count, 'total': total, 'hit': hit_count, 'items': progress_buf}, ensure_ascii=False)}\n\n"
                     progress_buf = []
-                    # 云端写入由上面的 20 条阈值统一触发；进度仍逐条推送
+                    # 云端写入由上面的 20 条阈值统一触发；进度每 20 条批量推送
         finally:
             # 等待工作线程真正结束，避免页面已显示完成、后台仍在提取/写云端
             pool.shutdown(wait=True, cancel_futures=True)

@@ -1,7 +1,7 @@
 Global:
-  text_score: 0.5
+  text_score: 0.15
   use_det: true
-  use_cls: true
+  use_cls: false
   use_rec: true
   print_verbose: false
   min_height: 30
@@ -9,10 +9,10 @@ Global:
   max_side_len: 2000
   min_side_len: 30
   return_word_box: false
-  intra_op_num_threads: 4
+  intra_op_num_threads: 1
   inter_op_num_threads: 1
 Det:
-  intra_op_num_threads: 4
+  intra_op_num_threads: 1
   inter_op_num_threads: 1
   use_cuda: true
   use_dml: false
@@ -28,13 +28,13 @@ Det:
   - 0.5
   - 0.5
   thresh: 0.3
-  box_thresh: 0.6
+  box_thresh: 0.3
   max_candidates: 1000
   unclip_ratio: 1.5
   use_dilation: true
   score_mode: fast
 Cls:
-  intra_op_num_threads: 4
+  intra_op_num_threads: 1
   inter_op_num_threads: 1
   use_cuda: true
   use_dml: false
@@ -49,7 +49,7 @@ Cls:
   - '0'
   - '180'
 Rec:
-  intra_op_num_threads: 4
+  intra_op_num_threads: 1
   inter_op_num_threads: 1
   use_cuda: true
   use_dml: false

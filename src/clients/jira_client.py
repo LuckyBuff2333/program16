@@ -9,6 +9,9 @@ from datetime import datetime, timedelta
 from src.clients.ai_log_client import _load_testdata_row
 from src.clients.base import http_get
 from src.config import load_config, setup_logger
+# 归一化逻辑抽取为公共工具，供文本提取路径与 OCR 提取路径共享；
+# 以原名别名导入，保持本模块内所有调用点（_normalize_datetime_text）向后兼容
+from src.core.text_utils import normalize_datetime_text as _normalize_datetime_text
 
 logger = setup_logger("jira")
 
@@ -255,26 +258,8 @@ _US_DATE_RE = re.compile(r"(\d{1,2})-(\d{1,2})-(\d{4})\s+(\d{1,2})-(\d{1,2})(?:-
 _COMPACT_RE = re.compile(r"(20\d{2})[\-_.]?(\d{2})[\-_.]?(\d{2})[\-_./T ]?(\d{2})[\-_: .]?(\d{2})(?:[\-_: .]?(\d{2}))?")  # YYYY[sep]MM[sep]DD[sep]HH[sep]MM[SS]，支持 -_./T 等分隔符
 
 
-def _normalize_datetime_text(text: str) -> str:
-    """标准化非标准日期时间文本，提升提取兼容性
-
-    处理三类常见异常格式：
-    1. 破折号分隔符：YYYY/MM/DD——HH:MM → YYYY/MM/DD HH:MM（全角/半角破折号替换为空格）
-    2. 冒号空格：HH: MM → HH:MM（去除时间冒号旁的空格）
-    3. 分号冒号化：8；44 / 8;44 → 8:44（中文/半角分号在数字间替换为冒号）
-    """
-    # 破折号/全角横线替换为空格（U+2013 en-dash, U+2014 em-dash, U+2015 horizontal bar, U+FF0D fullwidth hyphen-minus）
-    text = re.sub(r'[\u2013\u2014\u2015\uFF0D]+', ' ', text)
-    # 数字间的中文分号/半角分号替换为冒号（8；44 → 8:44, 8;44 → 8:44）
-    text = re.sub(r'(\d)\s*[;；]\s*(\d)', r'\1:\2', text)
-    # 全角冒号替换为半角冒号（支持中文输入法场景）
-    # 中文标签后全角冒号 + 数字：加空格避免与独立时间正则冲突（测试时间：11：30 → 测试时间: 11:30）
-    text = re.sub(r'([^\d])\s*[\uFF1A]\s*(\d)', r'\1: \2', text)
-    # 数字间全角冒号（11：30 → 11:30）
-    text = re.sub(r'(\d)\s*[\uFF1A]\s*(\d)', r'\1:\2', text)
-    # 时间冒号旁空格去除（14: 57 → 14:57，不影响日期部分）
-    text = re.sub(r'(\d)\s*:\s*(\d)', r'\1:\2', text)
-    return text
+# _normalize_datetime_text 已抽取至 src.core.text_utils.normalize_datetime_text（公共工具）
+# 顶部以别名导入，函数逻辑与行为保持不变，OCR 与文本两条路径共享同一实现
 
 
 # 附件分类后缀

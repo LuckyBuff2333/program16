@@ -904,3 +904,18 @@
 - **实现文件**：`src/api/routes/testing.py`
 
 </details>
+
+<details>
+<summary><b>195. 时间精度分级贯通机制（H1/M11/M12，2026-11-08）</b></summary>
+
+- **问题描述**：提取侧容差 900s 与 AI 消费侧窗口 30s 根本错配。视频缓存 83% 记录秒位为 00（分钟级精度），而 AI 侧日志过滤窗口中位 6s、P90 仅 30s；月度失败 544 条中 72.4%（394 条）是「时间过滤后日志为空」，且自检判定「不可用」的时间仍被写入并送给 AI 分析。
+- **根因**：提取结果未携带精度信息，消费侧统一按秒级 30s 窗口判定，把分钟级截断误差（±60s）误判为时间错误。
+- **解决方案**：
+  - **M12 精度标记**：视频缓存 value 增加 `precision` 字段（秒位为 00 记 `minute`，否则 `second`）；新增 `_store_video_time_cache` 统一写入 17 处缓存点，并把精度登记到 `remember_time_precision`；`_load_video_time_cache`/`_save_video_time_cache` 兼容旧格式（字符串值→`minute`，无标记 dict→按秒位推断）。
+  - **H1 精度传递到自检**：`self_check_trigger_time` 增加 `precision` 参数，`minute` 时窗口命中阈值 `_TIME_WINDOW_SEC` 由 30 放宽到 `_TIME_WINDOW_SEC_MINUTE=120`，「待确认」阈值同步放宽；`_trigger_time_meta` 写入「时间精度」列；`pipeline._time_check_before_analysis`（AI 消费侧）与 `_diag_time_check`（诊断侧）按精度放宽窗口。
+  - **M11 自检反馈回路**：新增 `_build_trigger_write_fields`，自检「不可用」时**不写触发时间字段**，改在「备注」列打待办标记「时间待确认-自检不可用」；单条/批量写入路径（缓存命中、增量搜索、新建）全部接入；本地 CSV 同步不落地不可用时间。
+  - **补列**：`_TRIGGER_TIME_EXTRA_FIELDS` 增加「时间精度」「备注」，`ensure_trigger_time_fields` 幂等补列。
+- **验证**：`py_compile` 通过；`tests/test_time_check.py` 等 24 项测试全通过；专项验证脚本 25 项检查 ALL PASS（精度推断/窗口放宽/不可用置空+待办/旧缓存兼容）。
+- **实现文件**：`src/services/server_legacy.py`、`src/services/trigger_ops.py`、`src/pipeline.py`
+
+</details>
