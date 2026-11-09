@@ -20,3 +20,15 @@ jira_api:
 params:
   # EasyOCR 模型目录，避免运行时触发在线下载（留空则使用包内默认路径）
   easyocr_model_dir: ~/.EasyOCR/model
+
+# ── OCR 配置（各机器独立，不跟随云端） ──
+ocr:
+  engine: v5                  # OCR 引擎版本: v5(PP-OCRv5) / v4(PP-OCRv4)
+  max_pixels: 2000000         # GPU 推理最大像素面积（无 GPU 时可忽略）
+  box_thresh: 0.3             # 检测阈值
+  text_score: 0.15            # 文本分数阈值
+  mag_ratio: 1.5              # 小图像放大比例（提升小字号识别率）
+  oom_cooldown_sec: 300       # GPU OOM 后 CPU 冷却时间（秒）
+  easyocr_languages:          # EasyOCR 回退语言
+  - en
+  - ch_sim
