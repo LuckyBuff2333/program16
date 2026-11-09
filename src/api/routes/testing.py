@@ -4291,9 +4291,9 @@ async def regression_run(request: Request):
                     jn = _bitable_text(fields.get(bf, ""))
                     if not jn:
                         continue
-                    # 按分析完成时间过滤
+                    # 按分析开始时间过滤
                     if cutoff:
-                        done_time = _bitable_text(fields.get("分析完成时间", ""))
+                        done_time = _bitable_text(fields.get("分析开始时间", ""))
                         done_dt = _ts_parse_datetime(done_time) if done_time else None
                         if not done_dt or done_dt <= cutoff:
                             continue
@@ -4448,7 +4448,7 @@ async def regression_run(request: Request):
 
 @router.post("/api/test/regression_date_load", response_model=ApiResponse)
 async def regression_date_load(request: Request):
-    """按分析完成时间加载线上失败记录，按日期+人工审核原因分组"""
+    """按分析开始时间加载线上失败记录，按日期+人工审核原因分组"""
     from src.clients import feishu_client
     body = await request.json() or {}
     after_time = str(body.get("after_time", "") or "").strip()
@@ -4472,7 +4472,7 @@ async def regression_date_load(request: Request):
         trigger_src = _bitable_text(fields.get("触发来源", ""))
         if trigger_src != "parseFullTicket":
             continue
-        done_time = _bitable_text(fields.get("分析完成时间", ""))
+        done_time = _bitable_text(fields.get("分析开始时间", ""))
         if after_time and (not done_time or done_time < after_time):
             continue
         result_status = _bitable_text(fields.get("分析结果", ""))
