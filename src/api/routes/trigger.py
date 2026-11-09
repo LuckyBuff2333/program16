@@ -394,6 +394,9 @@ async def batch_extract_time(request: Request):
         _save_trigger_time_to_csv,
     )
     body = await request.json() or {}
+    logger.info("时间批量提取请求: client=%s ua=%s",
+                getattr(request.client, "host", ""),
+                str(request.headers.get("user-agent", ""))[:120])
     jql = str(body.get("jql", "")).strip()
     bugids = body.get("bugids") or []
     skip_cached = body.get("skip_cached", False)
@@ -677,10 +680,28 @@ async def batch_extract_time(request: Request):
 
         _threading.Thread(target=_produce, name="time-extract-sse", daemon=True).start()
         _loop = asyncio.get_event_loop()
+
+        def _get_with_timeout():
+            try:
+                return _q.get(timeout=1)
+            except _queue.Empty:
+                return "__EMPTY__"
+
         while True:
-            _chunk = await _loop.run_in_executor(None, _q.get)
+            _chunk = await _loop.run_in_executor(None, _get_with_timeout)
             if _chunk is None:
                 break
+            if _chunk == "__EMPTY__":
+                # 页面关闭/刷新后 SSE 断开，必须让服务端提取停止，不能继续下载/OCR
+                if await request.is_disconnected():
+                    logger.info("时间批量提取：客户端已断开，发送停止信号")
+                    try:
+                        _job.stop_event.set()
+                    except Exception:
+                        pass
+                    _stop_event.set()
+                    break
+                continue
             yield _chunk
 
     # 注册作业：/api/jobs 可查进度，/api/jobs/{id}/stop 可单独停止本作业
