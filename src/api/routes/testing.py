@@ -124,7 +124,7 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
 
     用于同来源去重：线上执行时只排除线上已执行的，PC执行时只排除PC已执行的。
     PC和线上允许重复（不同来源）。
-    同时检查今天和昨天的记录，支持跨天持续执行场景。
+    检查最近 14 天的云端记录，覆盖周末和长周期场景。
     仅查云端飞书文档，不查本地CSV，避免本地文件残留导致误去重。
     全部失败的批次（文档名中 (0/N)）自动跳过，不纳入去重。
     """
@@ -137,8 +137,8 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
     if _cached and _t.time() - _cached[0] < _EXECUTED_KEYS_TTL:
         return set(_cached[1])
     executed = set()
-    yesterday = today - timedelta(days=1)
-    check_dates = [today.strftime("%Y-%m-%d"), yesterday.strftime("%Y-%m-%d")]
+    # 检查最近 14 天的云端批次执行记录，覆盖周末和长周期场景
+    check_dates = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(14)]
     # 云端批次执行记录
     try:
         from src.clients import feishu_client
