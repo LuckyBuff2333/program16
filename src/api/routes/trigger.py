@@ -407,7 +407,7 @@ async def batch_extract_time(request: Request):
     # 单批次锁：已有 time_extract 在跑时拒绝新批次，避免页面对应一批、后台还在跑另一批
     from src.core.job_registry import JOBS as _JOBS_ALL
     _running_jobs = [j for j in _JOBS_ALL.list(50)
-                     if j.type == "time_extract" and j.status == "running"]
+                     if j.get("type") == "time_extract" and j.get("status") == "running"]
     if _running_jobs:
         return _fail("已有批量提取任务在运行，请等待完成或先点“停止”")
 
@@ -420,7 +420,7 @@ async def batch_extract_time(request: Request):
         _extract_workers = 4
     logger.info("时间批量提取并发数: %d", _extract_workers)
 
-    def event_generator():
+    def _event_generator_sync():
         nonlocal bugids
         yield f"data: {_json.dumps({'type': 'preparing', 'message': '正在查询 Jira...'}, ensure_ascii=False)}\n\n"
         if jql:
@@ -659,6 +659,29 @@ async def batch_extract_time(request: Request):
         if ai_skip_count:
             done_msg += f'，{ai_skip_count} 个已有AI分析跳过'
         yield f"data: {_json.dumps({'type': 'done', 'total': total, 'hit': hit_count, 'ai_skipped': ai_skip_count, 'message': done_msg}, ensure_ascii=False)}\n\n"
+
+    async def event_generator():
+        """同步生成器放线程生产，避免 OCR/阻塞操作卡住事件循环导致 SSE 到结束才返回。"""
+        import queue as _queue
+        import threading as _threading
+        _q = _queue.Queue()
+
+        def _produce():
+            try:
+                for _chunk in _event_generator_sync():
+                    _q.put(_chunk)
+            except Exception as _e:
+                _q.put(f"data: {_json.dumps({'type': 'error', 'message': f'提取异常: {_e}'}, ensure_ascii=False)}\n\n")
+            finally:
+                _q.put(None)
+
+        _threading.Thread(target=_produce, name="time-extract-sse", daemon=True).start()
+        _loop = asyncio.get_event_loop()
+        while True:
+            _chunk = await _loop.run_in_executor(None, _q.get)
+            if _chunk is None:
+                break
+            yield _chunk
 
     # 注册作业：/api/jobs 可查进度，/api/jobs/{id}/stop 可单独停止本作业
     from src.core.job_registry import JOBS as _JOBS
