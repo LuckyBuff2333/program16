@@ -495,6 +495,7 @@ _SKIP_ANALYSIS_CATEGORIES = {
     "分析任务执行超时，跳过排查", "问题重复", "问题未复现",
     "无gmlogger", "无gmlogger文件",
     "IP配置错误", "人工取消", "无时间信息", "网络波动",
+    "解压问题",
 }
 
 
@@ -513,9 +514,9 @@ def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
         # 处理后没有有效日志包：预处理无gmlogger，不深度分析
         if "处理后未找到有效的日志文件" in ec:
             return "无gmlogger"
-        # 解压后未找到可识别日志：仍走深度分析确认
+        # 解压后未找到可识别日志：直接映射为解压问题，跳过深度分析
         if "解压后未找到可识别的日志文件" in ec:
-            return ""
+            return "解压问题"
         # JIRA 分析超时 / adjudication / reasoning：转人工，查 app.log
         if "JIRA 分析任务执行超时" in ec or "JIRA 网关分析任务执行超时" in ec:
             return "待人工排查"
@@ -610,9 +611,9 @@ def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
     # 处理后未找到有效日志：预处理无gmlogger
     if "处理后未找到有效的日志文件" in msg:
         return "无gmlogger"
-    # 解压后未找到可识别日志：需要深度分析确认
+    # 解压后未找到可识别日志：直接映射为解压问题，跳过深度分析
     if "解压后未找到可识别的日志文件" in msg:
-        return "无gmlogger"
+        return "解压问题"
     return ""
 
 

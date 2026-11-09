@@ -212,6 +212,7 @@ _video_time_cache_lock = threading.Lock()
 _OCR_UNAVAILABLE = object()  # OCR 不可用哨兵值
 
 _rapid_ocr_engine = None
+_rapid_ocr_is_gpu = False  # 主引擎是否使用 GPU 加速
 
 _rapid_ocr_lock = threading.Lock()  # 防止 RapidOCR 并发初始化
 _rapid_ocr_cpu_engine = None  # OOM 回退用 CPU-only 引擎
@@ -4395,6 +4396,8 @@ def _get_rapid_ocr():
                     _tmp_cfg = os.path.join(tempfile.gettempdir(), "rapidocr_v5_runtime.yaml")
                     with open(_tmp_cfg, "w") as _f:
                         _yaml.dump(_ycfg, _f, default_flow_style=False, allow_unicode=True)
+                    global _rapid_ocr_is_gpu
+                    _rapid_ocr_is_gpu = _gpu
                     _rapid_ocr_engine = RapidOCR(config_path=_tmp_cfg)
                     _mode = "PP-OCRv5+GPU" if _gpu else "PP-OCRv5+CPU"
                     logger.info("RapidOCR 引擎初始化完成（%s）", _mode)
@@ -4489,7 +4492,7 @@ def _rapid_ocr_readtext(image, _already_enhanced: bool = False):
         return []
 
     try:
-        return _run_ocr(engine, image, _already_enhanced, tag="GPU")
+        return _run_ocr(engine, image, _already_enhanced, tag="GPU" if _rapid_ocr_is_gpu else "CPU")
     except Exception as e:
         _err = str(e)
         _is_oom = "AllocateRawInternal" in _err or "memory" in _err.lower() or "OOM" in _err
