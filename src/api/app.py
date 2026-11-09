@@ -296,6 +296,21 @@ async def _on_shutdown():
     for bugid in list(_shared.flow_cancel):
         _shared.flow_cancel[bugid] = True
 
+    # 服务退出时通知所有后台批处理停止，避免进程退出前继续下载/OCR
+    for _ev_name in ("batch_extract_stop_event", "cache_batch_stop_event",
+                     "adp_lookup_stop_event", "regression_stop_event",
+                     "form_exec_stop_event", "prod_batch_stop_event"):
+        _ev = getattr(_shared, _ev_name, None)
+        if _ev is not None:
+            _ev.set()
+    try:
+        from src.core.job_registry import JOBS as _JOBS
+        for _job in _JOBS.list(100):
+            if isinstance(_job, dict) and _job.get("status") == "running":
+                _JOBS.cancel(_job.get("id", ""))
+    except Exception as _e:
+        _logger.warning("服务关闭时取消作业失败: %s", _e)
+
     if _shared._DIAG_EXECUTOR is not None:
         _shared._DIAG_EXECUTOR.shutdown(wait=False)
         _shared._DIAG_EXECUTOR = None
