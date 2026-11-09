@@ -1058,13 +1058,13 @@ async def test_batch_ai_filter(request: Request):
                     elif not filter_online_only and not filter_pc_only:
                         exclude_keys.add(jira_key)  # 未指定来源时：排除所有成功的
                 elif filter_pc_only and filter_online_only:
-                    if is_excluded:
-                        exclude_keys.add(jira_key)
+                    # 只要该来源执行过（分析成功或失败）都不再重复
+                    exclude_keys.add(jira_key)
                 elif filter_pc_only:
-                    if is_pc and is_excluded:
+                    if is_pc:
                         exclude_keys.add(jira_key)
                 elif filter_online_only:
-                    if not is_pc and is_excluded:
+                    if not is_pc:
                         exclude_keys.add(jira_key)
                 elif is_excluded:
                     exclude_keys.add(jira_key)  # 默认：分析成功的排除
