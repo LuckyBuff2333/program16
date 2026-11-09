@@ -8597,27 +8597,13 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                     _tod_diff = min(abs(_vt_tod - _err_tod), 86400 - abs(_vt_tod - _err_tod))
                     if _tod_diff > 300:  # 时分差 > 5 分钟
                         category = "触发时间问题"
+                        suggested_time = _vt  # _fill_time_with_main_date 已按时分就近选取日期
                         verify_status = "manual"
-                        # 遍历所有 main 文件名日期，用视频时分拼接后找与 problem_time 最接近的
-                        _vid_tod = _vt_dt.hour * 3600 + _vt_dt.minute * 60 + _vt_dt.second
-                        _best_cand = _vt
-                        _best_diff = abs((_vt_dt - err_dt).total_seconds()) if err_dt else float('inf')
-                        _all_refs = list(main_times or []) + list(all_times or []) + list(gm_times or [])
-                        for _ref in _all_refs:
-                            _rdt = _ref[1] if isinstance(_ref, tuple) else _ref
-                            if not isinstance(_rdt, datetime):
-                                continue
-                            _cand = _rdt.replace(hour=_vt_dt.hour, minute=_vt_dt.minute, second=_vt_dt.second)
-                            _cd = abs((_cand - err_dt).total_seconds()) if err_dt else float('inf')
-                            if _cd < _best_diff:
-                                _best_diff = _cd
-                                _best_cand = _cand.strftime("%Y-%m-%d %H:%M:%S")
-                        suggested_time = _best_cand
                         final_msg = (f"视频内容时间 {video_time} 与 gmlogger 文件名时间 "
-                                     f"{err_dt.strftime('%H:%M:%S')} 不一致（差 {_tod_diff//60} 分钟），"
-                                     f"已从包内 {len(_all_refs)} 个文件日期中选取最优拼接")
-                        logger.warning("视频时间与gmlogger不一致: video=%s gm=%s diff=%dm best=%s",
-                                       video_time, err_dt.strftime("%H:%M:%S"), _tod_diff // 60, _best_cand)
+                                     f"{err_dt.strftime('%H:%M:%S')} 不一致（时分差 {_tod_diff//60} 分钟），"
+                                     f"以视频时间为准")
+                        logger.warning("视频时间与gmlogger不一致: video=%s gm=%s tod_diff=%dm",
+                                       video_time, err_dt.strftime("%H:%M:%S"), _tod_diff // 60)
         elif _no_ts:
             # 包内没有任何时间戳：不能用“触发时间问题”下结论
             if gm_times:
