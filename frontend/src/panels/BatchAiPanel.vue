@@ -610,9 +610,10 @@ export default {
     async runDynamicQueue() {
       const source = this.batchAi.execMode === 'online' ? 'parseFullTicket' : 'jira_analyze';
       this.batchAi.continuousRunning = true;
-      let pending = [...this.batchAi.filteredKeys];
+      let pending = Array.from(new Set(this.batchAi.filteredKeys));
       try {
         await this.batchAiSample();
+        this.batchAi.selected = Array.from(new Set(this.batchAi.selected));
         if (!this.batchAi.selected.length) throw new Error('动态队列抽样结果为空');
         if (this.batchAi.execMode === 'online') await this.batchAiRunOnline(); else await this.batchAiRun();
         let inflight = [...this.batchAi.selected];

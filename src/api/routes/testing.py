@@ -95,10 +95,26 @@ _EXECUTED_TTL = 2 * 3600  # 2小时过期
 _EXECUTED_KEYS_CACHE = {}  # {(source, date): (ts, set)}
 _batch_ai_run_stop_event = threading.Event()
 _EXECUTED_KEYS_TTL = 600  # 云端批次文档扫描一次约 60s，缓存 10 分钟
+# 动态队列/多标签页防重：同一 Jira 在短时间内只允许提交一次
+_recent_single_submit = {}  # (exec_mode, jira) -> timestamp
+_RECENT_SINGLE_TTL = 180  # 3 分钟
 
 
 def _invalidate_executed_keys_cache():
     _EXECUTED_KEYS_CACHE.clear()
+
+def _claim_single_submit(exec_mode: str, bugid: str) -> bool:
+    """占位提交锁；返回 False 表示同一 Jira 刚刚已提交，避免多标签页重复执行。"""
+    now = _time_mod.time()
+    key = (exec_mode, bugid)
+    expired = [k for k, t in _recent_single_submit.items() if now - t > _RECENT_SINGLE_TTL]
+    for k in expired:
+        _recent_single_submit.pop(k, None)
+    if key in _recent_single_submit:
+        return False
+    _recent_single_submit[key] = now
+    return True
+
 
 def _mark_executed(keys: list):
     """ 标记一批 JIRA 号为已执行 """
@@ -194,6 +210,8 @@ async def batch_ai_single(request: Request):
         return _fail("bugid 为空")
     if not exec_time:
         return _fail("trigger_time 为空")
+    if not _claim_single_submit(exec_mode, bugid):
+        return _fail(f"{bugid} 刚刚已提交，跳过重复执行")
     try:
         import asyncio
         from src.clients.base import http_post
@@ -2833,7 +2851,7 @@ async def test_prod_batch_run(request: Request):
         "触发来源": str(body.get("trigger_source", mode_label)),
     }
     # 从 CSV 和直接输入两种来源收集 Jira 号
-    all_bugids = list(direct_bugids)
+    all_bugids = list(dict.fromkeys(str(b).strip() for b in direct_bugids if str(b).strip()))
     for fpath in csv_files:
         try:
             with open(fpath, "r", encoding="utf-8-sig") as f:
@@ -3145,6 +3163,18 @@ async def test_prod_batch_run(request: Request):
             run_bugids = [b for b in run_bugids if b in trigger_times][:max_count]
         else:
             run_bugids = [b for b in run_bugids if b in trigger_times]
+        # 同一批次内+多标签页：同一 Jira 3 分钟内只允许提交一次
+        _unique_run = list(dict.fromkeys(run_bugids))
+        _allowed_run = []
+        _dups = []
+        for _b in _unique_run:
+            if _claim_single_submit(exec_mode, _b):
+                _allowed_run.append(_b)
+            else:
+                _dups.append(_b)
+        if _dups:
+            logger.warning("批量执行跳过最近已提交 Jira: %s", ",".join(_dups[:10]))
+        run_bugids = _allowed_run
         skipped_no_time = len(bugids) - len(run_bugids)
         yield f"data: {_json.dumps({'type': 'extract_done', 'total': len(run_bugids), 'with_time': len(trigger_times), 'without_time': skipped_no_time, 'skip_empty_mark': skip_empty_mark}, ensure_ascii=False)}\n\n"
         # 批量执行接口（支持PC/线上模式）
