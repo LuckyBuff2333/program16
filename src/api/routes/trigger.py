@@ -491,6 +491,10 @@ async def batch_extract_time(request: Request):
             skip_parts.append(f'{cache_skip_count} 个已有缓存')
         if skip_parts:
             start_evt['message'] = f'跳过 {"、".join(skip_parts)}，实际提取 {total} 个'
+        try:
+            _JOBS.update(_job.id, total=total, done=0, message=f'共 {total} 条待提取')
+        except Exception:
+            pass
         yield f"data: {_json.dumps(start_evt, ensure_ascii=False)}\n\n"
 
         done_count = 0
@@ -627,6 +631,11 @@ async def batch_extract_time(request: Request):
                 })
                 # 每完成一个 Jira 立即推送，前端才能逐条展示结果
                 if progress_buf:
+                    try:
+                        _JOBS.update(_job.id, done=done_count, total=total,
+                                     message=f'提取中 {done_count}/{total}，命中 {hit_count}')
+                    except Exception:
+                        pass
                     yield f"data: {_json.dumps({'type': 'progress_batch', 'current': done_count, 'total': total, 'hit': hit_count, 'items': progress_buf}, ensure_ascii=False)}\n\n"
                     progress_buf = []
                     # 云端写入仍按 20 条批量，进度不跟着批量等待
