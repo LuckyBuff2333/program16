@@ -394,6 +394,9 @@ async def batch_extract_time(request: Request):
         _save_trigger_time_to_csv,
     )
     body = await request.json() or {}
+    logger.info("时间批量提取请求: client=%s ua=%s",
+                getattr(request.client, "host", ""),
+                str(request.headers.get("user-agent", ""))[:120])
     jql = str(body.get("jql", "")).strip()
     bugids = body.get("bugids") or []
     skip_cached = body.get("skip_cached", False)
@@ -434,9 +437,13 @@ async def batch_extract_time(request: Request):
             if not bugids:
                 yield f"data: {_json.dumps({'type': 'error', 'message': '无待提取的 Jira 号（JQL 未匹配）'}, ensure_ascii=False)}\n\n"
                 return
+            if _stop_event.is_set():
+                return
             yield f"data: {_json.dumps({'type': 'preparing', 'message': f'JQL 返回 {len(bugids)} 条，正在加载云端缓存...'}, ensure_ascii=False)}\n\n"
         # 跳过已有缓存时，预加载云端缓存
         cloud_cache = {}
+        if _stop_event.is_set():
+            return
         if skip_cached:
             cloud_cache = _load_trigger_times_from_cloud()
         # 分离需要提取的和可跳过的（缓存跳过）
