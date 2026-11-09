@@ -24,9 +24,26 @@ params:
 # ── OCR 配置（各机器独立，不跟随云端） ──
 ocr:
   engine: v5                  # OCR 引擎版本: v5(PP-OCRv5) / v4(PP-OCRv4)
+  # 模型路径：本机独立配置，可写绝对路径；相对路径按项目根目录解析
+  model_dir: models/ppocrv5
+  det_model_path: models/ppocrv5/det.onnx
+  cls_model_path: models/ppocrv5/cls.onnx
+  rec_model_path: models/ppocrv5/rec.onnx
+  rec_keys_path: models/ppocrv5/ppocrv5_dict.txt
+  use_cuda: true              # 有 CUDA 时是否启用
+  use_dml: false              # AMD/其他显卡可改用 DirectML
+  intra_op_num_threads: 1
+  inter_op_num_threads: 1
+  limit_side_len: 736
+  limit_type: min
+  max_side_len: 2000
+  min_height: 30
+  width_height_ratio: 8
+  rec_batch_num: 6
   box_thresh: 0.3             # 检测阈值
   text_score: 0.15            # 文本分数阈值
   mag_ratio: 1.5              # 小图像放大比例（提升小字号识别率）
+  max_pixels: 4000000
   oom_cooldown_sec: 300       # GPU OOM 后 CPU 冷却时间（秒）
   easyocr_languages:          # EasyOCR 回退语言
   - en

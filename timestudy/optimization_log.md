@@ -999,3 +999,14 @@
 - **实现文件**：`src/services/server_legacy.py`、`src/services/trigger_ops.py`、`src/pipeline.py`
 
 </details>
+
+<details>
+<summary><b>195. OCR模型路径与参数改为本机config覆盖（2026-11-09）</b></summary>
+
+- **背景**：不同电脑的 PP-OCRv5 模型路径、线程数、检测参数不同，不能写死在公共 YAML。
+- **实现**：新增 `_apply_ocr_runtime_config()`，从 `config/config.yaml` 的 `ocr` 段读取 `model_dir`、`det/cls/rec_model_path`、`rec_keys_path`、`use_cuda/use_dml`、线程数、`limit_side_len`、阈值等，覆盖到运行时 RapidOCR YAML。
+- **本地化**：真实路径只写本机 `config/config.yaml`（已忽略）；`config.example.yaml` 只保留字段说明；公共 `models/ppocrv5/rapidocr_v5.yaml` 保持通用默认值。
+- **验证**：模型路径解析存在；`tests/test_ocr_time_extraction.py` 363 passed。
+- **实现文件**：`src/services/server_legacy.py`、`config/config.example.yaml`
+
+</details>

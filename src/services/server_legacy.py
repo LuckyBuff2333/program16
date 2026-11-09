@@ -4478,6 +4478,74 @@ def _has_gpu_runtime():
         return False
 
 
+def _resolve_ocr_model_path(path: str, proj_root: str) -> str:
+    if not path:
+        return path
+    return path if os.path.isabs(path) else os.path.join(proj_root, path)
+
+
+def _apply_ocr_runtime_config(ycfg: dict, use_cuda: bool) -> dict:
+    """把 config.yaml 的 ocr 段覆盖到 RapidOCR 的 yaml。
+
+    模型路径和 OCR 参数属于本机配置：不同电脑可各自设置绝对路径/线程数/阈值，
+    公共的 models/ppocrv5/rapidocr_v5.yaml 只保留通用默认值。
+    """
+    cfg = _get_ocr_cfg()
+    proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    model_dir = cfg.get("model_dir", "")
+    # 模型路径：优先显式 *_model_path，其次 model_dir + 默认文件名
+    model_keys = {
+        "Det": ("det_model_path", "det.onnx"),
+        "Cls": ("cls_model_path", "cls.onnx"),
+        "Rec": ("rec_model_path", "rec.onnx"),
+    }
+    for sec, (key, default_name) in model_keys.items():
+        sec_cfg = ycfg.get(sec)
+        if sec_cfg is None:
+            continue
+        path = cfg.get(key, "")
+        if not path and model_dir:
+            path = os.path.join(model_dir, default_name)
+        if not path:
+            path = sec_cfg.get("model_path", "")
+        sec_cfg["model_path"] = _resolve_ocr_model_path(path, proj_root)
+        sec_cfg["use_cuda"] = bool(use_cuda and cfg.get("use_cuda", True))
+        if "use_dml" in cfg:
+            sec_cfg["use_dml"] = bool(cfg["use_dml"])
+    rec_cfg = ycfg.get("Rec")
+    if rec_cfg is not None:
+        keys_path = cfg.get("rec_keys_path", "")
+        if not keys_path and model_dir:
+            keys_path = os.path.join(model_dir, "ppocrv5_dict.txt")
+        if keys_path:
+            rec_cfg["rec_keys_path"] = _resolve_ocr_model_path(keys_path, proj_root)
+
+    def _set(section: str, key: str, cfg_key: str = None):
+        val = cfg.get(cfg_key or key)
+        if val is None:
+            return
+        sec_cfg = ycfg.get(section)
+        if sec_cfg is not None:
+            sec_cfg[key] = val
+
+    # Global
+    for key in ("text_score", "min_height", "width_height_ratio", "max_side_len",
+                "intra_op_num_threads", "inter_op_num_threads"):
+        _set("Global", key)
+    # Det
+    for key in ("box_thresh", "thresh", "limit_side_len", "limit_type",
+                "max_candidates", "unclip_ratio", "intra_op_num_threads", "inter_op_num_threads"):
+        _set("Det", key)
+    # Rec / Cls
+    _set("Rec", "rec_batch_num")
+    _set("Cls", "cls_batch_num")
+    _set("Cls", "cls_thresh")
+    for section in ("Det", "Cls", "Rec"):
+        for key in ("intra_op_num_threads", "inter_op_num_threads"):
+            _set(section, key)
+    return ycfg
+
+
 def _get_rapid_ocr():
     """获取 RapidOCR 引擎实例（懒加载+缓存，线程安全，安装不可用时返回 None）"""
     global _rapid_ocr_engine
@@ -4509,13 +4577,7 @@ def _get_rapid_ocr():
                     _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                     with open(_v5_cfg) as _f:
                         _ycfg = _yaml.safe_load(_f)
-                    for _sec in ["Det", "Cls", "Rec"]:
-                        if _sec in _ycfg and "model_path" in _ycfg[_sec]:
-                            _mp = _ycfg[_sec]["model_path"]
-                            if not os.path.isabs(_mp):
-                                _ycfg[_sec]["model_path"] = os.path.join(_proj_root, _mp)
-                        if not _gpu and _sec in _ycfg:
-                            _ycfg[_sec]["use_cuda"] = False
+                    _apply_ocr_runtime_config(_ycfg, use_cuda=_gpu)
                     import tempfile
                     _tmp_cfg = os.path.join(tempfile.gettempdir(), "rapidocr_v5_runtime.yaml")
                     with open(_tmp_cfg, "w") as _f:
@@ -4558,13 +4620,7 @@ def _get_rapid_ocr_cpu():
                     _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                     with open(_v5_cfg) as _f:
                         _ycfg = _yaml.safe_load(_f)
-                    for _sec in ["Det", "Cls", "Rec"]:
-                        if _sec in _ycfg and "model_path" in _ycfg[_sec]:
-                            _mp = _ycfg[_sec]["model_path"]
-                            if not os.path.isabs(_mp):
-                                _ycfg[_sec]["model_path"] = os.path.join(_proj_root, _mp)
-                        if _sec in _ycfg:
-                            _ycfg[_sec]["use_cuda"] = False
+                    _apply_ocr_runtime_config(_ycfg, use_cuda=False)
                     import tempfile
                     _tmp_cfg = os.path.join(tempfile.gettempdir(), "rapidocr_v5_cpu_runtime.yaml")
                     with open(_tmp_cfg, "w") as _f:
