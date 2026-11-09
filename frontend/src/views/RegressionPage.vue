@@ -107,10 +107,10 @@
       <el-tab-pane label="日期测试" name="date">
         <!-- 区域 A：筛选栏 -->
         <el-card shadow="never">
-          <template #header><span style="font-weight:700">① 选择分析完成时间</span></template>
+          <template #header><span style="font-weight:700">① 选择分析开始时间</span></template>
           <div class="filter-bar">
             <div class="param-item">
-              <span class="param-label">分析完成时间起</span>
+              <span class="param-label">分析开始时间起</span>
               <el-date-picker v-model="dateCutoff" type="datetime" value-format="YYYY-MM-DD HH:mm:ss"
                 placeholder="选择起始时间" clearable style="width:220px" size="small"></el-date-picker>
             </div>
@@ -370,7 +370,7 @@ export default {
 
     // ===== Tab2 方法 =====
     async loadDateFailures() {
-      if (!this.dateCutoff) return ElMessage.warning('请选择分析完成时间起点');
+      if (!this.dateCutoff) return ElMessage.warning('请选择分析开始时间起点');
       this.dateLoading = true;
       this.dateMsg = '正在加载...'; this.dateError = false;
       this.dateBatches = []; this.dateCheckedSet.clear(); this.dateCollapseActive = [];

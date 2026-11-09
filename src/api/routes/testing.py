@@ -1903,7 +1903,7 @@ async def test_bitable_failed_jiras(request: Request):
     """从多维表格提取分析失败的 jira 号，支持时间/通用失败/已成功过滤"""
     import os, re, json
     body = await request.json() or {}
-    after_time = str(body.get("after_time", "") or "").strip()  # 分析完成时间起点过滤
+    after_time = str(body.get("after_time", "") or "").strip()  # 分析开始时间起点过滤
     exclude_common = body.get("exclude_common", False)  # 是否排除通用失败原因
     exclude_success = body.get("exclude_success", False)  # 是否排除已成功的 Jira
     from src.clients import feishu_client
@@ -1951,9 +1951,9 @@ async def test_bitable_failed_jiras(request: Request):
                 if any(reason in combined for reason in _EXCLUDE_REASONS):
                     skipped_common += 1
                     continue
-            # 分析完成时间过滤
+            # 分析开始时间过滤
             if after_time:
-                done_time = _bitable_text(fields.get("分析完成时间", ""))
+                done_time = _bitable_text(fields.get("分析开始时间", ""))
                 if done_time and done_time < after_time:
                     skipped_time += 1
                     continue
@@ -2115,7 +2115,7 @@ async def test_confidence_batch_write(request: Request, after_time: str = "", on
     本端点不写多维表格：只把每条待写字段（write_fields）通过 SSE 推给页面，
     真正写入由用户确认后调用 POST /api/test/confidence_batch_commit 完成。
 
-    :param after_time: 可选时间筛选，仅处理分析完成时间在此时间之后的记录
+    :param after_time: 可选时间筛选，仅处理分析开始时间在此时间之后的记录
     :param jira_ids: 可选 Jira 号列表（逗号分隔），指定时仅处理这些记录，忽略 after_time 和 only_empty
     """
     import os, re, json, asyncio
@@ -2179,7 +2179,7 @@ async def test_confidence_batch_write(request: Request, after_time: str = "", on
                 if str(fv_check).strip().upper() not in _jira_id_set:
                     continue
             if not _jira_id_set and after_time:
-                done_str = _bitable_text(fields.get("分析完成时间", ""))
+                done_str = _bitable_text(fields.get("分析开始时间", ""))
                 if not done_str or done_str < after_time:
                     continue
             conf_val = fields.get(conf_field_name, "")

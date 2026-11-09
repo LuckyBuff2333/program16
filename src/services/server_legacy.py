@@ -1597,7 +1597,7 @@ def _bot_diag_single(chat_id: str, bugids: list):
                     "bugid": bugid,
                     "err_msg": _diag_pick_error_info(fields),
                     "problem_time": _bitable_text(fields.get("分析问题时间", "")),
-                    "done_time": _bitable_text(fields.get("分析完成时间", "")),
+                    "done_time": _bitable_text(fields.get("分析开始时间", "")),
                 })
                 data = result.get("data", {})
                 cat = data.get("category", "待人工排查")
@@ -1681,7 +1681,7 @@ def _bot_run_troubleshoot(chat_id: str, after_time: str):
         failed_records = []
         for rec in records:
             fields = rec.get("fields", {})
-            done_dt = _ts_parse_datetime(fields.get("分析完成时间", ""))
+            done_dt = _ts_parse_datetime(fields.get("分析开始时间", ""))
             if not done_dt or done_dt <= cutoff:
                 continue
             if _bitable_text(fields.get("分析结果", "")) != "失败":
@@ -1694,7 +1694,7 @@ def _bot_run_troubleshoot(chat_id: str, after_time: str):
                 "jira号": jira_no,
                 "err_msg": _diag_pick_error_info(fields),
                 "problem_time": _bitable_text(fields.get("分析问题时间", "")),
-                "done_time": _bitable_text(fields.get("分析完成时间", "")),
+                "done_time": _bitable_text(fields.get("分析开始时间", "")),
             })
         if not failed_records:
             feishu_client.send_bot_message(chat_id, f"排查时间 {after_time} 之后无失败记录")
@@ -2588,7 +2588,7 @@ def _morning_briefing(chat_id: str) -> bool:
                 version = _bt(fields.get("版本号", ""))
                 if is_chinese_version(version):
                     continue
-                done_time = _bt(fields.get("分析完成时间", ""))
+                done_time = _bt(fields.get("分析开始时间", ""))
                 if not done_time or not done_time.startswith(yesterday):
                     continue
                 jira_no = _bt(fields.get(bugid_field, ""))
