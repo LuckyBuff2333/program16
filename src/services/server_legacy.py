@@ -217,7 +217,7 @@ _rapid_ocr_is_gpu = False  # 主引擎是否使用 GPU 加速
 _rapid_ocr_lock = threading.Lock()  # 防止 RapidOCR 并发初始化
 _rapid_ocr_cpu_engine = None  # OOM 回退用 CPU-only 引擎
 _ocr_oom_cooldown_until = 0.0  # OOM 冷却截止时间戳
-_ocr_max_pixels = 2_000_000  # GPU 推理最大像素面积（默认值，实际从配置读取）
+_ocr_max_pixels = 4_000_000  # GPU 推理最大像素面积（默认值，实际从配置读取）
 _ocr_cfg_cache = {}  # OCR 配置缓存
 
 
@@ -231,7 +231,7 @@ def _get_ocr_cfg() -> dict:
     except Exception:
         pass
     # 确保关键参数有默认值
-    _ocr_cfg_cache.setdefault("max_pixels", 2_000_000)
+    _ocr_cfg_cache.setdefault("max_pixels", 4_000_000)
     _ocr_cfg_cache.setdefault("box_thresh", 0.3)
     _ocr_cfg_cache.setdefault("text_score", 0.15)
     _ocr_cfg_cache.setdefault("mag_ratio", 1.5)
@@ -282,6 +282,31 @@ _OCR_CHAR_MAP = {
     'S': '5', 's': '5',  # S → 5
     'B': '8',            # B → 8
 }
+
+# 英文月份缩写映射（含常见 OCR 误读变体）
+# 车载 HMI / 手机状态栏常在时间上方显示英文月份，如 "Oct 9" "Nov 2026"
+_OCR_MONTH_MAP = {
+    # 标准缩写
+    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
+    'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
+    'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+    # 完整拼写（常见于系统 UI）
+    'january': 1, 'february': 2, 'march': 3, 'april': 4,
+    'june': 6, 'july': 7, 'august': 8,
+    'september': 9, 'october': 10, 'november': 11, 'december': 12,
+    # OCR 误读: O→Q/0, c→e, n→r, v→u/y, p→q
+    'qan': 1, 'qct': 10, '0ct': 10, '0et': 10,
+    'nou': 11, 'riov': 11,
+    'deo': 12, 'jar': 1, 'jari': 1,
+    'mau': 5, 'jur': 6,
+    'seq': 9, 'auq': 8, 'teb': 2,
+}
+# 构建月份正则（不区分大小写，优先匹配长词避免 "january" 被 "jan" 提前匹配）
+_MONTH_KEYS = sorted(_OCR_MONTH_MAP.keys(), key=len, reverse=True)
+_MONTH_RE = re.compile(
+    r'\b(' + '|'.join(re.escape(k) for k in _MONTH_KEYS) + r')[.]?\s*(\d{1,2})(?:[,.]\s*(\d{4}))?',
+    re.IGNORECASE
+)
 
 
 def _valid_ocr_time(time_str: str) -> bool:
@@ -4565,11 +4590,18 @@ def _run_ocr(engine, image, _already_enhanced: bool, tag: str = ""):
         logger.info("OCR 大图预缩放: %dx%d (%.1fMP→%.1fMP, tag=%s)",
                     w, h, pixel_area / 1e6, w * h / 1e6, tag)
 
-    # 仅对小尺寸原始帧放大，已二值化/锐化的图像跳过（ROI 已放大，跳过二次放大）
-    if not _already_enhanced and w < 1280:
-        mag_ratio = _mag
-        enlarged = cv2.resize(image, (int(w * mag_ratio), int(h * mag_ratio)),
-                              interpolation=cv2.INTER_CUBIC)
+    # 仅对小尺寸帧放大（1920 以内），提升小字号/低对比度时钟识别率
+    # 视频帧经 max_pixels 缩放后通常 ~1600px，仍需放大以改善 OCR
+    # 放大后像素上限 6M，避免 CPU 推理过慢（4.7M@1.5x 约 3-4s，可接受）
+    if not _already_enhanced and w < 1920:
+        _mag_pixels = int(w * _mag) * int(h * _mag)
+        if _mag_pixels <= 6_000_000:
+            mag_ratio = _mag
+            enlarged = cv2.resize(image, (int(w * mag_ratio), int(h * mag_ratio)),
+                                  interpolation=cv2.INTER_CUBIC)
+        else:
+            mag_ratio = 1.0
+            enlarged = image
     else:
         mag_ratio = 1.0
         enlarged = image
@@ -4690,20 +4722,23 @@ def _vote_from_texts(texts, ref_pool, gm_ref_dt, tol):
 def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     """对状态栏/任务栏等小区域做高倍 OCR
 
-    录屏时间通常出现在：手机顶部状态栏、Windows 右下角任务栏。
-    先裁这两块放大 2.5x 再识别，区域小、速度快、抗内容干扰。
+    录屏时间通常出现在：手机顶部状态栏、车载 HMI 中央顶部、Windows 右下角任务栏。
+    裁剪这些区域放大 2.5x 再识别，区域小、速度快、抗内容干扰。
     """
     import cv2
     parts = []
     try:
         h, w = frame.shape[:2]
+        # 扩展区域：车载 HMI 时钟常出现在顶部状态栏、中央顶部、右下任务栏
         regions = [
-            (0, 0, w, max(1, int(h * 0.10))),                 # 顶部状态栏
-            (int(w * 0.55), int(h * 0.75), w, h),             # 右下任务栏
+            (0, 0, w, max(1, int(h * 0.15))),                  # 顶部状态栏（扩展 10%→15%）
+            (int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),  # 中央顶部（车载 HMI 居中时钟）
+            (int(w * 0.55), int(h * 0.75), w, h),              # 右下任务栏
         ]
         if not status_only:
             regions = [
-                (0, 0, w, max(1, int(h * 0.10))),
+                (0, 0, w, max(1, int(h * 0.15))),
+                (int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),
                 (0, 0, int(w * 0.55), int(h * 0.55)),
                 (int(w * 0.55), int(h * 0.75), w, h),
                 (int(w * 0.40), int(h * 0.18), w, int(h * 0.70)),
@@ -4750,8 +4785,19 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
             except (ValueError, TypeError):
                 _r[2] = 0.0
     _avg_conf = sum((r[2] for r in results if len(r) > 2), 0) / max(len(results), 1) if results else 0
+    # 检查 RapidOCR 是否已识别到时间类文本（我们只关心时间，其他文本无用）
+    _rapid_has_time = False
+    if results:
+        import re as _re_check
+        _t_chk = _re_check.compile(r'\d[.:;,]\d{2}')
+        for _r in results:
+            if len(_r) > 1 and _t_chk.search(str(_r[1])):
+                _rapid_has_time = True
+                break
+    # RapidOCR 已识别到时间文本时跳过 EasyOCR 回退（节省 ~5s/帧，我们只需要时间）
+    _skip_easyocr = _rapid_has_time and not _already_enhanced
     # RapidOCR 失败或质量差时回退 EasyOCR（延迟初始化，避免不必要的模型下载）
-    if not results or _avg_conf < 0.3:
+    if not results or (_avg_conf < 0.3 and not _skip_easyocr):
         if reader is None:
             reader = _get_ocr_reader()
         if reader is not None:
@@ -4905,12 +4951,52 @@ def _fix_ocr_missing_colon(text: str) -> str:
     return _OCR_BARE_TIME_RE.sub(_try_insert_colon, text)
 
 
+def _current_year_for_ocr() -> int:
+    """获取当前年份，用于无年份的中文日期/英文月份补全"""
+    from datetime import datetime as _dt
+    return _dt.now().year
+
+
+def _fix_ocr_month_abbrev(text: str) -> str:
+    """将英文月份缩写（含 OCR 误读）转换为数字日期格式
+    如 "Oct 9" → "2026-10-9"（年份从上下文补充，无年份时用当前年）
+    "Oct 9, 2026 16:44" → "2026-10-9 16:44"（可被 _OCR_TIME_FULL_RE 匹配）
+    """
+    def _replace_month(m):
+        month_word = m.group(1).lower()
+        day = int(m.group(2))
+        year = m.group(3)  # 可能为 None
+        month = _OCR_MONTH_MAP.get(month_word)
+        if not month or day < 1 or day > 31:
+            return m.group(0)
+        if year:
+            return f"{year}-{month:02d}-{day:02d}"
+        # 无年份时，尝试从文本其他地方找 4 位年份
+        # 找不到则用当前年份（车载 HMI 通常显示当前日期）
+        _y = _current_year_for_ocr()
+        # 尝试从匹配位置前后找年份
+        _before = text[:m.start()]
+        _after = text[m.end():]
+        _yr_match = re.search(r'(20\d{2})', _before + _after)
+        if _yr_match:
+            _y = int(_yr_match.group(1))
+        return f"{_y}-{month:02d}-{day:02d}"
+    return _MONTH_RE.sub(_replace_month, text)
+
+
 def _preprocess_ocr_datetime(text: str) -> str:
     """OCR 日期时间预处理：修正年份、拆分日期与无分隔符时间
     用于正则匹配前的文本预处理，解决 6024-01-22172440 等极端 OCR 误识别
     """
     # 全角归一化（：→: 、；→: 、——→空格 等），与文本提取路径共享同一实现
     text = normalize_datetime_text(text)
+    # 英文月份缩写转换（Oct 9 → 2026-10-9，含 OCR 误读如 Qct → Oct）
+    text = _fix_ocr_month_abbrev(text)
+    # 中文日期关键字转换：2026年11月9日 → 2026-11-9（车载 HMI / 手机状态栏常见）
+    text = re.sub(r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日', r'\1-\2-\3', text)
+    # 中文仅月日：11月9日 → 当年-MM-DD（需配合后续年份补充逻辑）
+    text = re.sub(r'(?<!\d)(\d{1,2})\s*月\s*(\d{1,2})\s*日(?=[\s,，.\-]*\d{1,2}[.:;])',
+                  lambda m: f"{_current_year_for_ocr()}-{int(m.group(1)):02d}-{int(m.group(2)):02d}", text)
     # 3位年份补全：026-10-27 → 2026-10-27（OCR丢失首位数字的常见情况）
     text = re.sub(r'(?<!\d)(\d{3})(-\d{1,2}-\d{1,2})', r'2\1\2', text)
     # 修正年份（如 6024 → 2024）
@@ -6828,8 +6914,10 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
                     continue
                 # 收集完整文本用于时间正则匹配
                 full_text = " ".join(r[1] for r in results)
+                full_text = _fix_ocr_missing_colon(full_text)
+                full_text = _fix_ocr_char_confusion(full_text)
+                full_text = _preprocess_ocr_datetime(full_text)
                 preprocessed = _normalize_ocr_time(full_text)
-                preprocessed = _fix_ocr_missing_colon(preprocessed)
                 # 提取完整时间戳
                 times_found = []
                 for m in _OCR_TIME_FULL_RE.finditer(preprocessed):
