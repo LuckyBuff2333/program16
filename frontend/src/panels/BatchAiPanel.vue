@@ -614,6 +614,7 @@ export default {
       try {
         await this.batchAiSample();
         this.batchAi.selected = Array.from(new Set(this.batchAi.selected));
+        this.batchAi.filteredKeys = this.batchAi.filteredKeys.filter(k => !this.batchAi.selected.includes(k));
         if (!this.batchAi.selected.length) throw new Error('动态队列抽样结果为空');
         if (this.batchAi.execMode === 'online') await this.batchAiRunOnline(); else await this.batchAiRun();
         let inflight = [...this.batchAi.selected];
@@ -656,6 +657,7 @@ export default {
               });
               inflight.push(next);
               markInflight(next);
+              this.batchAi.filteredKeys = this.batchAi.filteredKeys.filter(k => k !== next);
             } catch (e) { submitFail += 1; }
           }
           this.batchAi.oneClickMsg = `动态队列：在途 ${inflight.length} | 已完成 ${doneTotal} | 待执行 ${pending.length}${submitFail ? ` | 提交失败 ${submitFail}` : ''}${timeoutCount ? ` | 超时 ${timeoutCount}` : ''}`;
@@ -697,7 +699,9 @@ export default {
           await this.batchAiSample();
           if (this.batchAi.stopRequested) { const e = new Error('stopped'); e.name = 'AbortError'; throw e; }
           if (!this.batchAi.selected.length) throw new Error(`${roundLabel}抽样结果为空`);
+          const _attempted = new Set(this.batchAi.selected);
           if (this.batchAi.execMode === 'online') { await this.batchAiRunOnline(); } else { await this.batchAiRun(); }
+          this.batchAi.filteredKeys = this.batchAi.filteredKeys.filter(k => !_attempted.has(k));
         };
         // 执行后从候选池中移除已执行的 Jira，缩小池子
         const shrinkPool = () => {

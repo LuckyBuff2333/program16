@@ -210,6 +210,9 @@ async def batch_ai_single(request: Request):
         return _fail("bugid 为空")
     if not exec_time:
         return _fail("trigger_time 为空")
+    _recent_left, _recent_skipped = _filter_recently_executed([bugid], ttl_seconds=_EXECUTED_TTL)
+    if _recent_skipped:
+        return _fail(f"{bugid} 最近已执行，跳过重复执行")
     if not _claim_single_submit(exec_mode, bugid):
         return _fail(f"{bugid} 刚刚已提交，跳过重复执行")
     try:
@@ -3175,6 +3178,9 @@ async def test_prod_batch_run(request: Request):
         if _dups:
             logger.warning("批量执行跳过最近已提交 Jira: %s", ",".join(_dups[:10]))
         run_bugids = _allowed_run
+        # 提交即视为已执行：即使后续分析失败，也不再被下一批/下一轮重复选中
+        if run_bugids:
+            _mark_executed(run_bugids)
         skipped_no_time = len(bugids) - len(run_bugids)
         yield f"data: {_json.dumps({'type': 'extract_done', 'total': len(run_bugids), 'with_time': len(trigger_times), 'without_time': skipped_no_time, 'skip_empty_mark': skip_empty_mark}, ensure_ascii=False)}\n\n"
         # 批量执行接口（支持PC/线上模式）
