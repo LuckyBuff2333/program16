@@ -4891,26 +4891,36 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
 
 
 def _is_ocr_time_related_text(text: str) -> bool:
-    """判断 OCR 文本块是否可能包含时间/日期信息。
+    """判断 OCR 文本块是否与时间提取有关。
 
-    整帧 OCR 仍会跑完整画面，但返回给后续时间解析前只保留时间相关块，
-    去掉按钮文案、车况、天气等无关文本，降低误匹配。
+    先用时间提取的兼容预处理（全角冒号、分号、英文月份、中文日期、
+    年份修正等）归一化，再判断；返回原始文本块本身。
+    除纯时间外，保留日期、年份、相对日期和 AM/PM 上下文，供后续补日期。
     """
     s = (text or "").strip()
     if not s:
         return False
-    if (_OCR_TIME_FULL_RE.search(s) or _OCR_TIME_ONLY_RE.search(s)
-            or _OCR_RELATIVE_DATE_TIME_RE.search(s)
-            or _OCR_BARE_TIME_RE.search(s) or _OCR_COMMA_TIME_RE.search(s)):
+    try:
+        norm = _preprocess_ocr_datetime(_fix_ocr_char_confusion(s))
+    except Exception:
+        norm = normalize_datetime_text(s)
+    if (_OCR_TIME_FULL_RE.search(norm) or _OCR_TIME_ONLY_RE.search(norm)
+            or _OCR_RELATIVE_DATE_TIME_RE.search(norm)
+            or _OCR_BARE_TIME_RE.search(norm) or _OCR_COMMA_TIME_RE.search(norm)):
         return True
-    if _MONTH_RE.search(s):
+    if _MONTH_RE.search(norm):
         return True
     # 中文日期 / 仅日期 / 单独年份（给“仅时间”补日期用）
-    if re.search(r'(?<!\d)(?:19|20)\d{2}\s*[-/.年]\s*\d{1,2}', s):
+    if re.search(r'(?<!\d)(?:19|20)\d{2}\s*[-/.年]\s*\d{1,2}', norm):
         return True
-    if re.search(r'(?<!\d)\d{1,2}\s*月\s*\d{1,2}\s*日', s):
+    if re.search(r'(?<!\d)\d{1,2}\s*月\s*\d{1,2}\s*日', norm):
         return True
-    if re.search(r'(?<!\d)(?:19|20)\d{2}(?!\d)', s):
+    if re.search(r'(?<!\d)(?:19|20)\d{2}(?!\d)', norm):
+        return True
+    # 相对日期 / 上下午 / 时间标签本身也可能是日期上下文
+    if re.search(r'昨天|今天|前天|大前天|上午|下午|晚上|凌晨|中午|AM|PM', norm, re.I):
+        return True
+    if re.search(r'触发时间|发生时间|问题时间|时间[:：]?|日期[:：]?', norm):
         return True
     return False
 
