@@ -411,10 +411,10 @@ def report_daily_refresh(date: str = Query(default=None, description="日期 YYY
         if bt_records:
             exec_time = exec_info.get("执行时间", "")
             candidates = [r for r in bt_records
-                         if r.get("分析完成时间", "") and r["分析完成时间"] >= exec_time]
+                         if r.get("分析开始时间", "") and r["分析开始时间"] >= exec_time]
             if not candidates:
                 candidates = bt_records
-            candidates.sort(key=lambda x: x.get("分析完成时间", ""))
+            candidates.sort(key=lambda x: x.get("分析开始时间", ""))
             bf = candidates[0]
             row.update(bf)
         else:
@@ -529,10 +529,10 @@ def report_daily_summary(date: str = Query(default=None, description="日期 YYY
             pending_count += 1
             continue
         candidates = [r for r in bt_records
-                     if r.get("分析完成时间", "") and r["分析完成时间"] >= exec_time]
+                     if r.get("分析开始时间", "") and r["分析开始时间"] >= exec_time]
         if not candidates:
             candidates = bt_records
-        candidates.sort(key=lambda x: x.get("分析完成时间", ""))
+        candidates.sort(key=lambda x: x.get("分析开始时间", ""))
         bf = candidates[0]
         result = bf.get("分析结果", "")
         if result == "成功":
@@ -894,7 +894,7 @@ def _dashboard_data_sync(date_str: str, force: bool = False):
                 b_ok = b_fail = b_miss = 0
                 b_fail_cats = {}
                 b_durations = []
-                latest_complete = ""  # 最晚分析完成时间
+                latest_complete = ""  # 最晚分析开始时间
                 for row in row_list:
                     jid = (row.get("jira号") or "").strip()
                     if not jid:
@@ -904,16 +904,16 @@ def _dashboard_data_sync(date_str: str, force: bool = False):
                         b_miss += 1
                         continue
                     exec_t = (row.get("执行时间") or "").strip()
-                    cands = [x for x in bt_recs if x.get("分析完成时间", "") and x["分析完成时间"] >= exec_t] if exec_t else []
+                    cands = [x for x in bt_recs if x.get("分析开始时间", "") and x["分析开始时间"] >= exec_t] if exec_t else []
                     if not cands:
                         cands = bt_recs
-                    cands.sort(key=lambda x: x.get("分析完成时间", ""))
+                    cands.sort(key=lambda x: x.get("分析开始时间", ""))
                     bf = cands[0] if exec_t and cands else cands[-1]  # 执行时间之后最接近的一条
                     dur = _parse_dur_sec(bf.get("分析耗时", ""))
                     if dur > 0:
                         b_durations.append(dur)
-                    # 追踪最晚分析完成时间
-                    ct = bf.get("分析完成时间", "")
+                    # 追踪最晚分析开始时间
+                    ct = bf.get("分析开始时间", "")
                     if ct and ct > latest_complete:
                         latest_complete = ct
                     if bf.get("分析结果", "") == "成功":
@@ -1036,7 +1036,7 @@ def dashboard_task_overview(
                 if jk and jk in id_set:
                     bt_map.setdefault(jk, []).append({
                         "result": _bt(fields.get("分析结果", "")).strip(),
-                        "done_time": _bt(fields.get("分析完成时间", "")).strip(),
+                        "done_time": _bt(fields.get("分析开始时间", "")).strip(),
                         "duration": _bt(fields.get("分析耗时", "")).strip(),
                         "error_info": (_bt(fields.get("错误信息", "")) or "")[:120],
                         "human_review": _bt(fields.get("人工审核结果", "")).strip(),
@@ -1049,7 +1049,7 @@ def dashboard_task_overview(
         exec_info = jira_exec[jid]
         exec_time = exec_info["exec_time"]
         recs = bt_map.get(jid, [])
-        # 按分析完成时间筛选：只取执行时间之后的记录
+        # 按分析开始时间筛选：只取执行时间之后的记录
         matched = [r for r in recs if r["done_time"] and r["done_time"] >= exec_time] if exec_time else recs
         if not matched:
             matched = recs  # 回退到全部记录
@@ -1268,7 +1268,7 @@ def dashboard_batch_detail(
     bt_ok = bt_fail = bt_miss = 0
     fail_cats = {}
     durations = []
-    latest_complete = ""  # 最晚分析完成时间
+    latest_complete = ""  # 最晚分析开始时间
     try:
         from src.clients import feishu_client
         from src.services.report_ops import (
@@ -1297,17 +1297,17 @@ def dashboard_batch_detail(
                     bt_miss += 1
                     continue
                 exec_t = r.get("执行时间", "")
-                cands = [x for x in bt_recs if x.get("分析完成时间", "") and x["分析完成时间"] >= exec_t] if exec_t else []
+                cands = [x for x in bt_recs if x.get("分析开始时间", "") and x["分析开始时间"] >= exec_t] if exec_t else []
                 if not cands:
                     cands = bt_recs
-                cands.sort(key=lambda x: x.get("分析完成时间", ""))
+                cands.sort(key=lambda x: x.get("分析开始时间", ""))
                 bf = cands[0] if exec_t and cands else cands[-1]  # 执行时间之后最接近的一条
                 result = bf.get("分析结果", "")
                 dur = _parse_dur_sec(bf.get("分析耗时", ""))
                 if dur > 0:
                     durations.append(dur)
-                # 追踪最晚分析完成时间
-                ct = bf.get("分析完成时间", "")
+                # 追踪最晚分析开始时间
+                ct = bf.get("分析开始时间", "")
                 if ct and ct > latest_complete:
                     latest_complete = ct
                 if result == "成功":

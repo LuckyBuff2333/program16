@@ -24,7 +24,6 @@ params:
 # ── OCR 配置（各机器独立，不跟随云端） ──
 ocr:
   engine: v5                  # OCR 引擎版本: v5(PP-OCRv5) / v4(PP-OCRv4)
-  max_pixels: 4000000         # GPU 推理最大像素面积（无 GPU 时可忽略，CPU 模式建议 4M 以保留小文字）
   box_thresh: 0.3             # 检测阈值
   text_score: 0.15            # 文本分数阈值
   mag_ratio: 1.5              # 小图像放大比例（提升小字号识别率）

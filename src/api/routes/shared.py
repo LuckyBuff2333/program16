@@ -351,7 +351,7 @@ def flatten_bitable_record(fields: dict, report_field: str) -> dict:
         "分析结果": bitable_text(pick("分析结果")),
         "错误信息": bitable_text(pick("错误信息")),
         "分析问题时间": bitable_text(pick("分析问题时间")),
-        "分析完成时间": bitable_text(pick("分析完成时间")),
+        "分析开始时间": bitable_text(pick("分析开始时间")),
         "分析耗时": bitable_text(pick("分析耗时")),
         "总耗时": bitable_text(pick("总耗时")),
         "飞书报告链接": report_link,

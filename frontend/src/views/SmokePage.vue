@@ -103,7 +103,7 @@
           <template #default="{row}">{{ computeSmokeDuration(row) }}</template>
         </el-table-column>
         <el-table-column prop="分析问题时间" label="分析问题时间" width="160"></el-table-column>
-        <el-table-column prop="分析完成时间" label="分析完成时间" width="160"></el-table-column>
+        <el-table-column prop="分析开始时间" label="分析开始时间" width="160"></el-table-column>
         <el-table-column label="置信度" width="90" align="center">
           <template #default="{row}">
             <el-tag v-if="row['结果置信度']" :type="parseFloat(row['结果置信度'])>=0.8?'success':parseFloat(row['结果置信度'])>=0.5?'warning':'info'" size="small">{{ row['结果置信度'] }}</el-tag>
@@ -307,7 +307,7 @@ export default {
     computeSmokeDuration(row: any): string {
       const dur = row['分析耗时'];
       if (dur && dur !== '-' && dur.trim()) return dur;
-      const start = row['分析问题时间'], end = row['分析完成时间'];
+      const start = row['分析问题时间'], end = row['分析开始时间'];
       if (!start || !end) return '-';
       try {
         const s = new Date(start.replace(' ', 'T')), e = new Date(end.replace(' ', 'T'));

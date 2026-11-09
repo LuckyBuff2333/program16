@@ -70,14 +70,14 @@
             <el-table-column prop="exec_time" label="执行时间" width="180" />
             <el-table-column prop="trigger_time" label="触发时间" min-width="180" />
           </template>
-          <!-- 待办：分析完成时间、错误信息 -->
+          <!-- 待办：分析开始时间、错误信息 -->
           <template v-else-if="activeCat === 'investigate'">
-            <el-table-column prop="done_time" label="分析完成时间" width="180" />
+            <el-table-column prop="done_time" label="分析开始时间" width="180" />
             <el-table-column prop="error_info" label="错误信息" min-width="260" show-overflow-tooltip />
           </template>
-          <!-- 待重试：分析完成时间、人工审核结果 -->
+          <!-- 待重试：分析开始时间、人工审核结果 -->
           <template v-else-if="activeCat === 'retry'">
-            <el-table-column prop="done_time" label="分析完成时间" width="180" />
+            <el-table-column prop="done_time" label="分析开始时间" width="180" />
             <el-table-column prop="human_review" label="人工审核结果" min-width="200" show-overflow-tooltip />
           </template>
         </el-table>
@@ -213,7 +213,7 @@
         <el-tab-pane label="错误统计" name="error_stats">
           <div style="padding:12px 0">
             <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">
-              <el-date-picker v-model="errorStats.afterTime" type="datetime" placeholder="分析完成时间起点（留空则全量）"
+              <el-date-picker v-model="errorStats.afterTime" type="datetime" placeholder="分析开始时间起点（留空则全量）"
                 format="YYYY-MM-DD HH:mm" value-format="YYYY-MM-DD HH:mm:ss" size="default" style="width:280px" clearable></el-date-picker>
               <el-button type="primary" :loading="errorStats.querying" @click="queryErrorStats(true)">按时间查询</el-button>
               <el-button :loading="errorStats.querying" @click="queryErrorStats(false)">全量查询</el-button>
@@ -590,7 +590,7 @@ export default {
     },
     async queryErrorStats(useTime: any) {
       const afterTime = useTime ? (this.errorStats.afterTime || '') : '';
-      if (useTime && !afterTime) return ElMessage.warning('请选择分析完成时间起点');
+      if (useTime && !afterTime) return ElMessage.warning('请选择分析开始时间起点');
       this.errorStats.querying = true;
       this.errorStats.records = [];
       this.errorStats.queryMsg = '';

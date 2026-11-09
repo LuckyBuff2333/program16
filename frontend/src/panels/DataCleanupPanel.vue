@@ -42,7 +42,6 @@
           </template>
         </el-table-column>
         <el-table-column prop="分析开始时间" label="失败开始时间" width="165" />
-        <el-table-column prop="分析完成时间" label="失败完成时间" width="165" />
         <el-table-column prop="后续成功时间" label="后续成功时间" width="165" />
         <el-table-column prop="错误分类" label="错误分类" min-width="180" show-overflow-tooltip />
         <el-table-column prop="人工审核结果" label="人工审核结果" min-width="220" show-overflow-tooltip />

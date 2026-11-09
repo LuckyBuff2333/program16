@@ -79,7 +79,7 @@ async def tuning_analyze(request: Request):
             bt_records = bt_map.get(jira_no, [])
             if not bt_records:
                 continue
-            bt_records.sort(key=lambda x: x.get("分析完成时间", ""))
+            bt_records.sort(key=lambda x: x.get("分析开始时间", ""))
             bf = bt_records[-1]
             result_status = bf.get("分析结果", "")
             if result_status == "成功":

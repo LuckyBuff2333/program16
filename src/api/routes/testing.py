@@ -1585,7 +1585,7 @@ async def test_batch_quality_assess(request: Request):
         jid = _bitable_text(fields.get("jira号", ""))
         if jid not in jira_set:
             continue
-        dt = _bitable_text(fields.get("分析完成时间", ""))
+        dt = _bitable_text(fields.get("分析开始时间", ""))
         if dt > latest_done:
             latest_done = dt
         if not _bitable_text(fields.get("分析问题时间", "")).strip():
@@ -2736,7 +2736,7 @@ async def test_prod_csv_bitable(request: Request):
                 jira_key = _bitable_text(fields.get(bugid_field, ""))
                 if not jira_key or jira_key not in jira_set:
                     continue
-                rec_done = _bitable_text(fields.get("分析完成时间", ""))
+                rec_done = _bitable_text(fields.get("分析开始时间", ""))
                 if batch_exec_time and rec_done and rec_done < batch_exec_time:
                     continue
                 flat = _flatten_bitable_record(fields, report_field)
@@ -2752,7 +2752,7 @@ async def test_prod_csv_bitable(request: Request):
         jira_no = item["jira号"]
         bt_list = bitable_map.get(jira_no, [])
         if bt_list:
-            bt_list.sort(key=lambda x: x.get("分析完成时间", ""))
+            bt_list.sort(key=lambda x: x.get("分析开始时间", ""))
             bf = bt_list[0]
             results.append({
                 "jira号": jira_no,
@@ -2765,7 +2765,7 @@ async def test_prod_csv_bitable(request: Request):
                 "飞书报告链接": bf.get("飞书报告链接", ""),
                 "错误信息": bf.get("错误信息", ""),
                 "分析问题时间": bf.get("分析问题时间", ""),
-                "分析完成时间": bf.get("分析完成时间", ""),
+                "分析开始时间": bf.get("分析开始时间", ""),
                 "人工审核结果": bf.get("人工审核结果", ""),
                 "备注": item["备注"],
             })
@@ -2775,7 +2775,7 @@ async def test_prod_csv_bitable(request: Request):
                 "执行结果": item["执行结果"],
                 "分析结果": "", "触发来源": "", "结果置信度": "",
                 "rootcause": "", "AI评论总结": "", "飞书报告链接": "",
-                "错误信息": "", "分析问题时间": "", "分析完成时间": "",
+                "错误信息": "", "分析问题时间": "", "分析开始时间": "",
                 "人工审核结果": "", "备注": item["备注"],
             })
     matched = len(jira_set & set(bitable_map.keys()))
@@ -3771,10 +3771,10 @@ def online_followup_compare(request: Request):
             continue
         result_status = _bitable_text(fields.get("分析结果", ""))
         source = _bitable_text(fields.get("触发来源", ""))
-        done_time = _bitable_text(fields.get("分析完成时间", ""))
+        done_time = _bitable_text(fields.get("分析开始时间", ""))
         entry = {
             "jira号": jira_no, "分析结果": result_status, "触发来源": source,
-            "分析完成时间": done_time,
+            "分析开始时间": done_time,
             "触发时间": _bitable_text(fields.get("分析问题时间", "")),
             "错误信息": _bitable_text(fields.get("错误信息", "")),
         }
@@ -3803,7 +3803,7 @@ def online_followup_compare(request: Request):
             status = "线上未执行"
             err = ""
         diff_records.append({
-            "jira号": k, "pc分析完成时间": pc_entry["分析完成时间"],
+            "jira号": k, "pc分析开始时间": pc_entry["分析开始时间"],
             "触发时间": pc_entry["触发时间"],
             "线上状态": status, "线上错误信息": err,
         })
@@ -4643,7 +4643,7 @@ async def smoke_test_query(request: Request):
     jira_ids = [b.strip().upper() for b in (body.get("jira_ids") or []) if b.strip()]
     if not jira_ids:
         return _fail("请输入 Jira 号")
-    exec_time = (body.get("exec_time") or "").strip()  # 执行时间，过滤分析完成时间 >= 此时间的记录
+    exec_time = (body.get("exec_time") or "").strip()  # 执行时间，过滤分析开始时间 >= 此时间的记录
     from src.clients import feishu_client
     cfg = load_config().get("feishu_bitable", {})
     app_token = cfg.get("app_token", "")
@@ -4664,17 +4664,17 @@ async def smoke_test_query(request: Request):
         jira_no = _bitable_text(fields.get(bugid_field, ""))
         if not jira_no or jira_no not in target_set:
             continue
-        done_time = _bitable_text(fields.get("分析完成时间", ""))
-        # 有执行时间时，仅保留分析完成时间 >= 执行时间的记录
+        done_time = _bitable_text(fields.get("分析开始时间", ""))
+        # 有执行时间时，仅保留分析开始时间 >= 执行时间的记录
         if exec_time and done_time and done_time < exec_time:
             continue
         prev = picked.get(jira_no)
-        if prev is None or done_time < prev.get("分析完成时间", ""):
+        if prev is None or done_time < prev.get("分析开始时间", ""):
             # 取 exec_time 之后最早的一条（最接近执行时间的）
             row = _flatten_bitable_record(fields, report_field)
             row["jira号"] = jira_no
             picked[jira_no] = row
-    rows = sorted(picked.values(), key=lambda r: r.get("分析完成时间", ""))
+    rows = sorted(picked.values(), key=lambda r: r.get("分析开始时间", ""))
     return _ok({"rows": rows, "count": len(rows)},
                f"查询到 {len(rows)} 条记录（共 {len(jira_ids)} 个 Jira 号）")
 
@@ -4818,7 +4818,7 @@ async def error_stats_query(request: Request):
         if not jira_no:
             continue
         result_status = _bitable_text(fields.get("分析结果", ""))
-        done_time = _bitable_text(fields.get("分析完成时间", ""))
+        done_time = _bitable_text(fields.get("分析开始时间", ""))
         # 时间过滤
         if cutoff and done_time:
             done_dt = _ts_parse_datetime(done_time)
@@ -6537,7 +6537,7 @@ async def data_cleanup_preview(request: Request):
         src = _txt(f.get("触发来源")).strip()
         if source and src != source:
             continue
-        t = _parse(f.get("分析完成时间"))
+        t = _parse(f.get("分析开始时间"))
         j = _txt(f.get("jira号")).strip()
         if t and j:
             success[(j, src)] = max(success.get((j, src), t), t)
@@ -6551,7 +6551,7 @@ async def data_cleanup_preview(request: Request):
         if source and src != source:
             continue
         st = _parse(f.get("分析开始时间"))
-        ft = _parse(f.get("分析完成时间"))
+        ft = _parse(f.get("分析开始时间"))
         j = _txt(f.get("jira号")).strip()
         if not j or not st or st < start or st > end:
             continue
@@ -6563,7 +6563,6 @@ async def data_cleanup_preview(request: Request):
             "jira号": j,
             "触发来源": src,
             "分析开始时间": _txt(f.get("分析开始时间")),
-            "分析完成时间": _txt(f.get("分析完成时间")),
             "后续成功时间": ok_t.strftime("%Y-%m-%d %H:%M:%S"),
             "错误分类": _txt(f.get("错误分类")) or _txt(f.get("错误信息")),
             "人工审核结果": _txt(f.get("人工审核结果")),

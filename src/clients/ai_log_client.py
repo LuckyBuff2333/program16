@@ -294,7 +294,7 @@ def _extract_field_text(value) -> str:
 
 
 def _pick_best_record(records: list, api_trigger_time: datetime) -> Optional[dict]:
-    """从多条匹配记录中选取分析完成时间最接近 API 触发时间的记录
+    """从多条匹配记录中选取分析开始时间最接近 API 触发时间的记录
 
     :param records: bugid 匹配的所有记录
     :param api_trigger_time: AI 分析接口触发时间
@@ -304,12 +304,12 @@ def _pick_best_record(records: list, api_trigger_time: datetime) -> Optional[dic
         return None
     if len(records) == 1:
         return records[0]
-    # 多条记录：按分析完成时间与触发时间的差值排序，取最近
+    # 多条记录：按分析开始时间与触发时间的差值排序，取最近
     best = None
     best_diff = float("inf")
     for rec in records:
         fields = rec.get("fields", {})
-        finish_str = _extract_field_text(fields.get("分析完成时间"))
+        finish_str = _extract_field_text(fields.get("分析开始时间"))
         if not finish_str:
             continue
         try:
@@ -331,7 +331,7 @@ def _poll_feishu_bitable(bugid: str, api_trigger_time: datetime = None,
     """监听飞书多维表格更新，查找对应 bugid 的分析结果
 
     轮询策略：第1分钟首查（快速发现失败），然后第6/7/8/9/10分钟各查一次。
-    匹配逻辑：同一 bugid 多条记录时，选取分析完成时间最接近 API 触发时间的记录。
+    匹配逻辑：同一 bugid 多条记录时，选取分析开始时间最接近 API 触发时间的记录。
     失败即停：分析结果=失败时直接返回错误，停止后续链路。
     :param api_trigger_time: AI 分析接口调用时间，用于匹配最新记录
     :param cancel_check: 可选回调函数，返回 True 表示需要取消
@@ -369,7 +369,7 @@ def _poll_feishu_bitable(bugid: str, api_trigger_time: datetime = None,
                     fields = record.get("fields", {})
                     result_status = _extract_field_text(fields.get("分析结果"))
                     error_msg = _extract_field_text(fields.get("错误信息"))
-                    finish_time = _extract_field_text(fields.get("分析完成时间"))
+                    finish_time = _extract_field_text(fields.get("分析开始时间"))
                     duration = _extract_field_text(fields.get("分析耗时"))
                     source = _extract_field_text(fields.get("触发来源"))
                     # 分析结果为失败：立即停止，返回错误信息
@@ -378,7 +378,7 @@ def _poll_feishu_bitable(bugid: str, api_trigger_time: datetime = None,
                                        bugid, error_msg, duration)
                         return {"code": -1, "msg": f"AI分析失败: {error_msg}",
                                 "data": {"分析结果": "失败", "错误信息": error_msg,
-                                          "分析耗时": duration, "分析完成时间": finish_time,
+                                          "分析耗时": duration, "分析开始时间": finish_time,
                                           "触发来源": source},
                                 "source": "feishu_bitable"}
                     # 分析结果为成功或无状态：提取报告
@@ -391,7 +391,7 @@ def _poll_feishu_bitable(bugid: str, api_trigger_time: datetime = None,
                                 result_status or "未标记", len(report or ""))
                     return {"code": 0,
                             "data": {"report": report, "分析结果": result_status or "成功",
-                                      "分析耗时": duration, "分析完成时间": finish_time,
+                                      "分析耗时": duration, "分析开始时间": finish_time,
                                       "触发来源": source, "错误信息": error_msg},
                             "source": "feishu_bitable"}
             except Exception as e:

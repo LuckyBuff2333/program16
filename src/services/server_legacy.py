@@ -8665,7 +8665,7 @@ def _bot_compare_pc_online() -> dict:
         source = _bitable_text(fields.get("触发来源", ""))
         entry = {
             "jira号": jira_no, "分析结果": result_status, "触发来源": source,
-            "分析完成时间": _bitable_text(fields.get("分析完成时间", "")),
+            "分析开始时间": _bitable_text(fields.get("分析开始时间", "")),
             "触发时间": _bitable_text(fields.get("分析问题时间", "")),
             "错误信息": _bitable_text(fields.get("错误信息", "")),
         }
@@ -8691,7 +8691,7 @@ def _bot_compare_pc_online() -> dict:
             status = "线上未执行"
             err = ""
         diff_records.append({
-            "jira号": k, "pc分析完成时间": pc_entry["分析完成时间"],
+            "jira号": k, "pc分析开始时间": pc_entry["分析开始时间"],
             "触发时间": pc_entry["触发时间"],
             "线上状态": status, "线上错误信息": err,
         })

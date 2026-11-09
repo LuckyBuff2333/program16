@@ -269,7 +269,7 @@ def _format_dur(sec: float) -> str:
 
 
 def _generate_daily_report_from_table(date_str: str) -> dict:
-    """每日播报：直接统计数据沉淀中分析完成时间落在报告日期范围内的记录。
+    """每日播报：直接统计数据沉淀中分析开始时间落在报告日期范围内的记录。
 
     不再依赖批量执行记录里的 Jira 号；失败与待分析统一计入失败数。
     """
@@ -301,7 +301,7 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
             records = feishu_client.list_bitable_records(app_token, table_id)
             for rec in records:
                 fields = rec.get("fields", {})
-                completed = _bitable_text(fields.get("分析完成时间", "")).strip()
+                completed = _bitable_text(fields.get("分析开始时间", "")).strip()
                 if not completed or completed[:10] not in date_set:
                     continue
                 version = _bitable_text(fields.get("版本号", "")).strip()
@@ -309,7 +309,7 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
                     continue
                 row = _flatten_bitable_record_all(fields, report_field)
                 row["jira号"] = _bitable_text(fields.get(bugid_field, "")) or row.get("jira号", "")
-                row["分析完成时间"] = completed[:19]
+                row["分析开始时间"] = completed[:19]
                 # 同一 Jira 可能因重试产生多条记录：优先人工审核记录，其次最新完成
                 prev = next((r for r in rows if r.get("jira号") == row["jira号"]), None)
                 if prev is None:
@@ -318,9 +318,9 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
                     prev_review = _bitable_text(prev.get("人工审核结果", "")).strip()
                     cur_review = _bitable_text(row.get("人工审核结果", "")).strip()
                     prev_score = (1 if prev_review and prev_review not in ("-", "None") else 0,
-                                  prev.get("分析完成时间", ""))
+                                  prev.get("分析开始时间", ""))
                     cur_score = (1 if cur_review and cur_review not in ("-", "None") else 0,
-                                 row.get("分析完成时间", ""))
+                                 row.get("分析开始时间", ""))
                     if cur_score > prev_score:
                         rows[rows.index(prev)] = row
         except Exception as e:
@@ -381,21 +381,8 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
                         or "待人工排查" in human_review):
                     is_todo = True
             if is_todo:
-                # 执行时间=分析开始时间：分析完成时间 - 分析耗时
-                _done = str(row.get("分析完成时间", "") or "")
-                _dur_raw = str(row.get("分析耗时", "") or row.get("总耗时", "")).strip()
-                if _dur_raw.replace(".", "", 1).isdigit():
-                    # 数据沉淀里的纯数字耗时单位为分钟
-                    _dur = float(_dur_raw) * 60
-                else:
-                    _dur = _parse_dur_sec(_dur_raw)
-                _start = _done
-                if _done and _dur > 0:
-                    try:
-                        _start = (datetime.strptime(_done[:19], "%Y-%m-%d %H:%M:%S")
-                                  - timedelta(seconds=_dur)).strftime("%Y-%m-%d %H:%M:%S")
-                    except ValueError:
-                        pass
+                # 执行时间直接使用分析开始时间
+                _start = str(row.get("分析开始时间", "") or "")
                 todo_items.append({
                     "jira号": row.get("jira号", ""),
                     "reason": f"分析失败: {cat}",
@@ -519,10 +506,10 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
         if bt_records:
             exec_time = exec_info.get("执行时间", "")
             candidates = [r for r in bt_records
-                         if r.get("分析完成时间", "") and r["分析完成时间"] >= exec_time]
+                         if r.get("分析开始时间", "") and r["分析开始时间"] >= exec_time]
             if not candidates:
                 candidates = bt_records
-            candidates.sort(key=lambda x: x.get("分析完成时间", ""))
+            candidates.sort(key=lambda x: x.get("分析开始时间", ""))
             # 智能去重：有成功则取成功，否则取最后一次失败
             success_records = [r for r in candidates if r.get("分析结果", "") == "成功"]
             if success_records:

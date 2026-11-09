@@ -964,7 +964,7 @@ def find_records_by_bugid(bugid: str, app_token: str = None,
                           table_id: str = None, view_id: str = None) -> list:
     """在多维表格中查找指定 bugid 的所有匹配记录
 
-    用于同一 bugid 存在多条记录时（如多次执行），按分析完成时间筛选最新记录。
+    用于同一 bugid 存在多条记录时（如多次执行），按分析开始时间筛选最新记录。
     :return: 匹配的记录列表，未找到返回空列表
     """
     cfg = _get_bitable_cfg()

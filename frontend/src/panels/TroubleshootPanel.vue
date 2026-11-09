@@ -54,7 +54,7 @@
               <span v-else>{{ row['触发来源'] || '-' }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="分析完成时间" label="分析完成时间" width="160"></el-table-column>
+          <el-table-column prop="分析开始时间" label="分析开始时间" width="160"></el-table-column>
           <el-table-column prop="错误分类" label="错误分类" min-width="180" show-overflow-tooltip></el-table-column>
           <el-table-column prop="人工审核结果" label="人工审核结果" min-width="220" show-overflow-tooltip></el-table-column>
         </el-table>
@@ -66,7 +66,7 @@
         <el-table-column prop="分析结果" label="分析结果" width="90">
           <template #default="{row}"><el-tag :type="row['分析结果']==='成功'?'success':'danger'" size="small">{{ row['分析结果'] || '-' }}</el-tag></template>
         </el-table-column>
-        <el-table-column prop="分析完成时间" label="分析完成时间" width="160"></el-table-column>
+        <el-table-column prop="分析开始时间" label="分析开始时间" width="160"></el-table-column>
         <el-table-column prop="分析问题时间" label="分析问题时间" width="160"></el-table-column>
         <el-table-column prop="错误信息" label="错误信息" min-width="220" show-overflow-tooltip></el-table-column>
         <el-table-column prop="触发来源" label="触发来源" width="100">
@@ -112,7 +112,7 @@
           <el-table-column prop="分析结果" label="分析结果" width="90">
             <template #default="{row}"><el-tag type="success" size="small">{{ row['分析结果'] }}</el-tag></template>
           </el-table-column>
-          <el-table-column prop="分析完成时间" label="分析完成时间" width="160"></el-table-column>
+          <el-table-column prop="分析开始时间" label="分析开始时间" width="160"></el-table-column>
           <el-table-column prop="分析问题时间" label="分析问题时间" width="160"></el-table-column>
           <el-table-column prop="错误信息" label="错误信息" min-width="200" show-overflow-tooltip></el-table-column>
           <el-table-column prop="触发来源" label="触发来源" width="100">
@@ -205,7 +205,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="done_time" label="分析完成时间" width="160"></el-table-column>
+        <el-table-column prop="done_time" label="分析开始时间" width="160"></el-table-column>
       </el-table>
     </el-card>
 
@@ -326,7 +326,7 @@
         <el-table-column prop="分析结果" label="分析结果" width="90">
           <template #default="{row}"><el-tag :type="row['分析结果']==='成功'?'success':'danger'" size="small">{{ row['分析结果'] || '-' }}</el-tag></template>
         </el-table-column>
-        <el-table-column prop="分析完成时间" label="分析完成时间" width="160"></el-table-column>
+        <el-table-column prop="分析开始时间" label="分析开始时间" width="160"></el-table-column>
         <el-table-column prop="分析问题时间" label="分析问题时间" width="160"></el-table-column>
         <el-table-column prop="错误信息" label="错误信息" min-width="220" show-overflow-tooltip></el-table-column>
         <el-table-column prop="人工审核结果" label="人工" width="100" show-overflow-tooltip>
@@ -418,7 +418,7 @@
                   </el-popover><span v-else>-</span>
                 </template>
               </el-table-column>
-              <el-table-column prop="分析完成时间" label="分析完成时间" width="160" sortable show-overflow-tooltip></el-table-column>
+              <el-table-column prop="分析开始时间" label="分析开始时间" width="160" sortable show-overflow-tooltip></el-table-column>
             </el-table>
             <el-card v-if="batchHistory.assessResult" shadow="never" style="margin-top:10px;padding:6px 0">
               <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -648,7 +648,7 @@ export default {
         } else { signal = abortSig || timeoutSig || undefined; }
         const body = await api('/api/troubleshoot/diagnose', {
           method: 'POST',
-          body: JSON.stringify({ bugid, err_msg: row['错误信息'] || '', error_class: row['错误分类'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析完成时间'] || '', force, skip_video_cache: skipVideoCache, boot_id: this.troubleshoot.bootId || '', human_review: row['人工审核结果'] || '' }),
+          body: JSON.stringify({ bugid, err_msg: row['错误信息'] || '', error_class: row['错误分类'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析开始时间'] || '', force, skip_video_cache: skipVideoCache, boot_id: this.troubleshoot.bootId || '', human_review: row['人工审核结果'] || '' }),
           signal,
         });
         const d = body.data || {};
@@ -670,7 +670,7 @@ export default {
           const idx = this.troubleshoot.diagResults.findIndex(r => r.bugid === bugid);
           const fallback = { bugid, category: '诊断超时', problem_time: row['分析问题时间'] || '',
             archive_files: [], detail: '诊断接口响应超时（15分钟），请稍后重试',
-            verify_status: '', suggested_time: '', report: {}, done_time: row['分析完成时间'] || '' };
+            verify_status: '', suggested_time: '', report: {}, done_time: row['分析开始时间'] || '' };
           if (idx >= 0) { this.troubleshoot.diagResults.splice(idx, 1, fallback); }
           else { this.troubleshoot.diagResults.push(fallback); }
           return;
@@ -686,7 +686,7 @@ export default {
         const idx = this.troubleshoot.diagResults.findIndex(r => r.bugid === bugid);
         const fallback = { bugid, category: '诊断异常', problem_time: row['分析问题时间'] || '',
           archive_files: [], detail: `诊断请求异常: ${msg || e?.name || '未知错误'}`,
-          verify_status: '', suggested_time: '', report: {}, done_time: row['分析完成时间'] || '' };
+          verify_status: '', suggested_time: '', report: {}, done_time: row['分析开始时间'] || '' };
         if (idx >= 0) { this.troubleshoot.diagResults.splice(idx, 1, fallback); }
         else { this.troubleshoot.diagResults.push(fallback); }
       }
@@ -718,7 +718,7 @@ export default {
         await this.ensureBootId();
         const body = await api('/api/troubleshoot/diagnose', {
           method: 'POST',
-          body: JSON.stringify({ bugid: row['jira号'], err_msg: row['错误信息'] || '', error_class: row['错误分类'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析完成时间'] || '', boot_id: this.troubleshoot.bootId || '' })
+          body: JSON.stringify({ bugid: row['jira号'], err_msg: row['错误信息'] || '', error_class: row['错误分类'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析开始时间'] || '', boot_id: this.troubleshoot.bootId || '' })
         });
         st.diagResult = body.data || {};
         ElMessage.success(`${row['jira号']} 诊断完成：${st.diagResult.category || ''}`);
@@ -915,7 +915,7 @@ export default {
             records: uniqueTargets.map(r => ({
               bugid: r['jira号'], err_msg: r['错误信息'] || '',
               error_class: r['错误分类'] || '',
-              human_review: r['人工审核结果'] || '', done_time: r['分析完成时间'] || '',
+              human_review: r['人工审核结果'] || '', done_time: r['分析开始时间'] || '',
               problem_time: r['分析问题时间'] || '',
             })),
           }),
@@ -1029,7 +1029,7 @@ export default {
       this.troubleshoot.editingSkipBugid = row.bugid;
       this.troubleshoot.editingSkipReason = (row.report && row.report.human_reason) || '';
     },
-    // 需分析表格行样式：分析完成时间与错误时间不同，或已保存人工审核时标绿
+    // 需分析表格行样式：分析开始时间与错误时间不同，或已保存人工审核时标绿
     diagRowClassName({ row }) {
       const hasReview = row.report && row.report.human_reason;
       const timeDiff = row.done_time && row.problem_time && row.done_time !== row.problem_time;
@@ -1155,7 +1155,7 @@ export default {
         const records = targets.map(r => ({
           bugid: r['jira号'], err_msg: r['错误信息'] || '',
           error_class: r['错误分类'] || '',
-          human_review: r['人工审核结果'] || '', done_time: r['分析完成时间'] || '',
+          human_review: r['人工审核结果'] || '', done_time: r['分析开始时间'] || '',
           problem_time: r['分析问题时间'] || '',
         }));
         const body = await api('/api/troubleshoot/batch_pre_classify', {
@@ -1242,7 +1242,7 @@ export default {
         while (queue.length && !this.troubleshoot.stopFlag) {
           const d = queue.shift();
           const origRow = this.troubleshoot.records.find(r => r['jira号'] === d.bugid);
-          const row = origRow || { 'jira号': d.bugid, '错误信息': '', '分析问题时间': d.problem_time || '', '分析完成时间': d.done_time || '' };
+          const row = origRow || { 'jira号': d.bugid, '错误信息': '', '分析问题时间': d.problem_time || '', '分析开始时间': d.done_time || '' };
           await this._diagnoseRow(row, true, this.troubleshoot.skipVideoCache);
         }
       };
@@ -1310,7 +1310,7 @@ export default {
         .filter(r => r.category === '触发时间问题' || r.category?.includes('触发时间') || r.category?.includes('解压问题'))
         .filter(r => r.verify_status !== 'manual')
         .map(r => ({
-          jira号: r.bugid, 问题归类: r.category, 分析完成时间: r.done_time || '',
+          jira号: r.bugid, 问题归类: r.category, 分析开始时间: r.done_time || '',
           错误时间: formatMinute(r.problem_time || ''), 诊断详情: r.detail || '',
           修正建议: formatMinute(r.suggested_time || ''),
           人工审核结果: formatHumanReason((r.report && r.report.human_reason) || r.correction_note || ''),

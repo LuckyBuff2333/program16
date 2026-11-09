@@ -141,7 +141,7 @@ def _resolve_bugid_field(cfg: dict, fields: dict = None) -> str:
 
 def _extract_record_row(fields: dict, cfg: dict) -> dict:
     """从飞书记录字段提取标准化的排查行"""
-    done_dt = _ts_parse_datetime(fields.get("分析完成时间", ""))
+    done_dt = _ts_parse_datetime(fields.get("分析开始时间", ""))
     report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
     report_val = fields.get(report_field, "")
     report_link = ""
@@ -152,7 +152,7 @@ def _extract_record_row(fields: dict, cfg: dict) -> dict:
         "分析结果": _bitable_text(fields.get("分析结果", "")),
         "版本号": _bitable_text(fields.get("版本号", "")),
         "触发来源": _bitable_text(fields.get("触发来源", "")),
-        "分析完成时间": done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else _bitable_text(fields.get("分析完成时间", "")),
+        "分析开始时间": done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else _bitable_text(fields.get("分析开始时间", "")),
         "分析问题时间": _bitable_text(fields.get("分析问题时间", "")),
         "错误信息": _pick_error_info(fields),
         "错误分类": _bitable_text(fields.get("错误分类", "")),
@@ -179,22 +179,22 @@ def query_records(
     """
     cutoff = _ts_parse_datetime(after_time)
     if not cutoff:
-        raise ValueError("请选择有效的排查时间（分析完成时间起点）")
+        raise ValueError("请选择有效的排查时间（分析开始时间起点）")
 
     cfg = _get_bitable_config()
     if not cfg:
         raise ValueError("多维表格 app_token/table_id 未配置")
 
-    # 服务端先按“分析完成时间”过滤：只拉取时间窗口内的记录。
+    # 服务端先按“分析开始时间”过滤：只拉取时间窗口内的记录。
     # 该字段在表里是文本（YYYY-MM-DD HH:MM:SS），字符串比较等价于时间比较。
     # 之前每次查询都把全表 6000+ 条分页拉回本地再筛选，耗时 60~180s，会超过前端 120s 超时。
     filter_expr = (
-        f'CurrentValue.[分析完成时间] > "'
+        f'CurrentValue.[分析开始时间] > "'
         f'{cutoff.strftime("%Y-%m-%d %H:%M:%S")}"'
     )
     try:
         records = _query_bitable_records(filter_expr=filter_expr)
-        logger.info("按分析完成时间过滤查询: after=%s, 返回 %d 条", after_time, len(records))
+        logger.info("按分析开始时间过滤查询: after=%s, 返回 %d 条", after_time, len(records))
     except ValueError as e:
         # 字段被改名/过滤语法不支持时回退全表，保证功能可用（只牺牲速度）
         if "1254018" in str(e) or "InvalidFilter" in str(e):
@@ -208,7 +208,7 @@ def query_records(
 
     for rec in records:
         fields = rec.get("fields", {})
-        done_dt = _ts_parse_datetime(fields.get("分析完成时间", ""))
+        done_dt = _ts_parse_datetime(fields.get("分析开始时间", ""))
         if not done_dt or done_dt <= cutoff:
             continue
         jira_no = _bitable_text(fields.get(bugid_field, ""))
@@ -228,13 +228,13 @@ def query_records(
             if trigger_source != source_filter:
                 continue
         prev = picked.get(jira_no)
-        if not dedup or prev is None or row["分析完成时间"] > prev["分析完成时间"]:
+        if not dedup or prev is None or row["分析开始时间"] > prev["分析开始时间"]:
             picked[jira_no] = row
 
     if no_manual_review:
         picked = {j: r for j, r in picked.items() if j not in reviewed_jiras}
 
-    rows = sorted(picked.values(), key=lambda r: r["分析完成时间"])
+    rows = sorted(picked.values(), key=lambda r: r["分析开始时间"])
     matched_rows = []
     filtered_success_count = 0
     if exclude_same_source_success:
@@ -297,10 +297,10 @@ def query_by_bugids(bugids: list[str]) -> dict:
         if is_chinese_version(row.get("版本号", "")):
             continue
         prev = picked.get(jira_no)
-        if prev is None or row["分析完成时间"] > prev["分析完成时间"]:
+        if prev is None or row["分析开始时间"] > prev["分析开始时间"]:
             picked[jira_no] = row
 
-    rows = sorted(picked.values(), key=lambda r: r["分析完成时间"])
+    rows = sorted(picked.values(), key=lambda r: r["分析开始时间"])
     not_found = sorted(target_set - set(picked.keys()))
     message = f"查询到 {len(rows)} 条匹配记录"
     if not_found:
@@ -328,7 +328,7 @@ def search_by_keyword(keyword: str) -> dict:
         jira_no = _bitable_text(fields.get(bugid_field, "")).upper()
         if not jira_no or keyword_upper not in jira_no:
             continue
-        done_dt = _ts_parse_datetime(fields.get("分析完成时间", ""))
+        done_dt = _ts_parse_datetime(fields.get("分析开始时间", ""))
         version = _bitable_text(fields.get("版本号", ""))
         if is_chinese_version(version):
             continue
@@ -336,14 +336,14 @@ def search_by_keyword(keyword: str) -> dict:
             "jira号": _bitable_text(fields.get(bugid_field, "")),
             "分析结果": _bitable_text(fields.get("分析结果", "")),
             "版本号": version,
-            "分析完成时间": done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else "",
+            "分析开始时间": done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else "",
             "分析问题时间": _bitable_text(fields.get("分析问题时间", "")),
             "错误信息": _pick_error_info(fields),
             "错误分类": _bitable_text(fields.get("错误分类", "")),
             "人工审核结果": _bitable_text(fields.get("人工审核结果", "")),
         })
 
-    rows.sort(key=lambda r: r["分析完成时间"] or "", reverse=True)
+    rows.sort(key=lambda r: r["分析开始时间"] or "", reverse=True)
     return {"rows": rows, "count": len(rows), "message": f"找到 {len(rows)} 条匹配记录"}
 
 
@@ -385,7 +385,7 @@ def batch_write_review(items: list[dict], only_empty_review: bool = False) -> di
     for rec in records:
         fields = rec.get("fields", {})
         jira_no = _bitable_text(fields.get(bugid_field, ""))
-        done_dt = _ts_parse_datetime(fields.get("分析完成时间", ""))
+        done_dt = _ts_parse_datetime(fields.get("分析开始时间", ""))
         done_time = done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else ""
         if jira_no and done_time:
             index[(jira_no, done_time)] = rec["record_id"]
@@ -456,7 +456,7 @@ def export_trigger_time_issues(items: list[dict], folder_token: str = "") -> dic
     os.makedirs(local_dir, exist_ok=True)
     csv_path = os.path.join(local_dir, f"trigger_time_issues_{date_str}_{time_str}.csv")
 
-    fieldnames = ["jira号", "问题归类", "分析完成时间", "错误时间", "诊断详情", "修正建议", "人工审核结果"]
+    fieldnames = ["jira号", "问题归类", "分析开始时间", "错误时间", "诊断详情", "修正建议", "人工审核结果"]
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -738,7 +738,7 @@ def send_to_developer(records: list[dict]) -> dict:
     if not records:
         raise ValueError("发送列表为空")
     lines = [f"\U0001f514 AI日志分析失败 - 待后端排查记录（{len(records)} 条）",
-             "", "| # | Jira号 | 分析完成时间 | 错误信息 |",
+             "", "| # | Jira号 | 分析开始时间 | 错误信息 |",
              "|---|--------|-------------|----------|"]
     for i, rec in enumerate(records, 1):
         bugid = rec.get("bugid", "")

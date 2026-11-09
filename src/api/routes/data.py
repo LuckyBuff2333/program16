@@ -269,7 +269,7 @@ def data_history_jira(
                 fields = rec.get("fields", {})
                 jira_key = _bitable_text(fields.get(bugid_field, ""))
                 if jira_key and jira_key in jira_set:
-                    rec_done = _bitable_text(fields.get("分析完成时间", ""))
+                    rec_done = _bitable_text(fields.get("分析开始时间", ""))
                     # 成功记录不受当前批次时间下限限制，用于同来源成功过滤
                     if _bitable_text(fields.get("分析结果", "")) == "成功":
                         success_keys.add((jira_key, _bitable_text(fields.get("触发来源", ""))))
@@ -285,7 +285,7 @@ def data_history_jira(
         jira_no = item["jira号"]
         bt_records = bitable_records_map.get(jira_no, [])
         if bt_records:
-            bt_records.sort(key=lambda x: x.get("分析完成时间", ""), reverse=True)
+            bt_records.sort(key=lambda x: x.get("分析开始时间", ""), reverse=True)
             bf = bt_records[0]
             rows.append({
                 "jira号": jira_no, "执行结果": item["执行结果"],
@@ -293,7 +293,7 @@ def data_history_jira(
                 "分析结果": bf.get("分析结果", ""), "错误信息": bf.get("错误信息", "") or item.get("备注", ""),
                 "飞书报告链接": bf.get("飞书报告链接", ""),
                 "分析问题时间": bf.get("分析问题时间", ""),
-                "分析完成时间": bf.get("分析完成时间", ""),
+                "分析开始时间": bf.get("分析开始时间", ""),
                 "人工审核结果": bf.get("人工审核结果", ""),
                 "触发来源": bf.get("触发来源", ""),
                 "rootcause": bf.get("rootcause", ""),
@@ -304,7 +304,7 @@ def data_history_jira(
             rows.append({
                 "jira号": jira_no, "执行结果": item["执行结果"],
                 "执行时间": item["执行时间"],
-                "分析结果": "", "错误信息": item.get("备注", ""), "飞书报告链接": "", "分析问题时间": "", "分析完成时间": "",
+                "分析结果": "", "错误信息": item.get("备注", ""), "飞书报告链接": "", "分析问题时间": "", "分析开始时间": "",
                 "触发来源": "", "rootcause": "", "AI评论总结": "", "结果置信度": "",
             })
     matched = len(jira_set & set(bitable_records_map.keys()))
