@@ -181,6 +181,6 @@
     "browser": "chrome"
   },
   "batch_env": {
-    "software_version": "V1.0.3"
+    "software_version": "V1.0.4"
   }
 }
