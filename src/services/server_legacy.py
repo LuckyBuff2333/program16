@@ -4582,8 +4582,11 @@ def _get_ocr_reader():
             warnings.filterwarnings('ignore', message='.*pin_memory.*', module='torch')
             warnings.filterwarnings('ignore', message='.*quantize_per_tensor.*', module='torch')
             import easyocr
-            # 使用 EasyOCR 默认目录 ~/.EasyOCR，模型已存在时无需重复下载
-            _model_dir = None  # None = 使用默认目录
+            # 从配置读取 EasyOCR 模型目录（本地独有，每台机器各自配置）
+            _cfg_model_dir = str(load_config().get('params', {}).get('easyocr_model_dir', '') or '').strip()
+            _model_dir = os.path.expanduser(_cfg_model_dir) if _cfg_model_dir else None
+            if _model_dir and not os.path.isdir(_model_dir):
+                _model_dir = None
             try:
                 import torch as _torch
                 _use_gpu = bool(_torch.cuda.is_available())
@@ -4593,7 +4596,7 @@ def _get_ocr_reader():
                 ['en', 'ch_sim'], gpu=_use_gpu, verbose=False,
                 model_storage_directory=_model_dir)
             logger.info("easyocr Reader 初始化完成（en + ch_sim，gpu=%s，model_dir=%s）",
-                        _use_gpu, _model_dir or "~/.EasyOCR")
+                        _use_gpu, _model_dir or "默认包目录")
         except Exception as e:
             logger.warning("easyocr 回退不可用（模型下载超时/网络不可用；RapidOCR 仍可用）: %s", e)
             _easyocr_reader = _OCR_UNAVAILABLE

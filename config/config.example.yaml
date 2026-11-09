@@ -15,3 +15,8 @@ feishu_bot:
   app_secret: <REPLACE_ME>
 jira_api:
   token: <REPLACE_ME>
+
+# ── 本地独有参数（不同步云端） ──
+params:
+  # EasyOCR 模型目录，避免运行时触发在线下载（留空则使用包内默认路径）
+  easyocr_model_dir: ~/.EasyOCR/model
