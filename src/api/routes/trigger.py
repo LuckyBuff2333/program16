@@ -394,9 +394,6 @@ async def batch_extract_time(request: Request):
         _save_trigger_time_to_csv,
     )
     body = await request.json() or {}
-    logger.info("时间批量提取请求: client=%s ua=%s",
-                getattr(request.client, "host", ""),
-                str(request.headers.get("user-agent", ""))[:120])
     jql = str(body.get("jql", "")).strip()
     bugids = body.get("bugids") or []
     skip_cached = body.get("skip_cached", False)
