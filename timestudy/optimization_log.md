@@ -20,6 +20,7 @@
 - 状态栏 ROI 放大 2.5x；整帧大图缩放到约 2MP。
 - 时间匹配容差 900 秒（15 分钟）。
 - 12/24 小时歧义、日期拼接、gmlogger/附件名候选都会保留，不直接丢弃。
+- 整帧 OCR 仍执行完整识别，但识别结果只保留时间/日期相关文本块，其他 UI 文本不进入解析。
 
 ### 时间来源标签
 
@@ -1008,5 +1009,16 @@
 - **本地化**：真实路径只写本机 `config/config.yaml`（已忽略）；`config.example.yaml` 只保留字段说明；公共 `models/ppocrv5/rapidocr_v5.yaml` 保持通用默认值。
 - **验证**：模型路径解析存在；`tests/test_ocr_time_extraction.py` 363 passed。
 - **实现文件**：`src/services/server_legacy.py`、`config/config.example.yaml`
+
+</details>
+
+<details>
+<summary><b>196. 整帧OCR结果只保留时间相关文本块（2026-11-09）</b></summary>
+
+- **方案**：整帧 OCR 仍然执行，不做输入裁剪；在 `_ocr_readtext` 返回前过滤文本块，只保留时间、日期、英文月份、中文日期、单独年份。
+- **保留原因**：时间块和日期块可能分开，单独年份用于补全“仅时间”。
+- **过滤内容**：按钮、车况、天气、限速等非时间文本。
+- **验证**：时间/日期样例保留，普通 UI 文本丢弃；`tests/test_ocr_time_extraction.py` 363 passed。
+- **实现文件**：`src/services/server_legacy.py`
 
 </details>

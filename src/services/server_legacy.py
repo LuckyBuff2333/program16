@@ -4890,6 +4890,31 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     return " ".join(parts)
 
 
+def _is_ocr_time_related_text(text: str) -> bool:
+    """判断 OCR 文本块是否可能包含时间/日期信息。
+
+    整帧 OCR 仍会跑完整画面，但返回给后续时间解析前只保留时间相关块，
+    去掉按钮文案、车况、天气等无关文本，降低误匹配。
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    if (_OCR_TIME_FULL_RE.search(s) or _OCR_TIME_ONLY_RE.search(s)
+            or _OCR_RELATIVE_DATE_TIME_RE.search(s)
+            or _OCR_BARE_TIME_RE.search(s) or _OCR_COMMA_TIME_RE.search(s)):
+        return True
+    if _MONTH_RE.search(s):
+        return True
+    # 中文日期 / 仅日期 / 单独年份（给“仅时间”补日期用）
+    if re.search(r'(?<!\d)(?:19|20)\d{2}\s*[-/.年]\s*\d{1,2}', s):
+        return True
+    if re.search(r'(?<!\d)\d{1,2}\s*月\s*\d{1,2}\s*日', s):
+        return True
+    if re.search(r'(?<!\d)(?:19|20)\d{2}(?!\d)', s):
+        return True
+    return False
+
+
 def _ocr_readtext(reader, image, _already_enhanced: bool = False):
     """统一 OCR 调用，RapidOCR 优先 + EasyOCR 回退。
 
@@ -5002,7 +5027,12 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
                     continue
             clean.append(item)
         filtered = clean
-    return filtered
+    # 3. 只保留时间/日期相关文本块（整帧 OCR 仍然执行，过滤在识别之后）
+    _time_related = [it for it in filtered
+                     if _is_ocr_time_related_text(it[1] if len(it) > 1 else "")]
+    if len(_time_related) != len(filtered):
+        logger.debug("OCR 时间文本过滤: %d -> %d 块", len(filtered), len(_time_related))
+    return _time_related
 
 
 def _normalize_ocr_time(text: str) -> str:
