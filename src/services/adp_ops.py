@@ -18,7 +18,7 @@ logger = setup_logger("adp_ops")
 
 # SSE 已知事件类型（不触发未知事件日志）
 _KNOWN_EVENT_TYPES = {
-    "text.delta", "text.replace", "content.added", "response.created",
+    "text.delta", "text.replace", "content.added", "reference.added", "response.created",
     "request_ack", "response.completed", "error", "message.done",
     "message.processing", "message.added", "response.processing",
 }
@@ -609,6 +609,21 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
                         elif ctype in ("option_cards", "questionnaire"):
                             has_cards = True
                             logger.warning("ADP 智能体发出追问信号: type=%s", ctype)
+                    elif et == "reference.added":
+                        _ref = data.get("Reference") or data.get("Content") or {}
+                        _ref_type = _ref.get("Type") or _ref.get("type") or ""
+                        if _ref_type == "file":
+                            _finfo = _ref.get("File") or _ref
+                            _fname = _finfo.get("FileName") or _finfo.get("file_name") or ""
+                            _furl = _finfo.get("FileUrl") or _finfo.get("file_url") or ""
+                            if _fname and _furl and not any(f.get("name") == _fname for f in file_urls):
+                                file_urls.append({"name": _fname, "url": _furl})
+                                if _fname.endswith(".html"):
+                                    logger.info("ADP SSE reference.added 捕获 HTML 文件: %s", _fname)
+                        else:
+                            # 首次出现的非 file 类型 reference.added，打日志便于排查数据结构
+                            logger.info("ADP SSE reference.added 非 file 类型: type=%s keys=%s",
+                                        _ref_type, list(_ref.keys()))
         except httpx.ReadTimeout:
             # 读超时（60s 无新数据）：非连接错误，检查停止信号后返回已收集的数据
             stream_exc = "读超时（60s 无新数据）"
@@ -730,6 +745,20 @@ def call_adp_sse_stream(message: str, keepalive_cb=None, max_retries: int = 3, s
                                             file_urls.append({"name": fname, "url": furl})
                                             if fname.endswith(".html"):
                                                 logger.info("ADP 续接 SSE 捕获 HTML 文件: %s", fname)
+                                    elif et == "reference.added":
+                                        _ref = data.get("Reference") or data.get("Content") or {}
+                                        _ref_type = _ref.get("Type") or _ref.get("type") or ""
+                                        if _ref_type == "file":
+                                            _finfo = _ref.get("File") or _ref
+                                            _fname = _finfo.get("FileName") or _finfo.get("file_name") or ""
+                                            _furl = _finfo.get("FileUrl") or _finfo.get("file_url") or ""
+                                            if _fname and _furl and not any(f.get("name") == _fname for f in file_urls):
+                                                file_urls.append({"name": _fname, "url": _furl})
+                                                if _fname.endswith(".html"):
+                                                    logger.info("ADP 续接 SSE reference.added 捕获 HTML 文件: %s", _fname)
+                                        else:
+                                            logger.info("ADP 续接 SSE reference.added 非 file 类型: type=%s keys=%s",
+                                                        _ref_type, list(_ref.keys()))
                                 logger.info("ADP 续接第 %d 轮完成: 新增 %d 字符, file_urls=%d, closeout=%s",
                                             round_idx + 1, new_text_len, len(file_urls), closeout_data is not None)
                     finally:
@@ -936,6 +965,27 @@ def _validate_confidence(raw: str) -> str:
         return ""
 
 
+def _resolve_lke_short_link(url: str, timeout: int = 15) -> str:
+    """解析 lke.cloud.tencent.com 短链，跟随 302 跳转拿到签名 URL。
+    成功返回签名 URL；失败或无跳转则返回原始 url。
+    """
+    if not url or "lke.cloud.tencent.com" not in url:
+        return url
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            resp = client.get(url)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                resolved = resp.headers.get("location", "")
+                if resolved and resolved != url:
+                    logger.info("ADP lke 短链解析成功: %s -> %s",
+                                url[:60], resolved[:80])
+                    return resolved
+            logger.warning("ADP lke 短链解析失败: %s (HTTP %d)", url[:60], resp.status_code)
+    except Exception as e:
+        logger.warning("ADP lke 短链解析异常: %s -> %s", url[:60], e)
+    return url
+
+
 def _extract_report_url(text: str, file_urls: list) -> tuple:
     """从文本或 file_urls 中提取报告链接（兼容三种域名 + lke 短链 + 沙箱路径）
     优先级（签名 URL 始终优先于无签名 URL，避免 403 Forbidden）：
@@ -966,13 +1016,18 @@ def _extract_report_url(text: str, file_urls: list) -> tuple:
     if m:
         url = m.group(1)
         name = re.search(r'(report_[A-Za-z0-9_\-]+\.html)', text[max(0, m.start() - 500):m.end() + 200])
-        return (name.group(1) if name else "adp_report.html"), url
-    # 3. file_urls（content.added 事件），同样签名优先
+        # 立即解析短链，拿到签名 URL 避免后续 404
+        resolved = _resolve_lke_short_link(url)
+        return (name.group(1) if name else "adp_report.html"), resolved
+    # 3. file_urls（content.added / reference.added 事件），同样签名优先
     signed_fu, unsigned_fu = None, None
     for f in (file_urls or []):
         name = f.get("name", "")
         url = f.get("url", "")
         if name.endswith(".html") and "meta" not in name.lower() and url:
+            # file_urls 中的 lke 短链也立即解析
+            if "lke.cloud.tencent.com" in url:
+                url = _resolve_lke_short_link(url)
             if "q-sign" in url and not signed_fu:
                 signed_fu = (name, url)
             elif not unsigned_fu:
@@ -1012,6 +1067,13 @@ def _looks_truncated(reply: str) -> bool:
 
 CONCLUDED_MARKERS = ["没有可推进", "分析完成", "无更多工作", "请给新指令",
                     "已收口", "无进一步", "没有更多", "无实质工作"]
+
+# 智能体回复"继续"后表示"已完成/要交付报告"的关键词
+DELIVERY_MARKERS = [
+    "生成可观测性分析报告", "生成分析报告", "生成 HTML 报告", "生成HTML报告",
+    "上传文件", "生成报告并上传", "交付", "收口",
+    "继续完成任务", "分析已完成", "生成最终报告",
+]
 
 
 def _looks_concluded(reply: str) -> bool:
@@ -1337,7 +1399,10 @@ def save_adp_local(jira_key: str, full_text: str, closeout_data: dict,
 # ===== 下载 HTML 报告并上传多维表格附件 =====
 
 def download_adp_report(jira_key: str, report_url: str, html_file: str) -> dict:
-    """下载 ADP HTML 报告到本地，再上传为多维表格附件，返回 {file_token, local_path, error_code}"""
+    """下载 ADP HTML 报告到本地，再上传为多维表格附件，返回 {file_token, local_path, error_code}
+
+    对 lke 短链增加 404 重试：先尝试重新解析短链拿到新签名 URL，再重试下载。
+    """
     from src.config import PROJECT_ROOT
     from src.clients import feishu_client
     if not report_url:
@@ -1346,28 +1411,42 @@ def download_adp_report(jira_key: str, report_url: str, html_file: str) -> dict:
     os.makedirs(save_dir, exist_ok=True)
     filename = html_file or report_url.split("/")[-1].split("?")[0]
     local_path = os.path.join(save_dir, filename)
+    # 下载到本地（含 404 重试逻辑）
+    download_url = report_url
+    for _attempt in range(2):
+        try:
+            with httpx.Client(timeout=120, follow_redirects=True) as client:
+                resp = client.get(download_url)
+                resp.raise_for_status()
+                with open(local_path, "wb") as f:
+                    f.write(resp.content)
+            logger.info("ADP 报告下载成功: %s (%d bytes)", jira_key, len(resp.content))
+            break
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
+            # 404 且是 lke 短链：尝试重新解析获取新签名 URL
+            if status_code == 404 and _attempt == 0 and "lke.cloud.tencent.com" in report_url:
+                logger.warning("ADP 报告下载 404（lke 短链可能已失效），尝试重新解析: %s", jira_key)
+                resolved = _resolve_lke_short_link(report_url)
+                if resolved and resolved != report_url:
+                    download_url = resolved
+                    continue
+            logger.error("ADP 报告下载失败: %s -> HTTP %d (%s)", jira_key, status_code, e)
+            return {"file_token": "", "local_path": "", "error_code": f"HTTP_{status_code}"}
+        except Exception as e:
+            logger.error("ADP 报告处理失败: %s -> %s", jira_key, e)
+            return {"file_token": "", "local_path": "", "error_code": "OTHER"}
+    # 上传为多维表格附件
     try:
-        # Step 1: 下载到本地
-        with httpx.Client(timeout=120, follow_redirects=True) as client:
-            resp = client.get(report_url)
-            resp.raise_for_status()
-            with open(local_path, "wb") as f:
-                f.write(resp.content)
-        logger.info("ADP 报告下载成功: %s (%d bytes)", jira_key, len(resp.content))
-        # Step 2: 上传为多维表格附件
         adp_cfg = _get_adp_cfg()
         file_token = feishu_client.upload_bitable_attachment(
             adp_cfg["bitable_app_token"], local_path, content_type="text/html")
         if file_token:
             logger.info("ADP 报告附件上传成功: %s -> %s", jira_key, file_token)
         return {"file_token": file_token, "local_path": local_path, "error_code": ""}
-    except httpx.HTTPStatusError as e:
-        status_code = e.response.status_code
-        logger.error("ADP 报告下载失败: %s -> HTTP %d (%s)", jira_key, status_code, e)
-        return {"file_token": "", "local_path": "", "error_code": f"HTTP_{status_code}"}
     except Exception as e:
-        logger.error("ADP 报告处理失败: %s -> %s", jira_key, e)
-        return {"file_token": "", "local_path": "", "error_code": "OTHER"}
+        logger.error("ADP 报告上传失败: %s -> %s", jira_key, e)
+        return {"file_token": "", "local_path": local_path, "error_code": "UPLOAD_FAIL"}
 
 
 # ===== Step 5: 写入飞书多维表格（独立 ADP 表格）=====
@@ -1758,6 +1837,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         _no_progress_rounds = 0
         _force_final = False
         _content_safety_rounds = 0
+        _delivery_detected = False  # 续接响应含交付/收口意图，下一轮直接要报告
         for cont_idx in range(max_continues):
             if err_code in CONTENT_SAFETY_CODES:
                 _content_safety_rounds += 1
@@ -1766,13 +1846,18 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                     results["分析失败归因"] = "输出内容安全"
                     logger.warning("ADP 内容安全拦截连续失败，停止续接: %s", jira_key)
                     break
-            # 前置判断：没有任何报告链接 → 视为"可疑未完成"，参与续接决策
+            # 前置判断：没有任何报告链接 → 视为“可疑未完成”，参与续接决策
             _no_report = not results.get("_report_url")
             _has_closing = any(k in full_text for k in COMPLETE_SECTION_MARKERS)
             _clarify, _ = _looks_like_clarify_or_refusal(full_text, signal_info.get("reply_method", ""))
             _short_no_report = (_no_report and not _clarify and not _has_closing)
             _trunc_mid = _looks_truncated_mid_tool(full_text)
-            _concluded = bool(_no_report and _looks_concluded(full_text))
+            # 交付意图检测：续接响应含“生成报告/上传文件”等关键词 → 视为收口
+            if _delivery_detected:
+                _concluded = True
+                _delivery_detected = False  # 重置，避免重复触发
+            else:
+                _concluded = bool(_no_report and _looks_concluded(full_text))
             _continue_prompt = "继续"
             if _concluded:
                 if _report_requested >= 3:
@@ -1887,6 +1972,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             _sig_conv = (cont_sig or {}).get("conversation_id") or ""
             if _sig_conv:
                 signal_info["conversation_id"] = _sig_conv
+            _sig_rid = (cont_sig or {}).get("record_id") or ""
+            if _sig_rid:
+                signal_info["record_id"] = _sig_rid
             # 同步续接信号，避免上一轮的 questionnaire/has_cards 残留
             for _sk in ("error_code", "error_msg", "reply_method", "response_status",
                         "has_cards", "request_ack", "stream_exc"):
@@ -1910,6 +1998,10 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 break
             logger.warning("ADP 续接第%d次仍未产出报告", cont_idx + 1)
             _progress("adp_continue", "running", f"第{cont_idx+1}次续接仍无报告")
+            # 检测续接响应是否含交付/收口意图（生成报告、上传文件等）
+            if cont_text and any(k in cont_text for k in DELIVERY_MARKERS):
+                _delivery_detected = True
+                logger.info("ADP 续接响应含交付意图，下一轮直接请求报告: %s", jira_key)
             # 更新 err_code 为本次续接返回的错误码
             err_code = (cont_sig or {}).get("error_code", "")
             # 致命错误（如 460502 内容安全拦截）：续接无意义，立即退出
