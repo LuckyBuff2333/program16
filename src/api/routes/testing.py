@@ -1183,15 +1183,10 @@ async def test_batch_ai_sample(request: Request):
     keys = unique_keys
     # 跨批次去重：如果前端明确告知 keys 已由 filter 去重，则直接复用，避免重复扫云端
     tested = set()
-    cloud_added = 0
     if not bool(body.get("prefiltered")):
-        tested = _load_all_doc_jira_keys()
-        cloud_executed = _get_same_source_executed_keys("")  # 空=不限来源，全部排除
-        before_cloud = len(tested)
-        tested |= cloud_executed
-        cloud_added = len(tested) - before_cloud
-        if cloud_added:
-            logger.info("云端批量执行记录去重: 额外排除 %d 条", cloud_added)
+        tested = _get_same_source_executed_keys("")  # 空=不限来源，全部排除；仅读云端表格
+        if tested:
+            logger.info("云端批量执行记录去重: 排除 %d 条", len(tested & set(keys)))
     # 排除已执行记录
     available = [k for k in keys if k not in tested]
     if not available:
