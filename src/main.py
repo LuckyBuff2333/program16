@@ -154,6 +154,29 @@ def _kill_port_hog(port: int):
     time.sleep(1)  # 等待端口释放
 
 
+def _find_available_port(port: int, max_tries: int = 20) -> int:
+    """端口被占用时顺延到下一个空闲端口，不杀旧服务。"""
+    import socket
+    for candidate in range(port, port + max_tries):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(0.3)
+        try:
+            if probe.connect_ex(("127.0.0.1", candidate)) == 0:
+                probe.close()
+                continue
+        finally:
+            probe.close()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind(("127.0.0.1", candidate))
+            s.close()
+            return candidate
+        except OSError:
+            s.close()
+            continue
+    raise RuntimeError(f"端口 {port}~{port + max_tries - 1} 都被占用，请先关闭旧服务或指定其它端口")
+
+
 def cmd_web(args):
     """启动前端可视化页面服务（基于 uvicorn + FastAPI，支持代码热重载）"""
     import logging
@@ -161,8 +184,15 @@ def cmd_web(args):
 
     import uvicorn
 
-    # 自动杀掉占用端口的旧进程
-    _kill_port_hog(args.port)
+    # 不杀旧服务：端口被占用时顺延到下一个空闲端口，允许多个实例并存
+    _requested_port = args.port
+    try:
+        args.port = _find_available_port(args.port)
+    except RuntimeError as _e:
+        print(str(_e))
+        return
+    if args.port != _requested_port:
+        print(f"端口 {_requested_port} 已被占用，本次改用 {args.port}（旧服务保持运行）")
 
     # 判断是否为打包后的 exe（打包后无源码，禁用 reload）
     is_frozen = getattr(sys, 'frozen', False)

@@ -267,7 +267,10 @@ def _install_crypto_aes_fallback() -> bool:
         _native_aes.new(b"\0" * 32, _native_aes.MODE_CBC, b"\0" * 16)
         return True
     except Exception as _e:
-        logger.warning("pycryptodome 原生模块不可用，启用纯 Python AES 兜底: %s", str(_e)[:160])
+        # 应用程序控制策略拦截 .pyd 是环境限制，不是业务故障；
+        # 纯 Python AES 已覆盖飞书事件解密需求，不用 warning 刷屏。
+        logger.info("系统策略未放行 pycryptodome 原生模块，使用纯 Python AES")
+        logger.debug("pycryptodome 不可用详情: %s", str(_e)[:160])
     try:
         import sys as _sys
         import types as _types
