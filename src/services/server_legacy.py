@@ -152,7 +152,7 @@ _bot_sessions: dict = {}
 
 _timestudy_ctx: dict = {}
 
-_EXCLUDE_REASONS = {"无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "日志文件已损坏", "问题重复", "问题重复，无需排查", "问题未复现", "触发时间无日志", "无日志附件", "该jira无日志附件，属于正常处理机制", "该Jira无日志附件，属于正常处理机制", "该jira无日志附件", "该Jira无日志附件", "日志里无对应触发时间相关文件，但是标题里明确说了触发时间", "解压问题，待排查", "解压问题"}
+_EXCLUDE_REASONS = {"无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "日志文件已损坏", "问题重复", "问题重复，无需排查", "问题未复现", "触发时间无日志", "无日志附件", "该jira无日志附件，属于正常处理机制", "该Jira无日志附件，属于正常处理机制", "该jira无日志附件", "该Jira无日志附件", "日志里无对应触发时间相关文件，但是标题里明确说了触发时间", "解压问题，待排查", "解压问题", "压缩包损坏"}
 
 _TIMESTUDY_DIR = os.path.join(PROJECT_ROOT, "data", "timestudy")
 _TIMESTUDY_REPORT_DIR = os.path.join(PROJECT_ROOT, "reports", "timestudy")
@@ -4582,10 +4582,8 @@ def _get_ocr_reader():
             warnings.filterwarnings('ignore', message='.*pin_memory.*', module='torch')
             warnings.filterwarnings('ignore', message='.*quantize_per_tensor.*', module='torch')
             import easyocr
-            import tempfile as _tempfile
-            # 不要使用用户目录 .EasyOCR（可能无写权限）；改用可写的临时目录
-            _model_dir = os.path.join(_tempfile.gettempdir(), "dsh_easyocr_models")
-            os.makedirs(_model_dir, exist_ok=True)
+            # 使用 EasyOCR 默认目录 ~/.EasyOCR，模型已存在时无需重复下载
+            _model_dir = None  # None = 使用默认目录
             try:
                 import torch as _torch
                 _use_gpu = bool(_torch.cuda.is_available())
@@ -4594,7 +4592,8 @@ def _get_ocr_reader():
             _easyocr_reader = easyocr.Reader(
                 ['en', 'ch_sim'], gpu=_use_gpu, verbose=False,
                 model_storage_directory=_model_dir)
-            logger.info("easyocr Reader 初始化完成（en + ch_sim，gpu=%s）", _use_gpu)
+            logger.info("easyocr Reader 初始化完成（en + ch_sim，gpu=%s，model_dir=%s）",
+                        _use_gpu, _model_dir or "~/.EasyOCR")
         except Exception as e:
             logger.warning("easyocr 回退不可用（模型下载超时/网络不可用；RapidOCR 仍可用）: %s", e)
             _easyocr_reader = _OCR_UNAVAILABLE
@@ -7922,7 +7921,6 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                 logger.warning("诊断 %s: 最新图片优先 OCR 失败: %s", bugid, e)
     # —— 识别 gmlogger 附件（智能检测：文件名含 gmlogger 或压缩包内含 main.log）——
     if not _has_gmlogger_logs(attachments, bugid):
-        # 附件存在但未被识别为日志 → 不能直接判“无gmlogger”，避免误伤
         _names = [str(a.get("filename", "") or "") for a in attachments]
         _archive_like = any(n.lower().endswith((".zip", ".rar", ".7z", ".log", ".txt", ".gz")) for n in _names)
         if not attachments:
@@ -7932,53 +7930,9 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             category = "解压问题"
             detail = _build_simple_detail("", "", "", f"附件中存在压缩包/日志，但未识别出可用 gmlogger（共 {len(attachments)} 个附件）")
         else:
-            # 没有日志包，只有视频/图片：先实际 OCR，确认确实没有时间才判“无时间信息”
-            _media_time = ""
-            try:
-                _has_video = any(str(a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES)
-                                 for a in attachments)
-                _has_image = any(str(a.get("filename", "") or "").lower().endswith(_IMAGE_SUFFIXES)
-                                 for a in attachments)
-                if _has_video:
-                    _media_time = _diag_extract_time_from_video_simple(issue) or ""
-                if not _media_time and _has_image:
-                    _media_time, _ = _diag_extract_time_from_images(issue, headers, att_timeout, bugid)
-                    _media_time = _media_time or ""
-                if not _media_time:
-                    _media_time = jira_client.extract_latest_comment_time(issue) or ""
-            except Exception as e:
-                logger.warning("诊断 %s: 无日志时视频/图片 OCR 失败: %s", bugid, e)
-            # 视频文件名兜底不算“视频里真的有时间”
-            if _media_time:
-                for _a in attachments:
-                    _fn = str(_a.get("filename") or "")
-                    if not _fn.lower().endswith(_VIDEO_SUFFIXES):
-                        continue
-                    _vfn_time = _parse_video_filename_datetime(_fn)
-                    if _vfn_time and str(_media_time)[:19] == str(_vfn_time)[:19]:
-                        _media_time = ""
-                        break
-            if _media_time:
-                _media_upload = (_video_upload_datetime(attachments)
-                                 or _attachment_upload_datetime(attachments, _IMAGE_SUFFIXES))
-                _confirmed, _ = _confirm_time_with_bound(_media_time, _media_upload)
-                if _confirmed:
-                    category = "触发时间问题"
-                    detail = _build_simple_detail("", "", _confirmed,
-                                                  f"视频/图片 OCR 提取到时间（共 {len(attachments)} 个附件）")
-                    report = _generate_troubleshoot_report(
-                        bugid, category, err_msg, detail, problem_time, "success", _confirmed)
-                    result = {"bugid": bugid, "category": category, "problem_time": problem_time,
-                              "archive_files": [], "detail": detail, "main_entries": [],
-                              "verify_status": "success", "suggested_time": _confirmed,
-                              "report": report, "done_time": done_time}
-                    _save_diagnose_cache(bugid, result)
-                    return _ok(result, f"{bugid} 诊断完成：{category}")
-                category = "无参考"
-                detail = _build_simple_detail("", "", "", f"提取到时间但无参考时间（共 {len(attachments)} 个附件）")
-            else:
-                category = "无时间信息"
-                detail = _build_simple_detail("", "", "", f"视频/图片/评论区均无时间信息（共 {len(attachments)} 个附件）")
+            # 附件不满足 gmlogger 条件（只有视频/图片/logcat 等），直接定为无gmlogger，不做后续分析
+            category = "无gmlogger"
+            detail = _build_simple_detail("", "", "", f"附件中无 gmlogger 日志包（已有: {', '.join(_names[:5])}）")
         verify_status, suggested_time = "", ""
         archive_results = []
         report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time, verify_status, suggested_time, archive_results)

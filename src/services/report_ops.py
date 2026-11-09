@@ -662,10 +662,8 @@ def _review_category(review: str) -> str:
         return "触发时间问题"
     if "无gmlogger" in review or "无日志附件" in review or "gmlogger文件已上传" in review:
         return "无gmlogger"
-    if "损坏" in review or "日志文件已损坏" in review:
-        return "日志过滤逻辑"
-    if "日志里无对应" in review or "信息不全" in review:
-        return "日志过滤逻辑"
+    if "压缩包损坏" in review or "日志文件已损坏" in review:
+        return "压缩包损坏"
     if "解压" in review or "unrar" in review or "RAR5" in review:
         return "解压问题"
     if "接口无响应" in review:
@@ -1787,14 +1785,6 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         human_reason = "无gmlogger文件"
         retry_result = ""
         final_category = "无gmlogger"
-    elif category == "日志过滤逻辑":
-        ai_reason = msg or "时间过滤后日志为空（0行），无法进行分析"
-        if "压缩文件包已损坏" in detail or "损坏" in detail:
-            human_reason = "经过排查当前压缩文件包已损坏，当前数据不做分析验证"
-            retry_result = "经过排查当前压缩文件包已损坏，当前数据不做分析验证"
-        else:
-            human_reason = "日志里无对应触发时间相关文件，但是标题里明确说了触发时间，这种暂定为无效bug，信息不全不进行分析"
-        final_category = "日志过滤逻辑"
     elif category == "解压问题":
         ai_reason = msg or "gmlogger 包内时间戳与错误时间匹配，但日志为空无法解析"
         human_reason = "解压问题，待排查"

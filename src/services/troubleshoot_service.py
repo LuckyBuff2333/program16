@@ -495,7 +495,7 @@ _SKIP_ANALYSIS_CATEGORIES = {
     "分析任务执行超时，跳过排查", "问题重复", "问题未复现",
     "无gmlogger", "无gmlogger文件",
     "IP配置错误", "人工取消", "无时间信息", "网络波动",
-    "解压问题",
+    "解压问题", "压缩包损坏",
 }
 
 
@@ -684,8 +684,8 @@ def batch_pre_classify(records: list[dict]) -> dict:
                 category = "无gmlogger"
             elif "gmlogger文件已上传" in human_review:
                 category = "无gmlogger"
-            elif "损坏" in human_review or "日志文件已损坏" in human_review:
-                category = "日志过滤逻辑"
+            elif "压缩包损坏" in human_review or "日志文件已损坏" in human_review:
+                category = "压缩包损坏"
             elif "磁盘空间不足" in human_review:
                 category = "磁盘空间不足"
             elif "无时间信息" in human_review:
