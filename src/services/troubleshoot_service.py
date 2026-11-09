@@ -690,7 +690,7 @@ def batch_pre_classify(records: list[dict]) -> dict:
                 category = "磁盘空间不足"
             elif "无时间信息" in human_review:
                 category = "无时间信息"
-            elif "时间添加" in human_review or "时间异常" in human_review:
+            elif "时间添加" in human_review or "时间异常" in human_review or "触发时间错误" in human_review or "触发时间问题" in human_review:
                 category = "触发时间问题"
             elif "解压" in human_review or "unrar" in human_review or "RAR5" in human_review:
                 category = "解压问题"

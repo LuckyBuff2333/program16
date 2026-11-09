@@ -645,7 +645,7 @@ def _review_category(review: str) -> str:
         return "服务关闭"
     if "待后端开发排查" in review:
         return "待后端开发排查"
-    if "时间添加" in review or "时间异常" in review:
+    if "时间添加" in review or "时间异常" in review or "触发时间错误" in review or "触发时间问题" in review:
         return "触发时间问题"
     if "无gmlogger" in review or "无日志附件" in review or "gmlogger文件已上传" in review:
         return "无gmlogger"

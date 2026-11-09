@@ -8513,6 +8513,20 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                 if _vt_dt and err_dt and abs((_vt_dt - err_dt).total_seconds()) <= 300:
                     suggested_time = _vt
                     final_msg = "视频内容时间与 gmlogger 文件名时间一致"
+                elif _vt_dt and err_dt:
+                    # 视频内容与 gmlogger 时分不一致：覆盖“正常”判定
+                    _vt_tod = _vt_dt.hour * 3600 + _vt_dt.minute * 60 + _vt_dt.second
+                    _err_tod = err_dt.hour * 3600 + err_dt.minute * 60 + err_dt.second
+                    _tod_diff = min(abs(_vt_tod - _err_tod), 86400 - abs(_vt_tod - _err_tod))
+                    if _tod_diff > 300:  # 时分差 > 5 分钟
+                        category = "触发时间问题"
+                        suggested_time = _vt
+                        verify_status = "manual"
+                        final_msg = (f"视频内容时间 {video_time} 与 gmlogger 文件名时间 "
+                                     f"{err_dt.strftime('%H:%M:%S')} 不一致（差 {_tod_diff//60} 分钟），"
+                                     f"以视频时间为准")
+                        logger.warning("视频时间与gmlogger不一致: video=%s gm=%s diff=%dm",
+                                       video_time, err_dt.strftime("%H:%M:%S"), _tod_diff // 60)
         elif _no_ts:
             # 包内没有任何时间戳：不能用“触发时间问题”下结论
             if gm_times:
