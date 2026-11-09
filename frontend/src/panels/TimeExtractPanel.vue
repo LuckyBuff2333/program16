@@ -41,7 +41,7 @@
     <div v-if="running || total > 0" style="margin-top:14px">
       <el-progress :percentage="pct" :stroke-width="18" :text-inside="true" :status="progressStatus" :indeterminate="total === 0"></el-progress>
       <div v-if="total === 0" style="margin-top:6px;font-size:12px;color:#909399">
-        正在准备：查询 Jira、预加载云端缓存并筛选候选...
+        {{ statusMsg || '正在准备：查询 Jira、预加载云端缓存并筛选候选...' }}
       </div>
       <div v-else style="margin-top:6px;font-size:12px;color:#909399;display:flex;gap:16px">
         <span>完成: {{ doneCount }}/{{ total }}</span>
@@ -488,7 +488,9 @@ export default {
       }
     },
     handleSSE(evt: any) {
-      if (evt.type === 'start') {
+      if (evt.type === 'preparing') {
+        this.statusMsg = evt.message || '正在准备...';
+      } else if (evt.type === 'start') {
         this.total = evt.total;
         this.skippedCount = evt.skipped || 0;
         this.aiSkippedCount = evt.ai_skipped || 0;

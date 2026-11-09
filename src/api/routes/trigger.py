@@ -398,15 +398,8 @@ async def batch_extract_time(request: Request):
     bugids = body.get("bugids") or []
     skip_cached = body.get("skip_cached", False)
     filter_ai_preliminary = body.get("filter_ai_preliminary", False)
-    # ── 解析输入 ──
-    if jql:
-        try:
-            issues = await _run_blocking(_jc.search_issues, jql, max_results=500)
-            bugids = [(i.get("key") or "").strip() for i in issues if i.get("key")]
-            bugids = [b for b in bugids if b]
-        except Exception as e:
-            return _fail(f"JQL 查询失败: {e}")
-    if not bugids:
+    # ── 解析输入（JQL 放到 SSE 生成器里执行，先让前端收到 preparing）──
+    if not jql and not bugids:
         return _fail("无待提取的 Jira 号（JQL 未匹配或 bugids 为空）")
     # 去重，避免同一 Jira 被并行提取两次
     bugids = list(dict.fromkeys(str(b).strip() for b in bugids if str(b).strip()))
@@ -428,6 +421,20 @@ async def batch_extract_time(request: Request):
     logger.info("时间批量提取并发数: %d", _extract_workers)
 
     def event_generator():
+        nonlocal bugids
+        yield f"data: {_json.dumps({'type': 'preparing', 'message': '正在查询 Jira...'}, ensure_ascii=False)}\n\n"
+        if jql:
+            try:
+                issues = _jc.search_issues(jql, max_results=5000)
+                bugids = [(i.get("key") or "").strip() for i in issues if i.get("key")]
+                bugids = list(dict.fromkeys(b for b in bugids if b))
+            except Exception as e:
+                yield f"data: {_json.dumps({'type': 'error', 'message': f'JQL 查询失败: {e}'}, ensure_ascii=False)}\n\n"
+                return
+            if not bugids:
+                yield f"data: {_json.dumps({'type': 'error', 'message': '无待提取的 Jira 号（JQL 未匹配）'}, ensure_ascii=False)}\n\n"
+                return
+            yield f"data: {_json.dumps({'type': 'preparing', 'message': f'JQL 返回 {len(bugids)} 条，正在加载云端缓存...'}, ensure_ascii=False)}\n\n"
         # 跳过已有缓存时，预加载云端缓存
         cloud_cache = {}
         if skip_cached:
