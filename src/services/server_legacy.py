@@ -5042,6 +5042,12 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
                      if _is_ocr_time_related_text(it[1] if len(it) > 1 else "")]
     if len(_time_related) != len(filtered):
         logger.debug("OCR 时间文本过滤: %d -> %d 块", len(filtered), len(_time_related))
+    # 没有任何时间块时不能直接返回空：OCR 可能把 16:44 拆成多个文本框，
+    # 或日期/时间被 OCR 误读，后续 _fix_ocr_missing_colon / 预处理仍可能修复。
+    # 保留原始识别结果，避免把“有文本但正则没命中”误判成 OCR 质量过低。
+    if not _time_related and filtered:
+        logger.debug("OCR 未命中时间块，保留 %d 个原始文本块供后续解析", len(filtered))
+        return filtered
     return _time_related
 
 
