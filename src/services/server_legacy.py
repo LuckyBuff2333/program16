@@ -219,6 +219,7 @@ _rapid_ocr_cpu_engine = None  # OOM 回退用 CPU-only 引擎
 _ocr_oom_cooldown_until = 0.0  # OOM 冷却截止时间戳
 _ocr_max_pixels = 4_000_000  # GPU 推理最大像素面积（默认值，实际从配置读取）
 _ocr_cfg_cache = {}  # OCR 配置缓存
+_LAST_VIDEO_MAIN_TIME = {}  # bugid -> 压缩包 main 兜底时间（避免被外层附件名覆盖）
 
 
 def _get_ocr_cfg() -> dict:
@@ -4332,7 +4333,7 @@ def _diag_download_archives(attachments: list, headers: dict, timeout: int, prob
     return archive_results, matched_any
 
 
-def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bugid: str = "") -> dict:
+def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bugid: str = "", include_non_gmlogger: bool = False) -> dict:
     """下载 gmlogger 压缩包（支持 .001/.002 分卷合并），查找包内 main 相关 log 文件并提取时间
 
     外侧文件名时间可能不准，包内 main log 的时间才是日志记录的权威时间戳。
@@ -4350,7 +4351,7 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
         fname = att.get("filename", "") or ""
         _fn = fname.lower()
         # 日志包：gmlogger/gmlog/log_/pataclogger 等，或直接是 .log/.txt
-        if not (any(h in _fn for h in _LOG_NAME_HINTS) or _fn.endswith((".log", ".txt"))):
+        if not include_non_gmlogger and not (any(h in _fn for h in _LOG_NAME_HINTS) or _fn.endswith((".log", ".txt"))):
             continue
         m = _re.search(r"(?:\.part(\d+))?\.(zip|7z|rar|tar|gz)(\.(\d{2,3}))?$", fname, _re.I)
         if not m:
@@ -6059,10 +6060,15 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
 def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
     """视频提取入口（带创建时间纠偏 + 统一时间约束）"""
     ts = _diag_extract_time_from_video_simple_impl(issue, stop_event=stop_event)
-    try:
-        ts = _fix_video_time_against_created(issue, ts)
-    except Exception as e:
-        logger.warning("视频时间纠偏失败: %s", e)
+    _key = str(issue.get("key") or "")
+    if ts and _LAST_VIDEO_MAIN_TIME.get(_key) == ts:
+        # 已由压缩包内 main 文件名确定，不能再被外层 gmlogger/附件名时间覆盖
+        logger.info("视频时间纠偏：保留压缩包 main 时间 %s（跳过外层附件名覆盖）", ts)
+    else:
+        try:
+            ts = _fix_video_time_against_created(issue, ts)
+        except Exception as e:
+            logger.warning("视频时间纠偏失败: %s", e)
     return _guard_extracted_time(issue, ts, force_video=True)
 
 
@@ -6129,10 +6135,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
             _inner_times.append(parsed)
             logger.info("视频兜底提取(%s)：直接上传的 main 文件: %s -> %s", bugid, fname, parsed[0])
     # 3. 非 gmlogger 且非 main 的压缩包：解压探测包内 main 文件（场景三）
-    #    如果已有 gmlogger 文件名时间（三个文件日期一致），无需再解压确认
-    _skip_archive_probe = bool(gm_times)
-    if _skip_archive_probe:
-        logger.info("视频兜底提取(%s)：已有 %d 个 gmlogger 文件名时间，跳过压缩包探测", bugid, len(gm_times))
+    #    外层文件名时间可能不准；即使已有 gmlogger 文件名，也要继续向内层探 main 时间。
     cfg = load_config().get("jira_api", {})
     _timeout = max(int(cfg.get("timeout", 30)), 120)
     headers = {}
@@ -6141,6 +6144,30 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
         auth_type = cfg.get("auth_type", "bearer").lower()
         if auth_type == "bearer":
             headers["Authorization"] = f"Bearer {token}"
+    _skip_archive_probe = False
+    # 先做递归解压探测（支持单文件夹逐层向下，最多 3 层），找包内 main 文件时间
+    try:
+        _gm_probe = _diag_gmlogger_main_times(
+            attachments, headers, _timeout, bugid, include_non_gmlogger=True)
+        if _gm_probe.get("status") == "ok":
+            # all_times 包含包内所有 main 文件名时间；main_times 只取了前 5 个，
+            # 可能漏掉真正接近目标的那一个，所以两者都并入。
+            _probe_times = (_gm_probe.get("main_times") or []) + (_gm_probe.get("all_times") or [])
+            _known = {dt for _, dt in _inner_times}
+            for _ts, _dt in _probe_times:
+                if _dt not in _known:
+                    _inner_times.append((_ts, _dt))
+                    _known.add(_dt)
+            if _probe_times:
+                logger.info("视频兜底提取(%s)：递归压缩包探测到 main 时间 %d 个", bugid, len(_probe_times))
+                _skip_archive_probe = True
+            else:
+                logger.info("视频兜底提取(%s)：递归压缩包未找到 main 时间，继续外层探测", bugid)
+        else:
+            logger.info("视频兜底提取(%s)：递归压缩包探测失败(%s)，继续外层探测",
+                        bugid, _gm_probe.get("reason", "")[:80])
+    except Exception as _e:
+        logger.warning("视频兜底提取(%s)：递归压缩包探测异常: %s", bugid, _e)
     if not _skip_archive_probe:
         for att in attachments:
             fname = att.get("filename", "") or ""
@@ -6291,11 +6318,12 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                         _timestudy_update_ctx(bugid, source="video_ocr")
                         _timestudy_trace(bugid, "cache:hit")
                         return ts
-                    # 缓存时间未通过日志包校验：保留为低置信候选，不再直接丢失
+                    # 缓存时间未通过日志包校验：保留为低置信候选，并继续下载视频重新 OCR
                     if not best_partial:
                         best_partial = ts
-                    logger.info("视频兜底提取：缓存 %s 未通过日志包校验，保留为低置信候选", video_label)
-                continue  # 缓存无时间，也跳过处理
+                    logger.info("视频兜底提取：缓存 %s 未通过日志包校验，继续重新 OCR", video_label)
+                else:
+                    continue  # 缓存无时间，跳过处理
         # 下载视频（流式下载，避免一次性加载到内存）
         video_path = None
         tmp_dir = None
@@ -6606,6 +6634,36 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
     # 保存缓存（所有视频处理完后统一保存）
     if cache_updated:
         _save_video_time_cache()
+    # 压缩包内 main 时间兜底：视频 OCR 未通过校验时，按“时分最接近”选 main 时间。
+    # 若 OCR 只读到播放器 00:00，则在 main 时间中选最大的小时簇的中位数（同一次会话）。
+    if _inner_times:
+        _valid_inner = sorted({dt for _, dt in _inner_times})
+        _picked = None
+        if best_partial:
+            _bp = _parse_datetime_string(best_partial)
+            if _bp and (_bp[1].hour != 0 or _bp[1].minute != 0):
+                _picked = min(_valid_inner, key=lambda d: abs(
+                    (d.hour * 3600 + d.minute * 60 + d.second) -
+                    (_bp[1].hour * 3600 + _bp[1].minute * 60 + _bp[1].second)))
+        if _picked is None:
+            # 按 20 分钟间隔聚簇，取最大簇的中位数，过滤掉包内其他时段的日志
+            _clusters = []
+            for _d in _valid_inner:
+                if _clusters and (_d - _clusters[-1][-1]).total_seconds() <= 1200:
+                    _clusters[-1].append(_d)
+                else:
+                    _clusters.append([_d])
+            if _clusters:
+                _clusters.sort(key=len, reverse=True)
+                _cluster = _clusters[0]
+                _picked = _cluster[len(_cluster) // 2]
+        if _picked is not None:
+            _picked_ts = _picked.strftime("%Y-%m-%d %H:%M:%S")
+            logger.info("视频兜底提取(%s)：视频未命中，改用压缩包 main 时间 %s", bugid, _picked_ts)
+            _timestudy_update_ctx(bugid, source="video_ocr", error_type="main_time_fallback")
+            _timestudy_trace(bugid, "archive:main_fallback")
+            _LAST_VIDEO_MAIN_TIME[str(issue.get("key") or "")] = _picked_ts
+            return _picked_ts
     # 视频未命中 gmlogger → 图片 OCR 兜底
     img_ts = _image_fallback_time(issue, headers, _timeout, bugid, ref_pool)
     if img_ts:
