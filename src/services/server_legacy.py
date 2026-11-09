@@ -4053,6 +4053,107 @@ def _diag_scan_entry_times(names: list) -> list:
     return times
 
 
+def _diag_extract_to_dir(archive_path: str, extract_dir: str) -> tuple:
+    """解压压缩包到指定目录，返回 (成功, 文件路径列表或失败原因)"""
+    import zipfile
+    import tarfile
+    try:
+        if zipfile.is_zipfile(archive_path):
+            with zipfile.ZipFile(archive_path) as zf:
+                zf.extractall(extract_dir)
+                return True, [os.path.join(extract_dir, n) for n in zf.namelist() if not n.endswith("/")]
+    except Exception as e:
+        return False, f"zip 解压失败: {e}"
+    try:
+        import py7zr
+        if py7zr.is_7zfile(archive_path):
+            with py7zr.SevenZipFile(archive_path, "r") as zf:
+                zf.extractall(extract_dir)
+                return True, [os.path.join(extract_dir, n) for n in zf.getnames() if not n.endswith("/")]
+    except ImportError:
+        pass
+    except Exception as e:
+        return False, f"7z 解压失败: {e}"
+    try:
+        with tarfile.open(archive_path) as tf:
+            tf.extractall(extract_dir)
+            return True, [os.path.join(extract_dir, m.name) for m in tf.getmembers() if m.isfile()]
+    except Exception as e:
+        return False, f"tar 解压失败: {e}"
+    try:
+        import rarfile
+        if _setup_rarfile() and rarfile.is_rarfile(archive_path):
+            with rarfile.RarFile(archive_path) as rf:
+                rf.extractall(extract_dir)
+                return True, [os.path.join(extract_dir, n) for n in rf.namelist() if not n.endswith("/")]
+    except ImportError:
+        pass
+    except Exception as e:
+        return False, f"rar 解压失败: {e}"
+    return False, "不支持的压缩包格式"
+
+
+def _diag_find_main_in_tree(base_dir: str, max_depth: int = 3) -> tuple:
+    """在解压目录树中递归查找 main 相关文件，支持嵌套压缩包（最深 max_depth 层）
+
+    探索策略：每层若有多个子文件夹且都不含 gmlogger/main 关键词则停止探索。
+    :return: (main_files, all_basenames)
+        main_files: main 相关文件绝对路径列表
+        all_basenames: 所有文件名列表（用于 _diag_scan_entry_times 时间扫描）
+    """
+    import re as _re
+
+    def _has_hint(name: str) -> bool:
+        """路径或名称中是否含 gmlogger / main 关键词"""
+        nl = name.lower()
+        return "main" in nl or "gmlog" in nl or "pataclogger" in nl
+
+    def _walk(directory: str, depth: int) -> tuple:
+        """递归查找，返回 (main_files, all_basenames)"""
+        if depth > max_depth:
+            return [], []
+        mains, alls = [], []
+        sub_dirs = []
+        for entry in os.scandir(directory):
+            if entry.is_file(follow_symlinks=False):
+                alls.append(entry.name)
+                bnl = entry.name.lower()
+                if ("main.log" in bnl or "main_" in bnl) and bnl.endswith((".log", ".txt", ".gz")):
+                    mains.append(entry.path)
+            elif entry.is_dir(follow_symlinks=False):
+                sub_dirs.append(entry.path)
+        # 子文件夹探索：多个子文件夹时仅探索含 gmlogger/main 关键词的，无匹配则停止
+        if sub_dirs:
+            if len(sub_dirs) > 1:
+                targets = [d for d in sub_dirs if _has_hint(os.path.basename(d))]
+                if not targets:
+                    return mains, alls
+            else:
+                targets = sub_dirs
+            for sd in targets:
+                sm, sa = _walk(sd, depth + 1)
+                mains.extend(sm)
+                alls.extend(sa)
+        # 查找嵌套压缩包并递归解压探索（深度 +1）
+        nested = []
+        for entry in os.scandir(directory):
+            if entry.is_file(follow_symlinks=False) and _re.search(
+                    r"\.(zip|7z|tar|gz|rar)$", entry.name, _re.I):
+                nested.append(entry.path)
+        if nested and depth < max_depth:
+            for na in nested[:2]:  # 每层最多处理 2 个嵌套压缩包
+                sub_dir = na + "_ext"
+                os.makedirs(sub_dir, exist_ok=True)
+                ok, _ = _diag_extract_to_dir(na, sub_dir)
+                if ok:
+                    sm, sa = _walk(sub_dir, depth + 1)
+                    mains.extend(sm)
+                    alls.extend(sa)
+        return mains, alls
+
+    return _walk(base_dir, 1)
+
+
 def _diag_rar_main_times(rar_first: str, work_dir: str) -> dict:
     """解压 rar 提取包内 main 相关文件的时间，返回结构与 _diag_gmlogger_main_times 一致
 
@@ -4096,11 +4197,8 @@ def _diag_rar_main_times(rar_first: str, work_dir: str) -> dict:
             return {"status": "failed", "reason": f"rar 解压异常: {e}", "main_entries": [], "main_times": []}
     if not extracted:
         return {"status": "failed", "reason": "rar 解压失败（无可用工具）", "main_entries": [], "main_times": []}
-    # 扫描解出的 main 文件（优先 .log/.txt）
-    main_files = []
-    for root, _d, files in os.walk(main_dir):
-        for f in files:
-            main_files.append(os.path.join(root, f))
+    # 递归扫描解出的文件树（支持嵌套压缩包，最深 3 层）
+    main_files, all_names = _diag_find_main_in_tree(main_dir, max_depth=3)
     main_files.sort(key=lambda p: (not p.lower().endswith((".log", ".txt")), p))
     main_files = main_files[:5]
     main_times = []
@@ -4116,21 +4214,6 @@ def _diag_rar_main_times(rar_first: str, work_dir: str) -> dict:
             main_times.append(parsed)
     logger.info("rar 内包探测: %s, main 文件 %d 个, 提取时间 %d 个",
                 os.path.basename(rar_first), len(main_files), len(main_times))
-    # 全量条目清单：扫描全部文件名时间，任一命中窗口即验证通过
-    all_names = []
-    if tool:
-        try:
-            lr = subprocess.run([tool, "l", "-ba", rar_first], capture_output=True, timeout=120, check=False)
-            all_names = [ln.split()[-1] for ln in lr.stdout.decode("utf-8", errors="ignore").splitlines() if ln.strip()]
-        except Exception as e:
-            logger.warning("rar 条目清单获取失败: %s", e)
-    elif use_rarfile:
-        try:
-            import rarfile
-            with rarfile.RarFile(rar_first) as rf:
-                all_names = [n for n in rf.namelist() if not n.endswith("/")]
-        except Exception as e:
-            logger.warning("rar 条目清单获取失败: %s", e)
     all_times = _diag_scan_entry_times(all_names)
     return {"status": "ok", "reason": "",
             "main_entries": [os.path.basename(p) for p in main_files],
@@ -4349,40 +4432,34 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
             except Exception as e:
                 logger.warning("gmlogger 分卷下载失败 %s: %s", base, e)
                 return {"status": "failed", "reason": f"gmlogger 下载失败: {e}", "main_entries": [], "main_times": []}
-            # 打开压缩包（支持 zip/7z/tar），查找 main 相关文件并提取时间
-            ok, names = _diag_archive_names(merged)
-            if not ok:
-                logger.warning("gmlogger 解压失败 %s: %s", base, names)
-                return {"status": "failed", "reason": f"gmlogger 解压失败: {names}", "main_entries": [], "main_times": []}
-            main_names = [n for n in names
-                          if ("main.log" in os.path.basename(n).lower()
-                              or "main_" in os.path.basename(n).lower())
-                          and (".log" in os.path.basename(n).lower()
-                               or os.path.basename(n).lower().endswith((".txt", ".gz", ".log")))]
+            # 解压到磁盘并递归查找 main 文件（支持嵌套压缩包+深层目录，最深 3 层）
+            ext_dir = os.path.join(tmp, "ext_" + os.path.basename(base))
+            os.makedirs(ext_dir, exist_ok=True)
+            ext_ok, _ext_info = _diag_extract_to_dir(merged, ext_dir)
+            if not ext_ok:
+                logger.warning("gmlogger 解压失败 %s: %s", base, _ext_info)
+                return {"status": "failed", "reason": f"gmlogger 解压失败: {_ext_info}",
+                        "main_entries": [], "main_times": []}
+            main_files, all_names = _diag_find_main_in_tree(ext_dir, max_depth=3)
+            main_files.sort(key=lambda p: (not p.lower().endswith((".log", ".txt")), p))
+            main_files = main_files[:5]
             main_times = []
-            need_head = []  # 文件名无时间的 main 文件，待批量读头部提取首条日志时间戳
-            for n in main_names:
-                bname = os.path.basename(n)
-                parsed = _diag_parse_main_time(bname)
+            for fp in main_files:
+                head = ""
+                try:
+                    with open(fp, "rb") as f:
+                        head = f.read(65536).decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+                parsed = _diag_parse_main_time(os.path.basename(fp), head)
                 if parsed:
                     main_times.append(parsed)
-                    continue
-                need_head.append(n)
-            # 批量读文件头部提取首条日志时间戳（7z 一次解压，读 64KB 提升命中率）
-            if need_head:
-                heads = _diag_archive_read_heads(merged, need_head, 65536)
-                for n in need_head:
-                    mh = _re.search(r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})", heads.get(n, ""))
-                    if mh:
-                        ts = _ts_parse_datetime(mh.group(1).replace("T", " "))
-                        if ts:
-                            main_times.append((ts.strftime("%Y-%m-%d %H:%M:%S"), ts))
-            logger.info("gmlogger 内包探测: base=%s, 文件 %d 个, main 文件 %d 个, 提取时间 %d 个",
-                        base, len(names), len(main_names), len(main_times))
+            logger.info("gmlogger 内包探测: base=%s, main 文件 %d 个, 提取时间 %d 个",
+                        base, len(main_files), len(main_times))
             # 全部条目文件名时间戳（任一命中目标窗口即验证通过）
-            all_times = _diag_scan_entry_times(names)
+            all_times = _diag_scan_entry_times(all_names)
             return {"status": "ok", "reason": "",
-                    "main_entries": [os.path.basename(n) for n in main_names],
+                    "main_entries": [os.path.basename(n) for n in main_files],
                     "main_times": main_times, "all_times": all_times}
     return {"status": "failed", "reason": last_reason, "main_entries": [], "main_times": []}
 
