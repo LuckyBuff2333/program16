@@ -18,6 +18,7 @@
         <el-button size="small" type="danger" :loading="todayBugLoading" @click="queryTodayNewBugs">今日新增 Bug</el-button>
         <el-button size="small" type="warning" :loading="yesterdayBugLoading" @click="queryYesterdayNewBugs">昨日新增 Bug</el-button>
         <el-button size="small" type="success" :loading="weekBugLoading" @click="queryWeekNewBugs">本周新增 Bug</el-button>
+        <el-button size="small" type="info" :loading="lastWeekBugLoading" @click="queryLastWeekNewBugs">上周新增 Bug</el-button>
         <el-button size="small" type="primary" @click="fillSummaryQuery">描述查 Jira 号</el-button>
         <el-divider direction="vertical" style="margin:0 4px"></el-divider>
         <el-checkbox v-model="filterAiPreliminary" size="small">过滤AI初步分析结果</el-checkbox>
@@ -99,6 +100,7 @@ export default {
       todayBugLoading: false,
       yesterdayBugLoading: false,
       weekBugLoading: false,
+      lastWeekBugLoading: false,
       filterAiPreliminary: true,
       rows: [] as any[],
       errors: [] as any[],
@@ -239,6 +241,27 @@ export default {
       } finally {
         this.loading = false;
         this.weekBugLoading = false;
+      }
+    },
+    async queryLastWeekNewBugs() {
+      if (!this.checkLookupCooldown('lastWeek')) return;
+      const jql = 'created >= startOfWeek(-1) AND created < startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
+      this.query = jql;
+      this.lastWeekBugLoading = true;
+      this.loading = true; this.queried = true; this.rows = []; this.errors = [];
+      try {
+        const result = await api('/api/test/jira_lookup', { method: 'POST', body: JSON.stringify({ query: jql }) });
+        const data = result.data || {};
+        this.rows = data.rows || [];
+        this.errors = data.errors || [];
+        this.mode = data.mode || 'jql';
+        if (!this.rows.length) ElMessage.info('上周暂无新增 Bug');
+        else ElMessage.success(`上周新增 ${this.rows.length} 个 Bug`);
+      } catch (e: any) {
+        ElMessage.error('查询失败: ' + e.message);
+      } finally {
+        this.loading = false;
+        this.lastWeekBugLoading = false;
       }
     },
     copyAllKeys() {

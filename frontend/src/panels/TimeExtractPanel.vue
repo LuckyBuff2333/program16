@@ -17,6 +17,7 @@
         <el-button size="small" @click="setJql('today')">今日新增 Bug</el-button>
         <el-button size="small" @click="setJql('yesterday')">昨日新增 Bug</el-button>
         <el-button size="small" @click="setJql('week')">本周新增 Bug</el-button>
+        <el-button size="small" @click="setJql('lastWeek')">上周新增 Bug</el-button>
         <el-button size="small" @click="setJql('no_label')">无触发时间标签</el-button>
       </div>
     </el-card>
@@ -339,6 +340,7 @@ const JQL_PRESETS = {
   today: 'created >= startOfDay() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
   yesterday: 'created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC',
   week: 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
+  lastWeek: 'created >= startOfWeek(-1) AND created < startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
   no_label: 'labels not in (trigger_time) AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
 };
 

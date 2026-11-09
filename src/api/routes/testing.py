@@ -126,9 +126,11 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
     PC和线上允许重复（不同来源）。
     同时检查今天和昨天的记录，支持跨天持续执行场景。
     仅查云端飞书文档，不查本地CSV，避免本地文件残留导致误去重。
+    全部失败的批次（文档名中 (0/N)）自动跳过，不纳入去重。
     """
     from src.config import load_config
     import time as _t
+    import re as _re
     today = datetime.now()
     _cache_key = (source, today.strftime("%Y-%m-%d"))
     _cached = _EXECUTED_KEYS_CACHE.get(_cache_key)
@@ -151,6 +153,10 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
                 doc_token = doc.get("token", "")
                 doc_name = doc.get("name", "")
                 if not doc_token:
+                    continue
+                # 跳过全部失败的批次（文档名含 "(0/N)"），允许这些 Jira 重新执行
+                m = _re.search(r'\((\d+)/(\d+)\)\s*$', doc_name)
+                if m and int(m.group(1)) == 0:
                     continue
                 try:
                     md = feishu_client.fetch_docx_as_markdown(doc_token)
@@ -1084,28 +1090,40 @@ async def test_batch_ai_filter(request: Request):
         filtered, mem_skipped = _filter_recently_executed(filtered)
         if mem_skipped:
             logger.info("内存去重: 排除最近已执行的 %d 条", mem_skipped)
-    # —— 第2步：AI初步分析过滤（逐个 fetch，并行执行）——
+    # —— 第2步：AI初步分析过滤（批量 POST search 取回字段，Python 端过滤，避免逐个 fetch 和 JQL 不支持该字段）——
     ai_exclude = set()
     if filter_ai_preliminary and filtered:
-        import concurrent.futures as _cf
-        from src.clients import jira_client as _jc
+        import requests as _req
+        from src.config import load_config as _load_cfg
+        _cfg = _load_cfg()["jira_api"]
         _AI_FIELD_ID = "customfield_13714"
-
-        def _check_ai_field(bid):
+        _search_url = _cfg["url"].rsplit("/issue", 1)[0] + "/search"
+        _auth_hdrs = {"Content-Type": "application/json"}
+        _token = _cfg.get("token", "")
+        _auth = None
+        if _token:
+            _at = _cfg.get("auth_type", "bearer").lower()
+            if _at == "bearer":
+                _auth_hdrs["Authorization"] = f"Bearer {_token}"
+            elif _cfg.get("username"):
+                _auth = (_cfg["username"], _token)
+        _BATCH_SIZE = 50
+        for _start in range(0, len(filtered), _BATCH_SIZE):
+            _chunk = filtered[_start:_start + _BATCH_SIZE]
+            _jql = f'key in ({",".join(_chunk)})'
             try:
-                iss = _jc.fetch_issue(bid)
-                f = (iss.get("fields") or {}).get(_AI_FIELD_ID)
-                if f and str(f).strip() and str(f).strip().lower() not in ("none", "null"):
-                    return bid
-            except Exception:
-                pass
-            return None
-
-        with _cf.ThreadPoolExecutor(max_workers=10) as pool:
-            results = list(pool.map(_check_ai_field, filtered))
-        for r in results:
-            if r:
-                ai_exclude.add(r)
+                _resp = _req.post(_search_url, json={
+                    "jql": _jql, "maxResults": _BATCH_SIZE,
+                    "startAt": 0, "fields": [_AI_FIELD_ID]
+                }, headers=_auth_hdrs, auth=_auth, timeout=_cfg.get("timeout", 30))
+                _resp.raise_for_status()
+                for _iss in _resp.json().get("issues", []):
+                    _k = (_iss.get("key") or "").strip()
+                    _fv = ((_iss.get("fields") or {}).get(_AI_FIELD_ID))
+                    if _k and _fv and str(_fv).strip() and str(_fv).strip().lower() not in ("none", "null"):
+                        ai_exclude.add(_k)
+            except Exception as _e:
+                logger.warning("AI字段批量POST查询失败(chunk %d-%d): %s", _start, _start + len(_chunk), _e)
         if ai_exclude:
             filtered = [k for k in filtered if k not in ai_exclude]
     # —— 汇总返回 ——
@@ -1297,16 +1315,82 @@ async def test_batch_ai_sample(request: Request):
     # 循环结束后保存剩余未上传的到云端
     if new_to_cloud:
         _batch_save_trigger_times_to_cloud(new_to_cloud, dict(new_sources), dict(new_refs))
+    # —— 兜底提取：结果不足时对云端已标记空的项再尝试一次 ——
+    fallback_extracted = 0
+    if len(selected) < sample_size:
+        selected_set = set(selected)
+        retry_pool = [k for k in available
+                      if k not in selected_set and k not in trigger_times
+                      and k in cloud_keys]
+        random.shuffle(retry_pool)
+        if retry_pool:
+            logger.info("兜底提取: 结果 %d/%d 不足，对 %d 个云端空标记项重试",
+                        len(selected), sample_size, len(retry_pool))
+            for k in retry_pool:
+                if len(selected) >= sample_size or _batch_stop.is_set():
+                    break
+                try:
+                    from src.clients import jira_client as _jc
+                    issue = await _run_blocking(_jc.fetch_issue, k)
+                    attachments = (issue.get("fields") or {}).get("attachment") or []
+                    if not _has_gmlogger_logs(attachments, k):
+                        continue
+                    tt = await _run_blocking(_jc.extract_trigger_time_from_issue, issue, skip_attachment=True)
+                    if not tt:
+                        tt = _diag_extract_time_from_video_simple(issue)
+                    if not tt:
+                        cfg_api = load_config().get("jira_api", {})
+                        img_h, img_tok = {}, cfg_api.get("token", "")
+                        if img_tok:
+                            img_h["Authorization"] = f"Bearer {img_tok}"
+                        img_to = max(int(cfg_api.get("timeout", 30)), 120)
+                        img_tt, _ = _diag_extract_time_from_images(issue, img_h, img_to, k)
+                        if img_tt:
+                            tt = img_tt
+                    if not tt:
+                        tt = _jc.extract_attachment_time(issue)
+                    if tt and not isinstance(tt, str):
+                        if hasattr(tt, 'strftime'):
+                            tt = tt.strftime("%Y-%m-%d %H:%M:%S")
+                        elif isinstance(tt, (tuple, list)) and len(tt) >= 1:
+                            tt = str(tt[0])
+                        else:
+                            tt = str(tt)
+                    if tt:
+                        trigger_times[k] = tt
+                        _save_trigger_time_to_csv(k, tt)
+                        new_to_cloud[k] = tt
+                        new_sources[k] = "兜底提取"
+                        try:
+                            _gm = _diag_gmlogger_times(attachments) or []
+                            if _gm:
+                                _d = _gm[0][1]
+                                new_refs[k] = (_d.strftime("%Y-%m-%d %H:%M:%S")
+                                               if hasattr(_d, "strftime") else str(_d)[:19])
+                        except Exception:
+                            pass
+                        selected.append(k)
+                        fallback_extracted += 1
+                        new_extracted += 1
+                except Exception as e:
+                    logger.warning("兜底提取触发时间失败 %s: %s", k, e)
+            if new_to_cloud:
+                _batch_save_trigger_times_to_cloud(new_to_cloud, dict(new_sources), dict(new_refs))
+            if fallback_extracted:
+                logger.info("兜底提取成功: %d 条", fallback_extracted)
     # 统计
     with_time_count = len([k for k in selected if k in trigger_times])
-    time_info = f"，{with_time_count} 条有触发时间（云端 {cloud_picked} + CSV {csv_hit} + 新提取 {new_extracted}）"
+    time_info = f"，{with_time_count} 条有触发时间（云端 {cloud_picked} + CSV {csv_hit} + 新提取 {new_extracted}"
+    if fallback_extracted:
+        time_info += f" + 兜底 {fallback_extracted}"
+    time_info += "）"
     if extract_failed:
         time_info += f"，提取失败跳过 {extract_failed} 条"
     return _ok({"available_count": len(available), "tested_count": len(tested),
                  "selected": selected, "selected_count": len(selected),
                  "trigger_times": trigger_times, "time_count": len(trigger_times),
                  "cloud_picked": cloud_picked, "csv_hit": csv_hit,
-                 "new_extracted": new_extracted,
+                 "new_extracted": new_extracted, "fallback_extracted": fallback_extracted,
                  "extract_failed": extract_failed, "pending_scanned": len(pending_pool)},
                 f"可用 {len(available)} 条，抽取 {len(selected)} 条{time_info}")
 
@@ -1472,6 +1556,8 @@ async def test_batch_ai_run(request: Request):
             cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
         except Exception as e:
             logger.warning("批量执行上传云端失败（不影响主流程）: %s", e)
+        # 内存级去重：标记本次执行的 JIRA 号，防止持续执行下一轮时重复
+        _mark_executed([r["jira号"] for r in results if r.get("jira号")])
         done_msg = f"执行完成：成功 {success_count} 条，失败 {fail_count} 条"
         if skipped_jiras:
             done_msg += f"，已跳过 {len(skipped_jiras)} 条（多维表格已成功）"
