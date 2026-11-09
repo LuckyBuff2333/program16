@@ -255,6 +255,42 @@ def _next_backoff(cur: int) -> int:
     return min(60, cur * 2)
 
 
+def _install_crypto_aes_fallback() -> bool:
+    """Windows 应用程序控制策略可能拦截 pycryptodome 的 .pyd。
+
+    此时 lark_oapi 导入 Crypto.Cipher.AES 会失败。注入一个纯 Python
+    AES-CBC 兼容模块，保证飞书长连接仍可启动。
+    """
+    try:
+        from Crypto.Cipher import AES as _native_aes
+        # 仅 import 成功不代表原生模块可用；真正 new 一次才能发现被策略拦截的 .pyd
+        _native_aes.new(b"\0" * 32, _native_aes.MODE_CBC, b"\0" * 16)
+        return True
+    except Exception as _e:
+        logger.warning("pycryptodome 原生模块不可用，启用纯 Python AES 兜底: %s", str(_e)[:160])
+    try:
+        import sys as _sys
+        import types as _types
+        from src.core import pure_aes as _pure_aes
+        crypto_mod = _types.ModuleType("Crypto")
+        crypto_mod.__path__ = []
+        cipher_mod = _types.ModuleType("Crypto.Cipher")
+        cipher_mod.__path__ = []
+        aes_mod = _types.ModuleType("Crypto.Cipher.AES")
+        aes_mod.new = _pure_aes.new
+        aes_mod.block_size = _pure_aes.block_size
+        aes_mod.MODE_CBC = _pure_aes.MODE_CBC
+        cipher_mod.AES = aes_mod
+        crypto_mod.Cipher = cipher_mod
+        _sys.modules["Crypto"] = crypto_mod
+        _sys.modules["Crypto.Cipher"] = cipher_mod
+        _sys.modules["Crypto.Cipher.AES"] = aes_mod
+        return True
+    except Exception as _e:
+        logger.error("纯 Python AES 兜底注入失败: %s", _e)
+        return False
+
+
 def start_feishu_ws_client(event_handler):
     """启动飞书长连接 WebSocket 客户端（官方 lark-oapi SDK 推荐模式，守护线程+断线自动重连）
 
@@ -271,6 +307,7 @@ def start_feishu_ws_client(event_handler):
         return
 
     def _run():
+        _install_crypto_aes_fallback()
         import lark_oapi as lark
         backoff = 5
         while True:
