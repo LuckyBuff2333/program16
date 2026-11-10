@@ -633,16 +633,23 @@ async def test_bitable_vcs_query(request: Request):
         loop = asyncio.get_event_loop()
         records = None
         use_search = bool(date_from or date_to)
+        # 始终解析日期范围边界（无论哪种策略都需要 Python 侧兆底过滤）
+        ts_from = 0
+        ts_to = float('inf')
+        if date_from:
+            ts_from = datetime.strptime(date_from, "%Y-%m-%d").timestamp() * 1000
+        if date_to:
+            ts_to = (datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000
         # 策略 1：search API（有日期范围时优先，服务端过滤，只拉命中记录）
         if use_search:
             try:
                 conditions = []
                 if date_from:
-                    ts_from = str(int(datetime.strptime(date_from, "%Y-%m-%d").timestamp() * 1000))
-                    conditions.append({"field_name": "创建日期", "operator": "isGreater", "value": [ts_from]})
+                    ts_from_str = str(int(ts_from))
+                    conditions.append({"field_name": "创建日期", "operator": "isGreaterEqual", "value": [ts_from_str]})
                 if date_to:
-                    ts_to = str(int((datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000))
-                    conditions.append({"field_name": "创建日期", "operator": "isLess", "value": [ts_to]})
+                    ts_to_str = str(int(ts_to))
+                    conditions.append({"field_name": "创建日期", "operator": "isLessEqual", "value": [ts_to_str]})
                 filter_obj = {"conjunction": "and", "conditions": conditions}
                 records = await loop.run_in_executor(
                     None, lambda: _fc.search_bitable_records(
@@ -657,23 +664,17 @@ async def test_bitable_vcs_query(request: Request):
             records = await loop.run_in_executor(
                 None, lambda: _fc.list_bitable_records(app_token, table_id))
             logger.info("表格查询使用全量拉取，共 %d 条", len(records))
-        # 解析日期范围边界（全量拉取时需要 Python 侧过滤）
-        ts_from = 0
-        ts_to = float('inf')
-        if not use_search or records is None:
-            if date_from:
-                ts_from = datetime.strptime(date_from, "%Y-%m-%d").timestamp() * 1000
-            if date_to:
-                ts_to = (datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000
-        # 解析记录
+        # 解析记录（始终做 Python 侧日期兆底过滤，防止 search API 过滤无效）
         rows = []
         for rec in records:
             fields = rec.get("fields", {})
-            # 全量拉取时 Python 侧日期过滤
-            if ts_from or ts_to != float('inf'):
-                created_ts = fields.get("创建日期", "")
-                if not isinstance(created_ts, (int, float)) or created_ts <= 0:
+            # 日期过滤（search API 可能过滤无效，始终兆底）
+            created_ts = fields.get("创建日期", "")
+            if not isinstance(created_ts, (int, float)) or created_ts <= 0:
+                if use_search:
                     continue
+                created_ts = 0
+            else:
                 if ts_from and created_ts < ts_from:
                     continue
                 if ts_to != float('inf') and created_ts >= ts_to:
@@ -684,7 +685,6 @@ async def test_bitable_vcs_query(request: Request):
             if filter_ai and ai_result and ai_result not in ("-", "None"):
                 continue
             # 创建日期转可读格式
-            created_ts = fields.get("创建日期", "")
             created_str = ""
             if isinstance(created_ts, (int, float)) and created_ts > 0:
                 created_str = datetime.fromtimestamp(created_ts / 1000).strftime("%Y-%m-%d %H:%M")
