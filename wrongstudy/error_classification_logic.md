@@ -42,25 +42,25 @@ flowchart TD
 
 「错误类型」字段为英文枚举值，直接映射，优先级最高：
 
-| ErrorType | 分类结果 | 是否深度分析 |
-|---|---|---|
-| `JIRA_API_ERROR` | 并发过多 | ❌ 跳过 |
-| `NO_PROBLEM_TIME` | 无时间信息 | ❌ 跳过 |
-| `NO_LOG_ATTACHMENT` | 无gmlogger | ❌ 跳过 |
-| `ATTACHMENT_INCOMPLETE` | （空串） | ✅ 走深度分析，判断附件是否真的缺失 |
-| `EXTRACTION_NO_LOG` | 无gmlogger | ❌ 跳过 |
-| `EXTRACTION_TIME_FILTERED` | 触发时间问题 | ✅ 深度排查 |
-| `TIME_FILTER_EMPTY` | 触发时间问题 | ✅ 深度排查 |
-| `LLM_CALL_FAILED` | 待重试 | ❌ 跳过，无需分析 |
-| `REPORT_EMPTY` | 待重试 | ❌ 跳过，无需分析 |
-| `ANALYSIS_PARTIAL` | 待重试 | ❌ 跳过，无需分析 |
-| `REPORT_DELIVERY_FAILED` | 待重试 | ❌ 跳过，无需分析 |
-| `POST_RESULT_FAILED` | 待重试 | ❌ 跳过，无需分析 |
-| `TASK_TIMEOUT` | 并发过多 | ❌ 跳过 |
-| `TASK_CANCELLED` | 人工取消 | ❌ 跳过 |
-| `NETWORK_TIMEOUT` | 网络波动 | ❌ 跳过 |
-| `NETWORK_ERROR` | 网络波动 | ❌ 跳过 |
-| `UNEXPECTED_ERROR` | 并发过多 | ❌ 跳过 |
+| ErrorType | 对应错误分类 | 分类结果 | 是否深度分析 |
+|---|---|---|---|
+| `JIRA_API_ERROR` | JIRA API 调用失败 | 并发过多 | ❌ 跳过 |
+| `NO_PROBLEM_TIME` | 未找到问题时间 | 无时间信息 | ❌ 跳过 |
+| `NO_LOG_ATTACHMENT` | 没有可下载的日志附件 / 无日志附件 | 无gmlogger | ❌ 跳过 |
+| `ATTACHMENT_INCOMPLETE` | 分卷压缩包不完整 | （空串） | ✅ 走深度分析，判断附件是否真的缺失 |
+| `EXTRACTION_NO_LOG` | 处理后未找到有效的日志文件 | 无gmlogger | ❌ 跳过 |
+| `EXTRACTION_TIME_FILTERED` | 时间过滤后日志为空 / 日志文件均不在时间范围内 | 触发时间问题 | ✅ 深度排查 |
+| `TIME_FILTER_EMPTY` | 时间过滤后日志为空 | 触发时间问题 | ✅ 深度排查 |
+| `LLM_CALL_FAILED` | 模型调用失败 / adjudication/reasoning 失败 | 待重试 | ❌ 跳过，无需分析 |
+| `REPORT_EMPTY` | 分析报告生成失败 | 待重试 | ❌ 跳过，无需分析 |
+| `ANALYSIS_PARTIAL` | 分析完成但包含部分错误 | 待重试 | ❌ 跳过，无需分析 |
+| `REPORT_DELIVERY_FAILED` | 飞书文档创建或发送失败 | 待重试 | ❌ 跳过，无需分析 |
+| `POST_RESULT_FAILED` | JIRA 网关回填分析结果失败 | 待重试 | ❌ 跳过，无需分析 |
+| `TASK_TIMEOUT` | JIRA 分析任务执行超时 / 分析任务执行超时 | 并发过多 | ❌ 跳过 |
+| `TASK_CANCELLED` | 分析任务被取消 | 人工取消 | ❌ 跳过 |
+| `NETWORK_TIMEOUT` | 网络通信失败 / 网络连接超时 | 网络波动 | ❌ 跳过 |
+| `NETWORK_ERROR` | 网络通信失败 / 网络连接超时 | 网络波动 | ❌ 跳过 |
+| `UNEXPECTED_ERROR` | 未预期的错误 | 并发过多 | ❌ 跳过 |
 
 > ErrorType 未命中时回退到「错误分类」和「错误信息」文本匹配。
 
@@ -68,33 +68,33 @@ flowchart TD
 
 当 ErrorType 未命中时，按「错误分类」字段文本匹配：
 
-| 错误分类字段值 | 分类结果 | 是否深度分析 |
-|---|---|---|
-| 时间过滤后日志为空 | 触发时间问题 | ✅ 继续深度分析 |
-| 处理后未找到有效的日志文件 | 无gmlogger | ❌ 跳过 |
-| 解压后未找到可识别的日志文件 | 无gmlogger | ❌ 跳过 |
-| 日志文件均不在时间范围内 | 触发时间问题 | ✅ 深度排查 |
-| JIRA 分析任务执行超时/网关超时 | 待人工排查 | ❌ 跳过，查 app.log |
-| adjudication/reasoning 失败 | 待人工排查 | ❌ 跳过，查 app.log |
-| 504/502/503/500 网关错误 | IP配置错误 | ❌ 跳过 |
-| 分析任务被取消 | 人工取消 | ❌ 跳过 |
-| 未找到问题时间 | 无时间信息 | ❌ 跳过 |
-| 网络通信失败 / 网络连接超时 | 网络波动 | ❌ 跳过 |
-| 分卷压缩包不完整 | （空串） | ✅ 走深度分析，判断附件是否真的缺失 |
-| 没有可下载的日志附件 / 无日志附件 | 无gmlogger | ❌ 跳过 |
-| JIRA API 调用失败 | 并发过多 | ❌ 跳过 |
-| 未预期的错误 | 并发过多 | ❌ 跳过 |
-| 分析完成但包含部分错误 | 待重试 | ❌ 跳过，无需分析 |
-| 分析报告生成失败 | 待重试 | ❌ 跳过，无需分析 |
-| 模型调用失败 | 待重试 | ❌ 跳过，无需分析 |
-| 飞书文档创建或发送失败 | 待重试 | ❌ 跳过，无需分析 |
-| JIRA 网关回填分析结果失败 | 待重试 | ❌ 跳过，无需分析 |
-| 服务有报错 | 服务关闭 | ❌ 跳过 |
-| All connection attempts failed / Server disconnected | 服务关闭 | ❌ 跳过 |
-| No space left on device / Errno 28 | 磁盘空间不足 | ❌ 跳过 |
-| 分析任务执行超时（不含 JIRA/网关） | 并发过多 | ❌ 跳过 |
-| 日志行数过多 | 日志行数过多，手动分析 | ❌ 跳过 |
-| 错误分类、错误类型、错误信息都为空 | 服务关闭 | ❌ 跳过 |
+| 错误分类字段值 | 对应 ErrorType | 分类结果 | 是否深度分析 |
+|---|---|---|---|
+| 时间过滤后日志为空 | `EXTRACTION_TIME_FILTERED` / `TIME_FILTER_EMPTY` | 触发时间问题 | ✅ 继续深度分析 |
+| 处理后未找到有效的日志文件 | `EXTRACTION_NO_LOG` | 无gmlogger | ❌ 跳过 |
+| 解压后未找到可识别的日志文件 | `NO_LOG_ATTACHMENT` | 无gmlogger | ❌ 跳过 |
+| 日志文件均不在时间范围内 | `EXTRACTION_TIME_FILTERED` | 触发时间问题 | ✅ 深度排查 |
+| JIRA 分析任务执行超时/网关超时 | `TASK_TIMEOUT` | 待人工排查 | ❌ 跳过，查 app.log |
+| adjudication/reasoning 失败 | `LLM_CALL_FAILED` | 待人工排查 | ❌ 跳过，查 app.log |
+| 504/502/503/500 网关错误 | — | IP配置错误 | ❌ 跳过 |
+| 分析任务被取消 | `TASK_CANCELLED` | 人工取消 | ❌ 跳过 |
+| 未找到问题时间 | `NO_PROBLEM_TIME` | 无时间信息 | ❌ 跳过 |
+| 网络通信失败 / 网络连接超时 | `NETWORK_TIMEOUT` / `NETWORK_ERROR` | 网络波动 | ❌ 跳过 |
+| 分卷压缩包不完整 | `ATTACHMENT_INCOMPLETE` | （空串） | ✅ 走深度分析，判断附件是否真的缺失 |
+| 没有可下载的日志附件 / 无日志附件 | `NO_LOG_ATTACHMENT` | 无gmlogger | ❌ 跳过 |
+| JIRA API 调用失败 | `JIRA_API_ERROR` | 并发过多 | ❌ 跳过 |
+| 未预期的错误 | `UNEXPECTED_ERROR` | 并发过多 | ❌ 跳过 |
+| 分析完成但包含部分错误 | `ANALYSIS_PARTIAL` | 待重试 | ❌ 跳过，无需分析 |
+| 分析报告生成失败 | `REPORT_EMPTY` | 待重试 | ❌ 跳过，无需分析 |
+| 模型调用失败 | `LLM_CALL_FAILED` | 待重试 | ❌ 跳过，无需分析 |
+| 飞书文档创建或发送失败 | `REPORT_DELIVERY_FAILED` | 待重试 | ❌ 跳过，无需分析 |
+| JIRA 网关回填分析结果失败 | `POST_RESULT_FAILED` | 待重试 | ❌ 跳过，无需分析 |
+| 服务有报错 | — | 服务关闭 | ❌ 跳过 |
+| All connection attempts failed / Server disconnected | — | 服务关闭 | ❌ 跳过 |
+| No space left on device / Errno 28 | — | 磁盘空间不足 | ❌ 跳过 |
+| 分析任务执行超时（不含 JIRA/网关） | `TASK_TIMEOUT` | 并发过多 | ❌ 跳过 |
+| 日志行数过多 | — | 日志行数过多，手动分析 | ❌ 跳过 |
+| 错误分类、错误类型、错误信息都为空 | — | 服务关闭 | ❌ 跳过 |
 
 > `无gmlogger` 与 `无gmlogger文件` 已合并，统一使用 `无gmlogger`。
 
