@@ -185,31 +185,33 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
                          and (f.get("name", "").startswith("批量执行")
                               or f.get("name", "").startswith("线上批量执行")
                               or f.get("name", "").startswith("动态队列"))]
-            for doc in cloud_docs:
-                doc_token = doc.get("token", "")
-                doc_name = doc.get("name", "")
-                if not doc_token:
-                    continue
-                # 跳过全部失败的批次（文档名含 "(0/N)"），允许这些 Jira 重新执行
-                m = _re.search(r'\((\d+)/(\d+)\)\s*$', doc_name)
+            # 并发拉取飞书文档，提升云端去重速度
+            import concurrent.futures as _cf
+            def _fetch_one(_doc):
+                _token = _doc.get("token", "")
+                _name = _doc.get("name", "")
+                if not _token:
+                    return None
+                m = _re.search(r'\((\d+)/(\d+)\)\s*$', _name)
                 if m and int(m.group(1)) == 0:
-                    continue
+                    return None
                 try:
-                    md = feishu_client.fetch_docx_as_markdown(doc_token)
-                    # 解析 markdown 表格中的 Jira 号
+                    _md = feishu_client.fetch_docx_as_markdown(_token)
                     from src.services.report_ops import _parse_markdown_batch_table
-                    batch_rows = _parse_markdown_batch_table(md)
-                    # 从文档名前缀推断来源
-                    if doc_name.startswith("线上批量执行") or doc_name.startswith("动态队列"):
-                        inferred_source = "parseFullTicket"
-                    else:
-                        inferred_source = "jira_analyze"
-                    for r in batch_rows:
-                        jira = (r.get("jira号") or "").strip()
-                        if jira and (not source or inferred_source == source):
-                            executed.add(jira)
+                    _rows = _parse_markdown_batch_table(_md)
+                    _src = "parseFullTicket" if (_name.startswith("线上批量执行") or _name.startswith("动态队列")) else "jira_analyze"
+                    return (_src, [(r.get("jira号") or "").strip() for r in _rows])
                 except Exception as e:
-                    logger.warning("云端批次记录读取失败 %s: %s", doc_name, e)
+                    logger.warning("云端批次记录读取失败 %s: %s", _name, e)
+                    return None
+            with _cf.ThreadPoolExecutor(max_workers=8) as _pool:
+                for _res in _pool.map(_fetch_one, cloud_docs):
+                    if _res is None:
+                        continue
+                    _src, _jiras = _res
+                    for _j in _jiras:
+                        if _j and (not source or _src == source):
+                            executed.add(_j)
     except Exception as e:
         logger.warning("读取云端批量执行记录失败: %s", e)
     _EXECUTED_KEYS_CACHE[_cache_key] = (_t.time(), set(executed))
