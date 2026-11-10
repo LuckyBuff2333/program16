@@ -59,7 +59,6 @@
             <div class="section-label">过滤选项</div>
             <div class="filter-row">
               <el-checkbox v-model="batchAi.filterExistingSuccess">过滤已存在记录成功case</el-checkbox>
-              <el-button size="small" :loading="running.batchFilter" @click="refreshDedupe">强制刷新去重</el-button>
             </div>
           </div>
         </div>
@@ -68,7 +67,6 @@
             <div class="section-label">过滤选项</div>
             <div class="filter-row">
               <el-checkbox v-model="batchAi.filterAiPreliminary">过滤有AI字段数据</el-checkbox>
-              <el-button size="small" :loading="running.batchFilter" @click="refreshDedupe">强制刷新去重</el-button>
             </div>
           </div>
         </div>
@@ -81,7 +79,6 @@
             <span class="fs-sep">→</span>
             <el-tag size="small">表格去重 {{ batchAi.filterCounts.bitable }}</el-tag>
             <el-tag size="small">云端去重 {{ batchAi.filterCounts.cloud }}</el-tag>
-            <el-tag size="small">内存去重 {{ batchAi.filterCounts.memory }}</el-tag>
             <el-tag size="small" type="warning">AI初步分析 {{ batchAi.filterCounts.ai }}</el-tag>
             <span class="fs-sep">→</span>
             <el-tag size="small" type="success">剩余 {{ batchAi.filterCounts.remaining }}</el-tag>
@@ -431,13 +428,6 @@ export default {
     },
     onFilterAllChange(val) { if (val) { this.batchAi.filterPcOnly = false; this.batchAi.filterOnlineOnly = false; } },
     onFilterSourceChange() { if (this.batchAi.filterPcOnly || this.batchAi.filterOnlineOnly) { this.batchAi.filterAllExisting = false; } },
-    async refreshDedupe() {
-      try {
-        await api('/api/test/executed_keys/refresh', { method: 'POST', body: '{}' });
-        ElMessage.success('去重缓存已刷新');
-        if (this.batchAi.rows.length) await this.batchAiFilter();
-      } catch (e) { ElMessage.error('刷新失败: ' + (e.message || e)); }
-    },
     async batchAiFilter() {
       if (!this.batchAi.rows.length) return ElMessage.warning('请先执行步骤1');
       this.running.batchFilter = true; this.batchAi.filterMsg = ''; this.batchAi.filterError = false;

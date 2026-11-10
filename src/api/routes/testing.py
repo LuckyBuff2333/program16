@@ -88,10 +88,8 @@ def _fail(message: str, extra: dict = None):
 logger = setup_logger("web.testing")
 router = APIRouter()
 
-# —— 内存级跨批次去重：记录最近执行的 JIRA 号，防止多维表格未及时更新导致重复 ——
+# —— 云端批次文档扫描缓存：用于去重 ——
 import time as _time_mod
-_recently_executed = {}  # jira_key -> timestamp
-_EXECUTED_TTL = 2 * 3600  # 2小时过期
 _EXECUTED_KEYS_CACHE = {}  # {(source, date): (ts, set)}
 _batch_ai_run_stop_event = threading.Event()
 _EXECUTED_KEYS_TTL = 600  # 云端批次文档扫描一次约 60s，缓存 10 分钟
@@ -156,25 +154,6 @@ def _claim_single_submit(exec_mode: str, bugid: str) -> bool:
     return True
 
 
-def _mark_executed(keys: list):
-    """ 标记一批 JIRA 号为已执行 """
-    now = _time_mod.time()
-    for k in keys:
-        _recently_executed[k] = now
-
-def _filter_recently_executed(keys: list, ttl_seconds: int = None) -> tuple:
-    """ 过滤掉最近已执行的 JIRA 号，返回 (过滤后列表, 排除数量) """
-    now = _time_mod.time()
-    ttl = _EXECUTED_TTL if ttl_seconds is None else ttl_seconds
-    # 清理过期记录
-    expired = [k for k, t in _recently_executed.items() if now - t > ttl]
-    for k in expired:
-        del _recently_executed[k]
-    # 过滤
-    filtered = [k for k in keys if k not in _recently_executed]
-    return filtered, len(keys) - len(filtered)
-
-
 def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
     """读取云端批量执行记录，返回指定来源的已执行Jira号集合
 
@@ -237,13 +216,6 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
     return executed
 
 
-@router.post("/api/test/executed_keys/refresh", response_model=ApiResponse)
-def refresh_executed_keys_cache():
-    """强制刷新跨批次去重缓存。"""
-    _invalidate_executed_keys_cache()
-    return _ok(None, "去重缓存已刷新")
-
-
 @router.post("/api/test/batch_ai_single", response_model=ApiResponse)
 async def batch_ai_single(request: Request):
     """动态队列：提交单条 Jira 到 AI 分析接口。"""
@@ -255,9 +227,6 @@ async def batch_ai_single(request: Request):
         return _fail("bugid 为空")
     if not exec_time:
         return _fail("trigger_time 为空")
-    _recent_left, _recent_skipped = _filter_recently_executed([bugid], ttl_seconds=_EXECUTED_TTL)
-    if _recent_skipped:
-        return _fail(f"{bugid} 最近已执行，跳过重复执行")
     if not _claim_single_submit(exec_mode, bugid):
         return _fail(f"{bugid} 刚刚已提交，跳过重复执行")
     try:
@@ -281,7 +250,6 @@ async def batch_ai_single(request: Request):
         if ok_flag and exec_mode != "online":
             ok_flag = any(k in msg for k in ("分析任务已启动", "后台处理", "正在分析"))
         if ok_flag:
-            _mark_executed([bugid])
             # 写入动态队列补给缓冲区，每满 20 条自动写入云端批次文档
             _trigger_source = "parseFullTicket" if exec_mode == "online" else "jira_analyze"
             _now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1260,12 +1228,6 @@ async def test_batch_ai_filter(request: Request):
             mode_parts.append("线上正确+通用失败")
     mode_desc = "+".join(mode_parts) if mode_parts else "无过滤"
     filtered = [k for k in keys if k not in exclude_keys]
-    # —— 内存级跨批次去重：排除最近已提交但多维表格可能尚未更新的 JIRA ——
-    mem_skipped = 0
-    if filtered:
-        filtered, mem_skipped = _filter_recently_executed(filtered)
-        if mem_skipped:
-            logger.info("内存去重: 排除最近已执行的 %d 条", mem_skipped)
     # —— 第2步：AI初步分析过滤（批量 POST search 取回字段，Python 端过滤，避免逐个 fetch 和 JQL 不支持该字段）——
     ai_exclude = set()
     if filter_ai_preliminary and filtered:
@@ -1305,19 +1267,17 @@ async def test_batch_ai_filter(request: Request):
     # —— 汇总返回 ——
     removed = len(keys) - len(filtered)
     ai_removed = len(ai_exclude)
-    logger.info("过滤汇总(%s): 候选 %d → 表格去重 %d / 云端去重 %d / 内存去重 %d / AI初步分析 %d → 剩余 %d",
-                mode_desc, len(keys), bitable_removed, cloud_removed, mem_skipped, ai_removed, len(filtered))
+    logger.info("过滤汇总(%s): 候选 %d → 表格去重 %d / 云端去重 %d / AI初步分析 %d → 剩余 %d",
+                mode_desc, len(keys), bitable_removed, cloud_removed, ai_removed, len(filtered))
     if not filtered:
         return _fail(f"所有候选均已被过滤（候选 {len(keys)} 条，共过滤 {removed} 条）")
     filter_desc = f"候选 {len(keys)} 条，多维表格过滤 {bitable_removed} 条"
-    if mem_skipped:
-        filter_desc += f"，内存去重 {mem_skipped} 条"
     if ai_exclude:
         filter_desc += f"，AI字段过滤 {len(ai_exclude)} 条"
     filter_desc += f"，剩余 {len(filtered)} 条"
     return _ok({"filtered": filtered, "removed": removed, "total": len(keys),
                  "counts": {"total": len(keys), "bitable": bitable_removed, "cloud": cloud_removed,
-                            "memory": mem_skipped, "ai": ai_removed, "remaining": len(filtered)},
+                            "ai": ai_removed, "remaining": len(filtered)},
                  "exclude_keys": list(exclude_keys)[:20]},
                 filter_desc)
 
@@ -1579,14 +1539,9 @@ async def test_batch_ai_run(request: Request):
     from src.services.trigger_ops import _load_trigger_times_from_cloud
     body = await request.json() or {}
     bugids = body.get("bugids") or []
-    # 持续执行：用内存最近执行集合兜底，防止多维表格尚未同步时被另一轮/另一页面重复选中
     if bool(body.get("continuous")):
-        bugids, _mem_skipped = _filter_recently_executed(bugids, ttl_seconds=3600)
-        if _mem_skipped:
-            logger.info("持续执行内存去重: 排除 %d 条最近已执行 Jira", _mem_skipped)
         if not bugids:
-            return _fail("持续执行去重后无待执行 Jira")
-        _mark_executed(bugids)
+            return _fail("无待执行 Jira")
     trigger_times = body.get("trigger_times") or {}
     _dynamic_queue = bool(body.get("dynamic_queue"))
     # 批量执行元数据（分析并发数、下载并发数、模型、触发来源）
@@ -1764,8 +1719,6 @@ async def test_batch_ai_run(request: Request):
             cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
         except Exception as e:
             logger.warning("批量执行上传云端失败（不影响主流程）: %s", e)
-        # 内存级去重：标记本次执行的 JIRA 号，防止持续执行下一轮时重复
-        _mark_executed([r["jira号"] for r in results if r.get("jira号")])
         done_msg = f"执行完成：成功 {success_count} 条，失败 {fail_count} 条"
         if skipped_jiras:
             done_msg += f"，已跳过 {len(skipped_jiras)} 条（多维表格已成功）"
@@ -3068,12 +3021,8 @@ async def test_prod_batch_run(request: Request):
             bugids.append(b)
     dedup_count = len(all_bugids) - len(bugids)
     if _continuous_run:
-        bugids, _mem_skipped = _filter_recently_executed(bugids, ttl_seconds=3600)
-        if _mem_skipped:
-            logger.info("持续执行内存去重: 排除 %d 条最近已执行 Jira", _mem_skipped)
         if not bugids:
-            return _fail("持续执行去重后无待执行 Jira")
-        _mark_executed(bugids)
+            return _fail("无待执行 Jira")
     # 重复过滤：查询多维表格，跳过已执行成功或人工审核确认为无效bug的 Jira 号
     # 支持 skip_existing（全量过滤）和 filter_pc_only/filter_online_only（按来源过滤）
     any_filter = skip_existing or filter_pc_only or filter_online_only
@@ -3380,9 +3329,6 @@ async def test_prod_batch_run(request: Request):
         if _dups:
             logger.warning("批量执行跳过最近已提交 Jira: %s", ",".join(_dups[:10]))
         run_bugids = _allowed_run
-        # 提交即视为已执行：即使后续分析失败，也不再被下一批/下一轮重复选中
-        if run_bugids:
-            _mark_executed(run_bugids)
         skipped_no_time = len(bugids) - len(run_bugids)
         yield f"data: {_json.dumps({'type': 'extract_done', 'total': len(run_bugids), 'with_time': len(trigger_times), 'without_time': skipped_no_time, 'skip_empty_mark': skip_empty_mark}, ensure_ascii=False)}\n\n"
         # 批量执行接口（支持PC/线上模式）
@@ -3502,8 +3448,6 @@ async def test_prod_batch_run(request: Request):
         no_time_count = sum(1 for r in results if r.get("备注") == "无触发时间")
         done_msg = f"执行完成：成功 {success_count}，失败 {fail_count}，去重 {dedup_count}，重复跳过 {skipped_count}，无触发时间 {no_time_count}"
         logger.info("%s批量执行完成: %s", mode_label, done_msg)
-        # 内存级去重：标记本次执行的 JIRA 号，防止下一批次多维表格未更新导致重复
-        _mark_executed(run_bugids)
         # 上传执行记录到云端
         cloud_url = ""
         try:
