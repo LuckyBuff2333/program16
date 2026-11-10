@@ -626,35 +626,34 @@ async def test_bitable_vcs_query(request: Request):
         from src.clients import feishu_client as _fc
         app_token = "HOARbsrB0aSViFs5AjNchSQ0nAf"
         table_id = "tblr4oboVbKsV6y1"
-        # 构建日期范围过滤表达式（创建日期为 type=5 时间戳毫秒）
-        filter_expr = ""
-        if date_from:
-            ts_from = int(datetime.strptime(date_from, "%Y-%m-%d").timestamp() * 1000)
-            filter_expr = f'CurrentValue.[创建日期] >= {ts_from}'
-        if date_to:
-            # date_to 含当天，+1天
-            ts_to = int((datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000)
-            if filter_expr:
-                filter_expr += f' AND CurrentValue.[创建日期] < {ts_to}'
-            else:
-                filter_expr = f'CurrentValue.[创建日期] < {ts_to}'
+        # 飞书 filter 不支持日期字段比较，拉全量后 Python 侧按日期筛选
         loop = asyncio.get_event_loop()
         records = await loop.run_in_executor(
-            None, lambda: _fc.list_bitable_records(app_token, table_id,
-                                                   filter_expr=filter_expr if filter_expr else None))
+            None, lambda: _fc.list_bitable_records(app_token, table_id))
+        # 解析日期范围边界
+        ts_from = 0
+        ts_to = float('inf')
+        if date_from:
+            ts_from = datetime.strptime(date_from, "%Y-%m-%d").timestamp() * 1000
+        if date_to:
+            ts_to = (datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000
         rows = []
         for rec in records:
             fields = rec.get("fields", {})
+            # 创建日期过滤
+            created_ts = fields.get("创建日期", "")
+            if not isinstance(created_ts, (int, float)) or created_ts <= 0:
+                continue
+            if date_from and created_ts < ts_from:
+                continue
+            if date_to and created_ts >= ts_to:
+                continue
             jira_no = _bitable_text(fields.get("jira号", ""))
             ai_result = _bitable_text(fields.get("AI初步分析结果", ""))
             # AI过滤：跳过AI初步分析结果非空的记录
             if filter_ai and ai_result and ai_result not in ("-", "None"):
                 continue
-            # 创建日期转可读格式
-            created_ts = fields.get("创建日期", "")
-            created_str = ""
-            if isinstance(created_ts, (int, float)) and created_ts > 0:
-                created_str = datetime.fromtimestamp(created_ts / 1000).strftime("%Y-%m-%d %H:%M")
+            created_str = datetime.fromtimestamp(created_ts / 1000).strftime("%Y-%m-%d %H:%M")
             rows.append({
                 "jira号": jira_no,
                 "创建日期": created_str,
