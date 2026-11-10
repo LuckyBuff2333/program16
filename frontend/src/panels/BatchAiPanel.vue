@@ -30,7 +30,7 @@
                 <el-radio value="online" border @change="setBatchMeta('batchAi','online')">线上</el-radio>
               </el-radio-group>
               <el-divider direction="vertical" />
-              <el-input-number v-model="batchAi.sampleCount" :min="1" :max="200" size="default" style="width:110px" controls-position="right"></el-input-number>
+              <el-input-number v-model="batchAi.sampleCount" :min="1" :max="500" size="default" style="width:110px" controls-position="right"></el-input-number>
               <span class="field-hint">抽取数量</span>
               <el-checkbox v-model="batchAi.dynamicQueue" :disabled="!batchAi.continuous" size="small">动态队列</el-checkbox>
             </div>
@@ -283,7 +283,7 @@
                 <el-radio value="online" border @change="setBatchMeta('formExec','online')">线上</el-radio>
               </el-radio-group>
               <el-divider direction="vertical" />
-              <el-input-number v-model="formExec.sampleCount" :min="1" :max="200" size="default" style="width:110px" controls-position="right"></el-input-number>
+              <el-input-number v-model="formExec.sampleCount" :min="1" :max="500" size="default" style="width:110px" controls-position="right"></el-input-number>
               <span class="field-hint">抽取数量</span>
             </div>
           </div>
