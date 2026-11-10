@@ -6805,6 +6805,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
             if not cover_frames:
                 logger.warning("视频帧提取：无法提取封面帧 %s，尝试下一个", video_label)
                 continue
+            _VIDEO_OCR_STATS["videos"] += 1
             first_full = ""
             first_partial = ""
             first_detail = ""
@@ -6822,28 +6823,52 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     logger.info("视频帧提取：封面未识别到时间，继续截取前6帧")
                 
                 time_str = ""  # 初始化，防止 OCR 未匹配时 UnboundLocalError
+                _prev_sig = None
                 for sec, frame in frames:
-                    try:
-                        results = _ocr_readtext(None, frame)
-                    except Exception as e:
-                        logger.warning("视频帧提取：OCR 第%d秒失败: %s", sec, e)
+                    # 静帧跳过：与上一帧几乎相同就不重复 OCR（静态画面常见）
+                    _sig = _frame_signature(frame)
+                    if _prev_sig is not None and _same_frame(_sig, _prev_sig):
+                        _VIDEO_OCR_STATS["skipped_frames"] += 1
+                        logger.debug("视频帧提取(%s)：第%d秒与上一帧相同，跳过 OCR", video_label, sec + 1)
                         continue
-                    all_text = " ".join(r[1] for r in results)
-                    # 状态栏/任务栏/中控屏 ROI 往往比整帧更准（整帧可能同时含视频内嵌旧时间）
+                    _prev_sig = _sig
+                    # 状态栏 ROI 优先：只 OCR 顶部/右下小区域，命中时间就不再做整帧 OCR
+                    # （避免地图POI/聊天消息/系统UI等大量无关文本干扰，同时节省 ~5s/帧）
+                    _roi_text = ""
                     try:
-                        _roi_text = _ocr_frame_regions(frame) or ""
+                        _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
                     except Exception:
                         _roi_text = ""
-                    if _roi_text and (_OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text)):
+                    _roi_has_time = bool(_roi_text) and bool(
+                        _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
+                    if _roi_has_time:
+                        results = []
                         all_text = _roi_text
-                    elif _roi_text:
-                        all_text = f"{_roi_text} {all_text}".strip()
-                    logger.info("视频帧提取(%s)：第%d秒 OCR: %s", video_label, sec + 1,
+                        _VIDEO_OCR_STATS["roi_frames"] += 1
+                        # ROI 已含完整日期时间，跳过整帧 OCR（节省 ~5s，避免无关文本噪音）
+                        if _OCR_TIME_FULL_RE.search(_roi_text):
+                            logger.info("视频帧提取(%s)：第%d秒 ROI 命中完整日期时间，跳过整帧 OCR", video_label, sec + 1)
+                    else:
+                        try:
+                            results = _ocr_readtext(None, frame) or []
+                        except Exception as e:
+                            logger.warning("视频帧提取：OCR 第%d秒失败: %s", sec, e)
+                            continue
+                        # 只保留时间类文本块，过滤地图POI/聊天消息/系统UI等无关内容
+                        _time_items = [r for r in results if _is_ocr_time_related_text(r[1] if len(r) > 1 else "")]
+                        if _time_items:
+                            results = _time_items
+                        all_text = " ".join(r[1] for r in results)
+                        if _roi_text:
+                            all_text = f"{_roi_text} {all_text}".strip()
+                        _VIDEO_OCR_STATS["full_frames"] += 1
+                    logger.info("视频帧提取(%s)：第%d秒 OCR%s: %s", video_label, sec + 1,
+                                " (ROI)" if _roi_has_time else "",
                                 all_text[:200] if all_text else "(空)")
                     # OCR 质量门槛：整体置信度极低且无完整日期时跳过时间提取
                     _avg_conf = sum((r[2] for r in results if len(r) > 2), 0) / max(len(results), 1) if results else 0
                     _has_full_dt = bool(_OCR_TIME_FULL_RE.search(all_text))
-                    if _avg_conf < 0.10 and not _has_full_dt:
+                    if _avg_conf < 0.10 and not _has_full_dt and not _roi_has_time:
                         logger.info("视频帧提取(%s)：第%d秒 OCR 质量过低 (avg_conf=%.2f)，跳过时间提取",
                                     video_label, sec + 1, _avg_conf)
                         continue
