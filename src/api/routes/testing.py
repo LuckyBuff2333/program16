@@ -1620,7 +1620,13 @@ async def test_batch_ai_run(request: Request):
         stop_event = threading.Event()
         _batch_ai_run_stop_event.clear()
         batch_start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        yield f"data: {_json.dumps({'type': 'start', 'total': len(bugids)}, ensure_ascii=False)}\n\n"
+        # 分批执行：超过 50 条时按 50 条一批次顺序触发
+        _EXEC_BATCH_SIZE = 50
+        batches = [bugids[i:i + _EXEC_BATCH_SIZE] for i in range(0, len(bugids), _EXEC_BATCH_SIZE)]
+        total_batches = len(batches)
+        yield f"data: {_json.dumps({'type': 'start', 'total': len(bugids), 'batch_size': _EXEC_BATCH_SIZE, 'total_batches': total_batches}, ensure_ascii=False)}\n\n"
+        if total_batches > 1:
+            logger.info("批量执行分批模式: %d 条分为 %d 批（每批 %d 条）", len(bugids), total_batches, _EXEC_BATCH_SIZE)
         result_queue = queue.Queue()
         loop = asyncio.get_event_loop()
 
@@ -1669,40 +1675,58 @@ async def test_batch_ai_run(request: Request):
                                   "执行时间": batch_start_time,
                                   "开始时间": item_start, "分析执行时间": batch_start_time})
 
-        # 动态队列：仅启动初始批次，后续按完成动态补位；否则全量并行
-        _dq_max = int(body.get("analysis_concurrency", 10)) if _dynamic_queue else len(bugids)
-        futures = []
-        _dq_next = 0
-        for _i, bugid in enumerate(bugids):
-            if _i >= _dq_max:
-                break
-            futures.append(loop.run_in_executor(None, _run_one, bugid))
-            _dq_next = _i + 1
-
-        # 轮询队列，实时推送完成事件
+        # 逐批执行
         results = []
-        while len(results) < len(bugids):
-            if _batch_ai_run_stop_event.is_set():
-                stop_event.set()
-                for f in futures:
-                    f.cancel()
-                logger.info("收到功能测试批量停止信号，立即停止（已完成 %d/%d）", len(results), len(bugids))
+        _stopped = False
+        for batch_idx, batch_bugids in enumerate(batches):
+            if _stopped:
                 break
-            if await request.is_disconnected():
-                stop_event.set()
-                logger.info("客户端已断开，停止批量执行（已完成 %d/%d）", len(results), len(bugids))
-                break
-            try:
-                item = result_queue.get_nowait()
-                results.append(item)
-                yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(bugids), 'bugid': item['jira号'], 'status': item['status'], 'report_len': item.get('report_len', 0), 'msg': item.get('msg', ''), 'exec_time': item.get('触发时间', ''), 'analysis_time': item.get('执行时间', ''), 'start_time': item.get('开始时间', '')}, ensure_ascii=False)}\n\n"
-                # 动态补位：完成一个立即从队列取下一个
-                if _dynamic_queue and _dq_next < len(bugids):
-                    _nxt = bugids[_dq_next]
-                    futures.append(loop.run_in_executor(None, _run_one, _nxt))
-                    _dq_next += 1
-            except queue.Empty:
-                await asyncio.sleep(1)
+            batch_num = batch_idx + 1
+            # 本批并发控制：动态队列用 analysis_concurrency，否则全量并行
+            _dq_max = int(body.get("analysis_concurrency", 10)) if _dynamic_queue else len(batch_bugids)
+            futures = []
+            _dq_next = 0
+            for _i, bugid in enumerate(batch_bugids):
+                if _i >= _dq_max:
+                    break
+                futures.append(loop.run_in_executor(None, _run_one, bugid))
+                _dq_next = _i + 1
+            # 轮询本批结果
+            batch_results = []
+            while len(batch_results) < len(batch_bugids):
+                if _batch_ai_run_stop_event.is_set():
+                    stop_event.set()
+                    for f in futures:
+                        f.cancel()
+                    logger.info("收到功能测试批量停止信号，立即停止（已完成 %d/%d，批次 %d/%d）",
+                                len(results), len(bugids), batch_num, total_batches)
+                    _stopped = True
+                    break
+                if await request.is_disconnected():
+                    stop_event.set()
+                    logger.info("客户端已断开，停止批量执行（已完成 %d/%d，批次 %d/%d）",
+                                len(results), len(bugids), batch_num, total_batches)
+                    _stopped = True
+                    break
+                try:
+                    item = result_queue.get_nowait()
+                    batch_results.append(item)
+                    results.append(item)
+                    yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(bugids), 'bugid': item['jira号'], 'status': item['status'], 'report_len': item.get('report_len', 0), 'msg': item.get('msg', ''), 'exec_time': item.get('触发时间', ''), 'analysis_time': item.get('执行时间', ''), 'start_time': item.get('开始时间', ''), 'batch_index': batch_num}, ensure_ascii=False)}\n\n"
+                    # 动态补位：完成一个立即从本批队列取下一个
+                    if _dynamic_queue and _dq_next < len(batch_bugids):
+                        _nxt = batch_bugids[_dq_next]
+                        futures.append(loop.run_in_executor(None, _run_one, _nxt))
+                        _dq_next += 1
+                except queue.Empty:
+                    await asyncio.sleep(1)
+            # 本批完成
+            if not _stopped:
+                batch_ok = sum(1 for r in batch_results if r["执行结果"] == "成功")
+                yield f"data: {_json.dumps({'type': 'batch_done', 'batch_index': batch_num, 'total_batches': total_batches, 'batch_success': batch_ok, 'batch_total': len(batch_bugids), 'total_done': len(results), 'total': len(bugids)}, ensure_ascii=False)}\n\n"
+                if total_batches > 1:
+                    logger.info("批次 %d/%d 完成: 成功 %d/%d，累计 %d/%d",
+                                batch_num, total_batches, batch_ok, len(batch_bugids), len(results), len(bugids))
 
         # 写入本次批量执行表格：docs/日期/batch_HHMMSS.csv
         date_str = datetime.now().strftime("%Y-%m-%d")
