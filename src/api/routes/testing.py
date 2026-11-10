@@ -91,6 +91,8 @@ router = APIRouter()
 # —— 云端批次文档扫描缓存：用于去重 ——
 import time as _time_mod
 _EXECUTED_KEYS_CACHE = {}  # {(source, date): (ts, set)}
+_FOLDER_LIST_CACHE = {}  # {folder_token: (ts, file_list)}
+_FOLDER_LIST_TTL = 600  # 文件夹列表缓存 10 分钟
 _batch_ai_run_stop_event = threading.Event()
 _EXECUTED_KEYS_TTL = 600  # 云端批次文档扫描一次约 60s，缓存 10 分钟
 # 动态队列/多标签页防重：同一 Jira 在短时间内只允许提交一次
@@ -140,6 +142,7 @@ def _flush_single_submit_buffer():
 
 def _invalidate_executed_keys_cache():
     _EXECUTED_KEYS_CACHE.clear()
+    _FOLDER_LIST_CACHE.clear()
 
 def _claim_single_submit(exec_mode: str, bugid: str) -> bool:
     """占位提交锁；返回 False 表示同一 Jira 刚刚已提交，避免多标签页重复执行。"""
@@ -179,14 +182,22 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
         from src.clients import feishu_client
         folder_token = load_config().get("feishu_bitable", {}).get("batch_folder_token", "")
         if folder_token:
-            all_files = feishu_client.list_folder_files(folder_token, recursive=True)
+            # 文件夹列表缓存，避免每次重新扫描飞书目录结构
+            _fc = _FOLDER_LIST_CACHE.get(folder_token)
+            if _fc and _time_mod.time() - _fc[0] < _FOLDER_LIST_TTL:
+                all_files = _fc[1]
+            else:
+                all_files = feishu_client.list_folder_files(folder_token, recursive=True)
+                _FOLDER_LIST_CACHE[folder_token] = (_time_mod.time(), all_files)
             cloud_docs = [f for f in all_files
                          if f.get("folder", "") in check_dates and f.get("type") == "docx"
                          and (f.get("name", "").startswith("批量执行")
                               or f.get("name", "").startswith("线上批量执行")
                               or f.get("name", "").startswith("动态队列"))]
-            # 并发拉取飞书文档，提升云端去重速度
+            # 并发拉取飞书文档，4 并发 + 每请求间隔 0.1s，避免触发飞书 API 频率限制
             import concurrent.futures as _cf
+            import time as _t2
+            _fetch_lock = __import__('threading').Lock()
             def _fetch_one(_doc):
                 _token = _doc.get("token", "")
                 _name = _doc.get("name", "")
@@ -195,6 +206,8 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
                 m = _re.search(r'\((\d+)/(\d+)\)\s*$', _name)
                 if m and int(m.group(1)) == 0:
                     return None
+                with _fetch_lock:
+                    _t2.sleep(0.1)  # 请求间隔，避免并发过高触发限频
                 try:
                     _md = feishu_client.fetch_docx_as_markdown(_token)
                     from src.services.report_ops import _parse_markdown_batch_table
@@ -204,7 +217,7 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
                 except Exception as e:
                     logger.warning("云端批次记录读取失败 %s: %s", _name, e)
                     return None
-            with _cf.ThreadPoolExecutor(max_workers=8) as _pool:
+            with _cf.ThreadPoolExecutor(max_workers=4) as _pool:
                 for _res in _pool.map(_fetch_one, cloud_docs):
                     if _res is None:
                         continue
@@ -1198,20 +1211,19 @@ async def test_batch_ai_filter(request: Request):
     bitable_removed = len(exclude_keys)  # ① 多维表格去重条数（后续云端去重会在此基础上累加）
     # —— 第1.5步：同来源云端批量记录去重（默认模式 + 指定来源时使用）——
     if not filter_all:
+        # 一次调用获取所有来源的已执行记录，避免重复扫描飞书文件夹
+        _cloud_source_filter = None
         if filter_pc_only:
-            cloud_sources = ["jira_analyze"]
+            _cloud_source_filter = "jira_analyze"
         elif filter_online_only:
-            cloud_sources = ["parseFullTicket"]
-        else:
-            cloud_sources = ["jira_analyze", "parseFullTicket"]
-        for cs in cloud_sources:
-            cloud_executed = _get_same_source_executed_keys(cs)
-            if cloud_executed:
-                before_cloud = len(exclude_keys)
-                exclude_keys |= (cloud_executed & set(keys))
-                added_cloud = len(exclude_keys) - before_cloud
-                if added_cloud:
-                    logger.debug("云端同来源去重(%s): 额外排除 %d 条", cs, added_cloud)
+            _cloud_source_filter = "parseFullTicket"
+        _all_cloud = _get_same_source_executed_keys(_cloud_source_filter or "")
+        if _all_cloud:
+            before_cloud = len(exclude_keys)
+            exclude_keys |= (_all_cloud & set(keys))
+            added_cloud = len(exclude_keys) - before_cloud
+            if added_cloud:
+                logger.debug("云端去重: 额外排除 %d 条", added_cloud)
     cloud_removed = len(exclude_keys) - bitable_removed
     # 日志记录过滤模式
     mode_parts = []
