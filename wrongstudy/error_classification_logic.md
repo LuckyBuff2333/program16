@@ -53,6 +53,7 @@ flowchart TD
 | 分卷压缩包不完整 | （空串） | ✅ 正常深度分析 |
 | 解压后未找到可识别的日志文件 | （空串） | ✅ 正常深度分析 |
 | 分析任务执行超时（不含 JIRA/网关） | 并发过多 | ❌ 跳过 |
+| 日志行数过多 | 日志行数过多，手动分析 | ❌ 跳过 |
 | 模型调用失败 | IT侧服务停止 | ❌ 跳过 |
 | JIRA API 调用失败 | 并发过多 | ❌ 跳过 |
 | 未预期的错误 | 并发过多 | ❌ 跳过 |
@@ -102,12 +103,13 @@ flowchart TD
 | 时间添加 / 时间异常 | 触发时间问题 |
 | 解压 / unrar / RAR5 | 解压问题 |
 | 分析can信号 | 分析can信号导致超时 |
+| 日志行数过多 | 日志行数过多，手动分析 |
 
 ### 跳过类别（不进入深度诊断）
 
 `_SKIP_ANALYSIS_CATEGORIES`：
 
-待后端开发排查、磁盘空间不足、服务关闭、并发过多、IT侧服务停止、接口连接问题、接口响应问题、分析任务执行超时（跳过排查）、问题重复、问题未复现、无gmlogger、无gmlogger文件、IP配置错误、人工取消、无时间信息、网络波动、待人工排查。
+待后端开发排查、磁盘空间不足、服务关闭、并发过多、IT侧服务停止、接口连接问题、接口响应问题、分析任务执行超时（跳过排查）、问题重复、问题未复现、无gmlogger、无gmlogger文件、IP配置错误、人工取消、无时间信息、网络波动、待人工排查、日志行数过多，手动分析。
 
 > `触发时间问题` **不在**跳过类别中，继续走深度分析。
 
@@ -128,6 +130,7 @@ flowchart TD
 | 磁盘空间不足 | ❌ 不进 | 运维环境问题 |
 | 问题重复 / 问题未复现 | ❌ 不进 | 无需跟进 |
 | 解压问题 / 日志过滤逻辑 / IP配置错误 / 人工取消 / 无时间信息 / 网络波动 | ❌ 不进 | 已知原因或环境问题 |
+| 日志行数过多，手动分析 | ❌ 不进 | 需人工分析，自动跳过 |
 
 ---
 
@@ -208,5 +211,43 @@ flowchart TD
 - **失败记录统计**：1774 条失败、25 种错误分类，详见第二节。
 - **验证**：批量预归类用例通过：时间过滤→触发时间问题(needs_analysis=True)，处理后→无gmlogger，JIRA超时→待人工排查，504→IP配置错误，取消→人工取消，无时间→无时间信息，网络→网络波动，分卷→空(needs_analysis=True)。
 - **实现文件**：`src/services/troubleshoot_service.py`、`src/services/server_legacy.py`、`src/services/report_ops.py`、`src/api/routes/troubleshoot.py`、`src/schemas/troubleshoot.py`、`frontend/src/panels/TroubleshootPanel.vue`
+
+</details>
+
+<details>
+<summary><b>4. 新增“日志行数过多，手动分析”错误类型（2026-11-10）</b></summary>
+
+- **背景**：数据沉淀多维表格「错误分类」字段新增取值“日志行数过多”，表示日志量超出自动分析处理能力，需人工介入。
+- **核心变更**：
+  1. `错误分类` 字段匹配：“日志行数过多” → “日志行数过多，手动分析”，跳过深度分析；
+  2. 人工审核结果映射：“日志行数过多” → “日志行数过多，手动分析”；
+  3. 加入 `_SKIP_ANALYSIS_CATEGORIES` 跳过集合；
+  4. 加入 `_EXCLUDE_REASONS` 批量执行去重排除集合（不再重复执行）。
+- **实现文件**：`src/services/troubleshoot_service.py`、`src/services/report_ops.py`、`src/api/routes/shared.py`
+
+</details>
+
+<details>
+<summary><b>5. 云端批次去重始终执行（2026-11-10）</b></summary>
+
+- **背景**：`prod_batch_run`（线上批量执行）在 `skip_existing: false` 时不会执行云端批次去重，导致分析失败的 Jira 被反复执行。
+- **规则**：云端批次执行记录始终去重，不论 `skip_existing` 设置：
+  - 非全失败的批次（如 20/25）：整批排除（包括失败项）；
+  - 全失败的批次（0/N）：允许重试。
+- **核心变更**：将云端批次去重逻辑从 `if any_filter` 块中提取为独立块，始终执行。
+- **实现文件**：`src/api/routes/testing.py` — `prod_batch_run`
+
+</details>
+
+<details>
+<summary><b>6. 动态队列补给批次自动写入云端（2026-11-10）</b></summary>
+
+- **背景**：`batch_ai_single` 逐条提交只写内存标记（2h TTL），不创建云端文档，导致 TTL 过期后这些 Jira 会被重复选中。
+- **规则**：服务端维护缓冲区，每次成功提交追加记录，每满 20 条自动写入云端批次文档。
+  - 文档名：`动态队列 日期 时间 (成功数/总数)`
+  - 每条记录包含各自的触发时间和执行时间（时间可不同）
+  - 写入失败时数据放回缓冲区，不丢失
+- **去重扫描**：`_get_same_source_executed_keys` 新增识别 `动态队列` 前缀文档。
+- **实现文件**：`src/api/routes/testing.py` — `batch_ai_single`、`_flush_single_submit_buffer`、`_get_same_source_executed_keys`
 
 </details>

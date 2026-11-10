@@ -382,30 +382,57 @@ def batch_write_review(items: list[dict], only_empty_review: bool = False) -> di
     index = {}
     # 同时建立 bugid -> [record_ids] 索引用于兑底匹配
     bugid_index = {}
+    # 建立 bugid -> [record_ids of failures] 索引，用于同一 Jira 所有失败记录同步写入
+    bugid_failure_index = {}
     for rec in records:
         fields = rec.get("fields", {})
         jira_no = _bitable_text(fields.get(bugid_field, ""))
         done_dt = _ts_parse_datetime(fields.get("分析开始时间", ""))
         done_time = done_dt.strftime("%Y-%m-%d %H:%M:%S") if done_dt else ""
+        result_status = _bitable_text(fields.get("分析结果", "")).strip()
         if jira_no and done_time:
             index[(jira_no, done_time)] = rec["record_id"]
         if jira_no:
             bugid_index.setdefault(jira_no, []).append(rec["record_id"])
+            if result_status == "失败":
+                bugid_failure_index.setdefault(jira_no, []).append(rec["record_id"])
 
     updates = []
     matched, unmatched, skipped = 0, 0, 0
+    updated_rids = set()  # 防止同一 record 被重复写入
     for item in items:
         bugid = item.get("bugid", "")
         done_time = item.get("done_time", "")
         human_reason = item.get("human_reason", "")
         if not bugid or not human_reason:
             continue
+        # 优先写入该 Jira 的所有失败记录（去重场景下多条重复失败同步审核结果）
+        failure_rids = bugid_failure_index.get(bugid, [])
+        if failure_rids:
+            written = 0
+            for rid in failure_rids:
+                if rid in updated_rids:
+                    continue
+                if only_empty_review:
+                    cur = next((r for r in records if r["record_id"] == rid), None)
+                    if cur:
+                        existing = _bitable_text(cur.get("fields", {}).get(review_field, ""))
+                        if existing:
+                            skipped += 1
+                            continue
+                updates.append({"record_id": rid, "fields": {review_field: human_reason}})
+                updated_rids.add(rid)
+                written += 1
+            if written:
+                matched += 1
+            else:
+                skipped += 1
+            continue
+        # 无失败记录时兑底：取该 bugid 最新的一条记录
         rid = index.get((bugid, done_time))
         if not rid:
-            # 兑底：仅用 bugid 匹配（取该 bugid 最新的一条记录）
             fallback_ids = bugid_index.get(bugid, [])
             if fallback_ids:
-                # 尝试通过 (bugid, done_time) 精确匹配，失败则取第一条
                 for k, v in index.items():
                     if k[0] == bugid and v in fallback_ids:
                         rid = v
@@ -415,7 +442,7 @@ def batch_write_review(items: list[dict], only_empty_review: bool = False) -> di
                 logger.info("batch_write_review: (%s, '%s') 未精确匹配，兑底用 record_id=%s", bugid, done_time, rid)
             else:
                 logger.warning("batch_write_review: bugid=%s 在多维表格中不存在", bugid)
-        if rid:
+        if rid and rid not in updated_rids:
             if only_empty_review:
                 cur = next((r for r in records if r["record_id"] == rid), None)
                 if cur:
@@ -424,8 +451,9 @@ def batch_write_review(items: list[dict], only_empty_review: bool = False) -> di
                         skipped += 1
                         continue
             updates.append({"record_id": rid, "fields": {review_field: human_reason}})
+            updated_rids.add(rid)
             matched += 1
-        else:
+        elif not rid:
             unmatched += 1
 
     if not updates:
@@ -436,7 +464,7 @@ def batch_write_review(items: list[dict], only_empty_review: bool = False) -> di
         batch = updates[i:i + 500]
         feishu_client.update_bitable_records(app_token, table_id, batch)
 
-    message = f"批量写入完成: {matched}/{len(items)} 条匹配并写入"
+    message = f"批量写入完成: {matched}/{len(items)} 条 Jira 匹配，共写入 {len(updates)} 条记录"
     if unmatched:
         message += f"，{unmatched} 条未匹配"
     if skipped:
@@ -496,6 +524,7 @@ _SKIP_ANALYSIS_CATEGORIES = {
     "无gmlogger", "无gmlogger文件",
     "IP配置错误", "人工取消", "无时间信息", "网络波动",
     "解压问题", "压缩包损坏",
+    "日志行数过多，手动分析",
 }
 
 
@@ -558,6 +587,8 @@ def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
             return "IT侧服务停止"
         if "分析任务执行超时" in ec:
             return "并发过多"
+        if "日志行数过多" in ec:
+            return "日志行数过多，手动分析"
         # 未识别的错误分类：继续用错误信息兜底
         if not msg:
             return "服务关闭"
@@ -696,6 +727,8 @@ def batch_pre_classify(records: list[dict]) -> dict:
                 category = "解压问题"
             elif "分析can信号" in human_review:
                 category = "分析can信号导致超时"
+            elif "日志行数过多" in human_review:
+                category = "日志行数过多，手动分析"
         if not category and not err_msg and not error_class:
             category = "服务关闭"
         entry = {"bugid": bugid, "category": category or "", "done_time": done_time,

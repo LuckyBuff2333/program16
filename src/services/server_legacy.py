@@ -274,6 +274,16 @@ _OCR_RELATIVE_DATE_TIME_RE = re.compile(r'(昨天|今天|前天|大前天)[\s\-]
 
 _OCR_BARE_TIME_RE = re.compile(r'(?<![a-zA-Z0-9\-/.])(\d{2})(\d{2})(?![a-zA-Z0-9\-/.])')
 
+# 视频播放器进度条：HH:MM:SS / HH:MM:SS 或 HH:MM / HH:MM（不是真实录制时间）
+_OCR_PROGRESS_BAR_RE = re.compile(r'\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?\s*/\s*\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?')
+
+
+def _strip_progress_bar(text: str) -> str:
+    """移除视频播放器进度条文本（如 00:00:00 / 01:00:00），避免被误识别为录制时间"""
+    if not text or '/' not in text:
+        return text
+    return _OCR_PROGRESS_BAR_RE.sub('', text)
+
 _OCR_COMMA_TIME_RE = re.compile(r'(?<!\d)(\d{1,2}),(\d{2})(?![\d,.])')
 
 _OCR_CHAR_MAP = {
@@ -4868,7 +4878,7 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
         regions = [
             (0, 0, w, max(1, int(h * 0.15))),                  # 顶部状态栏（扩展 10%→15%）
             (int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),  # 中央顶部（车载 HMI 居中时钟）
-            (int(w * 0.55), int(h * 0.75), w, h),              # 右下任务栏
+            (int(w * 0.45), int(h * 0.60), w, h),              # 右下任务栏（水印相机时间/位置块）
             (int(w * 0.20), int(h * 0.70), int(w * 0.80), h),  # 底部中央导航栏（导航应用时间，字体较大）
         ]
         if not status_only:
@@ -4876,7 +4886,7 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
                 (0, 0, w, max(1, int(h * 0.15))),
                 (int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),
                 (0, 0, int(w * 0.55), int(h * 0.55)),
-                (int(w * 0.55), int(h * 0.75), w, h),
+                (int(w * 0.45), int(h * 0.60), w, h),
                 (int(w * 0.40), int(h * 0.18), w, int(h * 0.70)),
                 (int(w * 0.20), int(h * 0.70), int(w * 0.80), h),
             ]
@@ -4891,7 +4901,7 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
                 parts.append(txt)
     except Exception:
         return ""
-    return " ".join(parts)
+    return _strip_progress_bar(" ".join(parts))
 
 
 def _is_ocr_time_related_text(text: str) -> bool:
@@ -5001,46 +5011,7 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
                         text, conf, _avg_conf, _low_conf_thresh)
             continue
         filtered.append(item)
-    # 2. 过滤水印相机区域内的时间类文本
-    _wm_keywords = ("水印", "相机真实")
-    _weather_keywords = ("晴", "阴", "雨", "雪", "℃", "星期", "周")
-    wm_items = [it for it in filtered if any(kw in (it[1] if len(it) > 1 else "") for kw in _wm_keywords)]
-    # 回退检测：底部区域的日期+天气混合文本也视为水印标记
-    if not wm_items:
-        img_h = max((max(p[1] for p in it[0]) for it in filtered if it and it[0]), default=0)
-        if img_h > 0:
-            bottom_threshold = img_h * 0.6
-            for it in filtered:
-                text = it[1] if len(it) > 1 else ""
-                bbox = it[0] if it else []
-                if not bbox or not text:
-                    continue
-                cy = sum(p[1] for p in bbox) / len(bbox)
-                if cy >= bottom_threshold and any(kw in text for kw in _weather_keywords):
-                    wm_items.append(it)
-    if wm_items:
-        # 计算水印区域包围盒（y 范围）
-        wm_y_min = min(p[1] for it in wm_items for p in it[0])
-        wm_y_max = max(p[1] for it in wm_items for p in it[0])
-        wm_x_min = min(p[0] for it in wm_items for p in it[0])
-        # 向上扩展 80% 高度（水印时间通常在水印标记上方或同行）
-        wm_h = wm_y_max - wm_y_min or 1
-        wm_y_min_ext = wm_y_min - wm_h * 0.8
-        wm_y_max_ext = wm_y_max + wm_h * 0.3
-        clean = []
-        for item in filtered:
-            text = item[1] if len(item) > 1 else ""
-            bbox = item[0] if item else []
-            if text and _time_like.match(text.strip()) and bbox:
-                # 检查该文本是否在水印区域内
-                cy = sum(p[1] for p in bbox) / len(bbox)
-                cx = sum(p[0] for p in bbox) / len(bbox)
-                if wm_y_min_ext <= cy <= wm_y_max_ext and cx >= wm_x_min - 300:
-                    logger.info("OCR 过滤水印相机时间: '%s' (y=%.0f, 水印区域 y=[%.0f,%.0f])",
-                                text, cy, wm_y_min_ext, wm_y_max_ext)
-                    continue
-            clean.append(item)
-        filtered = clean
+    # 2. 水印相机时间不再过滤：行车记录仪/水印相机的叠加时间是真实拍摄时间，可作为有效参考
     # 3. 只保留时间/日期相关文本块（整帧 OCR 仍然执行，过滤在识别之后）
     _time_related = [it for it in filtered
                      if _is_ocr_time_related_text(it[1] if len(it) > 1 else "")]
@@ -6388,6 +6359,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                         _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
                     except Exception:
                         _roi_text = ""
+                    _roi_text = _strip_progress_bar(_roi_text)
                     _roi_has_time = bool(_roi_text) and bool(
                         _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
                     if _roi_has_time:
@@ -6400,7 +6372,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                         except Exception as e:
                             logger.warning("视频兜底提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
                             continue
-                        all_text = " ".join(r[1] for r in results)
+                        all_text = _strip_progress_bar(" ".join(r[1] for r in results))
                         _has_time = bool(all_text) and bool(
                             _OCR_TIME_FULL_RE.search(all_text) or _OCR_TIME_ONLY_RE.search(all_text))
                     _VIDEO_OCR_STATS["roi_frames" if _roi_has_time else "full_frames"] += 1
@@ -6842,6 +6814,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                         _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
                     except Exception:
                         _roi_text = ""
+                    _roi_text = _strip_progress_bar(_roi_text)
                     _roi_has_time = bool(_roi_text) and bool(
                         _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
                     if _roi_has_time:
@@ -6861,7 +6834,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                         _time_items = [r for r in results if _is_ocr_time_related_text(r[1] if len(r) > 1 else "")]
                         if _time_items:
                             results = _time_items
-                        all_text = " ".join(r[1] for r in results)
+                        all_text = _strip_progress_bar(" ".join(r[1] for r in results))
                         if _roi_text:
                             all_text = f"{_roi_text} {all_text}".strip()
                         _VIDEO_OCR_STATS["full_frames"] += 1

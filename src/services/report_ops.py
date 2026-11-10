@@ -97,16 +97,17 @@ def _batch_csv_to_markdown(csv_path: str) -> str:
         f"",
         f"## 执行明细",
         f"",
-        "| Jira号 | 执行结果 | 触发时间 | 执行时间 | 备注 |",
-        "|--------|----------|----------|----------|------|",
+        "| Jira号 | 执行结果 | 触发时间 | 执行时间 | 开始时间 | 备注 |",
+        "|--------|----------|----------|----------|----------|------|",
     ]
     for r in rows:
         jira = r.get("Jira号", "").strip() or r.get("jira号", "").strip()
         result = r.get("执行结果", "").strip()
         trigger_time = r.get("触发时间", "").strip()
         analysis_time = r.get("执行时间", "").strip() or r.get("分析执行时间", "").strip()
+        start_time = r.get("开始时间", "").strip()
         note = r.get("备注", "").strip().replace("|", "\\|")[:100]
-        lines.append(f"| {jira} | {result} | {trigger_time} | {analysis_time} | {note} |")
+        lines.append(f"| {jira} | {result} | {trigger_time} | {analysis_time} | {start_time} | {note} |")
     return "\n".join(lines)
 
 
@@ -677,6 +678,8 @@ def _review_category(review: str) -> str:
         return "待人工排查"
     if "分析can信号导致超时" in review:
         return "分析can信号导致超时"
+    if "日志行数过多" in review:
+        return "日志行数过多，手动分析"
     return review[:20]
 
 

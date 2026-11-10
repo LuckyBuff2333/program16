@@ -183,6 +183,7 @@
           </el-table-column>
           <el-table-column prop="触发时间" label="触发时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="执行时间" label="执行时间" width="160" show-overflow-tooltip></el-table-column>
+          <el-table-column prop="开始时间" label="开始时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="备注" label="备注" show-overflow-tooltip></el-table-column>
         </el-table>
         <el-alert v-if="batchAi.runDoneMsg" type="success" :closable="false" :title="batchAi.runDoneMsg" style="margin-top:10px"></el-alert>
@@ -501,7 +502,7 @@ export default {
               const evt = JSON.parse(line.slice(6));
               if (evt.type === 'progress') {
                 this.batchAi.runDone = evt.index;
-                this.batchAi.runResults.push({ 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '报告长度': evt.report_len || 0, '备注': evt.msg || '', '触发时间': evt.exec_time || '', '执行时间': evt.analysis_time || '' });
+                this.batchAi.runResults.push({ 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '报告长度': evt.report_len || 0, '备注': evt.msg || '', '触发时间': evt.exec_time || '', '执行时间': evt.analysis_time || '', '开始时间': evt.start_time || '' });
               } else if (evt.type === 'done') {
                 let doneMsg = `全部完成: ${evt.success}/${evt.total} 成功`;
                 if (evt.skipped) doneMsg += `，已跳过 ${evt.skipped} 条`;
@@ -540,7 +541,7 @@ export default {
               const evt = JSON.parse(line.slice(6));
               if (evt.type === 'progress') {
                 this.batchAi.runDone = evt.index;
-                this.batchAi.runResults.push({ 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '触发时间': evt.exec_time || '', '执行时间': evt.analysis_time || '', '备注': evt.msg || '' });
+                this.batchAi.runResults.push({ 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '触发时间': evt.exec_time || '', '执行时间': evt.analysis_time || '', '开始时间': evt.start_time || '', '备注': evt.msg || '' });
               } else if (evt.type === 'done') { this.batchAi.runDoneMsg = evt.message || '线上执行完成'; }
               else if (evt.type === 'stopped') { this.batchAi.stopRequested = true; this.batchAi.runDoneMsg = evt.message || '已停止：当前提取已保存，后续队列取消'; }
               else if (evt.type === 'error') { throw new Error(evt.message || '线上执行失败'); }
@@ -626,7 +627,14 @@ export default {
         this.batchAi.filteredKeys = this.batchAi.filteredKeys.filter(k => !this.batchAi.selected.includes(k));
         if (!this.batchAi.selected.length) throw new Error('动态队列抽样结果为空');
         if (this.batchAi.execMode === 'online') await this.batchAiRunOnline(); else await this.batchAiRun();
-        let inflight = [...this.batchAi.selected];
+        // 过滤无触发时间的幽灵项：后端 prod_batch_run 会静默丢弃无触发时间的 bugid，
+        // 如果不在此处过滤，它们会永远卡在在途列表中直到 55 分钟超时
+        let inflight = this.batchAi.selected.filter(k => this.batchAi.triggerTimes[k]);
+        const ghostCount = this.batchAi.selected.length - inflight.length;
+        if (ghostCount) {
+          this.batchAi.sampleMsg = `抽样 ${this.batchAi.selected.length} 条，${ghostCount} 条无触发时间已跳过`;
+          this.batchAi.runTotal = inflight.length;  // 修正进度条总数
+        }
         pending = pending.filter(k => !inflight.includes(k));
         const inflightSince = new Map();
         const markInflight = (k) => inflightSince.set(k, Date.now());
@@ -645,6 +653,12 @@ export default {
             inflight = inflight.filter(k => !doneSet.has(k));
             done.forEach(k => inflightSince.delete(k));
             doneTotal += done.length;
+            this.batchAi.runDone += done.length;
+            // 逐条展示已完成的 Jira 详情
+            const details = status.details || [];
+            for (const d of details) {
+              if (d['jira号']) this.batchAi.runResults.push(d);
+            }
           }
           const now = Date.now();
           const timedOut = inflight.filter(k => now - (inflightSince.get(k) || now) > 55 * 60 * 1000);

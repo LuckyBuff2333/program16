@@ -99,6 +99,46 @@ _EXECUTED_KEYS_TTL = 600  # 云端批次文档扫描一次约 60s，缓存 10 �
 _recent_single_submit = {}  # (exec_mode, jira) -> timestamp
 _RECENT_SINGLE_TTL = 180  # 3 分钟
 
+# —— 动态队列单条提交缓冲区：每满 20 条自动写入云端批次文档，用于去重 ——
+_single_submit_buffer = []  # [{jira号, 执行结果, 触发时间, 执行时间, 备注, 触发来源}]
+_SINGLE_SUBMIT_FLUSH_SIZE = 20
+
+
+def _flush_single_submit_buffer():
+    """将动态队列单条提交缓冲区写为云端批次文档，用于后续去重扫描"""
+    global _single_submit_buffer
+    if not _single_submit_buffer:
+        return
+    import csv as _csv
+    from src.services.report_ops import _upload_batch_to_cloud
+    buf = list(_single_submit_buffer)
+    _single_submit_buffer.clear()
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H%M%S")
+    success_count = sum(1 for r in buf if r["执行结果"] == "成功")
+    _UNANALYZED = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "unanalyzed")
+    os.makedirs(_UNANALYZED, exist_ok=True)
+    csv_path = os.path.join(_UNANALYZED, f"dynamic_queue_{date_str}_{time_str}.csv")
+    try:
+        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = _csv.writer(f)
+            writer.writerow(["Jira号", "执行结果", "触发时间", "执行时间", "开始时间", "备注",
+                             "分析并发数", "下载并发数", "模型", "触发来源"])
+            for r in buf:
+                writer.writerow([r["jira号"], r["执行结果"], r["触发时间"], r["执行时间"],
+                                 r.get("开始时间", ""),
+                                 r.get("备注", ""), r.get("分析并发数", ""), r.get("下载并发数", ""),
+                                 r.get("模型", ""), r["触发来源"]])
+        title = f"动态队列 {date_str} {time_str} ({success_count}/{len(buf)})"
+        _upload_batch_to_cloud(csv_path, title)
+        _invalidate_executed_keys_cache()
+        logger.info("动态队列补给批次已写入云端: %s (%d条)", title, len(buf))
+    except Exception as e:
+        logger.warning("动态队列补给批次写入失败: %s", e)
+        # 写入失败时把数据放回缓冲区，不丢失
+        _single_submit_buffer = buf + _single_submit_buffer
+
 
 def _invalidate_executed_keys_cache():
     _EXECUTED_KEYS_CACHE.clear()
@@ -164,7 +204,8 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
             cloud_docs = [f for f in all_files
                          if f.get("folder", "") in check_dates and f.get("type") == "docx"
                          and (f.get("name", "").startswith("批量执行")
-                              or f.get("name", "").startswith("线上批量执行"))]
+                              or f.get("name", "").startswith("线上批量执行")
+                              or f.get("name", "").startswith("动态队列"))]
             for doc in cloud_docs:
                 doc_token = doc.get("token", "")
                 doc_name = doc.get("name", "")
@@ -179,7 +220,11 @@ def _get_same_source_executed_keys(source: str = "parseFullTicket") -> set:
                     # 解析 markdown 表格中的 Jira 号
                     from src.services.report_ops import _parse_markdown_batch_table
                     batch_rows = _parse_markdown_batch_table(md)
-                    inferred_source = "parseFullTicket" if doc_name.startswith("线上批量执行") else "jira_analyze"
+                    # 从文档名前缀推断来源
+                    if doc_name.startswith("线上批量执行") or doc_name.startswith("动态队列"):
+                        inferred_source = "parseFullTicket"
+                    else:
+                        inferred_source = "jira_analyze"
                     for r in batch_rows:
                         jira = (r.get("jira号") or "").strip()
                         if jira and (not source or inferred_source == source):
@@ -237,6 +282,19 @@ async def batch_ai_single(request: Request):
             ok_flag = any(k in msg for k in ("分析任务已启动", "后台处理", "正在分析"))
         if ok_flag:
             _mark_executed([bugid])
+            # 写入动态队列补给缓冲区，每满 20 条自动写入云端批次文档
+            _trigger_source = "parseFullTicket" if exec_mode == "online" else "jira_analyze"
+            _now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _single_submit_buffer.append({
+                "jira号": bugid, "执行结果": "成功",
+                "触发时间": exec_time,
+                "执行时间": _now_str,
+                "开始时间": _now_str,
+                "备注": "", "触发来源": _trigger_source,
+                "分析并发数": "", "下载并发数": "", "模型": "",
+            })
+            if len(_single_submit_buffer) >= _SINGLE_SUBMIT_FLUSH_SIZE:
+                _flush_single_submit_buffer()
             return _ok({"bugid": bugid, "msg": msg[:200]}, f"{bugid} 已提交")
         return _fail(f"{bugid} 提交失败: {msg[:160]}")
     except Exception as e:
@@ -262,15 +320,25 @@ async def batch_done_status(request: Request):
             cfg.get("app_token", ""), cfg.get("table_id", ""),
             filter_expr=expr, timeout=60)
         done_set = set()
+        done_details = []
         for rec in recs:
             fields = rec.get("fields", {})
             j = _bitable_text(fields.get(bugid_field, "")).strip()
             src = _bitable_text(fields.get("触发来源", "")).strip()
             if j and (not source or src == source):
                 done_set.add(j)
+                done_details.append({
+                    "jira号": j,
+                    "执行结果": _bitable_text(fields.get("分析结果", "")).strip() or "未知",
+                    "触发时间": _bitable_text(fields.get("分析问题时间", "")).strip(),
+                    "执行时间": _bitable_text(fields.get("分析开始时间", "")).strip(),
+                    "开始时间": _bitable_text(fields.get("分析开始时间", "")).strip(),
+                    "备注": _bitable_text(fields.get("错误信息", "")).strip()[:120],
+                })
         done = [b for b in bugids if b in done_set]
         pending = [b for b in bugids if b not in done_set]
         return _ok({"done": done, "pending": pending, "done_count": len(done),
+                    "details": done_details,
                     "total": len(bugids), "all_done": not pending},
                    f"已写入 {len(done)}/{len(bugids)} 条")
     except Exception as e:
@@ -1473,13 +1541,14 @@ async def test_batch_ai_run(request: Request):
             """在线程池中执行单个 AI 分析：支持 stop_event 中断"""
             if stop_event.is_set() or _batch_ai_run_stop_event.is_set():
                 return
+            item_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             from src.clients.base import http_post
             # 无触发时间的 Jira 号跳过
             exec_time = trigger_times.get(bugid, "")
             if not exec_time:
                 result_queue.put({"jira号": bugid, "执行结果": "失败",
                                   "报告长度": 0, "备注": "无触发时间", "触发时间": "", "执行时间": batch_start_time,
-                                  "分析执行时间": batch_start_time,
+                                  "开始时间": item_start, "分析执行时间": batch_start_time,
                                   "status": "fail", "report_len": 0, "msg": "无触发时间"})
                 return
             try:
@@ -1498,12 +1567,12 @@ async def test_batch_ai_run(request: Request):
                 if is_async_ok:
                     result_queue.put({"jira号": bugid, "执行结果": "成功",
                                       "报告长度": 0, "备注": resp_msg[:200], "触发时间": exec_time, "执行时间": batch_start_time,
-                                      "分析执行时间": batch_start_time,
+                                      "开始时间": item_start, "分析执行时间": batch_start_time,
                                       "status": "success", "report_len": 0, "msg": resp_msg[:100]})
                 else:
                     result_queue.put({"jira号": bugid, "执行结果": "失败",
                                       "报告长度": 0, "备注": f"返回异常: {resp_msg[:150]}", "触发时间": exec_time, "执行时间": batch_start_time,
-                                      "分析执行时间": batch_start_time,
+                                      "开始时间": item_start, "分析执行时间": batch_start_time,
                                       "status": "fail", "report_len": 0, "msg": resp_msg[:100]})
             except Exception as e:
                 result_queue.put({"jira号": bugid, "执行结果": "失败", "报告长度": 0,
@@ -1511,7 +1580,7 @@ async def test_batch_ai_run(request: Request):
                                   "report_len": 0, "msg": str(e)[:100],
                                   "触发时间": exec_time,
                                   "执行时间": batch_start_time,
-                                  "分析执行时间": batch_start_time})
+                                  "开始时间": item_start, "分析执行时间": batch_start_time})
 
         # 动态队列：仅启动初始批次，后续按完成动态补位；否则全量并行
         _dq_max = int(body.get("analysis_concurrency", 10)) if _dynamic_queue else len(bugids)
@@ -1539,7 +1608,7 @@ async def test_batch_ai_run(request: Request):
             try:
                 item = result_queue.get_nowait()
                 results.append(item)
-                yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(bugids), 'bugid': item['jira号'], 'status': item['status'], 'report_len': item.get('report_len', 0), 'msg': item.get('msg', ''), 'exec_time': item.get('触发时间', ''), 'analysis_time': item.get('执行时间', '')}, ensure_ascii=False)}\n\n"
+                yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(bugids), 'bugid': item['jira号'], 'status': item['status'], 'report_len': item.get('report_len', 0), 'msg': item.get('msg', ''), 'exec_time': item.get('触发时间', ''), 'analysis_time': item.get('执行时间', ''), 'start_time': item.get('开始时间', '')}, ensure_ascii=False)}\n\n"
                 # 动态补位：完成一个立即从队列取下一个
                 if _dynamic_queue and _dq_next < len(bugids):
                     _nxt = bugids[_dq_next]
@@ -1553,7 +1622,7 @@ async def test_batch_ai_run(request: Request):
         time_str = datetime.now().strftime("%H%M%S")
         batch_csv = os.path.join(get_path("doc_dir"), date_str, f"batch_{time_str}.csv")
         os.makedirs(os.path.dirname(batch_csv), exist_ok=True)
-        fieldnames = ["jira号", "执行结果", "报告长度", "备注", "触发时间", "执行时间",
+        fieldnames = ["jira号", "执行结果", "报告长度", "备注", "触发时间", "执行时间", "开始时间",
                       "分析并发数", "下载并发数", "模型", "触发来源"]
         with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
             writer = _csv.DictWriter(f, fieldnames=fieldnames)
@@ -1563,6 +1632,7 @@ async def test_batch_ai_run(request: Request):
                                  "报告长度": r["报告长度"], "备注": r["备注"],
                                  "触发时间": r.get("触发时间", ""),
                                  "执行时间": r.get("执行时间", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                                 "开始时间": r.get("开始时间", ""),
                                  **_batch_meta})
         success_count = sum(1 for r in results if r["执行结果"] == "成功")
         fail_count = len(results) - success_count
@@ -2935,19 +3005,29 @@ async def test_prod_batch_run(request: Request):
                 skipped_count = before - len(bugids)
                 logger.info("多维表格过滤: 跳过 %d 个 Jira 号 (skip=%s, pc=%s, online=%s)",
                             skipped_count, skip_existing, filter_pc_only, filter_online_only)
-            # 同来源云端批量记录去重：只排除同来源已执行的Jira，PC和线上允许重复
-            cloud_source = "jira_analyze" if filter_pc_only else ("parseFullTicket" if filter_online_only else "")
-            if cloud_source:
-                cloud_executed = _get_same_source_executed_keys(cloud_source)
-                if cloud_executed:
-                    before_cloud = len(bugids)
-                    bugids = [b for b in bugids if b not in cloud_executed]
-                    added_cloud = before_cloud - len(bugids)
-                    if added_cloud:
-                        skipped_count += added_cloud
-                        logger.info("云端同来源去重(%s): 排除 %d 条", cloud_source, added_cloud)
         except Exception as e:
             logger.warning("多维表格重复过滤查询失败（跳过此检查）: %s", e)
+
+    # 云端批次执行记录去重：始终执行，不论 skip_existing 设置
+    # 规则：非全失败的批次整批排除，全失败(0/N)的批次允许重试
+    try:
+        if filter_pc_only and not filter_online_only:
+            _cloud_sources = ["jira_analyze"]
+        elif filter_online_only and not filter_pc_only:
+            _cloud_sources = ["parseFullTicket"]
+        else:
+            _cloud_sources = ["jira_analyze", "parseFullTicket"]
+        for _cs in _cloud_sources:
+            _cloud_exec = _get_same_source_executed_keys(_cs)
+            if _cloud_exec:
+                _before = len(bugids)
+                bugids = [b for b in bugids if b not in _cloud_exec]
+                _added = _before - len(bugids)
+                if _added:
+                    skipped_count += _added
+                    logger.info("云端批次去重(%s): 排除 %d 条", _cs, _added)
+    except Exception as e:
+        logger.warning("云端批次去重失败（继续）: %s", e)
 
     async def event_generator():
         # 停止标志由 /api/test/prod_batch_run/stop 设置：当前在提取的 Jira 完成并写云端后，取消后续队列
@@ -3205,6 +3285,7 @@ async def test_prod_batch_run(request: Request):
         def _run_one(bugid):
             if stop_event.is_set():
                 return
+            item_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             from src.clients.base import http_post
             # 无触发时间的 Jira 号跳过
             exec_time = trigger_times.get(bugid, "")
@@ -3212,6 +3293,7 @@ async def test_prod_batch_run(request: Request):
                 result_queue.put({"Jira号": bugid, "执行结果": "失败",
                                   "备注": "无触发时间", "触发时间": "",
                                   "执行时间": batch_start_time,
+                                  "开始时间": item_start,
                                   "status": "fail", "msg": "无触发时间"})
                 return
             last_err = ""
@@ -3241,6 +3323,7 @@ async def test_prod_batch_run(request: Request):
                         result_queue.put({"Jira号": bugid, "执行结果": "成功",
                                           "备注": f"{retry_note}{resp_msg[:200]}", "触发时间": exec_time,
                                           "执行时间": batch_start_time,
+                                          "开始时间": item_start,
                                           "status": "success", "msg": f"{retry_note}{resp_msg[:100]}"})
                         return
                     last_err = resp_msg
@@ -3263,6 +3346,7 @@ async def test_prod_batch_run(request: Request):
             result_queue.put({"Jira号": bugid, "执行结果": "失败",
                               "备注": f"{retry_note}{last_err}", "触发时间": trigger_times.get(bugid, ""),
                               "执行时间": batch_start_time,
+                              "开始时间": item_start,
                               "status": "fail", "msg": f"{retry_note}{last_err[:100]}"})
 
         for bugid in run_bugids:
@@ -3280,7 +3364,7 @@ async def test_prod_batch_run(request: Request):
                 item = result_queue.get_nowait()
                 results.append(item)
                 consecutive_fail = consecutive_fail + 1 if item.get("status") == "fail" else 0
-                yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(run_bugids), 'bugid': item['Jira号'], 'status': item['status'], 'msg': item.get('msg', ''), 'exec_time': item.get('触发时间', ''), 'analysis_time': item.get('执行时间', '')}, ensure_ascii=False)}\n\n"
+                yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(run_bugids), 'bugid': item['Jira号'], 'status': item['status'], 'msg': item.get('msg', ''), 'exec_time': item.get('触发时间', ''), 'analysis_time': item.get('执行时间', ''), 'start_time': item.get('开始时间', '')}, ensure_ascii=False)}\n\n"
                 if consecutive_fail >= 3:
                     stop_event.set()
                     logger.warning("线上批量连续 3 条提交失败，停止后续队列")
@@ -3294,10 +3378,12 @@ async def test_prod_batch_run(request: Request):
         batch_csv = os.path.join(_UNANALYZED_DIR, f"prod_batch_{date_str}_{time_str}.csv")
         with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
             writer = _csv.writer(f)
-            writer.writerow(["Jira号", "执行结果", "触发时间", "执行时间", "备注",
+            writer.writerow(["Jira号", "执行结果", "触发时间", "执行时间", "开始时间", "备注",
                              "分析并发数", "下载并发数", "模型", "触发来源"])
             for r in results:
-                writer.writerow([r["Jira号"], r["执行结果"], r.get("触发时间", ""), r.get("执行时间", ""), r.get("备注", ""),
+                writer.writerow([r["Jira号"], r["执行结果"], r.get("触发时间", ""), r.get("执行时间", ""),
+                                 r.get("开始时间", ""),
+                                 r.get("备注", ""),
                                  _batch_meta["分析并发数"], _batch_meta["下载并发数"],
                                  _batch_meta["模型"], _batch_meta["触发来源"]])
         success_count = sum(1 for r in results if r["执行结果"] == "成功")
@@ -4049,8 +4135,9 @@ async def auto_detect_run(request: Request):
                 if _shared.auto_detect_stop:
                     break
                 exec_time = trigger_times.get(bugid, "")
+                item_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if not exec_time:
-                    results.append({"Jira号": bugid, "执行结果": "失败", "备注": "无触发时间"})
+                    results.append({"Jira号": bugid, "执行结果": "失败", "备注": "无触发时间", "开始时间": item_start})
                     continue
                 try:
                     payload = _build_prod_ai_payload(bugid, exec_time)
@@ -4058,9 +4145,9 @@ async def auto_detect_run(request: Request):
                     resp_code = resp.get("code") if isinstance(resp, dict) else None
                     resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
                     is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
-                    results.append({"Jira号": bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200]})
+                    results.append({"Jira号": bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200], "开始时间": item_start})
                 except Exception as e:
-                    results.append({"Jira号": bugid, "执行结果": "失败", "备注": str(e)[:200]})
+                    results.append({"Jira号": bugid, "执行结果": "失败", "备注": str(e)[:200], "开始时间": item_start})
                     # 检查是否整批失败（接口完全不可用）
                     if len(results) >= 3 and all(r["执行结果"] == "失败" for r in results):
                         batch_fail_all = True
@@ -4079,11 +4166,11 @@ async def auto_detect_run(request: Request):
             try:
                 with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
                     writer = _csv.writer(f)
-                    writer.writerow(["Jira号", "执行结果", "触发时间", "执行时间", "备注",
+                    writer.writerow(["Jira号", "执行结果", "触发时间", "执行时间", "开始时间", "备注",
                                      "分析并发数", "下载并发数", "模型", "触发来源"])
                     for r in results:
                         writer.writerow([r["Jira号"], r["执行结果"], trigger_times.get(r["Jira号"], ""),
-                                         batch_start, r.get("备注", ""),
+                                         batch_start, r.get("开始时间", ""), r.get("备注", ""),
                                          _batch_meta["分析并发数"], _batch_meta["下载并发数"],
                                          _batch_meta["模型"], _batch_meta["触发来源"]])
                 doc_title = f"auto_add {date_str} {time_str} ({success_count}/{len(results)})"
@@ -4421,8 +4508,9 @@ async def regression_run(request: Request):
                         yield f"data: {_json.dumps({'type': 'stopped', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'round': round_num, 'message': '用户手动停止'}, ensure_ascii=False)}\n\n"
                         return
                     exec_time = trigger_times.get(bugid, "")
+                    item_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     if not exec_time:
-                        results.append({jira_col: bugid, "执行结果": "失败", "备注": "无触发时间"})
+                        results.append({jira_col: bugid, "执行结果": "失败", "备注": "无触发时间", "开始时间": item_start})
                         continue
                     try:
                         if exec_mode == "online":
@@ -4436,12 +4524,12 @@ async def regression_run(request: Request):
                         resp_code = resp.get("code") if isinstance(resp, dict) else None
                         resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
                         is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
-                        results.append({jira_col: bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200], "执行时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                        results.append({jira_col: bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200], "执行时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "开始时间": item_start})
                     except Exception as e:
                         if _stop_event.is_set():
                             yield f"data: {_json.dumps({'type': 'stopped', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'round': round_num, 'message': '用户手动停止'}, ensure_ascii=False)}\n\n"
                             return
-                        results.append({jira_col: bugid, "执行结果": "失败", "备注": str(e)[:200], "执行时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                        results.append({jira_col: bugid, "执行结果": "失败", "备注": str(e)[:200], "执行时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "开始时间": item_start})
                     yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(round_candidates), 'bugid': bugid, 'status': results[-1]['执行结果'], 'round': round_num, 'total_rounds': total_rounds}, ensure_ascii=False)}\n\n"
                 round_success = sum(1 for r in results if r["执行结果"] == "成功")
                 round_fail = len(results) - round_success
@@ -4470,11 +4558,12 @@ async def regression_run(request: Request):
         try:
             with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
                 writer = _csv.writer(f)
-                writer.writerow([jira_col, "执行结果", "触发时间", "执行时间", "备注",
+                writer.writerow([jira_col, "执行结果", "触发时间", "执行时间", "开始时间", "备注",
                                  "分析并发数", "下载并发数", "模型", "触发来源", "执行模式"])
                 for r in all_results:
                     writer.writerow([r[jira_col], r["执行结果"], trigger_times.get(r[jira_col], ""),
-                                     r.get("执行时间") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"), r.get("备注", ""),
+                                     r.get("执行时间") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                     r.get("开始时间", ""), r.get("备注", ""),
                                      _batch_meta["分析并发数"], _batch_meta["下载并发数"],
                                      _batch_meta["模型"], _batch_meta["触发来源"], mode_label])
             doc_title = f"回归执行 {mode_label} {_batch_start.strftime('%Y-%m-%d')} {_batch_start.strftime('%H%M%S')} ({total_success}/{len(all_results)}, {total_rounds}轮)"
@@ -5522,8 +5611,9 @@ async def form_exec(request: Request):
                     yield f"data: {_json.dumps({'type': 'stopped', 'total': len(all_results), 'success': total_success, 'fail': total_fail}, ensure_ascii=False)}\n\n"
                     return
                 exec_time = trigger_times.get(bugid, "")
+                item_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if not exec_time:
-                    round_results.append({"bugid": bugid, "执行结果": "失败", "备注": "无触发时间", "触发时间": "", "执行时间": batch_start})
+                    round_results.append({"bugid": bugid, "执行结果": "失败", "备注": "无触发时间", "触发时间": "", "执行时间": batch_start, "开始时间": item_start})
                     all_no_time.append(bugid)
                     yield f"data: {_json.dumps({'type': 'progress', 'index': len(round_results), 'total': len(round_selected), 'bugid': bugid, 'status': 'fail', 'round': round_num}, ensure_ascii=False)}\n\n"
                     continue
@@ -5539,9 +5629,9 @@ async def form_exec(request: Request):
                     resp_code = resp.get("code") if isinstance(resp, dict) else None
                     resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
                     is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
-                    round_results.append({"bugid": bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200], "触发时间": exec_time, "执行时间": batch_start})
+                    round_results.append({"bugid": bugid, "执行结果": "成功" if is_ok else "失败", "备注": resp_msg[:200], "触发时间": exec_time, "执行时间": batch_start, "开始时间": item_start})
                 except Exception as e:
-                    round_results.append({"bugid": bugid, "执行结果": "失败", "备注": str(e)[:200], "触发时间": exec_time, "执行时间": batch_start})
+                    round_results.append({"bugid": bugid, "执行结果": "失败", "备注": str(e)[:200], "触发时间": exec_time, "执行时间": batch_start, "开始时间": item_start})
                 yield f"data: {_json.dumps({'type': 'progress', 'index': len(round_results), 'total': len(round_selected), 'bugid': bugid, 'status': round_results[-1]['执行结果'], 'round': round_num}, ensure_ascii=False)}\n\n"
             round_success = sum(1 for r in round_results if r["执行结果"] == "成功")
             round_fail = len(round_results) - round_success
@@ -5569,11 +5659,11 @@ async def form_exec(request: Request):
         try:
             with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
                 writer = _csv.writer(f)
-                writer.writerow(["jira号", "执行结果", "触发时间", "执行时间", "备注",
+                writer.writerow(["jira号", "执行结果", "触发时间", "执行时间", "开始时间", "备注",
                                  "分析并发数", "下载并发数", "模型", "触发来源", "执行模式"])
                 for r in all_results:
                     writer.writerow([r["bugid"], r["执行结果"], r.get("触发时间", ""),
-                                     r.get("执行时间", ""), r.get("备注", ""),
+                                     r.get("执行时间", ""), r.get("开始时间", ""), r.get("备注", ""),
                                      _batch_meta["分析并发数"], _batch_meta["下载并发数"],
                                      _batch_meta["模型"], _batch_meta["触发来源"], mode_label])
             doc_title = f"表单执行 {mode_label} {date_str} {time_str} ({total_success}/{len(all_results)}, {total_rounds}轮)"
