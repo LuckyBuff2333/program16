@@ -4856,18 +4856,20 @@ def _vote_from_texts(texts, ref_pool, gm_ref_dt, tol):
 def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     """对状态栏/任务栏等小区域做高倍 OCR
 
-    录屏时间通常出现在：手机顶部状态栏、车载 HMI 中央顶部、Windows 右下角任务栏。
+    录屏时间通常出现在：手机顶部状态栏、车载 HMI 中央顶部、Windows 右下角任务栏、
+    导航应用底部中央导航栏（时间字体较大）。
     裁剪这些区域放大 2.5x 再识别，区域小、速度快、抗内容干扰。
     """
     import cv2
     parts = []
     try:
         h, w = frame.shape[:2]
-        # 扩展区域：车载 HMI 时钟常出现在顶部状态栏、中央顶部、右下任务栏
+        # 扩展区域：车载 HMI 时钟常出现在顶部状态栏、中央顶部、右下任务栏、底部中央导航栏
         regions = [
             (0, 0, w, max(1, int(h * 0.15))),                  # 顶部状态栏（扩展 10%→15%）
             (int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),  # 中央顶部（车载 HMI 居中时钟）
             (int(w * 0.55), int(h * 0.75), w, h),              # 右下任务栏
+            (int(w * 0.20), int(h * 0.70), int(w * 0.80), h),  # 底部中央导航栏（导航应用时间，字体较大）
         ]
         if not status_only:
             regions = [
@@ -4876,6 +4878,7 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
                 (0, 0, int(w * 0.55), int(h * 0.55)),
                 (int(w * 0.55), int(h * 0.75), w, h),
                 (int(w * 0.40), int(h * 0.18), w, int(h * 0.70)),
+                (int(w * 0.20), int(h * 0.70), int(w * 0.80), h),
             ]
         for (x1, y1, x2, y2) in regions:
             if x2 - x1 < 40 or y2 - y1 < 12:
