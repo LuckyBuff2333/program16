@@ -411,6 +411,10 @@ export default {
       return this.timeEdit.rows.filter((r: any) => r.new_time && r.new_time !== r.current_time);
     },
   },
+  deactivated() {
+    // keep-alive 切换走时中止进行中的提取请求
+    if (this.abortCtrl && !this.abortCtrl.signal.aborted) this.abortCtrl.abort();
+  },
   methods: {
     formatMinute,
     judgeTagType(judge: string) {

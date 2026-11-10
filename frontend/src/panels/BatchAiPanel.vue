@@ -394,6 +394,14 @@ export default {
   mounted() {
     this.loadBatchEnv();
   },
+  deactivated() {
+    // keep-alive 切换走时中止所有进行中的 SSE 连接，后端收到断连会自动停止 filter 查询
+    const ctrls = [this.batchAiAbort, this.batchAiExtractAbort, this.aiDirectAbort, this.formExec.abortController];
+    ctrls.forEach(c => { if (c && !c.signal.aborted) c.abort(); });
+    // 通知后端停止批量提取/执行
+    ['/api/test/batch_ai_extract_times/stop', '/api/test/batch_ai_run/stop', '/api/test/prod_batch_run/stop']
+      .forEach(url => fetch(url, { method: 'POST' }).catch(() => {}));
+  },
   methods: {
     async loadBatchEnv() {
       // 软件版本等环境设置持久化在后端 config.yaml，页面打开时自动回填
