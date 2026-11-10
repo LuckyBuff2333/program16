@@ -124,7 +124,7 @@
             </div>
           </div>
 
-          <el-table :data="tbl.displayedRows" size="small" stripe border max-height="520"
+          <el-table :data="tblDisplayedRows" size="small" stripe border max-height="520"
             :default-sort="{ prop: '创建日期', order: 'descending' }">
             <el-table-column type="index" label="#" width="50" align="center"></el-table-column>
             <el-table-column prop="jira号" label="Jira号" width="180" sortable>
