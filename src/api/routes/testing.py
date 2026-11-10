@@ -617,7 +617,11 @@ async def test_jira_lookup(request: Request):
 
 @router.post("/api/test/bitable_vcs_query", response_model=ApiResponse)
 async def test_bitable_vcs_query(request: Request):
-    """表格查询：从 VCS BUG 多维表格按创建日期范围查询记录，可选过滤AI初步分析结果非空的记录"""
+    """表格查询：从 VCS BUG 多维表格按创建日期范围查询记录，可选过滤AI初步分析结果非空的记录
+
+    查询策略：有日期范围时用 search API 精确过滤（~300-1600条）；
+    search 失败或无日期时回退全量拉取 + Python 侧筛选。
+    """
     body = await request.json() or {}
     date_from = (body.get("date_from") or "").strip()  # 如 "2026-11-02"
     date_to = (body.get("date_to") or "").strip()      # 如 "2026-11-08"
@@ -626,23 +630,54 @@ async def test_bitable_vcs_query(request: Request):
         from src.clients import feishu_client as _fc
         app_token = "HOARbsrB0aSViFs5AjNchSQ0nAf"
         table_id = "tblr4oboVbKsV6y1"
-        # 构建结构化过滤条件（search API 支持日期字段比较）
-        conditions = []
-        if date_from:
-            ts_from = str(int(datetime.strptime(date_from, "%Y-%m-%d").timestamp() * 1000))
-            conditions.append({"field_name": "创建日期", "operator": "isGreater", "value": [ts_from]})
-        if date_to:
-            ts_to = str(int((datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000))
-            conditions.append({"field_name": "创建日期", "operator": "isLess", "value": [ts_to]})
-        filter_obj = {"conjunction": "and", "conditions": conditions} if conditions else None
         loop = asyncio.get_event_loop()
-        records = await loop.run_in_executor(
-            None, lambda: _fc.search_bitable_records(
-                app_token, table_id, filter_obj=filter_obj,
-                field_names=["jira号", "创建日期", "AI初步分析结果"]))
+        records = None
+        use_search = bool(date_from or date_to)
+        # 策略 1：search API（有日期范围时优先，服务端过滤，只拉命中记录）
+        if use_search:
+            try:
+                conditions = []
+                if date_from:
+                    ts_from = str(int(datetime.strptime(date_from, "%Y-%m-%d").timestamp() * 1000))
+                    conditions.append({"field_name": "创建日期", "operator": "isGreater", "value": [ts_from]})
+                if date_to:
+                    ts_to = str(int((datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000))
+                    conditions.append({"field_name": "创建日期", "operator": "isLess", "value": [ts_to]})
+                filter_obj = {"conjunction": "and", "conditions": conditions}
+                records = await loop.run_in_executor(
+                    None, lambda: _fc.search_bitable_records(
+                        app_token, table_id, filter_obj=filter_obj,
+                        field_names=["jira号", "创建日期", "AI初步分析结果"]))
+                logger.info("表格查询使用 search API，命中 %d 条", len(records))
+            except Exception as e:
+                logger.warning("search API 失败(%s)，回退全量拉取", e)
+                records = None
+        # 策略 2：全量拉取 + Python 侧筛选（search 失败或无日期范围时）
+        if records is None:
+            records = await loop.run_in_executor(
+                None, lambda: _fc.list_bitable_records(app_token, table_id))
+            logger.info("表格查询使用全量拉取，共 %d 条", len(records))
+        # 解析日期范围边界（全量拉取时需要 Python 侧过滤）
+        ts_from = 0
+        ts_to = float('inf')
+        if not use_search or records is None:
+            if date_from:
+                ts_from = datetime.strptime(date_from, "%Y-%m-%d").timestamp() * 1000
+            if date_to:
+                ts_to = (datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000
+        # 解析记录
         rows = []
         for rec in records:
             fields = rec.get("fields", {})
+            # 全量拉取时 Python 侧日期过滤
+            if ts_from or ts_to != float('inf'):
+                created_ts = fields.get("创建日期", "")
+                if not isinstance(created_ts, (int, float)) or created_ts <= 0:
+                    continue
+                if ts_from and created_ts < ts_from:
+                    continue
+                if ts_to != float('inf') and created_ts >= ts_to:
+                    continue
             jira_no = _bitable_text(fields.get("jira号", ""))
             ai_result = _bitable_text(fields.get("AI初步分析结果", ""))
             # AI过滤：跳过AI初步分析结果非空的记录
