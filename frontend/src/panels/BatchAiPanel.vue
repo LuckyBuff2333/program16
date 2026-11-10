@@ -479,7 +479,8 @@ export default {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ bugids: this.batchAi.selected, trigger_times: this.batchAi.triggerTimes,
             analysis_concurrency: this.batchAi.analysisConcurrency, download_concurrency: this.batchAi.downloadConcurrency,
-            model: this.batchAi.model, trigger_source: this.batchAi.triggerSource, software_version: this.batchAi.softwareVersion, continuous: this.batchAi.continuous }),
+            model: this.batchAi.model, trigger_source: this.batchAi.triggerSource, software_version: this.batchAi.softwareVersion, continuous: this.batchAi.continuous,
+            dynamic_queue: this.batchAi.dynamicQueue }),
           signal: this.batchAiAbort.signal,
         });
         const reader = resp.body.getReader(); const decoder = new TextDecoder(); let buffer = '';

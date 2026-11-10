@@ -1433,6 +1433,7 @@ async def test_batch_ai_run(request: Request):
             return _fail("持续执行去重后无待执行 Jira")
         _mark_executed(bugids)
     trigger_times = body.get("trigger_times") or {}
+    _dynamic_queue = bool(body.get("dynamic_queue"))
     # 批量执行元数据（分析并发数、下载并发数、模型、触发来源）
     _batch_meta = {
         "分析并发数": str(body.get("analysis_concurrency", "10")),
@@ -1512,10 +1513,15 @@ async def test_batch_ai_run(request: Request):
                                   "执行时间": batch_start_time,
                                   "分析执行时间": batch_start_time})
 
-        # 并行启动所有任务；保留 future 以便停止时取消未开始的
+        # 动态队列：仅启动初始批次，后续按完成动态补位；否则全量并行
+        _dq_max = int(body.get("analysis_concurrency", 10)) if _dynamic_queue else len(bugids)
         futures = []
-        for bugid in bugids:
+        _dq_next = 0
+        for _i, bugid in enumerate(bugids):
+            if _i >= _dq_max:
+                break
             futures.append(loop.run_in_executor(None, _run_one, bugid))
+            _dq_next = _i + 1
 
         # 轮询队列，实时推送完成事件
         results = []
@@ -1534,6 +1540,11 @@ async def test_batch_ai_run(request: Request):
                 item = result_queue.get_nowait()
                 results.append(item)
                 yield f"data: {_json.dumps({'type': 'progress', 'index': len(results), 'total': len(bugids), 'bugid': item['jira号'], 'status': item['status'], 'report_len': item.get('report_len', 0), 'msg': item.get('msg', ''), 'exec_time': item.get('触发时间', ''), 'analysis_time': item.get('执行时间', '')}, ensure_ascii=False)}\n\n"
+                # 动态补位：完成一个立即从队列取下一个
+                if _dynamic_queue and _dq_next < len(bugids):
+                    _nxt = bugids[_dq_next]
+                    futures.append(loop.run_in_executor(None, _run_one, _nxt))
+                    _dq_next += 1
             except queue.Empty:
                 await asyncio.sleep(1)
 
