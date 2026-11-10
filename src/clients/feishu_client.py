@@ -527,6 +527,71 @@ def _paginate_get(url: str, headers: dict, params: dict,
     return all_items
 
 
+def _paginate_post(url: str, headers: dict, body: dict,
+                   log_msg: str = "", timeout: int = 30) -> list:
+    """飞书 API POST 分页拉取通用辅助（search 接口用）
+
+    :param url: API 地址
+    :param headers: 请求头
+    :param body: POST body（page_token 由内部自动管理）
+    :param log_msg: 日志描述
+    :param timeout: 单页请求超时秒数
+    :return: 所有页的 items 列表
+    """
+    all_items = []
+    page_token = None
+    while True:
+        if page_token:
+            body["page_token"] = page_token
+        try:
+            resp = httpx.post(url, headers=headers, json=body, timeout=timeout, verify=False)
+        except httpx.TransportError as _te:
+            logger.warning("%s: 网络错误(%s)", log_msg, type(_te).__name__)
+            raise
+        if resp.status_code >= 400:
+            err_body = {}
+            try:
+                err_body = resp.json()
+            except Exception:
+                pass
+            raise ValueError(f"{log_msg}: HTTP {resp.status_code}: {err_body.get('msg', resp.text[:200])} (code={err_body.get('code', 0)})")
+        data = resp.json()
+        if data.get("code") != 0:
+            raise ValueError(f"{log_msg}: {data.get('msg')} (code={data.get('code')})")
+        items = data.get("data", {}).get("items", [])
+        all_items.extend(items)
+        if not data.get("data", {}).get("has_more", False):
+            break
+        page_token = data.get("data", {}).get("page_token")
+    return all_items
+
+
+def search_bitable_records(app_token: str, table_id: str,
+                           filter_obj: dict = None, field_names: list = None,
+                           page_size: int = 500, timeout: int = 30) -> list:
+    """多维表格 search API：支持结构化过滤（日期、数字等），比 list + filter 表达式更强大
+
+    :param app_token: 多维表格 app_token
+    :param table_id: 数据表 ID
+    :param filter_obj: 结构化过滤条件，如 {"conjunction":"and","conditions":[{"field_name":"创建日期","operator":"isGreater","value":["1730476800000"]}]}
+    :param field_names: 指定返回字段列表（为空则返回全部）
+    :param page_size: 每页记录数（最大 500）
+    :param timeout: 单页请求超时秒数
+    :return: 记录列表，每条为 {"record_id": str, "fields": dict}
+    """
+    url = f"{_FEISHU_API}/bitable/v1/apps/{app_token}/tables/{table_id}/records/search"
+    body = {"page_size": min(page_size, 500)}
+    if filter_obj:
+        body["filter"] = filter_obj
+    if field_names:
+        body["field_names"] = field_names
+    records = _paginate_post(url, _bitable_headers(), body,
+                             log_msg="Bitable search", timeout=timeout)
+    logger.info("Bitable search 完成: app=%s, table=%s, 共 %d 条",
+                app_token, table_id, len(records))
+    return records
+
+
 def _get_doc_token() -> str:
     """获取文档 API 的认证 token：统一使用 tenant_access_token（稳定、自动刷新）
 
