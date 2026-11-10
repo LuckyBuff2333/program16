@@ -114,6 +114,7 @@ def troubleshoot_diagnose(req: DiagnoseRequest):
     bugid = req.bugid.strip()
     err_msg = req.err_msg.strip()
     error_class = req.error_class.strip()
+    error_type = req.error_type.strip()
     problem_time = req.problem_time.strip()
     done_time = req.done_time.strip()
     force = req.force
@@ -124,12 +125,12 @@ def troubleshoot_diagnose(req: DiagnoseRequest):
     # 否则浏览器里的批量循环会在服务恢复后继续下载附件/OCR 提取。
     if req.boot_id.strip() != SERVER_BOOT_ID:
         return fail("服务已重启，上一轮批量诊断已失效，请刷新页面后重新查询执行")
-    # 预归类保护：错误分类/错误信息命中跳过类别时直接返回，不执行诊断
+    # 预归类保护：错误类型/错误分类/错误信息命中跳过类别时直接返回，不执行诊断
     if not force:
-        if not err_msg and not error_class:
+        if not err_msg and not error_class and not error_type:
             _pre_cat = "服务关闭"
         else:
-            _pre_cat = _diag_pre_classify(err_msg, error_class)
+            _pre_cat = _diag_pre_classify(err_msg, error_class, error_type)
         if _pre_cat and _pre_cat in _SKIP_ANALYSIS_CATEGORIES:
             _pre_report = _generate_troubleshoot_report(bugid, _pre_cat, err_msg, f"预归类：{_pre_cat}")
             _pre_result = {
@@ -161,7 +162,7 @@ def troubleshoot_diagnose(req: DiagnoseRequest):
                     cached["needs_analysis"] = cached["category"] not in _SKIP_ANALYSIS_CATEGORIES
                 return ok(cached, f"{bugid} 诊断结果（本地缓存）")
         executor = _get_diag_executor()
-        future = executor.submit(_troubleshoot_diagnose_impl, bugid, err_msg, problem_time, done_time, force=force, error_class=error_class, human_review=req.human_review)
+        future = executor.submit(_troubleshoot_diagnose_impl, bugid, err_msg, problem_time, done_time, force=force, error_class=error_class, error_type=error_type, human_review=req.human_review)
         try:
             return future.result(timeout=_DIAG_TIMEOUT_SECONDS)
         except _futures.TimeoutError:

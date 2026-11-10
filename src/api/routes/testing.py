@@ -615,6 +615,60 @@ async def test_jira_lookup(request: Request):
         return _fail(str(e))
 
 
+@router.post("/api/test/bitable_vcs_query", response_model=ApiResponse)
+async def test_bitable_vcs_query(request: Request):
+    """表格查询：从 VCS BUG 多维表格按创建日期范围查询记录，可选过滤AI初步分析结果非空的记录"""
+    body = await request.json() or {}
+    date_from = (body.get("date_from") or "").strip()  # 如 "2026-11-02"
+    date_to = (body.get("date_to") or "").strip()      # 如 "2026-11-08"
+    filter_ai = body.get("filter_ai", False)  # 是否过滤AI初步分析结果非空的记录
+    try:
+        from src.clients import feishu_client as _fc
+        app_token = "HOARbsrB0aSViFs5AjNchSQ0nAf"
+        table_id = "tblr4oboVbKsV6y1"
+        # 构建日期范围过滤表达式（创建日期为 type=5 时间戳毫秒）
+        filter_expr = ""
+        if date_from:
+            ts_from = int(datetime.strptime(date_from, "%Y-%m-%d").timestamp() * 1000)
+            filter_expr = f'CurrentValue.[创建日期] >= {ts_from}'
+        if date_to:
+            # date_to 含当天，+1天
+            ts_to = int((datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000)
+            if filter_expr:
+                filter_expr += f' AND CurrentValue.[创建日期] < {ts_to}'
+            else:
+                filter_expr = f'CurrentValue.[创建日期] < {ts_to}'
+        loop = asyncio.get_event_loop()
+        records = await loop.run_in_executor(
+            None, lambda: _fc.list_bitable_records(app_token, table_id,
+                                                   filter_expr=filter_expr if filter_expr else None))
+        rows = []
+        for rec in records:
+            fields = rec.get("fields", {})
+            jira_no = _bitable_text(fields.get("jira号", ""))
+            ai_result = _bitable_text(fields.get("AI初步分析结果", ""))
+            # AI过滤：跳过AI初步分析结果非空的记录
+            if filter_ai and ai_result and ai_result not in ("-", "None"):
+                continue
+            # 创建日期转可读格式
+            created_ts = fields.get("创建日期", "")
+            created_str = ""
+            if isinstance(created_ts, (int, float)) and created_ts > 0:
+                created_str = datetime.fromtimestamp(created_ts / 1000).strftime("%Y-%m-%d %H:%M")
+            rows.append({
+                "jira号": jira_no,
+                "创建日期": created_str,
+                "AI初步分析结果": ai_result,
+            })
+        # 按创建日期降序
+        rows.sort(key=lambda r: r["创建日期"] or "", reverse=True)
+        return _ok({"rows": rows, "total": len(rows)},
+                   f"查询到 {len(rows)} 条记录")
+    except Exception as e:
+        logger.error("表格查询失败: %s", e)
+        return _fail(str(e))
+
+
 @router.post("/api/test/batch_ai_extract_times/stop", response_model=ApiResponse)
 def stop_batch_ai_extract_times():
     """触发批量提取停止信号（优雅停止：当前条目完成后停止后续）"""

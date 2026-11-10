@@ -648,7 +648,7 @@ export default {
         } else { signal = abortSig || timeoutSig || undefined; }
         const body = await api('/api/troubleshoot/diagnose', {
           method: 'POST',
-          body: JSON.stringify({ bugid, err_msg: row['错误信息'] || '', error_class: row['错误分类'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析开始时间'] || '', force, skip_video_cache: skipVideoCache, boot_id: this.troubleshoot.bootId || '', human_review: row['人工审核结果'] || '' }),
+          body: JSON.stringify({ bugid, err_msg: row['错误信息'] || '', error_class: row['错误分类'] || '', error_type: row['错误类型'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析开始时间'] || '', force, skip_video_cache: skipVideoCache, boot_id: this.troubleshoot.bootId || '', human_review: row['人工审核结果'] || '' }),
           signal,
         });
         const d = body.data || {};
@@ -718,7 +718,7 @@ export default {
         await this.ensureBootId();
         const body = await api('/api/troubleshoot/diagnose', {
           method: 'POST',
-          body: JSON.stringify({ bugid: row['jira号'], err_msg: row['错误信息'] || '', error_class: row['错误分类'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析开始时间'] || '', boot_id: this.troubleshoot.bootId || '' })
+          body: JSON.stringify({ bugid: row['jira号'], err_msg: row['错误信息'] || '', error_class: row['错误分类'] || '', error_type: row['错误类型'] || '', problem_time: row['分析问题时间'] || '', done_time: row['分析开始时间'] || '', boot_id: this.troubleshoot.bootId || '' })
         });
         st.diagResult = body.data || {};
         ElMessage.success(`${row['jira号']} 诊断完成：${st.diagResult.category || ''}`);
@@ -914,7 +914,7 @@ export default {
           method: 'POST', body: JSON.stringify({
             records: uniqueTargets.map(r => ({
               bugid: r['jira号'], err_msg: r['错误信息'] || '',
-              error_class: r['错误分类'] || '',
+              error_class: r['错误分类'] || '', error_type: r['错误类型'] || '',
               human_review: r['人工审核结果'] || '', done_time: r['分析开始时间'] || '',
               problem_time: r['分析问题时间'] || '',
             })),
@@ -1154,7 +1154,7 @@ export default {
       try {
         const records = targets.map(r => ({
           bugid: r['jira号'], err_msg: r['错误信息'] || '',
-          error_class: r['错误分类'] || '',
+          error_class: r['错误分类'] || '', error_type: r['错误类型'] || '',
           human_review: r['人工审核结果'] || '', done_time: r['分析开始时间'] || '',
           problem_time: r['分析问题时间'] || '',
         }));

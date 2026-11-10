@@ -156,6 +156,7 @@ def _extract_record_row(fields: dict, cfg: dict) -> dict:
         "分析问题时间": _bitable_text(fields.get("分析问题时间", "")),
         "错误信息": _pick_error_info(fields),
         "错误分类": _bitable_text(fields.get("错误分类", "")),
+        "错误类型": _bitable_text(fields.get("错误类型", "")),
         "人工审核结果": _bitable_text(fields.get("人工审核结果", "")),
         "飞书报告链接": report_link,
     }
@@ -525,14 +526,42 @@ _SKIP_ANALYSIS_CATEGORIES = {
     "IP配置错误", "人工取消", "无时间信息", "网络波动",
     "解压问题", "压缩包损坏",
     "日志行数过多，手动分析",
+    "待重试",
+}
+
+# 上游 ErrorType 枚举 → 错误分类映射
+# 精确匹配优先，未命中时回退到 错误分类/错误信息 文本匹配
+_ERROR_TYPE_MAP = {
+    "JIRA_API_ERROR": "并发过多",
+    "NO_PROBLEM_TIME": "无时间信息",
+    "NO_LOG_ATTACHMENT": "无gmlogger",
+    "ATTACHMENT_INCOMPLETE": "",  # 走深度分析，判断附件是否真的缺失
+    "EXTRACTION_NO_LOG": "无gmlogger",
+    "EXTRACTION_TIME_FILTERED": "触发时间问题",
+    "TIME_FILTER_EMPTY": "触发时间问题",
+    "LLM_CALL_FAILED": "待重试",
+    "REPORT_EMPTY": "待重试",
+    "ANALYSIS_PARTIAL": "待重试",
+    "REPORT_DELIVERY_FAILED": "待重试",
+    "POST_RESULT_FAILED": "待重试",
+    "TASK_TIMEOUT": "并发过多",
+    "TASK_CANCELLED": "人工取消",
+    "NETWORK_TIMEOUT": "网络波动",
+    "NETWORK_ERROR": "网络波动",
+    "UNEXPECTED_ERROR": "并发过多",
 }
 
 
-def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
-    """优先按表格「错误分类」预归类，缺失时回退「错误信息」文本。
+def _diag_pre_classify(err_msg: str, error_class: str = "", error_type: str = "") -> str:
+    """优先按「错误类型」(ErrorType) 精确映射，缺失时回退「错误分类」和「错误信息」文本匹配。
 
     返回空串表示需要走正常深度分析。
     """
+    # 0. 最高优先级：ErrorType 精确匹配
+    et = (error_type or "").strip().upper()
+    if et and et in _ERROR_TYPE_MAP:
+        return _ERROR_TYPE_MAP[et]
+
     msg = (err_msg or "").strip()
     ec = (error_class or "").strip()
 
@@ -543,9 +572,12 @@ def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
         # 处理后没有有效日志包：预处理无gmlogger，不深度分析
         if "处理后未找到有效的日志文件" in ec:
             return "无gmlogger"
-        # 解压后未找到可识别日志：直接映射为解压问题，跳过深度分析
+        # 解压后未找到可识别日志：无可用日志，归为无gmlogger
         if "解压后未找到可识别的日志文件" in ec:
-            return "解压问题"
+            return "无gmlogger"
+        # 日志文件均不在时间范围内：触发时间问题，走深度排查
+        if "日志文件均不在时间范围内" in ec:
+            return "触发时间问题"
         # JIRA 分析超时 / adjudication / reasoning：转人工，查 app.log
         if "JIRA 分析任务执行超时" in ec or "JIRA 网关分析任务执行超时" in ec:
             return "待人工排查"
@@ -562,7 +594,7 @@ def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
             return "无时间信息"
         if "网络通信失败" in ec or "网络连接超时" in ec:
             return "网络波动"
-        # 分卷不完整：走正常深度分析
+        # 分卷不完整：走深度分析，由深度排查判断附件是否真的缺失
         if "分卷压缩包不完整" in ec:
             return ""
         if "没有可下载的日志附件" in ec or "无日志附件" in ec:
@@ -572,19 +604,27 @@ def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
             return "并发过多"
         if "未预期的错误" in ec:
             return "并发过多"
-        # 历史数据，后续不再产生，不单独归类
+        # 分析完成但包含部分错误：待重试
         if "分析完成但包含部分错误" in ec:
-            return ""
+            return "待重试"
+        # 分析报告生成失败（报告为空）：待重试
         if "分析报告生成失败" in ec:
-            return "并发过多"
+            return "待重试"
         if ec == "服务有报错":
             return "服务关闭"
         if "All connection attempts failed" in ec or "Server disconnected" in ec:
             return "服务关闭"
         if "No space left on device" in ec or "Errno 28" in ec:
             return "磁盘空间不足"
+        # 模型调用失败：待重试
         if "模型调用失败" in ec:
-            return "IT侧服务停止"
+            return "待重试"
+        # 飞书文档创建或发送失败：待重试
+        if "飞书文档创建或发送失败" in ec:
+            return "待重试"
+        # JIRA 网关回填分析结果失败：待重试
+        if "JIRA 网关回填分析结果失败" in ec:
+            return "待重试"
         if "分析任务执行超时" in ec:
             return "并发过多"
         if "日志行数过多" in ec:
@@ -618,9 +658,15 @@ def _diag_pre_classify(err_msg: str, error_class: str = "") -> str:
     if "no space left on device" in msg.lower() or "Errno 28" in msg:
         return "磁盘空间不足"
     if msg.startswith("模型调用失败"):
-        return "IT侧服务停止"
+        return "待重试"
     if "分析报告生成失败" in msg:
-        return "并发过多"
+        return "待重试"
+    if "分析完成但包含部分错误" in msg:
+        return "待重试"
+    if "飞书文档创建或发送失败" in msg:
+        return "待重试"
+    if "JIRA 网关回填分析结果失败" in msg:
+        return "待重试"
     # 504/502/503/500 → IP 配置错误
     if any(k in msg for k in ("504 Gateway Timeout", "502 Bad Gateway",
                               "503 Service Unavailable", "500 Internal Server Error",
@@ -660,6 +706,7 @@ def batch_pre_classify(records: list[dict]) -> dict:
         bugid = rec.get("bugid", "")
         err_msg = rec.get("err_msg", "") or ""
         error_class = rec.get("error_class", "") or rec.get("错误分类", "") or ""
+        error_type = rec.get("error_type", "") or rec.get("错误类型", "") or ""
         human_review = rec.get("human_review", "") or ""
         done_time = rec.get("done_time", "")
         problem_time = rec.get("problem_time", "")
@@ -688,9 +735,9 @@ def batch_pre_classify(records: list[dict]) -> dict:
             else:
                 need_list.append(entry)
             continue
-        # 1. 优先用「错误分类」字段，空值不再默认服务关闭
-        if err_msg or error_class:
-            category = _diag_pre_classify(err_msg, error_class)
+        # 1. 最高优先级：错误类型(ErrorType)精确映射，其次错误分类/错误信息文本匹配
+        if err_msg or error_class or error_type:
+            category = _diag_pre_classify(err_msg, error_class, error_type)
         # 2. 错误信息/错误分类都没命中时，人工审核结果兜底
         if not category and human_review and human_review not in ("-", "None"):
             if "并发过多" in human_review or "接口拥堵" in human_review or "手动中断" in human_review:
@@ -729,7 +776,7 @@ def batch_pre_classify(records: list[dict]) -> dict:
                 category = "分析can信号导致超时"
             elif "日志行数过多" in human_review:
                 category = "日志行数过多，手动分析"
-        if not category and not err_msg and not error_class:
+        if not category and not err_msg and not error_class and not error_type:
             category = "服务关闭"
         entry = {"bugid": bugid, "category": category or "", "done_time": done_time,
                  "problem_time": problem_time, "err_msg": err_msg[:200],

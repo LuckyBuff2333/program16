@@ -34,6 +34,7 @@ class DiagnoseRequest(BaseModel):
     bugid: str = Field(..., description="Jira 编号", min_length=1)
     err_msg: str = Field(default="", description="错误信息")
     error_class: str = Field(default="", description="错误分类（优先于错误信息）")
+    error_type: str = Field(default="", description="错误类型（ErrorType 枚举，最高优先级）")
     problem_time: str = Field(default="", description="问题发生时间")
     done_time: str = Field(default="", description="完成时间")
     force: bool = Field(default=False, description="强制重新诊断")

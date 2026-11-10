@@ -371,7 +371,7 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
                 "jira号": row.get("jira号", ""),
                 "错误信息": (_bitable_text(row.get("错误信息", "")) or "")[:80],
             })
-            # 待办只保留两类：触发时间问题、待人工排查；
+            # 待办保留三类：触发时间问题、待人工排查、待重试；
             # 待人工排查被人工改成其他结论后不再计入待办。
             human_review = _bitable_text(row.get("人工审核结果", "")) or ""
             is_todo = False
@@ -381,6 +381,8 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
                 if (not human_review or human_review in ("-", "None")
                         or "待人工排查" in human_review):
                     is_todo = True
+            elif cat == "待重试":
+                is_todo = True
             if is_todo:
                 # 执行时间直接使用分析开始时间
                 _start = str(row.get("分析开始时间", "") or "")
@@ -549,23 +551,18 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
                     fail_jiras[cat] = []
                 err_short = (_bitable_text(bf.get("错误信息", "")) or "")[:80]
                 fail_jiras[cat].append({"jira号": jira_no, "错误信息": err_short})
-                # 待办规则：仅以下情况进入待办跟进
+                # 待办规则：触发时间问题、待人工排查、待重试 进入待办跟进
                 human_review = _bitable_text(bf.get("人工审核结果", ""))
                 is_todo = False
-                if not human_review or human_review in ("-", "None"):
-                    # 未审核
+                if cat == "触发时间问题":
                     is_todo = True
-                elif human_review.startswith("时间添加为") or "时间异常" in human_review:
-                    # 触发时间问题
+                elif cat == "待人工排查":
+                    if not human_review or human_review in ("-", "None") or "待人工排查" in human_review:
+                        is_todo = True
+                elif cat == "待重试":
                     is_todo = True
-                elif "服务关闭" in human_review or "服务有报错" in human_review:
-                    # 服务关闭
-                    is_todo = True
-                elif "分析任务执行超时" in human_review or "JIRA分析超时" in human_review or "JIRA 分析任务执行超时" in human_review:
-                    # 分析任务执行超时
-                    is_todo = True
-                elif "待后端开发排查" in human_review:
-                    # 待后端开发排查
+                elif not human_review or human_review in ("-", "None"):
+                    # 未审核的失败记录也计入待办
                     is_todo = True
                 if is_todo:
                     todo_items.append({"jira号": jira_no, "reason": f"分析失败: {cat}",
@@ -680,6 +677,8 @@ def _review_category(review: str) -> str:
         return "分析can信号导致超时"
     if "日志行数过多" in review:
         return "日志行数过多，手动分析"
+    if "待重试" in review:
+        return "待重试"
     return review[:20]
 
 
@@ -689,11 +688,13 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
     review_cat = _review_category(review)
     if review_cat:
         return review_cat
+    # 最高优先级：错误类型(ErrorType)精确映射
+    error_type = _bitable_text(bf.get("错误类型", "")).strip()
     error_class = _bitable_text(bf.get("错误分类", "")).strip()
-    if error_class:
+    if error_type or error_class:
         try:
             from src.services.troubleshoot_service import _diag_pre_classify
-            cat = _diag_pre_classify("", error_class)
+            cat = _diag_pre_classify("", error_class, error_type)
             if cat:
                 return cat
         except Exception:

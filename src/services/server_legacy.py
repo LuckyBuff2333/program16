@@ -152,7 +152,7 @@ _bot_sessions: dict = {}
 
 _timestudy_ctx: dict = {}
 
-_EXCLUDE_REASONS = {"无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "日志文件已损坏", "问题重复", "问题重复，无需排查", "问题未复现", "触发时间无日志", "无日志附件", "该jira无日志附件，属于正常处理机制", "该Jira无日志附件，属于正常处理机制", "该jira无日志附件", "该Jira无日志附件", "日志里无对应触发时间相关文件，但是标题里明确说了触发时间", "解压问题，待排查", "解压问题", "压缩包损坏"}
+_EXCLUDE_REASONS = {"无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "日志文件已损坏", "问题重复", "问题重复，无需排查", "问题未复现", "触发时间无日志", "无日志附件", "该jira无日志附件，属于正常处理机制", "该Jira无日志附件，属于正常处理机制", "该jira无日志附件", "该Jira无日志附件", "日志里无对应触发时间相关文件，但是标题里明确说了触发时间", "解压问题，待排查", "解压问题", "压缩包损坏", "日志行数过多，手动分析", "待重试"}
 
 _TIMESTUDY_DIR = os.path.join(PROJECT_ROOT, "data", "timestudy")
 _TIMESTUDY_REPORT_DIR = os.path.join(PROJECT_ROOT, "reports", "timestudy")
@@ -7732,11 +7732,11 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
     return "manual", "", f"未能提取到新触发时间（评论区/描述/视频均无时间），待人工审核正确的时间{gm_note}", ""
 
 
-def _troubleshoot_diagnose_impl(bugid, err_msg, problem_time, done_time, force=False, error_class="", human_review=""):
+def _troubleshoot_diagnose_impl(bugid, err_msg, problem_time, done_time, force=False, error_class="", error_type="", human_review=""):
     """诊断实现（从 troubleshoot_diagnose 抽取，便于统一 try/finally 管理取消标志）"""
     logger.info("诊断开始: %s%s", bugid, "（强制重新执行）" if force else "")
     try:
-        result = _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force, error_class=error_class)
+        result = _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force, error_class=error_class, error_type=error_type)
         # 统一注入 needs_analysis 标识（供前端拆分两张表）
         data = result.get("data") if isinstance(result, dict) else None
         if isinstance(data, dict) and "category" in data:
@@ -7885,7 +7885,7 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
             "change_sec": change_sec}
 
 
-def _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force=False, error_class=""):
+def _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force=False, error_class="", error_type=""):
     """诊断内部实现（实际逻辑）"""
     # —— 优先读取本地缓存 ——
     if not force:
@@ -7895,8 +7895,8 @@ def _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force=
             if done_time:
                 cached["done_time"] = done_time
             return _ok(cached, f"{bugid} 诊断结果（本地缓存）")
-    # —— 无报错信息且无错误分类的记录：历史人工审核均为服务关闭 ——
-    if not err_msg and not error_class:
+    # —— 无报错信息且无错误分类且无错误类型的记录：历史人工审核均为服务关闭 ——
+    if not err_msg and not error_class and not error_type:
         skip_category = "服务关闭"
         report = _generate_troubleshoot_report(bugid, skip_category, err_msg, "")
         result = {"bugid": bugid, "category": skip_category, "problem_time": problem_time,
@@ -7904,8 +7904,8 @@ def _troubleshoot_diagnose_inner(bugid, err_msg, problem_time, done_time, force=
                   "verify_status": "", "suggested_time": "", "report": report, "done_time": done_time}
         _save_diagnose_cache(bugid, result)
         return _ok(result)
-    # —— 预归类：仅跳过类直接返回；触发时间问题等仍需深度分析 ——
-    pre = _diag_pre_classify(err_msg, error_class)
+    # —— 预归类：最高优先级按错误类型，其次错误分类/错误信息 ——
+    pre = _diag_pre_classify(err_msg, error_class, error_type)
     if pre and pre in _SKIP_ANALYSIS_CATEGORIES:
         conn_tip = "" if pre != "服务关闭" else "（建议：确认 AI 日志分析接口内外网可达性后重试）"
         report = _generate_troubleshoot_report(bugid, pre, err_msg, conn_tip)
