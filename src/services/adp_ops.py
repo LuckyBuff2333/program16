@@ -1578,6 +1578,9 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             write_fields.pop("root cause", None)
         if write_fields.get("agent分析的问题模块"):
             write_fields["agent分析的问题模块"] = _strip_module_pid(write_fields["agent分析的问题模块"])
+        if str(write_fields.get("完成状态", "")) == "降级完成" and not str(
+                write_fields.get("agent分析的问题模块", "") or "").strip():
+            write_fields["完成状态"] = "降级完成-但没模块信息"
         if write_fields.get("分析失败归因"):
             write_fields["分析失败归因"] = short_failure_category(write_fields["分析失败归因"])
         if str(write_fields.get("完成状态", "")) in ("分析失败", "无法分析"):
@@ -1595,7 +1598,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
                 write_fields["完成状态"] = "分析失败"
                 write_fields.setdefault("分析失败归因", "未拿到 HTML 报告")
             elif not _module:
-                write_fields["完成状态"] = "降级完成"
+                write_fields["完成状态"] = "降级完成-但没模块信息"
         # 已有成功记录时，后续失败/取消尝试不得覆盖成功记录的任何字段
         if prev_status == "完成" and str(write_fields.get("完成状态", "")) != "完成":
             logger.info("ADP %s 已有成功记录，忽略本次失败/取消结果，保留成功耗时与 traceid", jira_key)
