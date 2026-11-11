@@ -107,6 +107,7 @@
             <el-button type="primary" size="small" :loading="tbl.loading" @click="tblQueryCustom">查询</el-button>
             <el-divider direction="vertical" style="margin:0 4px"></el-divider>
             <el-checkbox v-model="tbl.filterAi" size="small">过滤AI初步分析结果</el-checkbox>
+            <el-checkbox v-model="tbl.filterHasTime" size="small">有问题发生时间</el-checkbox>
           </div>
         </el-card>
 
@@ -117,6 +118,7 @@
               <el-tag type="info" size="small">总数 <b>{{ tbl.rows.length }}</b></el-tag>
               <el-tag type="warning" size="small">待分析 <b>{{ tblPendingCount }}</b></el-tag>
               <el-tag type="success" size="small">已分析 <b>{{ tblAnalyzedCount }}</b></el-tag>
+              <el-tag v-if="tbl.filterHasTime" type="" size="small">有时间 <b>{{ tblTimeCount }}</b></el-tag>
             </div>
             <el-tag v-if="tbl.dateLabel" type="info" size="small">{{ tbl.dateLabel }}</el-tag>
             <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
@@ -133,7 +135,14 @@
               </template>
             </el-table-column>
             <el-table-column prop="创建日期" label="创建日期" width="180" sortable></el-table-column>
-            <el-table-column prop="AI初步分析结果" label="AI初步分析结果" min-width="400" show-overflow-tooltip>
+            <el-table-column prop="问题发生时间" label="问题发生时间" width="180" sortable>
+              <template #default="{ row }">
+                <span :style="{ color: row['问题发生时间'] ? '#67c23a' : '#c0c4cc' }">
+                  {{ row['问题发生时间'] || '-' }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="AI初步分析结果" label="AI初步分析结果" min-width="300" show-overflow-tooltip>
               <template #default="{ row }">
                 <span :style="{ color: row['AI初步分析结果'] && row['AI初步分析结果'] !== '-' ? '#67c23a' : '#c0c4cc' }">
                   {{ row['AI初步分析结果'] || '-' }}
@@ -179,6 +188,7 @@ export default {
         queried: false,
         dateRange: null as [string, string] | null,
         filterAi: true,
+        filterHasTime: false,
         rows: [] as any[],
         dateLabel: '',
       },
@@ -198,14 +208,27 @@ export default {
     },
     // 表格查询 computed
     tblDisplayedRows() {
-      if (!this.tbl.filterAi) return this.tbl.rows;
-      return this.tbl.rows.filter((r: any) => !r['AI初步分析结果'] || r['AI初步分析结果'] === '-');
+      let rows = this.tbl.rows;
+      if (this.tbl.filterAi) {
+        rows = rows.filter((r: any) => !r['AI初步分析结果'] || r['AI初步分析结果'] === '-');
+      }
+      if (this.tbl.filterHasTime) {
+        rows = rows.filter((r: any) => r['问题发生时间'] && r['问题发生时间'].trim());
+      }
+      return rows;
     },
     tblAnalyzedCount() {
       return this.tbl.rows.filter((r: any) => r['AI初步分析结果'] && r['AI初步分析结果'] !== '-' && r['AI初步分析结果'] !== '').length;
     },
     tblPendingCount() {
       return this.tbl.rows.length - this.tblAnalyzedCount;
+    },
+    tblTimeCount() {
+      let rows = this.tbl.rows;
+      if (this.tbl.filterAi) {
+        rows = rows.filter((r: any) => !r['AI初步分析结果'] || r['AI初步分析结果'] === '-');
+      }
+      return rows.filter((r: any) => r['问题发生时间'] && r['问题发生时间'].trim()).length;
     },
   },
   methods: {

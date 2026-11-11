@@ -236,6 +236,7 @@
             <el-button size="small" @click="form.date = todayStr()">今日</el-button>
             <el-button size="small" @click="form.date = yesterdayStr()">昨日</el-button>
             <el-button type="primary" size="small" :loading="form.loading" @click="formQuery">查询</el-button>
+            <el-checkbox v-model="form.filterProblemTime" size="small">查询问题发生时间</el-checkbox>
             <el-tag v-if="form.rows.length" type="info" size="small">{{ form.rows.length }} 条</el-tag>
           </div>
           <div v-if="form.queried" class="form-stats">
@@ -243,11 +244,19 @@
             <el-tag size="small" type="success">有缓存 {{ formStats.cached }}</el-tag>
             <el-tag size="small" type="warning">待提取 {{ formStats.pending }}</el-tag>
             <el-tag size="small" type="info">有AI分析 {{ formStats.aiCount }}</el-tag>
+            <el-tag v-if="form.filterProblemTime" size="small" type="danger">有问题时间 {{ formStats.problemTimeCount }}</el-tag>
           </div>
           <el-table v-if="form.rows.length" :data="form.rows" size="small" style="margin-top:10px" max-height="360"
             :row-class-name="formRowClass">
             <el-table-column prop="jira号" label="Jira号" width="150"></el-table-column>
             <el-table-column prop="创建日期" label="创建日期" width="160"></el-table-column>
+            <el-table-column v-if="form.filterProblemTime" prop="问题发生时间" label="问题发生时间" width="180">
+              <template #default="{ row }">
+                <span :style="{ color: row['问题发生时间'] ? '#67c23a' : '#c0c4cc' }">
+                  {{ row['问题发生时间'] || '—' }}
+                </span>
+              </template>
+            </el-table-column>
             <el-table-column label="触发时间" min-width="180">
               <template #default="{ row }">
                 <el-tag v-if="row.has_cached_time" size="small" type="success">{{ row.cached_time }}</el-tag>
@@ -356,6 +365,7 @@ export default {
       form: {
         date: '',
         loading: false,
+        filterProblemTime: false,
         rows: [] as any[],
         queried: false,
         extracting: false,
@@ -396,12 +406,13 @@ export default {
         .sort();
     },
     // Tab3: 表单查找统计
-    formStats(): { cached: number; pending: number; aiCount: number } {
+    formStats(): { cached: number; pending: number; aiCount: number; problemTimeCount: number } {
       const rows = this.form.rows;
       return {
         cached: rows.filter((r: any) => r.has_cached_time).length,
         pending: rows.filter((r: any) => !r.has_cached_time).length,
         aiCount: rows.filter((r: any) => r.AI初步分析结果 && r.AI初步分析结果 !== '-').length,
+        problemTimeCount: rows.filter((r: any) => r['问题发生时间'] && r['问题发生时间'].trim()).length,
       };
     },
   },
@@ -562,7 +573,7 @@ export default {
       this.form.extractProgress = 0;
       try {
         const body = await api('/api/test/regression_form_query', {
-          method: 'POST', body: JSON.stringify({ date: this.form.date }),
+          method: 'POST', body: JSON.stringify({ date: this.form.date, filter_problem_time: this.form.filterProblemTime }),
         });
         const data = body.data || {};
         this.form.rows = data.rows || [];

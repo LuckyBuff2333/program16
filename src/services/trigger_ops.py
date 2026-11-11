@@ -477,7 +477,7 @@ def _ensure_trigger_time_bugid_cache():
 
 
 # ── 按需搜索：少量查询时用 filter_expr 逐表搜索，避免全量加载 ──
-_FILTER_SEARCH_THRESHOLD = 20  # bugid 数量 <= 此值时走 filter 搜索，超过走全量加载
+_FILTER_SEARCH_THRESHOLD = 100  # bugid 数量 < 此值时走 filter 分块搜索，超过走全量加载
 _table_counts_cache = {}  # {tid: count} 表记录数缓存
 _table_counts_ts = [0.0]  # 缓存时间戳
 
@@ -509,49 +509,63 @@ def _search_trigger_time_single(bugid: str) -> dict:
 
 
 def _search_trigger_time_batch(bugids: list) -> dict:
-    """用 filter_expr OR 搜索少量 Jira 号，返回 {bugid: trigger_time}
+    """用 filter_expr OR 分块搜索 Jira 号，返回 {bugid: trigger_time}
 
-    适合 2~10 个 bugid 的场景，比全量加载快 10 倍以上
+    每次查 20 个，最多 5 轮（100 条），适合 < 100 个 bugid 的场景。
+    超过 100 条应走全量加载 _load_cloud_trigger_cache。
     """
     from src.clients import feishu_client
     if not bugids:
         return {}
     app_token, table_ids = _get_trigger_time_table_cfg()
     result = {}
-    # 构建 OR 过滤表达式
-    conditions = [f'CurrentValue.[jira号] = "{b}"' for b in bugids]
-    # 飞书过滤语法是函数式 OR(...)，不是 SQL 的中缀 OR；中缀写法会返回 1254018
-    filter_expr = conditions[0] if len(conditions) == 1 else "OR(" + ",".join(conditions) + ")"
-    remaining = set(bugids)
-    # 27 个触发表逐个 filter 查询会串行 60 秒以上；这里并发查询，命中足够即停。
+    remaining = list(bugids)
+    chunk_size = 20
+    max_rounds = 5
+    total_rounds = 0
     import concurrent.futures as _cf
-    def _query_one(tid):
+
+    def _query_one(tid, filter_expr):
         try:
             records = feishu_client.list_bitable_records(
                 app_token, tid, filter_expr=filter_expr)
             return tid, records, None
         except Exception as e:
             return tid, [], e
-    with _cf.ThreadPoolExecutor(max_workers=min(6, max(1, len(table_ids)))) as pool:
-        futures = {pool.submit(_query_one, tid): tid for tid in table_ids}
-        for fut in _cf.as_completed(futures):
-            tid, records, err = fut.result()
-            if err:
-                logger.warning("批量搜索触发时间失败(表 %s): %s", tid[:8], err)
-                continue
-            for rec in records:
-                fields = rec.get("fields", {})
-                jira_no = _bitable_text(fields.get("jira号", ""))
-                if jira_no and jira_no in remaining:
-                    tt = _bitable_text(fields.get("触发时间", ""))
-                    if tt:
-                        result[jira_no] = tt
-                    _trigger_time_bugid_cache[jira_no] = (tid, rec["record_id"], tt)
-                    remaining.discard(jira_no)
-            if not remaining:
-                break
+
+    for round_idx in range(max_rounds):
+        if not remaining:
+            break
+        chunk = remaining[:chunk_size]
+        remaining = remaining[chunk_size:]
+        # 构建 OR 过滤表达式
+        conditions = [f'CurrentValue.[jira号] = "{b}"' for b in chunk]
+        filter_expr = conditions[0] if len(conditions) == 1 else "OR(" + ",".join(conditions) + ")"
+        # 并发查询各表，命中足够即停
+        remaining_set = set(chunk)
+        with _cf.ThreadPoolExecutor(max_workers=min(6, max(1, len(table_ids)))) as pool:
+            futures = {pool.submit(_query_one, tid, filter_expr): tid for tid in table_ids}
+            for fut in _cf.as_completed(futures):
+                tid, records, err = fut.result()
+                if err:
+                    logger.warning("批量搜索触发时间失败(表 %s): %s", tid[:8], err)
+                    continue
+                for rec in records:
+                    fields = rec.get("fields", {})
+                    jira_no = _bitable_text(fields.get("jira号", ""))
+                    if jira_no and jira_no in remaining_set:
+                        tt = _bitable_text(fields.get("触发时间", ""))
+                        if tt:
+                            result[jira_no] = tt
+                        _trigger_time_bugid_cache[jira_no] = (tid, rec["record_id"], tt)
+                        remaining_set.discard(jira_no)
+                if not remaining_set:
+                    break
+        logger.info("触发时间搜索第 %d/%d 轮: %d 条中 %d 命中",
+                    round_idx + 1, max_rounds, len(chunk), len(chunk) - len(remaining_set))
+        total_rounds = round_idx + 1
     found = len(bugids) - len(remaining)
-    logger.info("触发时间批量搜索: %d/%d 命中", found, len(bugids))
+    logger.info("触发时间批量搜索: %d/%d 命中（%d 轮）", found, len(bugids), total_rounds)
     return result
 
 

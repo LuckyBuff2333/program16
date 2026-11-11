@@ -374,6 +374,42 @@ def get_prod_ai_url() -> str:
     return (cfg.get("prod_ai") or {}).get("url", _PROD_AI_URL_DEFAULT)
 
 
+# 线上批次号：基于云端当日“线上批量执行”文档数自动递增（多机器不重复）
+_PROD_BATCH_ID_LOCK = threading.Lock()
+_BATCH_ID_CACHE = {"date": "", "count": 0, "ts": 0}
+_BATCH_ID_CACHE_TTL = 120  # 缓存 2 分钟，减少飞书 API 调用
+
+
+def _next_prod_batch_id() -> str:
+    """生成下一个线上批次号，基于云端当天已有批次文档数（多机器安全）"""
+    with _PROD_BATCH_ID_LOCK:
+        today_dash = datetime.now().strftime("%Y-%m-%d")
+        today_compact = datetime.now().strftime("%Y%m%d")
+        # 缓存有效期内直接递增，避免重复请求飞书
+        if _BATCH_ID_CACHE["date"] == today_compact and (datetime.now().timestamp() - _BATCH_ID_CACHE["ts"]) < _BATCH_ID_CACHE_TTL:
+            _BATCH_ID_CACHE["count"] += 1
+            return f"{today_compact}-{_BATCH_ID_CACHE['count']:03d}"
+        # 扫描云端当天日期文件夹内的线上批次文档
+        count = 0
+        try:
+            from src.clients import feishu_client
+            root_folder = load_config().get("feishu_bitable", {}).get("batch_folder_token", "")
+            if root_folder:
+                all_files = feishu_client.list_folder_files(root_folder, recursive=True)
+                for f in all_files:
+                    if (f.get("folder", "") == today_dash
+                            and f.get("type") == "docx"
+                            and f.get("name", "").startswith("线上批量执行")):
+                        count += 1
+        except Exception:
+            pass
+        count += 1
+        _BATCH_ID_CACHE["date"] = today_compact
+        _BATCH_ID_CACHE["count"] = count
+        _BATCH_ID_CACHE["ts"] = datetime.now().timestamp()
+        return f"{today_compact}-{count:03d}"
+
+
 def get_prod_ai_cfg() -> dict:
     """读取线上AI分析接口完整配置，提供默认值"""
     cfg = load_config()
@@ -387,7 +423,7 @@ def get_prod_ai_cfg() -> dict:
     }
 
 
-def build_prod_ai_payload(bugid: str, exec_time: str = None) -> dict:
+def build_prod_ai_payload(bugid: str, exec_time: str = None, batch_id: str = None) -> dict:
     """构建线上AI分析接口请求体，字段名从配置读取"""
     pai = get_prod_ai_cfg()
     payload = {pai["bugid_field"]: bugid}
@@ -397,12 +433,15 @@ def build_prod_ai_payload(bugid: str, exec_time: str = None) -> dict:
             payload[pai["trigger_time_field"]] = [exec_time]
         else:
             payload[pai["trigger_time_field"]] = exec_time
+    if batch_id:
+        payload["批次号"] = batch_id
     return payload
 
 
 _get_prod_ai_url = get_prod_ai_url
 _get_prod_ai_cfg = get_prod_ai_cfg
 _build_prod_ai_payload = build_prod_ai_payload
+_next_prod_batch_id = _next_prod_batch_id
 
 
 def parse_bugids(raw: str) -> list:

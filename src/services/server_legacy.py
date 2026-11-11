@@ -64,6 +64,7 @@ from src.api.routes.shared import (
     get_prod_ai_url as _get_prod_ai_url,
     get_prod_ai_cfg as _get_prod_ai_cfg,
     build_prod_ai_payload as _build_prod_ai_payload,
+    _next_prod_batch_id as _next_prod_batch_id,
     ts_parse_datetime as _ts_parse_datetime,
     read_csv_rows as _read_csv_rows,
     parse_conf as _parse_conf,
@@ -2257,7 +2258,7 @@ def _bot_extract_trigger_times(chat_id: str, bugids: list):
 
 
 def _bot_trigger_and_reply(chat_id: str, bugids: list, trigger_times: dict, realtime: bool = True,
-                          exec_mode: str = "pc") -> tuple:
+                          exec_mode: str = "pc", batch_id: str = None) -> tuple:
     """逐个触发 AI 日志分析，支持PC/线上模式切换"""
     from src.clients import feishu_client
     from src.clients.base import http_post
@@ -2282,7 +2283,7 @@ def _bot_trigger_and_reply(chat_id: str, bugids: list, trigger_times: dict, real
             continue
         try:
             if exec_mode == "online":
-                payload = _build_prod_ai_payload(bugid, exec_time)
+                payload = _build_prod_ai_payload(bugid, exec_time, batch_id=batch_id)
                 resp = http_post(_get_prod_ai_url(), payload, timeout=_get_prod_ai_cfg()["timeout"])
             else:
                 payload = {cfg["bugid_field"]: bugid}
@@ -2824,6 +2825,7 @@ def _bot_run_single_execute(chat_id: str, bugids: list, exec_mode: str = "pc"):
     _reset_cancel_event(chat_id)
     try:
         mode_label = "线上" if exec_mode == "online" else "PC"
+        _batch_id = _next_prod_batch_id() if exec_mode == "online" else None
         # 步骤1：提取触发时间
         feishu_client.send_bot_message(chat_id, f"步骤1/2：提取触发时间（{len(bugids)} 个）...")
         trigger_times = _bot_get_trigger_times(bugids)
@@ -2853,7 +2855,7 @@ def _bot_run_single_execute(chat_id: str, bugids: list, exec_mode: str = "pc"):
             exec_time = trigger_times.get(bugid)
             try:
                 if exec_mode == "online":
-                    payload = _build_prod_ai_payload(bugid, exec_time)
+                    payload = _build_prod_ai_payload(bugid, exec_time, batch_id=_batch_id)
                     resp = http_post(_get_prod_ai_url(), payload, timeout=_get_prod_ai_cfg()["timeout"])
                 else:
                     cfg = load_config()["ai_log_api"]
@@ -2882,7 +2884,8 @@ def _bot_run_single_execute(chat_id: str, bugids: list, exec_mode: str = "pc"):
             return
         # 保存执行记录
         try:
-            _save_bot_execution_results(results, batch_name=f"single_{exec_mode}_{datetime.now().strftime('%H%M%S')}")
+            _save_bot_execution_results(results, batch_name=f"single_{exec_mode}_{datetime.now().strftime('%H%M%S')}",
+                                        batch_id=_batch_id)
         except Exception as e:
             logger.warning("机器人单个执行结果保存失败: %s", e)
         feishu_client.send_bot_message(chat_id, f"批量执行{len(run_bugids)}个，成功{success}个，失败{len(run_bugids)-success}个，均在分析中。")
@@ -2916,6 +2919,7 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "
     from src.clients import jira_client as _jc
     from src.clients.base import http_post
     _reset_cancel_event(chat_id)
+    _batch_id = _next_prod_batch_id() if exec_mode == "online" else None
     try:
         jql_presets = _get_jql_presets()
         preset = jql_presets.get(jql_key)
@@ -3005,7 +3009,7 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "
                 # 使用较短超时以实现快速中断
                 _exec_timeout = 15
                 if exec_mode == "online":
-                    payload = _build_prod_ai_payload(bugid, exec_time)
+                    payload = _build_prod_ai_payload(bugid, exec_time, batch_id=_batch_id)
                     resp = http_post(_get_prod_ai_url(), payload, timeout=_exec_timeout)
                 else:
                     cfg = load_config()["ai_log_api"]
@@ -3042,7 +3046,8 @@ def _bot_run_batch_ai(chat_id: str, jql_key: str, count: int, exec_mode: str = "
             return
         # 保存执行记录
         try:
-            _save_bot_execution_results(results, batch_name=f"bot_{exec_mode}_{datetime.now().strftime('%H%M%S')}", batch_meta=batch_meta)
+            _save_bot_execution_results(results, batch_name=f"bot_{exec_mode}_{datetime.now().strftime('%H%M%S')}", batch_meta=batch_meta,
+                                        batch_id=_batch_id)
         except Exception as e:
             logger.warning("机器人批量结果保存失败: %s", e)
         feishu_client.send_bot_message(chat_id, f"批量执行{len(run_bugids)}个，成功{success}个，失败{len(run_bugids)-success}个，均在分析中。")
@@ -3114,6 +3119,7 @@ def _bot_run_batch_ai_single_round(chat_id: str, jql_key: str, count: int, exec_
     from src.clients.base import http_post
     executed_set = executed_set if executed_set is not None else set()
     this_round_executed = set()
+    _batch_id = _next_prod_batch_id() if exec_mode == "online" else None
     try:
         jql_presets = _get_jql_presets()
         preset = jql_presets.get(jql_key)
@@ -3219,12 +3225,12 @@ def _bot_run_batch_ai_single_round(chat_id: str, jql_key: str, count: int, exec_
                 feishu_client.send_bot_message(chat_id, "\n".join(msg_parts))
         feishu_client.send_bot_message(chat_id, f"[{round_num}/{total_rounds}] 步骤5/5：{mode_label}执行 {len(run_bugids)} 条...")
         success, lines, results = _bot_trigger_and_reply(chat_id, run_bugids, trigger_times,
-                                                         realtime=False, exec_mode=exec_mode)
+                                                         realtime=False, exec_mode=exec_mode, batch_id=_batch_id)
         this_round_executed = set(run_bugids)
         if not _is_cancelled(chat_id):
             try:
                 _save_bot_execution_results(results, batch_name=f"bot_{exec_mode}_r{round_num}_{datetime.now().strftime('%H%M%S')}",
-                                            batch_meta=batch_meta)
+                                            batch_meta=batch_meta, batch_id=_batch_id)
             except Exception as e:
                 logger.warning("机器人批量结果保存失败: %s", e)
             feishu_client.send_bot_message(chat_id,
@@ -3373,6 +3379,7 @@ def _bot_prod_batch_run(chat_id: str, bugids: list, filters: dict = None,
     from src.clients import feishu_client
     _reset_cancel_event(chat_id)
     mode_label = "线上" if exec_mode == "online" else "PC"
+    _batch_id = _next_prod_batch_id() if exec_mode == "online" else None
     try:
         # 步骤1：多维表格去重过滤
         feishu_client.send_bot_message(chat_id, f"步骤1/3：过滤记录（{len(bugids)} 个）...")
@@ -3402,12 +3409,13 @@ def _bot_prod_batch_run(chat_id: str, bugids: list, filters: dict = None,
         # 步骤3：调用接口执行
         feishu_client.send_bot_message(chat_id, f"步骤3/3：{mode_label}执行 {len(remaining)} 个...")
         success, lines, results = _bot_trigger_and_reply(chat_id, remaining, trigger_times,
-                                                         realtime=False, exec_mode=exec_mode)
+                                                         realtime=False, exec_mode=exec_mode, batch_id=_batch_id)
         if _is_cancelled(chat_id):
             return
         # 保存执行记录
         try:
-            _save_bot_execution_results(results, batch_name=f"prod_{datetime.now().strftime('%H%M%S')}", batch_meta=batch_meta)
+            _save_bot_execution_results(results, batch_name=f"prod_{datetime.now().strftime('%H%M%S')}", batch_meta=batch_meta,
+                                        batch_id=_batch_id)
         except Exception as e:
             logger.warning("机器人线上批量结果保存失败: %s", e)
         _bot_send_batch_results(chat_id, success, len(remaining), lines)
@@ -3426,6 +3434,7 @@ def _bot_prod_batch_run_continuous(chat_id: str, bugids: list, filters: dict = N
     from src.clients import feishu_client
     _reset_cancel_event(chat_id)
     mode_label = "线上" if exec_mode == "online" else "PC"
+    _batch_id = _next_prod_batch_id() if exec_mode == "online" else None
     try:
         # 步骤1：多维表格去重过滤（只做一次）
         feishu_client.send_bot_message(chat_id, f"步骤1/3：过滤记录（{len(bugids)} 个）...")
@@ -3468,13 +3477,13 @@ def _bot_prod_batch_run_continuous(chat_id: str, bugids: list, filters: dict = N
             feishu_client.send_bot_message(chat_id,
                 f"=== 第 {round_num}/{total_rounds} 轮 [{mode_label}] ===\n执行 {len(batch)} 个...")
             success, lines, results = _bot_trigger_and_reply(chat_id, batch, trigger_times,
-                                                             realtime=False, exec_mode=exec_mode)
+                                                             realtime=False, exec_mode=exec_mode, batch_id=_batch_id)
             done_total += len(batch)
             if _is_cancelled(chat_id):
                 break
             try:
                 _save_bot_execution_results(results, batch_name=f"prod_r{round_num}_{datetime.now().strftime('%H%M%S')}",
-                                            batch_meta=batch_meta)
+                                            batch_meta=batch_meta, batch_id=_batch_id)
             except Exception as e:
                 logger.warning("机器人线上批量结果保存失败: %s", e)
             feishu_client.send_bot_message(chat_id,
@@ -3603,6 +3612,64 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
             logger.info("无gmlogger文件名，但压缩包 %s 内含 main/.log/.txt 文件，判定有日志 (%s)", fn, bugid)
             return True
     return False
+
+
+def _diag_check_split_volumes(attachments: list) -> tuple:
+    """检查分卷压缩包的完整性：按基础名分组，检查卷号是否连续。
+
+    支持格式：
+    - filename.part01.rar / part1.rar（编号从1开始）
+    - filename.7z.001 / .zip.001 / .rar.001（编号从1开始）
+
+    :return: (has_split, is_complete, detail)
+        - has_split: 是否存在分卷附件
+        - is_complete: 分卷是否完整（无has_split时为True）
+        - detail: 检查说明
+    """
+    import re as _re
+    groups = {}  # base_name -> {nums: set, fnames: list}
+    for att in attachments:
+        fn = att.get("filename", "") or ""
+        if not fn:
+            continue
+        low = fn.lower()
+        # 模式1: filename.partNN.rar
+        m = _re.match(r'^(.+)\.part(\d+)\.rar$', low)
+        if m:
+            base, num = m.group(1), int(m.group(2))
+            groups.setdefault(base, {"nums": set(), "fnames": []})
+            groups[base]["nums"].add(num)
+            groups[base]["fnames"].append(fn)
+            continue
+        # 模式2: filename.ext.NNN（如 xxx.7z.001, xxx.zip.002）
+        m = _re.match(r'^(.+\.(?:7z|zip|rar|tar|gz))\.(\d{2,3})$', low)
+        if m:
+            base, num = m.group(1), int(m.group(2))
+            groups.setdefault(base, {"nums": set(), "fnames": []})
+            groups[base]["nums"].add(num)
+            groups[base]["fnames"].append(fn)
+    if not groups:
+        return False, True, ""
+    # 逐组检查连续性
+    incomplete_parts = []
+    complete_parts = []
+    for base, info in groups.items():
+        nums = sorted(info["nums"])
+        if not nums:
+            continue
+        expected = list(range(nums[0], nums[-1] + 1))
+        if nums == expected:
+            complete_parts.append(f"{base}({len(nums)}卷)")
+        else:
+            missing = sorted(set(expected) - set(nums))
+            incomplete_parts.append(
+                f"{base}: 有{len(nums)}卷, 缺卷{missing[:10]}")
+    if incomplete_parts:
+        detail = "分卷不完整: " + "; ".join(incomplete_parts)
+        if complete_parts:
+            detail += f"; 完整组: {', '.join(complete_parts)}"
+        return True, False, detail
+    return True, True, f"分卷完整: {', '.join(complete_parts)}"
 
 
 def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid: str = "", filename: str = "", stop_event=None) -> dict:
@@ -8297,6 +8364,20 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
                         return _ok(result, f"{bugid} 诊断完成：{category}（图片优先）")
             except Exception as e:
                 logger.warning("诊断 %s: 最新图片优先 OCR 失败: %s", bugid, e)
+    # —— 分卷压缩包完整性检查：不完整直接归类为"日志不全" ——
+    _has_split, _split_ok, _split_detail = _diag_check_split_volumes(attachments)
+    if _has_split and not _split_ok:
+        category = "日志不全"
+        detail = _build_simple_detail("", "", "", _split_detail)
+        report = _generate_troubleshoot_report(bugid, category, err_msg, detail, problem_time)
+        result = {"bugid": bugid, "category": category, "problem_time": problem_time,
+                   "archive_files": [], "detail": detail, "main_entries": [],
+                   "verify_status": "", "suggested_time": "", "report": report, "done_time": done_time}
+        _save_diagnose_cache(bugid, result)
+        logger.info("诊断 %s: %s", bugid, _split_detail)
+        return _ok(result, f"{bugid} 诊断完成：{category}")
+    if _has_split and _split_ok:
+        logger.info("诊断 %s: %s，继续深度分析", bugid, _split_detail)
     # —— 识别 gmlogger 附件（智能检测：文件名含 gmlogger 或压缩包内含 main.log）——
     if not _has_gmlogger_logs(attachments, bugid):
         _names = [str(a.get("filename", "") or "") for a in attachments]
@@ -8983,6 +9064,7 @@ def _bot_run_11_1_continuous(chat_id: str, diff_records: list, batch_size: int,
     from src.clients import feishu_client
     from src.clients.base import http_post
     _reset_cancel_event(chat_id)
+    _batch_id = _next_prod_batch_id()  # 11.1 始终线上模式
     try:
         all_bugids = [r["jira号"] for r in diff_records if r.get("jira号")]
         if not all_bugids:
@@ -9021,7 +9103,7 @@ def _bot_run_11_1_continuous(chat_id: str, diff_records: list, batch_size: int,
                     break
                 exec_time = trigger_times.get(bugid, "")
                 try:
-                    payload = _build_prod_ai_payload(bugid, exec_time)
+                    payload = _build_prod_ai_payload(bugid, exec_time, batch_id=_batch_id)
                     resp = http_post(_get_prod_ai_url(), payload, timeout=15)
                     resp_code = resp.get("code") if isinstance(resp, dict) else None
                     if resp_code in (200, 0, "200"):

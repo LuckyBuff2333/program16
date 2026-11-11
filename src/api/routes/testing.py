@@ -27,6 +27,7 @@ from src.api.routes.shared import (
     _flatten_bitable_record,
     _get_prod_ai_cfg,
     _get_prod_ai_url,
+    _next_prod_batch_id,
     _is_bitable_excluded,
     _parse_bugids,
     _parse_reasoning_rounds,
@@ -637,7 +638,7 @@ async def test_bitable_vcs_query(request: Request):
                 records = await loop.run_in_executor(
                     None, lambda: _fc.search_bitable_records(
                         app_token, table_id, filter_obj=filter_obj,
-                        field_names=["jira号", "创建日期", "AI初步分析结果"]))
+                        field_names=["jira号", "创建日期", "AI初步分析结果", "问题发生时间"]))
                 logger.info("表格查询使用 search API，命中 %d 条", len(records))
             except Exception as e:
                 logger.warning("search API 失败(%s)，回退全量拉取", e)
@@ -664,6 +665,7 @@ async def test_bitable_vcs_query(request: Request):
                     continue
             jira_no = _bitable_text(fields.get("jira号", ""))
             ai_result = _bitable_text(fields.get("AI初步分析结果", ""))
+            problem_time = _bitable_text(fields.get("问题发生时间", ""))
             # AI过滤：跳过AI初步分析结果非空的记录
             if filter_ai and ai_result and ai_result not in ("-", "None"):
                 continue
@@ -674,6 +676,7 @@ async def test_bitable_vcs_query(request: Request):
             rows.append({
                 "jira号": jira_no,
                 "创建日期": created_str,
+                "问题发生时间": problem_time,
                 "AI初步分析结果": ai_result,
             })
         # 按创建日期降序
@@ -682,6 +685,45 @@ async def test_bitable_vcs_query(request: Request):
                    f"查询到 {len(rows)} 条记录")
     except Exception as e:
         logger.error("表格查询失败: %s", e)
+        return _fail(str(e))
+
+
+@router.post("/api/test/vcs_problem_time_query", response_model=ApiResponse)
+async def vcs_problem_time_query(request: Request):
+    """按 Jira 号从 VCS BUG 表筛选查询问题发生时间字段
+
+    使用 filter_expr OR 分批查询（每批 20 条），返回 {jira号: 问题发生时间} 映射。
+    """
+    body = await request.json() or {}
+    bugids = [str(b).strip() for b in (body.get("bugids") or []) if str(b).strip()]
+    if not bugids:
+        return _fail("bugids 为空")
+    try:
+        from src.clients import feishu_client as _fc
+        app_token = "HOARbsrB0aSViFs5AjNchSQ0nAf"
+        table_id = "tblr4oboVbKsV6y1"
+        loop = asyncio.get_event_loop()
+        result = {}
+        chunk_size = 20
+        for i in range(0, len(bugids), chunk_size):
+            chunk = bugids[i:i + chunk_size]
+            conditions = [f'CurrentValue.[jira号] = "{b}"' for b in chunk]
+            expr = conditions[0] if len(conditions) == 1 else "OR(" + ",".join(conditions) + ")"
+            records = await loop.run_in_executor(
+                None, lambda e=expr: _fc.list_bitable_records(
+                    app_token, table_id, filter_expr=e))
+            for rec in records:
+                fields = rec.get("fields", {})
+                jira_no = _bitable_text(fields.get("jira号", ""))
+                pt = _bitable_text(fields.get("问题发生时间", ""))
+                if jira_no and pt:
+                    result[jira_no] = pt
+        found = len(result)
+        logger.info("VCS BUG 问题发生时间查询: %d/%d 命中", found, len(bugids))
+        return _ok({"problem_times": result, "hit": found, "total": len(bugids)},
+                   f"查询到 {found}/{len(bugids)} 条有问题发生时间")
+    except Exception as e:
+        logger.error("问题发生时间查询失败: %s", e)
         return _fail(str(e))
 
 
@@ -778,13 +820,13 @@ async def test_batch_ai_extract_times(request: Request):
         try:
             _batch_extract_stop_event.clear()  # 新批次开始时清除停止标志
             _begin_attach_batch()              # 新批次：重置附件下载预算
-            # 少量 Jira 直接按 Jira 号过滤搜索，不拉取 27 个触发表全量
-            if len(keys) <= 5:
+            # < 100 条用 filter 分块搜索（每轮 20 条，最多 5 轮），>= 100 条走全量加载
+            if len(keys) < 100:
                 from src.services.trigger_ops import _search_trigger_time_batch
                 cloud_times = await loop.run_in_executor(None, _search_trigger_time_batch, keys)
                 cloud_keys = set(cloud_times)
                 success_jiras = set()
-                logger.info("少量 Jira 直接搜索触发时间: %d 条", len(keys))
+                logger.info("少量 Jira 搜索触发时间: %d 条", len(keys))
             else:
                 (cloud_times, cloud_keys), success_jiras = await asyncio.gather(
                     loop.run_in_executor(None, _load_cloud_trigger_cache),
@@ -3108,6 +3150,7 @@ async def test_prod_batch_run(request: Request):
         from src.api.routes.shared import prod_batch_stop_event as stop_event
         stop_event.clear()
         batch_start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _batch_id = _next_prod_batch_id() if exec_mode == "online" else None
         loop = asyncio.get_event_loop()
         run_bugids = list(bugids)  # 局部副本，避免闭包变量赋值冲突
         # 提取触发时间（优先前端已传入 > 云端缓存 > 重新提取）
@@ -3344,7 +3387,7 @@ async def test_prod_batch_run(request: Request):
                 try:
                     with _exec_sem:
                         if exec_mode == "online":
-                            payload = _build_prod_ai_payload(bugid, exec_time)
+                            payload = _build_prod_ai_payload(bugid, exec_time, batch_id=_batch_id)
                             resp = http_post(_get_prod_ai_url(), payload, timeout=_get_prod_ai_cfg()["timeout"])
                         else:
                             cfg = load_config()["ai_log_api"]
@@ -3435,7 +3478,7 @@ async def test_prod_batch_run(request: Request):
         # 上传执行记录到云端
         cloud_url = ""
         try:
-            doc_title = f"线上批量执行 {date_str} {time_str} ({success_count}/{len(results)})"
+            doc_title = f"线上批量执行 {_batch_id} ({success_count}/{len(results)})"
             cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
         except Exception as e:
             logger.warning("线上批量执行记录上传云端失败: %s", e)
@@ -4058,6 +4101,7 @@ async def auto_detect_run(request: Request):
         from src.clients import jira_client, feishu_client
         from src.clients.base import http_post
         loop = asyncio.get_event_loop()
+        _batch_id = _next_prod_batch_id()
         round_num = 0
         total_executed = 0
         total_success = 0
@@ -4179,7 +4223,7 @@ async def auto_detect_run(request: Request):
                     results.append({"Jira号": bugid, "执行结果": "失败", "备注": "无触发时间", "开始时间": item_start})
                     continue
                 try:
-                    payload = _build_prod_ai_payload(bugid, exec_time)
+                    payload = _build_prod_ai_payload(bugid, exec_time, batch_id=_batch_id)
                     resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=_get_prod_ai_cfg()["timeout"]))
                     resp_code = resp.get("code") if isinstance(resp, dict) else None
                     resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
@@ -4441,6 +4485,7 @@ async def regression_run(request: Request):
         _http_base.set_http_cancel_check(_stop_event.is_set)
         _batch_start = datetime.now()
         _batch_start_str = _batch_start.strftime("%Y-%m-%d %H:%M:%S")
+        _batch_id = _next_prod_batch_id() if exec_mode == "online" else None
         loop = asyncio.get_event_loop()
         # 读取配置中的 Jira 号字段名
         cfg = load_config().get("feishu_bitable", {})
@@ -4553,7 +4598,7 @@ async def regression_run(request: Request):
                         continue
                     try:
                         if exec_mode == "online":
-                            payload = _build_prod_ai_payload(bugid, exec_time)
+                            payload = _build_prod_ai_payload(bugid, exec_time, batch_id=_batch_id)
                             resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=_get_prod_ai_cfg()["timeout"]))
                         else:
                             payload = {pc_cfg.get("bugid_field", "jira号"): bugid}
@@ -4625,9 +4670,13 @@ async def regression_run(request: Request):
 
 @router.post("/api/test/regression_form_query", response_model=ApiResponse)
 async def regression_form_query(request: Request):
-    """表单查找回归 Step1：按创建日期查询 VCS BUG 多维表格，附带云端触发时间缓存状态"""
+    """表单查找回归 Step1：按创建日期查询 VCS BUG 多维表格，附带云端触发时间缓存状态
+
+    filter_problem_time=True 时额外查询问题发生时间字段，并只返回有值的记录。
+    """
     body = await request.json() or {}
     date_str = (body.get("date") or "").strip()
+    filter_problem_time = body.get("filter_problem_time", False)
     if not date_str:
         return _fail("请选择日期")
     try:
@@ -4645,12 +4694,16 @@ async def regression_form_query(request: Request):
             {"field_name": "创建日期", "operator": "isGreaterEqual", "value": [ts_from_str]},
             {"field_name": "创建日期", "operator": "isLessEqual", "value": [ts_to_str]},
         ]}
+        # 按需扩展查询字段
+        field_names = ["jira号", "创建日期", "AI初步分析结果"]
+        if filter_problem_time:
+            field_names.append("问题发生时间")
         records = None
         try:
             records = await loop.run_in_executor(
                 None, lambda: _fc.search_bitable_records(
                     app_token, table_id, filter_obj=filter_obj,
-                    field_names=["jira号", "创建日期", "AI初步分析结果"]))
+                    field_names=field_names))
             logger.info("表单查找查询: search API 命中 %d 条", len(records))
         except Exception as e:
             logger.warning("表单查找 search API 失败(%s)，回退全量拉取", e)
@@ -4674,6 +4727,10 @@ async def regression_form_query(request: Request):
                     continue
             jira_no = _bitable_text(fields.get("jira号", ""))
             ai_result = _bitable_text(fields.get("AI初步分析结果", ""))
+            problem_time = _bitable_text(fields.get("问题发生时间", "")) if filter_problem_time else ""
+            # 筛选问题发生时间：只保留有值的记录
+            if filter_problem_time and not problem_time:
+                continue
             created_str = ""
             if isinstance(created_ts, (int, float)) and created_ts > 0:
                 created_str = datetime.fromtimestamp(created_ts / 1000).strftime("%Y-%m-%d %H:%M")
@@ -4682,6 +4739,7 @@ async def regression_form_query(request: Request):
                 "jira号": jira_no,
                 "创建日期": created_str,
                 "AI初步分析结果": ai_result,
+                "问题发生时间": problem_time,
                 "has_cached_time": bool(cached_time),
                 "cached_time": cached_time,
             })
@@ -4823,6 +4881,7 @@ async def regression_form_run(request: Request):
         from src.services.report_ops import _upload_batch_to_cloud
         from src.api.routes.shared import form_exec_stop_event as _stop_event
         _stop_event.clear()
+        _batch_id = _next_prod_batch_id()  # 表单查找回归始终为线上模式
         from src.clients import base as _http_base
         _http_base.set_http_cancel_check(_stop_event.is_set)
         cfg = load_config().get("feishu_bitable", {})
@@ -4852,7 +4911,7 @@ async def regression_form_run(request: Request):
                 exec_time = trigger_times.get(bugid, "")
                 item_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 try:
-                    payload = _build_prod_ai_payload(bugid, exec_time)
+                    payload = _build_prod_ai_payload(bugid, exec_time, batch_id=_batch_id)
                     resp = await loop.run_in_executor(
                         None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=_get_prod_ai_cfg()["timeout"]))
                     resp_code = resp.get("code") if isinstance(resp, dict) else None
@@ -5811,6 +5870,7 @@ async def form_exec(request: Request):
         from src.clients.base import http_post
         from src.api.routes.shared import form_exec_stop_event as _stop_event
         _stop_event.clear()
+        _batch_id = _next_prod_batch_id() if exec_mode == "online" else None
         loop = asyncio.get_event_loop()
         cfg = load_config()
         cfg_api = cfg.get("ai_log_api", {})
@@ -5940,7 +6000,7 @@ async def form_exec(request: Request):
                     continue
                 try:
                     if exec_mode == "online":
-                        payload = {"jiraNumber": bugid, "questionTimes": [exec_time]}
+                        payload = _build_prod_ai_payload(bugid, exec_time, batch_id=_batch_id)
                         resp = await loop.run_in_executor(None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=30))
                     else:
                         payload = {cfg_api.get("bugid_field", "jira号"): bugid}

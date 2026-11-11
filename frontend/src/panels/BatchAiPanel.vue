@@ -211,6 +211,10 @@
                 <el-radio value="pc" border @change="setBatchMeta('aiDirect','pc')">PC</el-radio>
                 <el-radio value="online" border @change="setBatchMeta('aiDirect','online')">线上</el-radio>
               </el-radio-group>
+              <el-divider direction="vertical" />
+              <el-checkbox v-model="aiDirect.filterProblemTime" size="small">查询问题发生时间</el-checkbox>
+              <el-button v-if="aiDirect.filterProblemTime && aiDirect.parsed.length" type="info" size="small" :loading="aiDirect.problemTimeLoading" @click="queryVcsProblemTime">查询</el-button>
+              <el-tag v-if="aiDirect.problemTimeHit" type="success" size="small">问题时间: {{ aiDirect.problemTimeHit }}/{{ aiDirect.parsed.length }}</el-tag>
             </div>
             <div class="action-right">
               <el-button type="primary" size="large" :loading="running.aiDirectRun" :disabled="!aiDirect.parsed.length || !aiDirect.execMode"
@@ -228,10 +232,14 @@
           <el-table-column prop="触发时间" label="触发时间" width="180">
             <template #default="{row}"><span :style="row['触发时间']?'':'color:#909399'">{{ row['触发时间'] || '未提取到' }}</span></template>
           </el-table-column>
+          <el-table-column v-if="aiDirect.filterProblemTime" prop="问题发生时间" label="问题发生时间" width="180">
+            <template #default="{row}"><span :style="row['问题发生时间']?'color:#67c23a':'color:#c0c4cc'">{{ row['问题发生时间'] || '—' }}</span></template>
+          </el-table-column>
           <el-table-column prop="来源" label="来源" width="100">
             <template #default="{row}">
               <el-tag v-if="row['来源']==='本地'" type="success" size="small">本地缓存</el-tag>
               <el-tag v-else-if="row['来源']==='新提取'" type="warning" size="small">新提取</el-tag>
+              <el-tag v-else-if="row['来源']==='问题发生时间'" type="info" size="small" style="color:#409eff">问题时间</el-tag>
               <el-tag v-else type="info" size="small">无</el-tag>
             </template>
           </el-table-column>
@@ -377,6 +385,7 @@ export default {
         analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '',
         filterPcSuccess: false, filterOnlineSuccess: false,
         filterLoading: false, filterInfo: '',
+        filterProblemTime: false, problemTimeLoading: false, problemTimes: {}, problemTimeHit: 0,
       },
       formExec: {
         rawFile: null, fileName: '', uploading: false, uploadMsg: '', uploadError: false,
@@ -835,6 +844,20 @@ export default {
         this.aiDirect.filterInfo = `过滤前 ${before} 条，排除 ${exclude.size} 条已成功，剩余 ${this.aiDirect.parsed.length} 条`;
       } catch (e) { ElMessage.error('过滤失败: ' + (e.message || '')); } finally { this.aiDirect.filterLoading = false; }
     },
+    async queryVcsProblemTime() {
+      if (!this.aiDirect.parsed.length) return ElMessage.warning('请先输入 Jira 号');
+      this.aiDirect.problemTimeLoading = true;
+      try {
+        const res = await api('/api/test/vcs_problem_time_query', {
+          method: 'POST', body: JSON.stringify({ bugids: this.aiDirect.parsed }),
+        });
+        const data = res.data || {};
+        this.aiDirect.problemTimes = data.problem_times || {};
+        this.aiDirect.problemTimeHit = data.hit || 0;
+        ElMessage.success(res.message || `查询到 ${this.aiDirect.problemTimeHit} 条有问题发生时间`);
+      } catch (e) { ElMessage.error('查询问题发生时间失败: ' + (e.message || '')); }
+      finally { this.aiDirect.problemTimeLoading = false; }
+    },
     async _extractTimesSSE(keys) {
       const resp = await fetch('/api/test/batch_ai_extract_times', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keys }) });
       const reader = resp.body.getReader(); const decoder = new TextDecoder(); let buffer = '', result = {};
@@ -903,7 +926,19 @@ export default {
       if (!this.aiDirect.parsed.length) { this.parseAiDirectBugids(); }
       if (!this.aiDirect.parsed.length) return ElMessage.warning('请先输入 Jira 号');
       if (!this.aiDirect.execMode) return ElMessage.warning('请选择执行模式');
-      try { await this.runAiDirectExtract(); } catch (e) { return ElMessage.error('获取触发时间失败: ' + (e.message || '')); }
+      // 查询问题发生时间：勾选后查询并仅执行有时间的 Jira
+      if (this.aiDirect.filterProblemTime) {
+        if (!Object.keys(this.aiDirect.problemTimes).length) {
+          await this.queryVcsProblemTime();
+        }
+        const ptKeys = Object.keys(this.aiDirect.problemTimes);
+        if (!ptKeys.length) return ElMessage.warning('没有查询到问题发生时间，无法执行');
+        this.aiDirect.triggerTimes = { ...this.aiDirect.problemTimes };
+        this.aiDirect.parsed = ptKeys;
+        this.aiDirect.timeRows = ptKeys.map(k => ({ 'jira号': k, '触发时间': this.aiDirect.problemTimes[k], '来源': '问题发生时间', '问题发生时间': this.aiDirect.problemTimes[k] }));
+      } else {
+        try { await this.runAiDirectExtract(); } catch (e) { return ElMessage.error('获取触发时间失败: ' + (e.message || '')); }
+      }
       this.running.aiDirectRun = true; this.aiDirect.runResults = []; this.aiDirect.runTotal = this.aiDirect.parsed.length; this.aiDirect.runDone = 0; this.aiDirect.runDoneMsg = '';
       this.aiDirectAbort = new AbortController();
       try {

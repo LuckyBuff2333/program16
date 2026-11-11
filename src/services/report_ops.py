@@ -151,7 +151,8 @@ def _get_or_create_date_folder(root_folder: str, date_str: str) -> str:
     return root_folder
 
 
-def _save_bot_execution_results(results: list, batch_name: str = None, batch_meta: dict = None):
+def _save_bot_execution_results(results: list, batch_name: str = None, batch_meta: dict = None,
+                                batch_id: str = None):
     """将机器人执行结果保存到本地 CSV（batch + daily）并上传云端"""
     import csv as _csv
     from src.core import report as report_module
@@ -193,7 +194,10 @@ def _save_bot_execution_results(results: list, batch_name: str = None, batch_met
     # 上传到飞书云端文件夹
     try:
         _sc = sum(1 for r in results if (r.get("执行结果") or "") == "成功")
-        doc_title = f"批量执行 {date_str}_{batch_name or time_str} ({_sc}/{len(results)})"
+        if batch_id:
+            doc_title = f"线上批量执行 {batch_id} ({_sc}/{len(results)})"
+        else:
+            doc_title = f"批量执行 {date_str}_{batch_name or time_str} ({_sc}/{len(results)})"
         cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
         if cloud_url:
             logger.info("机器人批量执行已上传云端: %s", cloud_url)
@@ -329,7 +333,7 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
 
     if not rows:
         return {"total": 0, "regression": 0, "success": 0, "fail": 0,
-                "pending": 0, "failures": {}, "failure_jiras": {}, "todo_items": [],
+                "pending": 0, "failures": {}, "failure_jiras": {},
                 "too_long": 0, "avg_total_duration": "-", "avg_analysis_duration": "-",
                 "report_dates": report_dates, "rows": [], "dedup": 0,
                 "pc_count": 0, "online_count": 0, "pc_dup": 0, "online_dup": 0,
@@ -341,7 +345,6 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
     pending_count = 0
     fail_cats = {}
     fail_jiras = {}
-    todo_items = []
     durations = []
     analysis_durations = []
     too_long_count = 0
@@ -371,28 +374,6 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
                 "jira号": row.get("jira号", ""),
                 "错误信息": (_bitable_text(row.get("错误信息", "")) or "")[:80],
             })
-            # 待办保留三类：触发时间问题、待人工排查、待重试；
-            # 待人工排查被人工改成其他结论后不再计入待办。
-            human_review = _bitable_text(row.get("人工审核结果", "")) or ""
-            is_todo = False
-            if cat == "触发时间问题":
-                is_todo = True
-            elif cat == "待人工排查":
-                if (not human_review or human_review in ("-", "None")
-                        or "待人工排查" in human_review):
-                    is_todo = True
-            elif cat == "待重试":
-                is_todo = True
-            if is_todo:
-                # 执行时间直接使用分析开始时间
-                _start = str(row.get("分析开始时间", "") or "")
-                todo_items.append({
-                    "jira号": row.get("jira号", ""),
-                    "reason": f"分析失败: {cat}",
-                    "触发时间": row.get("触发时间", "") or row.get("分析问题时间", ""),
-                    "执行时间": _start,
-                    "人工审核": human_review or "(未审核)",
-                })
         else:
             # 待分析/空结果：计入失败总数，但不参与失败原因分类
             pending_count += 1
@@ -424,7 +405,7 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
         "total": total, "regression": regression_count,
         "success": success_count, "fail": fail_count,
         "pending": pending_count, "failures": fail_cats, "failure_jiras": fail_jiras,
-        "todo_items": todo_items, "too_long": too_long_count,
+        "too_long": too_long_count,
         "avg_total_duration": avg_total_duration,
         "avg_analysis_duration": avg_analysis_duration,
         "pc_count": len(pc_rows), "online_count": len(online_rows),
@@ -468,7 +449,7 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
         jira_exec, dedup_count = _read_multi_day_batch_records(report_dates)
     if not jira_exec:
         return {"total": 0, "regression": 0, "success": 0, "fail": 0,
-                "pending": 0, "failures": {}, "todo_items": [],
+                "pending": 0, "failures": {},
                 "too_long": 0, "avg_total_duration": "-", "avg_analysis_duration": "-",
                 "report_dates": report_dates, "rows": [], "dedup": 0,
                 "yesterday_new": yesterday_new, "yesterday_done": yesterday_done}
@@ -496,7 +477,6 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
     fail_count = 0
     fail_cats = {}  # {分类: 数量}
     fail_jiras = {}  # {分类: [{jira号, 错误信息}]}
-    todo_items = []  # 待办跟进列表
     durations = []
     analysis_durations = []
     too_long_count = 0
@@ -551,24 +531,6 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
                     fail_jiras[cat] = []
                 err_short = (_bitable_text(bf.get("错误信息", "")) or "")[:80]
                 fail_jiras[cat].append({"jira号": jira_no, "错误信息": err_short})
-                # 待办规则：触发时间问题、待人工排查、待重试 进入待办跟进
-                human_review = _bitable_text(bf.get("人工审核结果", ""))
-                is_todo = False
-                if cat == "触发时间问题":
-                    is_todo = True
-                elif cat == "待人工排查":
-                    if not human_review or human_review in ("-", "None") or "待人工排查" in human_review:
-                        is_todo = True
-                elif cat == "待重试":
-                    is_todo = True
-                elif not human_review or human_review in ("-", "None"):
-                    # 未审核的失败记录也计入待办
-                    is_todo = True
-                if is_todo:
-                    todo_items.append({"jira号": jira_no, "reason": f"分析失败: {cat}",
-                                       "触发时间": exec_info.get("触发时间", ""),
-                                       "执行时间": exec_info.get("执行时间", ""),
-                                       "人工审核": human_review or "(未审核)"})
         else:
             # 执行成功但多维表格无记录 → 计入统计，标记为"分析中"
             row["分析结果"] = "分析中"
@@ -617,7 +579,7 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
     return {"total": len(rows), "regression": regression_count,
             "success": success_count, "fail": fail_count,
             "pending": pending_count, "failures": fail_cats, "failure_jiras": fail_jiras,
-            "todo_items": todo_items, "too_long": too_long_count,
+            "too_long": too_long_count,
             "avg_total_duration": avg_total_duration,
             "avg_analysis_duration": avg_analysis_duration,
             "pc_count": pc_count, "online_count": online_count,
@@ -854,7 +816,7 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
                     doc_title, len(existing), len(existing_docs))
     except Exception as e:
         logger.warning("查找旧每日结论文档失败: %s", e)
-    # 生成 Markdown 内容：结论→待办→详情
+    # 生成 Markdown 内容：结论→详情
     total = report['total']
     success = report['success']
     fail = report['fail']
@@ -1066,7 +1028,7 @@ def _generate_weekly_report(date_str: str, chat_id: str = "") -> dict:
     working_days = week_info["working_days"]
     if not working_days:
         return {"total": 0, "success": 0, "fail": 0, "pending": 0, "dedup": 0,
-                "regression": 0, "too_long": 0, "failures": {}, "todo_items": [],
+                "regression": 0, "too_long": 0, "failures": {},
                 "daily_breakdown": [], "rows": [], "week_info": week_info,
                 "pc_count": 0, "online_count": 0}
     # 优化：先收集所有天的 jira 号，只查询一次多维表格
@@ -1103,7 +1065,6 @@ def _generate_weekly_report(date_str: str, chat_id: str = "") -> dict:
     all_rows = []
     all_failures = {}
     all_failure_jiras = {}
-    all_todo = []
     total = success = fail = pending = dedup = regression = too_long = 0
     pc_count = online_count = 0
     for day in working_days:
@@ -1122,7 +1083,7 @@ def _generate_weekly_report(date_str: str, chat_id: str = "") -> dict:
             logger.error("每周汇总: %s 日报生成失败: %s", day, e)
             day_report = {"total": 0, "success": 0, "fail": 0, "pending": 0,
                           "dedup": 0, "regression": 0, "too_long": 0, "failures": {},
-                          "todo_items": [], "rows": [], "avg_analysis_duration": "-"}
+                          "rows": [], "avg_analysis_duration": "-"}
         dt = day_report.get("total", 0)
         ds = day_report.get("success", 0)
         df = day_report.get("fail", 0)
@@ -1144,9 +1105,6 @@ def _generate_weekly_report(date_str: str, chat_id: str = "") -> dict:
             all_failures[cat] = all_failures.get(cat, 0) + cnt
         for cat, jlist in day_report.get("failure_jiras", {}).items():
             all_failure_jiras.setdefault(cat, []).extend(jlist)
-        for item in day_report.get("todo_items", []):
-            item["日期"] = day
-            all_todo.append(item)
         for r in day_report.get("rows", []):
             r["日期"] = day
             all_rows.append(r)
@@ -1154,7 +1112,7 @@ def _generate_weekly_report(date_str: str, chat_id: str = "") -> dict:
     weekly_rate = f"{success / total * 100:.1f}%" if total else "0%"
     return {"total": total, "success": success, "fail": fail, "pending": pending,
             "dedup": dedup, "regression": regression, "too_long": too_long,
-            "failures": all_failures, "failure_jiras": all_failure_jiras, "todo_items": all_todo,
+            "failures": all_failures, "failure_jiras": all_failure_jiras,
             "daily_breakdown": daily_breakdown, "rows": all_rows,
             "week_info": week_info, "weekly_rate": weekly_rate,
             "pc_count": pc_count, "online_count": online_count}
@@ -1180,7 +1138,7 @@ def _generate_range_report(start_date: str, end_date: str, chat_id: str = "") ->
                   "working_days": working_days}
     if not working_days:
         return {"total": 0, "success": 0, "fail": 0, "pending": 0, "dedup": 0,
-                "regression": 0, "too_long": 0, "failures": {}, "todo_items": [],
+                "regression": 0, "too_long": 0, "failures": {},
                 "daily_breakdown": [], "rows": [], "range_info": range_info,
                 "weekly_rate": "0%", "pc_count": 0, "online_count": 0}
     # 复用周报的核心逻辑：先收集 jira + 一次 bitable 查询 + 逐日生成
@@ -1216,7 +1174,6 @@ def _generate_range_report(start_date: str, end_date: str, chat_id: str = "") ->
     all_rows = []
     all_failures = {}
     all_failure_jiras = {}
-    all_todo = []
     total = success = fail = pending = dedup = regression = too_long = 0
     pc_count = online_count = 0
     for day in working_days:
@@ -1233,7 +1190,7 @@ def _generate_range_report(start_date: str, end_date: str, chat_id: str = "") ->
             logger.error("时间段汇总: %s 日报生成失败: %s", day, e)
             day_report = {"total": 0, "success": 0, "fail": 0, "pending": 0,
                           "dedup": 0, "regression": 0, "too_long": 0, "failures": {},
-                          "todo_items": [], "rows": [], "avg_analysis_duration": "-"}
+                          "rows": [], "avg_analysis_duration": "-"}
         dt = day_report.get("total", 0)
         ds = day_report.get("success", 0)
         df = day_report.get("fail", 0)
@@ -1255,9 +1212,6 @@ def _generate_range_report(start_date: str, end_date: str, chat_id: str = "") ->
             all_failures[cat] = all_failures.get(cat, 0) + cnt
         for cat, jlist in day_report.get("failure_jiras", {}).items():
             all_failure_jiras.setdefault(cat, []).extend(jlist)
-        for item in day_report.get("todo_items", []):
-            item["日期"] = day
-            all_todo.append(item)
         for r in day_report.get("rows", []):
             r["日期"] = day
             all_rows.append(r)
@@ -1265,7 +1219,7 @@ def _generate_range_report(start_date: str, end_date: str, chat_id: str = "") ->
     weekly_rate = f"{success / total * 100:.1f}%" if total else "0%"
     return {"total": total, "success": success, "fail": fail, "pending": pending,
             "dedup": dedup, "regression": regression, "too_long": too_long,
-            "failures": all_failures, "failure_jiras": all_failure_jiras, "todo_items": all_todo,
+            "failures": all_failures, "failure_jiras": all_failure_jiras,
             "daily_breakdown": daily_breakdown, "rows": all_rows,
             "range_info": range_info, "weekly_rate": weekly_rate,
             "pc_count": pc_count, "online_count": online_count}
@@ -1306,9 +1260,6 @@ def _format_weekly_report_msg(report: dict, date_str: str, cloud_url: str = "") 
         msg += "\n失败分析：\n"
         for cat, cnt in failures.items():
             msg += f"  · {cat}：{cnt}\n"
-    todo = report.get("todo_items", [])
-    if todo:
-        msg += f"\n📝 待办跟进：{len(todo)} 项（详见文档）\n"
     msg += "\n"
     detail_url = cloud_url or get_daily_report_url()
     msg += detail_url
@@ -1363,18 +1314,6 @@ def _upload_weekly_report_to_cloud(report: dict, date_str: str) -> str:
         lines.append("")
         for cat, cnt in sorted(failures.items(), key=lambda x: -x[1]):
             lines.append(f"- {cat}：{cnt} 条")
-        lines.append("")
-    # 待办跟进
-    todo = report.get("todo_items", [])
-    if todo:
-        lines.append("## 待办跟进")
-        lines.append("")
-        lines.append(f"共 {len(todo)} 项待处理：")
-        lines.append("")
-        lines.append("| 日期 | Jira号 | 原因 |")
-        lines.append("|------|--------|------|")
-        for item in todo:
-            lines.append(f"| {item.get('日期', '')} | {item['jira号']} | {item['reason']} |")
         lines.append("")
     # 执行详情（合并所有天，按日期分组）
     lines.append("## 执行详情")

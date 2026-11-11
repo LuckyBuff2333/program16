@@ -524,7 +524,7 @@ _SKIP_ANALYSIS_CATEGORIES = {
     "分析任务执行超时，跳过排查", "问题重复", "问题未复现",
     "无gmlogger", "无gmlogger文件",
     "IP配置错误", "人工取消", "无时间信息", "网络波动",
-    "解压问题", "压缩包损坏",
+    "解压问题", "压缩包损坏", "日志不全",
     "日志行数过多，手动分析",
     "待重试",
 }
@@ -534,9 +534,9 @@ _SKIP_ANALYSIS_CATEGORIES = {
 _ERROR_TYPE_MAP = {
     "JIRA_API_ERROR": "并发过多",
     "NO_PROBLEM_TIME": "无时间信息",
-    "NO_LOG_ATTACHMENT": "无gmlogger",
+    "NO_LOG_ATTACHMENT": "",  # 走深度分析，实际查看Jira附件是否有日志文件
     "ATTACHMENT_INCOMPLETE": "",  # 走深度分析，判断附件是否真的缺失
-    "EXTRACTION_NO_LOG": "无gmlogger",
+    "EXTRACTION_NO_LOG": "",  # 走深度分析，实际查看Jira附件是否有日志文件
     "EXTRACTION_TIME_FILTERED": "触发时间问题",
     "TIME_FILTER_EMPTY": "触发时间问题",
     "LLM_CALL_FAILED": "待重试",
@@ -569,12 +569,12 @@ def _diag_pre_classify(err_msg: str, error_class: str = "", error_type: str = ""
         # 时间过滤为空：归类为触发时间问题，但仍走正常深度分析
         if "时间过滤后日志为空" in ec:
             return "触发时间问题"
-        # 处理后没有有效日志包：预处理无gmlogger，不深度分析
+        # 处理后没有有效日志包：走深度分析，实际查看Jira附件是否有日志文件
         if "处理后未找到有效的日志文件" in ec:
-            return "无gmlogger"
-        # 解压后未找到可识别日志：无可用日志，归为无gmlogger
+            return ""
+        # 解压后未找到可识别日志：走深度分析，实际查看Jira附件是否有日志文件
         if "解压后未找到可识别的日志文件" in ec:
-            return "无gmlogger"
+            return ""
         # 日志文件均不在时间范围内：触发时间问题，走深度排查
         if "日志文件均不在时间范围内" in ec:
             return "触发时间问题"
@@ -597,8 +597,9 @@ def _diag_pre_classify(err_msg: str, error_class: str = "", error_type: str = ""
         # 分卷不完整：走深度分析，由深度排查判断附件是否真的缺失
         if "分卷压缩包不完整" in ec:
             return ""
+        # 没有可下载的日志附件：走深度分析，实际查看Jira附件是否有日志文件
         if "没有可下载的日志附件" in ec or "无日志附件" in ec:
-            return "无gmlogger"
+            return ""
         # 依据人工审核结果：JIRA API 失败 30/31 为并发过多；未预期错误也按并发过多
         if "JIRA API 调用失败" in ec:
             return "并发过多"
