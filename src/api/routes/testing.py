@@ -6611,24 +6611,25 @@ async def test_adp_lookup(request: Request):
         total_skip = 0
         group_idx = 0
 
-        # 增量写回缓冲区：每积累 10 条完成结果立即写回飞书多维表格
-        _write_buffer = []
+        # 增量写回：每条完成立即写回飞书多维表格
+        _write_buffer = []  # 保留兼容，仅用于孤儿任务收尾
         _flush_count = 0
 
-        async def _flush_write_buffer():
-            """将缓冲区中的完成结果批量写回飞书多维表格（每 10 条触发一次）"""
+        async def _flush_write_buffer(items=None):
+            """将结果写回飞书多维表格。items=None 时处理 _write_buffer 兼容路径"""
             nonlocal _write_buffer, _flush_count
-            if not _write_buffer:
+            _items = items if items is not None else _write_buffer
+            if not _items:
                 return
             try:
                 from src.services.adp_ops import ensure_adp_field as _ensure_field
                 for _fn in ("sessionid", "conversationid", "recordid"):
-                    if any((r.get("results") or {}).get(_fn) for r in _write_buffer):
+                    if any((r.get("results") or {}).get(_fn) for r in _items):
                         _ensure_field(app_token, table_id, _fn, 1)
             except Exception as _e:
                 logger.warning("ADP lookup 增量写回字段检查失败: %s", _e)
             update_records = []
-            for r in _write_buffer:
+            for r in _items:
                 bugid = r.get("jira_key", "")
                 rec = bt_map.get(bugid)
                 if not rec:
@@ -6681,8 +6682,9 @@ async def test_adp_lookup(request: Request):
                     await loop.run_in_executor(
                         None, lambda _c=_wchunk: feishu_client.update_bitable_records(app_token, table_id, _c))
                 _flush_count += len(update_records)
-                logger.info("ADP lookup 增量写回: %d 条（累计 %d 条）", len(update_records), _flush_count)
-            _write_buffer = []
+                logger.info("ADP lookup 写回: %d 条（累计 %d 条）", len(update_records), _flush_count)
+            if items is None:
+                _write_buffer = []
 
         # 动态并发池：始终保持 batch_size 个任务在跑，一个完成立即补位
         batch_results = []
@@ -6795,11 +6797,8 @@ async def test_adp_lookup(request: Request):
                         "file_urls": result.get("file_urls", []),
                     }
                     batch_results.append(item)
-                    # 加入增量写回缓冲区（“ADP 无返回” 由后续重试处理，不立即写回）
-                    _fail_reason = str((result.get("results") or {}).get("分析失败归因", ""))
-                    _err_msg = str(result.get("error", ""))
-                    if _fail_reason != "ADP 无返回" and "ADP 无返回" not in _err_msg:
-                        _write_buffer.append(item)
+                    # 每条完成立即写回飞书多维表格（含“ADP 无返回”，待重试成功后再覆盖）
+                    await _flush_write_buffer([item])
                     yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
                     # 动态补位：只要完成一个，立即从队列取下一个（孤儿完成不占补位）
                     if not _from_orphan and next_idx < len(effective_bugids):
@@ -6809,9 +6808,6 @@ async def test_adp_lookup(request: Request):
                         _item_start_times[next_bugid] = {"start": _time.time(), "accumulated": 0, "start_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                         next_idx += 1
                         yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': next_bugid}, ensure_ascii=False)}\n\n"
-                    # 每积累 10 条立即写回飞书多维表格
-                    if len(_write_buffer) >= 10:
-                        await _flush_write_buffer()
                 # 还有未完成的，发心跳并等待
                 if futures and not done_now:
                     running_keys = [futures[f]["bugid"] for f in futures]
@@ -6913,11 +6909,16 @@ async def test_adp_lookup(request: Request):
                 }
                 # 重试结果直接并入原行对象：保留原行，只补结果字段，不新增/替换
                 _old.update(item)
-                # 重试结果加入写回缓冲区，由最终刷写写入飞书
-                _write_buffer.append(item)
+                # 重试成功时清空“分析失败归因”，避免残留首次失败的原因
+                if item.get("ok") and item.get("has_html"):
+                    _rd = item.get("results") or {}
+                    _rd["分析失败归因"] = ""
+                    item["results"] = _rd
+                # 重试结果立即写回飞书（覆盖首次的失败记录）
+                await _flush_write_buffer([item])
                 yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
 
-        # 空返回重试后，刷写剩余缓冲
+        # 空返回重试后，刷写孤儿任务遗留的缓冲（正常流程已无剩余）
         if _write_buffer:
             await _flush_write_buffer()
 
