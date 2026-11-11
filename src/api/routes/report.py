@@ -79,8 +79,18 @@ def _get_main_table_records(force: bool = False) -> list:
 
 # ── 批次详情缓存（内存 + 云端 JSON）──
 _batch_detail_cache = {}  # {(date, batch): {"ts": float, "data": dict}}
+_BATCH_DETAIL_MAX_SIZE = 200  # 内存缓存条目上限，超出时淘汰最旧的
 _BATCH_DETAIL_TTL_TODAY = 300  # 今天: 5 分钟
 _BATCH_DETAIL_TTL_HISTORY = 86400  # 历史: 24 小时
+
+
+def _evict_batch_detail_cache():
+    """淘汰最旧的缓存条目，调用方须已持有 _dashboard_cache_lock"""
+    if len(_batch_detail_cache) <= _BATCH_DETAIL_MAX_SIZE:
+        return
+    sorted_keys = sorted(_batch_detail_cache, key=lambda k: _batch_detail_cache[k]["ts"])
+    for k in sorted_keys[:len(sorted_keys) // 2]:
+        del _batch_detail_cache[k]
 
 
 # ── 云端批次文件列表缓存（列表本身很贵，5 分钟内复用）──
@@ -950,6 +960,7 @@ def _dashboard_data_sync(date_str: str, force: bool = False):
                 # 写入缓存
                 cache_key = (date_str, b["name"])
                 with _dashboard_cache_lock:
+                    _evict_batch_detail_cache()
                     _batch_detail_cache[cache_key] = {"ts": time.time(), "data": detail}
             logger.info("看板预加载: %s 共 %d 批，本次计算详情 %d 批",
                         date_str, len(batches), len(pending) if records else 0)
@@ -1245,6 +1256,7 @@ def dashboard_batch_detail(
     cloud_data = _load_batch_detail_cloud(date, batch)
     if cloud_data:
         with _dashboard_cache_lock:
+            _evict_batch_detail_cache()
             _batch_detail_cache[cache_key] = {"ts": time.time(), "data": cloud_data}
         return _ok(cloud_data)
 
@@ -1352,6 +1364,7 @@ def dashboard_batch_detail(
 
     # ── 4. 写入缓存 ──
     with _dashboard_cache_lock:
+        _evict_batch_detail_cache()
         _batch_detail_cache[cache_key] = {"ts": time.time(), "data": data}
     _save_batch_detail_cloud(date, batch, data)
 

@@ -6367,9 +6367,13 @@ async def test_adp_enrich(request: Request):
             return {"bugid": bugid, "description": "", "trigger_time": "", "error": str(e)[:80]}
 
     loop = asyncio.get_event_loop()
-    results = await loop.run_in_executor(
-        None, lambda: list(concurrent.futures.ThreadPoolExecutor(max_workers=5)
-                           .map(_enrich_one, bugids)))
+    def _run_enrich():
+        _pool = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+        try:
+            return list(_pool.map(_enrich_one, bugids))
+        finally:
+            _pool.shutdown(wait=False)
+    results = await loop.run_in_executor(None, _run_enrich)
     return _ok(results, f"补全完成: {len(results)} 条")
 
 

@@ -250,6 +250,20 @@ def _run_trace_skill(jira_key: str, trace_id: str):
 _ATTACH_CACHE = {}
 _ATTACH_ROOT_CACHE = {}
 _ATTACH_CACHE_LOCK = __import__("threading").Lock()
+_ATTACH_CACHE_MAX_SIZE = 5000  # 缓存容量上限，超出时清理过期条目
+
+
+def _prune_attach_cache():
+    """清理过期的附件缓存条目（调用方须已持有锁）"""
+    import time as _t
+    now = _t.time()
+    expired = [k for k, v in _ATTACH_CACHE.items() if now - v[0] > 600]  # 10分钟过期
+    for k in expired:
+        del _ATTACH_CACHE[k]
+    # 同步清理 _ATTACH_ROOT_CACHE 中已不在 _ATTACH_CACHE 中的条目
+    if expired:
+        for k in expired:
+            _ATTACH_ROOT_CACHE.pop(k, None)
 
 
 def _pick_attach_root_cause(payload) -> str:
@@ -295,6 +309,9 @@ def query_attachments(jira_key: str):
     # 本地缓存：同一 Jira 在 TTL 内复用，避免重复慢查询
     ttl = adp_cfg.get("attach_cache_ttl", 300)
     with _ATTACH_CACHE_LOCK:
+        # 缓存容量保护：超出上限时清理过期条目
+        if len(_ATTACH_CACHE) >= _ATTACH_CACHE_MAX_SIZE:
+            _prune_attach_cache()
         hit = _ATTACH_CACHE.get(jira_key)
         if hit and _t.time() - hit[0] < ttl:
             logger.info("dpportal 附件查询: %s 命中缓存（%d 个附件）", jira_key, len(hit[1]))

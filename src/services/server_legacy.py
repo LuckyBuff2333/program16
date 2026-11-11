@@ -219,7 +219,8 @@ _rapid_ocr_cpu_engine = None  # OOM 回退用 CPU-only 引擎
 _ocr_oom_cooldown_until = 0.0  # OOM 冷却截止时间戳
 _ocr_max_pixels = 4_000_000  # GPU 推理最大像素面积（默认值，实际从配置读取）
 _ocr_cfg_cache = {}  # OCR 配置缓存
-_LAST_VIDEO_MAIN_TIME = {}  # bugid -> 压缩包 main 兜底时间（避免被外层附件名覆盖）
+_LAST_VIDEO_MAIN_TIME = {}  # bugid -> 压缩包 main 兆底时间（避免被外层附件名覆盖）
+_LAST_VIDEO_MAIN_TIME_MAX = 10000  # 防止无界增长，超出时清空（仅用于单批次内的纠偏）
 
 
 def _get_ocr_cfg() -> dict:
@@ -5501,6 +5502,7 @@ def _extract_video_frames_gpu(video_path: str, positions: list = None, num_frame
     frames = []
     # 优先尝试 PyAV + GPU 解码
     if use_gpu:
+        container = None
         try:
             import av
             container = av.open(video_path)
@@ -5527,7 +5529,6 @@ def _extract_video_frames_gpu(video_path: str, positions: list = None, num_frame
                                 break
                 except Exception as e:
                     logger.warning("视频帧提取：PyAV 第%d秒提取失败: %s", sec, e)
-            container.close()
             if frames:
                 logger.info("视频帧提取：PyAV GPU 解码成功，截取 %d 帧", len(frames))
                 return frames
@@ -5536,6 +5537,13 @@ def _extract_video_frames_gpu(video_path: str, positions: list = None, num_frame
             logger.info("视频帧提取：PyAV 未安装，回退 OpenCV")
         except Exception as e:
             logger.warning("视频帧提取：PyAV GPU 解码异常: %s，回退 CPU", e)
+        finally:
+            # 确保 PyAV 容器始终关闭，防止 GPU 解码器内存泄漏
+            if container is not None:
+                try:
+                    container.close()
+                except Exception:
+                    pass
     # 回退: OpenCV CPU 解码
     try:
         import cv2
@@ -5546,24 +5554,27 @@ def _extract_video_frames_gpu(video_path: str, positions: list = None, num_frame
     if not cap.isOpened():
         logger.warning("视频帧提取：无法打开视频 %s", os.path.basename(video_path))
         return []
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    for sec in positions:
-        try:
-            if sec == 0:
-                # 第一帧：确保回到视频开头后读取
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        for sec in positions:
+            try:
+                if sec == 0:
+                    # 第一帧：确保回到视频开头后读取
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    ret, frame = cap.read()
+                    if ret:
+                        frames.append((sec, frame))
+                    continue
+                frame_pos = int(sec * fps)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
                 ret, frame = cap.read()
                 if ret:
                     frames.append((sec, frame))
-                continue
-            frame_pos = int(sec * fps)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
-            ret, frame = cap.read()
-            if ret:
-                frames.append((sec, frame))
-        except Exception as e:
-            logger.warning("视频帧提取：OpenCV 第%d秒提取失败: %s", sec, e)
-    cap.release()
+            except Exception as e:
+                logger.warning("视频帧提取：OpenCV 第%d秒提取失败: %s", sec, e)
+    finally:
+        # 确保 OpenCV VideoCapture 始终释放，防止资源泄漏
+        cap.release()
     logger.info("视频帧提取：OpenCV CPU 解码，截取 %d 帧", len(frames))
     return frames
 
@@ -6644,6 +6655,9 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
             logger.info("视频兜底提取(%s)：视频未命中，改用压缩包 main 时间 %s", bugid, _picked_ts)
             _timestudy_update_ctx(bugid, source="video_ocr", error_type="main_time_fallback")
             _timestudy_trace(bugid, "archive:main_fallback")
+            # 容量保护：超出上限时清空（仅用于单批次内纠偏，不会跨批次复用）
+            if len(_LAST_VIDEO_MAIN_TIME) >= _LAST_VIDEO_MAIN_TIME_MAX:
+                _LAST_VIDEO_MAIN_TIME.clear()
             _LAST_VIDEO_MAIN_TIME[str(issue.get("key") or "")] = _picked_ts
             return _picked_ts
     # 视频未命中 gmlogger → 图片 OCR 兜底
