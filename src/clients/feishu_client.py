@@ -294,6 +294,10 @@ def _install_crypto_aes_fallback() -> bool:
         return False
 
 
+# 飞书长连接退出标志：进程关闭时置 True，避免守护线程在退出时打印 SDK 错误
+_ws_shutdown = False
+
+
 def start_feishu_ws_client(event_handler):
     """启动飞书长连接 WebSocket 客户端（官方 lark-oapi SDK 推荐模式，守护线程+断线自动重连）
 
@@ -301,6 +305,7 @@ def start_feishu_ws_client(event_handler):
     :param event_handler: 消息回调函数，参数为 lark P2ImMessageReceiveV1 事件对象
     """
     import threading
+    import atexit
     bot_cfg = _get_bot_cfg()
     if not bot_cfg["enabled"]:
         logger.info("feishu_bot.enabled=false，跳过长连接客户端")
@@ -309,15 +314,23 @@ def start_feishu_ws_client(event_handler):
         logger.info("feishu_bot 未配置 app凭证，跳过长连接客户端")
         return
 
+    def _set_shutdown():
+        global _ws_shutdown
+        _ws_shutdown = True
+
+    atexit.register(_set_shutdown)
+
     def _run():
         _install_crypto_aes_fallback()
         import lark_oapi as lark
         backoff = 5
-        while True:
+        while not _ws_shutdown:
             domain = _ws_domain()
             host = _ws_host(domain)
             # DNS 预检：解析失败时不发起连接，避免 SDK 抛出大段 error，静默退避重试
             if not _dns_ok(host):
+                if _ws_shutdown:
+                    break
                 logger.warning("飞书长连接：DNS 解析失败（%s），%d 秒后重试（不影响主服务）", host, backoff)
                 time.sleep(backoff)
                 backoff = _next_backoff(backoff)
@@ -332,9 +345,15 @@ def start_feishu_ws_client(event_handler):
                 logger.info("飞书长连接客户端启动 (app_id=%s..., domain=%s)",
                             bot_cfg["app_id"][:8], domain)
                 cli.start()  # 阻塞，断开后返回进入重连循环
+                if _ws_shutdown:
+                    break
                 logger.warning("飞书长连接断开，%d 秒后重连...", backoff)
             except Exception as e:
+                if _ws_shutdown:
+                    break
                 logger.warning("飞书长连接客户端异常: %s，%d 秒后重连", str(e)[:150], backoff)
+            if _ws_shutdown:
+                break
             time.sleep(backoff)
             backoff = _next_backoff(backoff)
 
