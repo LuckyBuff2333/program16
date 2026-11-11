@@ -6643,6 +6643,13 @@ async def test_adp_lookup(request: Request):
                 else:
                     write_fields.pop("报告链接（分析报告、可观测报告）", None)
                 write_fields.pop("总执行时间", None)
+                # 写回开始/结束时间（用于耗时计算的时间差值）
+                _st = r.get("start_time", "")
+                _et = r.get("end_time", "")
+                if _st:
+                    write_fields["start_time"] = _st
+                if _et:
+                    write_fields["end_time"] = _et
                 record_id = rec.get("record_id", "")
                 if record_id and write_fields:
                     update_records.append({"record_id": record_id, "fields": write_fields})
