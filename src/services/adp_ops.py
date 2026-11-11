@@ -301,7 +301,7 @@ def query_attachments(jira_key: str):
             return list(hit[1])
 
     logger.info("dpportal 查询附件: %s", jira_key)
-    max_attempts = 2
+    max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
             resp = httpx.post(
@@ -329,7 +329,8 @@ def query_attachments(jira_key: str):
             return attachments
         except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError, httpx.HTTPError) as e:
             if attempt < max_attempts:
-                wait = adp_cfg.get("attach_retry_interval", 10)
+                # 指数退避: 10s, 30s, 60s
+                wait = adp_cfg.get("attach_retry_interval", 10) * (2 ** (attempt - 1))
                 logger.warning("dpportal 附件查询异常（第 %d/%d 次）: %s -> %s，%ds 后重试",
                                attempt, max_attempts, jira_key, str(e)[:120], wait)
                 _t.sleep(wait)
@@ -1570,7 +1571,8 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         # 写入字段白名单
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause", "root cause",
-                    "置信度", "分析失败归因", "traceid", "sessionid", "conversationid", "recordid", "traceid排查"]
+                    "置信度", "分析失败归因", "traceid", "sessionid", "conversationid", "recordid",
+                    "start_time", "end_time", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         if prev_root:
             write_fields.pop("root cause", None)
@@ -2166,6 +2168,14 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             results["conversationid"] = _session_id
             out["sessionid"] = _session_id
             out["conversationid"] = _session_id
+        # 任务开始/完成时间：表格是文本字段，统一写本地时间字符串
+        try:
+            if start_ts:
+                results["start_time"] = datetime.fromtimestamp(start_ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            if end_ts:
+                results["end_time"] = datetime.fromtimestamp(end_ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
         _record_id = str(signal_info.get("record_id") or out.get("recordid") or "")
         if _record_id:
             results["recordid"] = _record_id
