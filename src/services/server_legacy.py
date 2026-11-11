@@ -236,6 +236,8 @@ def _get_ocr_cfg() -> dict:
     _ocr_cfg_cache.setdefault("box_thresh", 0.3)
     _ocr_cfg_cache.setdefault("text_score", 0.15)
     _ocr_cfg_cache.setdefault("mag_ratio", 1.5)
+    _ocr_cfg_cache.setdefault("target_width", 2560)
+    _ocr_cfg_cache.setdefault("max_mag", 2.5)
     _ocr_cfg_cache.setdefault("oom_cooldown_sec", 300)
     _ocr_cfg_cache.setdefault("easyocr_languages", ["en", "ch_sim"])
     _ocr_cfg_cache.setdefault("engine", "v5")
@@ -4719,7 +4721,6 @@ def _run_ocr(engine, image, _already_enhanced: bool, tag: str = ""):
     import cv2
     _ocfg = _get_ocr_cfg()
     _max_px = int(_ocfg.get("max_pixels", 2_000_000))
-    _mag = float(_ocfg.get("mag_ratio", 1.5))
     _box_t = float(_ocfg.get("box_thresh", 0.3))
     _txt_s = float(_ocfg.get("text_score", 0.15))
     h, w = image.shape[:2]
@@ -4734,13 +4735,19 @@ def _run_ocr(engine, image, _already_enhanced: bool, tag: str = ""):
         logger.info("OCR 大图预缩放: %dx%d (%.1fMP→%.1fMP, tag=%s)",
                     w, h, pixel_area / 1e6, w * h / 1e6, tag)
 
-    # 仅对小尺寸帧放大（1920 以内），提升小字号/低对比度时钟识别率
-    # 视频帧经 max_pixels 缩放后通常 ~1600px，仍需放大以改善 OCR
-    # 放大后像素上限 6M，避免 CPU 推理过慢（4.7M@1.5x 约 3-4s，可接受）
-    if not _already_enhanced and w < 1920:
-        _mag_pixels = int(w * _mag) * int(h * _mag)
-        if _mag_pixels <= 6_000_000:
-            mag_ratio = _mag
+    # 自适应放大：根据视频分辨率自动计算最佳倍率（目标宽度 2560px，PP-OCRv5 最优识别区间）
+    # 低分辨率视频（如 720p/640x480）→ 自动放大更多倍；高分辨率（1080p+）→ 不放大或微放大
+    # 放大后像素上限 6M，避免 CPU 推理过慢
+    _target_w = int(_ocfg.get("target_width", 2560))
+    _max_mag = float(_ocfg.get("max_mag", 2.5))
+    _mag_cap = 6_000_000
+    if not _already_enhanced:
+        _adaptive_mag = max(1.0, min(_target_w / max(w, 1), _max_mag))
+        _mag_px = int(w * _adaptive_mag) * int(h * _adaptive_mag)
+        if _mag_px > _mag_cap:
+            _adaptive_mag = max(1.0, (_mag_cap / (w * h)) ** 0.5)
+        if _adaptive_mag > 1.05:
+            mag_ratio = round(_adaptive_mag, 2)
             enlarged = cv2.resize(image, (int(w * mag_ratio), int(h * mag_ratio)),
                                   interpolation=cv2.INTER_CUBIC)
         else:

@@ -222,6 +222,86 @@
         </el-card>
       </el-tab-pane>
 
+      <!-- ============ Tab3: 表单查找 ============ -->
+      <el-tab-pane label="表单查找" name="form_lookup">
+        <!-- Step 1: 表单查询 -->
+        <el-card shadow="never">
+          <template #header><span style="font-weight:700">① 表单查询</span></template>
+          <div class="filter-bar">
+            <div class="param-item">
+              <span class="param-label">创建日期</span>
+              <el-date-picker v-model="form.date" type="date" value-format="YYYY-MM-DD"
+                placeholder="选择日期" style="width:160px" size="small"></el-date-picker>
+            </div>
+            <el-button size="small" @click="form.date = todayStr()">今日</el-button>
+            <el-button size="small" @click="form.date = yesterdayStr()">昨日</el-button>
+            <el-button type="primary" size="small" :loading="form.loading" @click="formQuery">查询</el-button>
+            <el-tag v-if="form.rows.length" type="info" size="small">{{ form.rows.length }} 条</el-tag>
+          </div>
+          <div v-if="form.queried" class="form-stats">
+            <el-tag size="small">总数 {{ form.rows.length }}</el-tag>
+            <el-tag size="small" type="success">有缓存 {{ formStats.cached }}</el-tag>
+            <el-tag size="small" type="warning">待提取 {{ formStats.pending }}</el-tag>
+            <el-tag size="small" type="info">有AI分析 {{ formStats.aiCount }}</el-tag>
+          </div>
+          <el-table v-if="form.rows.length" :data="form.rows" size="small" style="margin-top:10px" max-height="360"
+            :row-class-name="formRowClass">
+            <el-table-column prop="jira号" label="Jira号" width="150"></el-table-column>
+            <el-table-column prop="创建日期" label="创建日期" width="160"></el-table-column>
+            <el-table-column label="触发时间" min-width="180">
+              <template #default="{ row }">
+                <el-tag v-if="row.has_cached_time" size="small" type="success">{{ row.cached_time }}</el-tag>
+                <el-tag v-else size="small" type="warning">待提取</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="AI初步分析结果" label="AI分析" width="120">
+              <template #default="{ row }">
+                <el-tag :type="row.AI初步分析结果 && row.AI初步分析结果 !== '-' ? 'success' : 'info'" size="small">
+                  {{ row.AI初步分析结果 ? '有' : '无' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+
+        <!-- Step 2: 提取触发时间 -->
+        <el-card v-if="form.rows.length" shadow="never">
+          <template #header><span style="font-weight:700">② 提取触发时间</span></template>
+          <div class="exec-bar">
+            <el-tag type="warning" size="small">待提取 {{ formStats.pending }} 条</el-tag>
+            <el-button v-if="!form.extracting" type="primary" size="small" :disabled="formStats.pending === 0"
+              @click="formExtract">提取触发时间</el-button>
+            <el-button v-if="form.extracting" type="warning" size="small" @click="formStop">停止提取</el-button>
+          </div>
+          <div v-if="form.extractProgress > 0" style="margin-top:8px">
+            <el-progress :percentage="form.extractProgress" :stroke-width="10"></el-progress>
+          </div>
+        </el-card>
+
+        <!-- Step 3: 抽样与执行 -->
+        <el-card v-if="form.withTimeBugids.length" shadow="never">
+          <template #header><span style="font-weight:700">③ 抽样与执行</span></template>
+          <div class="exec-bar">
+            <span class="param-label">抽取个数</span>
+            <el-input-number v-model="form.sampleCount" :min="0" :max="2000" :step="1"
+              style="width:130px" controls-position="right" size="small"></el-input-number>
+            <span style="font-size:12px;color:#909399">0 = 全部（{{ form.withTimeBugids.length }} 条有时间）</span>
+            <el-button v-if="!form.executing" type="primary" size="small" @click="formRun">开始执行</el-button>
+            <el-button v-if="form.executing" type="danger" size="small" @click="formStop">停止执行</el-button>
+          </div>
+          <div v-if="form.execProgress > 0 || form.execLogs.length" class="exec-progress">
+            <div v-if="form.execSummary" class="exec-summary">
+              <el-tag :type="form.execSummary.type">{{ form.execSummary.text }}</el-tag>
+              <span v-if="form.execSummary.detail" style="margin-left:8px;color:#606266;font-size:12px">{{ form.execSummary.detail }}</span>
+            </div>
+            <el-progress v-if="form.execProgress > 0" :percentage="form.execProgress" :stroke-width="10" style="margin-top:6px"></el-progress>
+            <div class="exec-log" v-if="form.execLogs.length">
+              <div v-for="(log, idx) in form.execLogs.slice(-30)" :key="idx" :style="logStyle(log)">{{ log }}</div>
+            </div>
+          </div>
+        </el-card>
+      </el-tab-pane>
+
       <el-tab-pane label="数据更新" name="data_cleanup">
         <DataCleanupPanel />
       </el-tab-pane>
@@ -272,6 +352,22 @@ export default {
       dateFilterDone: false,
       dateFilteredSet: new Set<string>(),
       dateSampleCount: 0,
+      // ===== Tab3: 表单查找 =====
+      form: {
+        date: '',
+        loading: false,
+        rows: [] as any[],
+        queried: false,
+        extracting: false,
+        extractProgress: 0,
+        executing: false,
+        execLogs: [] as string[],
+        execSummary: null as any,
+        execProgress: 0,
+        sampleCount: 0,
+        withTimeBugids: [] as string[],
+        triggerTimes: {} as Record<string, string>,
+      },
     };
   },
   computed: {
@@ -298,6 +394,15 @@ export default {
       return [...this.dateCheckedSet]
         .filter(j => !this.dateFilteredSet.has(j))
         .sort();
+    },
+    // Tab3: 表单查找统计
+    formStats(): { cached: number; pending: number; aiCount: number } {
+      const rows = this.form.rows;
+      return {
+        cached: rows.filter((r: any) => r.has_cached_time).length,
+        pending: rows.filter((r: any) => !r.has_cached_time).length,
+        aiCount: rows.filter((r: any) => r.AI初步分析结果 && r.AI初步分析结果 !== '-').length,
+      };
     },
   },
   methods: {
@@ -432,6 +537,168 @@ export default {
         ElMessage.error('查询AI初步分析结果失败: ' + (e.message || ''));
         this.dateFilterAi = false;
       } finally { this.dateFilterLoading = false; }
+    },
+
+    // ===== Tab3 方法 =====
+    todayStr(): string {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    },
+    yesterdayStr(): string {
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    },
+    async formQuery() {
+      if (!this.form.date) return ElMessage.warning('请选择日期');
+      this.form.loading = true;
+      this.form.rows = [];
+      this.form.queried = false;
+      this.form.withTimeBugids = [];
+      this.form.triggerTimes = {};
+      this.form.execLogs = [];
+      this.form.execSummary = null;
+      this.form.execProgress = 0;
+      this.form.extractProgress = 0;
+      try {
+        const body = await api('/api/test/regression_form_query', {
+          method: 'POST', body: JSON.stringify({ date: this.form.date }),
+        });
+        const data = body.data || {};
+        this.form.rows = data.rows || [];
+        this.form.queried = true;
+        // 构建 withTimeBugids + triggerTimes
+        this.form.withTimeBugids = this.form.rows.filter((r: any) => r.has_cached_time).map((r: any) => r['jira号']);
+        const tt: Record<string, string> = {};
+        for (const r of this.form.rows) {
+          if (r.has_cached_time && r.cached_time) tt[r['jira号']] = r.cached_time;
+        }
+        this.form.triggerTimes = tt;
+        ElMessage.success(body.message || `查询到 ${this.form.rows.length} 条`);
+      } catch (e: any) {
+        ElMessage.error('查询失败: ' + (e.message || ''));
+      } finally { this.form.loading = false; }
+    },
+    async formExtract() {
+      const pendingBugids = this.form.rows.filter((r: any) => !r.has_cached_time).map((r: any) => r['jira号']);
+      if (!pendingBugids.length) return ElMessage.info('无需提取，全部已有缓存');
+      this.form.extracting = true;
+      this.form.extractProgress = 0;
+      try {
+        const resp = await fetch('/api/test/regression_form_extract', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bugids: pendingBugids }),
+        });
+        const reader = resp.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const evt = JSON.parse(line.slice(6));
+              if (evt.type === 'extracted') {
+                this.form.extractProgress = Math.round(evt.done / evt.total * 100);
+                // 更新行数据
+                const row = this.form.rows.find((r: any) => r['jira号'] === evt.bugid);
+                if (row && evt.trigger_time) {
+                  row.has_cached_time = true;
+                  row.cached_time = evt.trigger_time;
+                  // 更新 triggerTimes 和 withTimeBugids
+                  this.form.triggerTimes[evt.bugid] = evt.trigger_time;
+                  if (!this.form.withTimeBugids.includes(evt.bugid)) {
+                    this.form.withTimeBugids.push(evt.bugid);
+                  }
+                }
+                this.formLog(`${evt.trigger_time ? '✓' : '✗'} ${evt.bugid}: ${evt.trigger_time || evt.error || '未提取到'} (${evt.source || ''})`);
+              } else if (evt.type === 'done') {
+                this.form.extractProgress = 100;
+                ElMessage.success(`提取完成: ${evt.hit}/${evt.total} 命中`);
+              }
+            } catch { /* ignore */ }
+          }
+        }
+      } catch (e: any) {
+        ElMessage.error('提取失败: ' + (e.message || ''));
+      } finally { this.form.extracting = false; }
+    },
+    async formRun() {
+      const bugids = this.form.withTimeBugids;
+      if (!bugids.length) return ElMessage.warning('无有触发时间的记录');
+      this.form.executing = true;
+      this.form.execLogs = [];
+      this.form.execSummary = null;
+      this.form.execProgress = 0;
+      try {
+        const resp = await fetch('/api/test/regression_form_run', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            bugids,
+            trigger_times: this.form.triggerTimes,
+            sample_count: this.form.sampleCount || 0,
+          }),
+        });
+        const reader = resp.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const evt = JSON.parse(line.slice(6));
+              if (evt.type === 'progress') {
+                const status = evt.status === '成功' ? '✓' : '✗';
+                this.formLog(`${status} ${evt.bugid} (${evt.index}/${evt.total})`);
+                this.form.execProgress = Math.round(evt.index / evt.total * 100);
+              } else if (evt.type === 'stopped') {
+                this.form.execSummary = { type: 'warning', text: '已停止', detail: `成功 ${evt.success} / 失败 ${evt.fail}` };
+                this.formLog(`[已停止] ${evt.message}`);
+              } else if (evt.type === 'done') {
+                this.form.execSummary = {
+                  type: evt.success > 0 ? 'success' : 'info',
+                  text: `完成: ${evt.success}/${evt.total} 成功`,
+                  detail: evt.cloud_url ? `云端: ${evt.cloud_url}` : '',
+                };
+                this.form.execProgress = 100;
+                this.formLog(`[完成] ${evt.success}/${evt.total} 成功`);
+                if (evt.cloud_url) this.formLog(`[云端] ${evt.cloud_url}`);
+                ElMessage.success(`执行完成: ${evt.success}/${evt.total} 成功`);
+              }
+            } catch { /* ignore */ }
+          }
+        }
+      } catch (e: any) {
+        ElMessage.error('执行失败: ' + (e.message || ''));
+      } finally { this.form.executing = false; }
+    },
+    async formStop() {
+      try {
+        await api('/api/test/form_exec/stop', { method: 'POST', body: '{}' });
+        ElMessage.warning('已发送停止信号');
+      } catch (e: any) {
+        ElMessage.error('停止失败: ' + (e.message || ''));
+      }
+    },
+    formLog(msg: string) {
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, '0');
+      const mm = String(now.getMinutes()).padStart(2, '0');
+      const ss = String(now.getSeconds()).padStart(2, '0');
+      this.form.execLogs.push(`[${hh}:${mm}:${ss}] ${msg}`);
+    },
+    formRowClass({ row }: any): string {
+      if (row.has_cached_time) return 'form-row-cached';
+      return '';
     },
 
     // ===== 共用执行方法 =====
@@ -609,4 +876,8 @@ export default {
 .exec-progress { margin-top: 12px; }
 .exec-summary { display: flex; align-items: center; }
 .exec-log { margin-top: 8px; max-height: 240px; overflow-y: auto; padding: 8px; background: #f5f7fa; border-radius: 6px; font-size: 12px; font-family: "Consolas", "Microsoft YaHei", monospace; line-height: 1.8; }
+
+/* 表单查找 */
+.form-stats { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.form-row-cached { background-color: #f0f9eb !important; }
 </style>

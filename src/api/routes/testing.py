@@ -4651,6 +4651,288 @@ async def regression_run(request: Request):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+# ===== 表单查找回归 =====
+
+@router.post("/api/test/regression_form_query", response_model=ApiResponse)
+async def regression_form_query(request: Request):
+    """表单查找回归 Step1：按创建日期查询 VCS BUG 多维表格，附带云端触发时间缓存状态"""
+    body = await request.json() or {}
+    date_str = (body.get("date") or "").strip()
+    if not date_str:
+        return _fail("请选择日期")
+    try:
+        from src.clients import feishu_client as _fc
+        from src.services.trigger_ops import _load_trigger_times_from_cloud
+        app_token = "HOARbsrB0aSViFs5AjNchSQ0nAf"
+        table_id = "tblr4oboVbKsV6y1"
+        loop = asyncio.get_event_loop()
+        # 单日范围：date 当天 00:00 ~ 次日 00:00
+        ts_from = datetime.strptime(date_str, "%Y-%m-%d").timestamp() * 1000
+        ts_to = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000
+        ts_from_str = str(int(ts_from))
+        ts_to_str = str(int(ts_to))
+        filter_obj = {"conjunction": "and", "conditions": [
+            {"field_name": "创建日期", "operator": "isGreaterEqual", "value": [ts_from_str]},
+            {"field_name": "创建日期", "operator": "isLessEqual", "value": [ts_to_str]},
+        ]}
+        records = None
+        try:
+            records = await loop.run_in_executor(
+                None, lambda: _fc.search_bitable_records(
+                    app_token, table_id, filter_obj=filter_obj,
+                    field_names=["jira号", "创建日期", "AI初步分析结果"]))
+            logger.info("表单查找查询: search API 命中 %d 条", len(records))
+        except Exception as e:
+            logger.warning("表单查找 search API 失败(%s)，回退全量拉取", e)
+        if records is None:
+            records = await loop.run_in_executor(
+                None, lambda: _fc.list_bitable_records(app_token, table_id))
+            logger.info("表单查找查询: 全量拉取 %d 条", len(records))
+        # 加载云端触发时间缓存
+        cloud_times = await loop.run_in_executor(None, _load_trigger_times_from_cloud)
+        # Python 侧兜底过滤 + 构建返回
+        rows = []
+        for rec in records:
+            fields = rec.get("fields", {})
+            created_ts = fields.get("创建日期", "")
+            if not isinstance(created_ts, (int, float)) or created_ts <= 0:
+                if records is not None:
+                    continue
+                created_ts = 0
+            else:
+                if created_ts < ts_from or created_ts >= ts_to:
+                    continue
+            jira_no = _bitable_text(fields.get("jira号", ""))
+            ai_result = _bitable_text(fields.get("AI初步分析结果", ""))
+            created_str = ""
+            if isinstance(created_ts, (int, float)) and created_ts > 0:
+                created_str = datetime.fromtimestamp(created_ts / 1000).strftime("%Y-%m-%d %H:%M")
+            cached_time = cloud_times.get(jira_no, "")
+            rows.append({
+                "jira号": jira_no,
+                "创建日期": created_str,
+                "AI初步分析结果": ai_result,
+                "has_cached_time": bool(cached_time),
+                "cached_time": cached_time,
+            })
+        rows.sort(key=lambda r: r["创建日期"] or "", reverse=True)
+        return _ok({"rows": rows, "total": len(rows)}, f"查询到 {len(rows)} 条记录")
+    except Exception as e:
+        logger.error("表单查找查询失败: %s", e)
+        return _fail(str(e))
+
+
+@router.post("/api/test/regression_form_extract")
+async def regression_form_extract(request: Request):
+    """表单查找回归 Step2：对无缓存的记录提取触发时间（SSE 流式）"""
+    import json as _json
+    import concurrent.futures
+    body = await request.json() or {}
+    bugids = body.get("bugids") or []
+    if not bugids:
+        return _fail("无待提取的 bugid")
+
+    async def event_generator():
+        loop = asyncio.get_event_loop()
+        from src.clients import jira_client as _jc
+        from src.services.server_legacy import (
+            _diag_extract_time_from_video_simple, _diag_extract_time_from_images,
+            _align_time_to_gmlogger, _VIDEO_SUFFIXES,
+        )
+        from src.services.trigger_ops import (
+            _batch_save_trigger_times_to_cloud, _save_trigger_time_to_csv,
+        )
+        from src.api.routes.shared import form_exec_stop_event as _stop_event
+        _stop_event.clear()
+        _begin_attach_batch()
+
+        cfg = load_config().get("jira_api", {})
+        img_tok = cfg.get("token", "")
+        img_to = max(int(cfg.get("timeout", 30)), 120)
+        _img_headers = {}
+        if img_tok:
+            _img_headers["Authorization"] = f"Bearer {img_tok}"
+
+        yield f"data: {_json.dumps({'type': 'start', 'total': len(bugids)}, ensure_ascii=False)}\n\n"
+
+        def extract_one(bugid):
+            """单个 bugid 的触发时间提取链路：视频 → 评论/描述 → 图片"""
+            if _stop_event.is_set():
+                return bugid, "", "stopped", "已停止"
+            try:
+                issue = _jc.fetch_issue(bugid)
+                if _stop_event.is_set():
+                    return bugid, "", "stopped", "已停止"
+                fields = issue.get("fields") or {}
+                attachments = fields.get("attachment") or []
+                has_video = any((a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES) for a in attachments)
+                tt, source = "", ""
+                # 1. 视频 OCR
+                if has_video:
+                    tt = _diag_extract_time_from_video_simple(issue, stop_event=_stop_event)
+                    if tt:
+                        source = "视频拼接"
+                    if _stop_event.is_set():
+                        return bugid, "", "stopped", "已停止"
+                # 2. 评论/描述/标题
+                if not tt:
+                    tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
+                    if tt:
+                        source = "文本"
+                # 3. 图片 OCR
+                if not tt and _img_headers:
+                    img_tt, _ = _diag_extract_time_from_images(issue, _img_headers, img_to, bugid, stop_event=_stop_event)
+                    if img_tt:
+                        tt = img_tt
+                        source = "图片拼接"
+                # 4. 附件文件名兜底
+                if not tt:
+                    try:
+                        att_tt = _jc.extract_attachment_time(issue)
+                    except Exception:
+                        att_tt = ""
+                    if att_tt:
+                        tt = att_tt
+                        source = "附件名兜底"
+                if tt:
+                    if not isinstance(tt, str):
+                        tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
+                    tt = _align_time_to_gmlogger(issue, tt, attachments)
+                    return bugid, tt, source, None
+                return bugid, "", "failed", "未提取到时间"
+            except Exception as e:
+                return bugid, "", "error", str(e)[:120]
+
+        done_count = 0
+        hit_count = 0
+        batch_buf = {}
+        sources_buf = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(extract_one, b): b for b in bugids}
+            for future in concurrent.futures.as_completed(futures):
+                bugid, tt, source, error = future.result()
+                done_count += 1
+                if tt:
+                    hit_count += 1
+                    batch_buf[bugid] = tt
+                    sources_buf[bugid] = source
+                yield f"data: {_json.dumps({'type': 'extracted', 'bugid': bugid, 'trigger_time': tt, 'source': source, 'error': error or '', 'done': done_count, 'total': len(bugids), 'hit': hit_count}, ensure_ascii=False)}\n\n"
+        # 批量写入云端
+        if batch_buf:
+            try:
+                await loop.run_in_executor(None, _batch_save_trigger_times_to_cloud, batch_buf, sources_buf)
+                for bid, btt in batch_buf.items():
+                    _save_trigger_time_to_csv(bid, btt)
+            except Exception as e:
+                logger.warning("表单查找提取: 云端写入失败: %s", e)
+        yield f"data: {_json.dumps({'type': 'done', 'total': len(bugids), 'hit': hit_count}, ensure_ascii=False)}\n\n"
+
+    from src.core.job_registry import JOBS as _JOBS
+    from src.api.routes.jobs import job_stream as _job_stream
+    from src.api.routes.shared import form_exec_stop_event as _job_stop
+    _job = _JOBS.create("form_extract", f"表单查找提取（{len(bugids)} 条）")
+    return StreamingResponse(_job_stream(_job, event_generator, _job_stop), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/api/test/regression_form_run")
+async def regression_form_run(request: Request):
+    """表单查找回归 Step3：批量执行有触发时间的记录（仅线上，无视去重，SSE 流式）"""
+    import json as _json
+    import csv as _csv
+    body = await request.json() or {}
+    bugids = body.get("bugids") or []
+    trigger_times = body.get("trigger_times") or {}
+    sample_count = int(body.get("sample_count") or 0)
+    if not bugids:
+        return _fail("无待执行的 bugid")
+
+    async def event_generator():
+        loop = asyncio.get_event_loop()
+        from src.clients.base import http_post
+        from src.services.report_ops import _upload_batch_to_cloud
+        from src.api.routes.shared import form_exec_stop_event as _stop_event
+        _stop_event.clear()
+        from src.clients import base as _http_base
+        _http_base.set_http_cancel_check(_stop_event.is_set)
+        cfg = load_config().get("feishu_bitable", {})
+        jira_col = cfg.get("bugid_field", "jira号")
+        # 过滤出有触发时间的
+        with_time = [b for b in bugids if trigger_times.get(b)]
+        if not with_time:
+            yield f"data: {_json.dumps({'type': 'done', 'total': 0, 'success': 0, 'fail': 0, 'message': '无有触发时间的记录'}, ensure_ascii=False)}\n\n"
+            return
+        # 抽样
+        if 0 < sample_count < len(with_time):
+            exec_list = random.sample(with_time, sample_count)
+        else:
+            exec_list = list(with_time)
+        yield f"data: {_json.dumps({'type': 'start', 'total': len(exec_list), 'sample_count': sample_count, 'with_time_total': len(with_time)}, ensure_ascii=False)}\n\n"
+
+        all_results = []
+        total_success = 0
+        total_fail = 0
+        batch_start = datetime.now()
+        batch_start_str = batch_start.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            for idx, bugid in enumerate(exec_list):
+                if _stop_event.is_set():
+                    yield f"data: {_json.dumps({'type': 'stopped', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'message': '用户手动停止'}, ensure_ascii=False)}\n\n"
+                    break
+                exec_time = trigger_times.get(bugid, "")
+                item_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                try:
+                    payload = _build_prod_ai_payload(bugid, exec_time)
+                    resp = await loop.run_in_executor(
+                        None, lambda p=payload: http_post(_get_prod_ai_url(), p, timeout=_get_prod_ai_cfg()["timeout"]))
+                    resp_code = resp.get("code") if isinstance(resp, dict) else None
+                    resp_msg = str(resp.get("msg", "")) if isinstance(resp, dict) else str(resp)[:200]
+                    is_ok = (resp_code == 200 or resp_code == 0 or resp_code == "200")
+                    result = {jira_col: bugid, "执行结果": "成功" if is_ok else "失败",
+                              "备注": resp_msg[:200], "执行时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                              "开始时间": item_start}
+                    if is_ok:
+                        total_success += 1
+                    else:
+                        total_fail += 1
+                except Exception as e:
+                    if _stop_event.is_set():
+                        yield f"data: {_json.dumps({'type': 'stopped', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'message': '用户手动停止'}, ensure_ascii=False)}\n\n"
+                        break
+                    result = {jira_col: bugid, "执行结果": "失败", "备注": str(e)[:200],
+                              "执行时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "开始时间": item_start}
+                    total_fail += 1
+                all_results.append(result)
+                yield f"data: {_json.dumps({'type': 'progress', 'index': len(all_results), 'total': len(exec_list), 'bugid': bugid, 'status': result['执行结果']}, ensure_ascii=False)}\n\n"
+        finally:
+            _http_base.set_http_cancel_check(None)
+        # 保存 CSV 并上传云端
+        cloud_url = ""
+        try:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            time_str = datetime.now().strftime("%H%M%S")
+            os.makedirs(_UNANALYZED_DIR, exist_ok=True)
+            batch_csv = os.path.join(_UNANALYZED_DIR, f"form_regression_{date_str}_{time_str}.csv")
+            with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
+                writer = _csv.writer(f)
+                writer.writerow([jira_col, "执行结果", "触发时间", "执行时间", "开始时间", "备注", "触发来源"])
+                for r in all_results:
+                    writer.writerow([r[jira_col], r["执行结果"], trigger_times.get(r[jira_col], ""),
+                                     r.get("执行时间", ""), r.get("开始时间", ""), r.get("备注", ""), "线上"])
+            doc_title = f"表单查找回归 {date_str} {time_str} ({total_success}/{len(all_results)})"
+            cloud_url = _upload_batch_to_cloud(batch_csv, doc_title)
+        except Exception as e:
+            logger.warning("表单查找回归: 保存失败: %s", e)
+        yield f"data: {_json.dumps({'type': 'done', 'total': len(all_results), 'success': total_success, 'fail': total_fail, 'cloud_url': cloud_url}, ensure_ascii=False)}\n\n"
+
+    from src.core.job_registry import JOBS as _JOBS
+    from src.api.routes.jobs import job_stream as _job_stream
+    from src.api.routes.shared import form_exec_stop_event as _job_stop
+    _job = _JOBS.create("form_regression", f"表单查找回归执行（{len(bugids)} 条）")
+    return StreamingResponse(_job_stream(_job, event_generator, _job_stop), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @router.post("/api/test/regression_date_load", response_model=ApiResponse)
 async def regression_date_load(request: Request):
     """按分析开始时间加载线上失败记录，按日期+人工审核原因分组"""
@@ -6329,6 +6611,79 @@ async def test_adp_lookup(request: Request):
         total_skip = 0
         group_idx = 0
 
+        # 增量写回缓冲区：每积累 10 条完成结果立即写回飞书多维表格
+        _write_buffer = []
+        _flush_count = 0
+
+        async def _flush_write_buffer():
+            """将缓冲区中的完成结果批量写回飞书多维表格（每 10 条触发一次）"""
+            nonlocal _write_buffer, _flush_count
+            if not _write_buffer:
+                return
+            try:
+                from src.services.adp_ops import ensure_adp_field as _ensure_field
+                for _fn in ("sessionid", "conversationid", "recordid"):
+                    if any((r.get("results") or {}).get(_fn) for r in _write_buffer):
+                        _ensure_field(app_token, table_id, _fn, 1)
+            except Exception as _e:
+                logger.warning("ADP lookup 增量写回字段检查失败: %s", _e)
+            update_records = []
+            for r in _write_buffer:
+                bugid = r.get("jira_key", "")
+                rec = bt_map.get(bugid)
+                if not rec:
+                    continue
+                results_dict = r.get("results") or {}
+                status = results_dict.get("完成状态", "")
+                if not r.get("ok") and status not in ("无法分析", "分析失败", "超时未完成"):
+                    continue
+                write_fields = {k: v for k, v in results_dict.items()
+                                if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
+                write_fields.pop("原因", None)
+                if write_fields.get("agent分析的问题模块"):
+                    from src.services.adp_ops import _strip_module_pid as _strip_pid
+                    write_fields["agent分析的问题模块"] = _strip_pid(write_fields["agent分析的问题模块"])
+                if write_fields.get("分析失败归因"):
+                    from src.services.adp_ops import short_failure_category as _short_reason
+                    write_fields["分析失败归因"] = _short_reason(write_fields["分析失败归因"])
+                if str(write_fields.get("完成状态", "")) in ("分析失败", "无法分析"):
+                    write_fields.pop("置信度", None)
+                _cur_dur = write_fields.get("耗时(分)")
+                _prev_fields = rec.get("fields") or {}
+                _prev_status = str(_prev_fields.get("完成状态", "") or "")
+                if _prev_status == "完成" and str(write_fields.get("完成状态", "")) != "完成":
+                    continue
+                if _cur_dur not in (None, ""):
+                    try:
+                        write_fields["耗时(分)"] = round(float(_cur_dur), 1)
+                    except (TypeError, ValueError):
+                        write_fields.pop("耗时(分)", None)
+                _prev_root = str(_prev_fields.get("root cause", "") or "").strip()
+                if _prev_root:
+                    write_fields.pop("root cause", None)
+                tid_check = write_fields.get("traceid排查", "")
+                if tid_check and isinstance(tid_check, str) and tid_check.startswith("http"):
+                    write_fields["traceid排查"] = {"link": tid_check, "text": tid_check}
+                else:
+                    write_fields.pop("traceid排查", None)
+                file_token = results_dict.get("_report_file_token", "")
+                if file_token:
+                    write_fields["报告链接（分析报告、可观测报告）"] = [{"file_token": file_token}]
+                else:
+                    write_fields.pop("报告链接（分析报告、可观测报告）", None)
+                write_fields.pop("总执行时间", None)
+                record_id = rec.get("record_id", "")
+                if record_id and write_fields:
+                    update_records.append({"record_id": record_id, "fields": write_fields})
+            if update_records:
+                for _wi in range(0, len(update_records), 5):
+                    _wchunk = update_records[_wi:_wi + 5]
+                    await loop.run_in_executor(
+                        None, lambda _c=_wchunk: feishu_client.update_bitable_records(app_token, table_id, _c))
+                _flush_count += len(update_records)
+                logger.info("ADP lookup 增量写回: %d 条（累计 %d 条）", len(update_records), _flush_count)
+            _write_buffer = []
+
         # 动态并发池：始终保持 batch_size 个任务在跑，一个完成立即补位
         batch_results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as pool:
@@ -6440,6 +6795,11 @@ async def test_adp_lookup(request: Request):
                         "file_urls": result.get("file_urls", []),
                     }
                     batch_results.append(item)
+                    # 加入增量写回缓冲区（“ADP 无返回” 由后续重试处理，不立即写回）
+                    _fail_reason = str((result.get("results") or {}).get("分析失败归因", ""))
+                    _err_msg = str(result.get("error", ""))
+                    if _fail_reason != "ADP 无返回" and "ADP 无返回" not in _err_msg:
+                        _write_buffer.append(item)
                     yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
                     # 动态补位：只要完成一个，立即从队列取下一个（孤儿完成不占补位）
                     if not _from_orphan and next_idx < len(effective_bugids):
@@ -6449,6 +6809,9 @@ async def test_adp_lookup(request: Request):
                         _item_start_times[next_bugid] = {"start": _time.time(), "accumulated": 0, "start_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                         next_idx += 1
                         yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': next_bugid}, ensure_ascii=False)}\n\n"
+                    # 每积累 10 条立即写回飞书多维表格
+                    if len(_write_buffer) >= 10:
+                        await _flush_write_buffer()
                 # 还有未完成的，发心跳并等待
                 if futures and not done_now:
                     running_keys = [futures[f]["bugid"] for f in futures]
@@ -6507,6 +6870,10 @@ async def test_adp_lookup(request: Request):
                 yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
             orphans.clear()
 
+        # 孤儿任务收尾后，刷写缓冲区剩余
+        if _write_buffer:
+            await _flush_write_buffer()
+
         # 空返回项：全部跑完后统一重试一次
         _empty_retry = [r for r in batch_results
                         if ((r.get("results") or {}).get("分析失败归因") == "ADP 无返回"
@@ -6546,7 +6913,13 @@ async def test_adp_lookup(request: Request):
                 }
                 # 重试结果直接并入原行对象：保留原行，只补结果字段，不新增/替换
                 _old.update(item)
+                # 重试结果加入写回缓冲区，由最终刷写写入飞书
+                _write_buffer.append(item)
                 yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
+
+        # 空返回重试后，刷写剩余缓冲
+        if _write_buffer:
+            await _flush_write_buffer()
 
         all_results.extend(batch_results)
         total_success = sum(1 for r in batch_results if r["has_html"])
@@ -6570,102 +6943,26 @@ async def test_adp_lookup(request: Request):
         except Exception:
             logger.warning("ADP 查找执行批次记录保存失败", exc_info=True)
 
-        # 批量写回飞书多维表格（执行完成后统一写入）
+        # 增量写回已在执行过程中完成（每 10 条一批），此处仅记录批次总耗时
         _lookup_elapsed = round(_time.time() - _t0, 1)
-        # 格式化总执行时间
-        _elapsed_mins, _elapsed_secs = divmod(int(_lookup_elapsed), 60)
-        _elapsed_hours, _elapsed_mins = divmod(_elapsed_mins, 60)
-        _elapsed_str = f"{_elapsed_hours}时{_elapsed_mins:02d}分{_elapsed_secs:02d}秒" if _elapsed_hours else f"{_elapsed_mins}分{_elapsed_secs:02d}秒"
         try:
-            # 确保目标批次表存在 sessionid/conversationid/recordid 列（老表自动补）
-            try:
-                from src.services.adp_ops import ensure_adp_field as _ensure_field
-                for _fn in ("sessionid", "conversationid", "recordid"):
-                    if any((r.get("results") or {}).get(_fn) for r in all_results):
-                        _ensure_field(app_token, table_id, _fn, 1)
-            except Exception as _e:
-                logger.warning("ADP lookup 会话字段检查失败: %s", _e)
-            update_records = []
-            for r in all_results:
-                bugid = r.get("jira_key", "")
-                rec = bt_map.get(bugid)
-                if not rec:
-                    continue
-                results_dict = r.get("results") or {}
-                status = results_dict.get("完成状态", "")
-                # 只写入有结果或状态为"无法分析"/"分析失败"/"超时未完成"的记录
-                if not r.get("ok") and status not in ("无法分析", "分析失败", "超时未完成"):
-                    continue
-                write_fields = {k: v for k, v in results_dict.items()
-                                if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
-                write_fields.pop("原因", None)
-                if write_fields.get("agent分析的问题模块"):
-                    from src.services.adp_ops import _strip_module_pid as _strip_pid
-                    write_fields["agent分析的问题模块"] = _strip_pid(write_fields["agent分析的问题模块"])
-                if write_fields.get("分析失败归因"):
-                    from src.services.adp_ops import short_failure_category as _short_reason
-                    write_fields["分析失败归因"] = _short_reason(write_fields["分析失败归因"])
-                if str(write_fields.get("完成状态", "")) in ("分析失败", "无法分析"):
-                    write_fields.pop("置信度", None)
-                # 只记录本次分析耗时；已有成功记录时，后续失败/取消不得覆盖成功记录
-                _cur_dur = write_fields.get("耗时(分)")
-                _prev_fields = rec.get("fields") or {}
-                _prev_status = str(_prev_fields.get("完成状态", "") or "")
-                if _prev_status == "完成" and str(write_fields.get("完成状态", "")) != "完成":
-                    continue
-                if _cur_dur not in (None, ""):
-                    try:
-                        # 数字字段必须传 number；字符串会触发 NumberFieldConvFail
-                        write_fields["耗时(分)"] = round(float(_cur_dur), 1)
-                    except (TypeError, ValueError):
-                        write_fields.pop("耗时(分)", None)
-                # root cause 只来自查附件链接接口；表里已有值时不覆盖
-                _prev_root = str(_prev_fields.get("root cause", "") or "").strip()
-                if _prev_root:
-                    write_fields.pop("root cause", None)
-                # traceid排查 是 URL 类型字段，必须用 {link, text} 格式，空值则移除
-                tid_check = write_fields.get("traceid排查", "")
-                if tid_check and isinstance(tid_check, str) and tid_check.startswith("http"):
-                    write_fields["traceid排查"] = {"link": tid_check, "text": tid_check}
-                else:
-                    write_fields.pop("traceid排查", None)
-                file_token = results_dict.get("_report_file_token", "")
-                if file_token:
-                    write_fields["报告链接（分析报告、可观测报告）"] = [{"file_token": file_token}]
-                else:
-                    write_fields.pop("报告链接（分析报告、可观测报告）", None)
-                # 总执行时间字段（飞书表格可能没有该列，先不写入）
-                write_fields.pop("总执行时间", None)
-                record_id = rec.get("record_id", "")
-                if record_id and write_fields:
-                    update_records.append({"record_id": record_id, "fields": write_fields})
-            if update_records:
-                # 每 5 条写回一次；空返回待重试项不在 update_records 中
-                for _i in range(0, len(update_records), 5):
-                    _chunk = update_records[_i:_i + 5]
-                    await loop.run_in_executor(
-                        None, lambda _c=_chunk: feishu_client.update_bitable_records(app_token, table_id, _c))
-                    logger.info("ADP lookup 写回: %d/%d 条", min(_i + 5, len(update_records)), len(update_records))
-                logger.info("ADP lookup 批量写回成功: %d 条（总耗时 %s）", len(update_records), _elapsed_str)
-            # 批次总耗时：批次表写本批次，数据表写累计；全失败批次不记录
-            try:
-                from src.services.adp_ops import apply_adp_batch_total, _get_adp_cfg
-                _master_id = _get_adp_cfg().get("bitable_master_table_id", "")
-                _batch_ok = any(bool(r.get("ok")) for r in all_results)
-                _batch_minutes = 0.0
-                for _r in all_results:
-                    _rd = _r.get("results") or {}
-                    try:
-                        _batch_minutes += float(_rd.get("耗时(分)") or 0)
-                    except (TypeError, ValueError):
-                        pass
-                await loop.run_in_executor(
-                    None, lambda: apply_adp_batch_total(
-                        app_token, table_id, _master_id, _batch_minutes, _batch_ok))
-            except Exception:
-                logger.warning("ADP lookup 批次总耗时写入失败", exc_info=True)
-        except Exception as e:
-            logger.error("ADP lookup 批量写回失败: %s", e)
+            from src.services.adp_ops import apply_adp_batch_total, _get_adp_cfg
+            _master_id = _get_adp_cfg().get("bitable_master_table_id", "")
+            _batch_ok = any(bool(r.get("ok")) for r in all_results)
+            _batch_minutes = 0.0
+            for _r in all_results:
+                _rd = _r.get("results") or {}
+                try:
+                    _batch_minutes += float(_rd.get("耗时(分)") or 0)
+                except (TypeError, ValueError):
+                    pass
+            await loop.run_in_executor(
+                None, lambda: apply_adp_batch_total(
+                    app_token, table_id, _master_id, _batch_minutes, _batch_ok))
+        except Exception:
+            logger.warning("ADP lookup 批次总耗时写入失败", exc_info=True)
+        if _flush_count:
+            logger.info("ADP lookup 增量写回总计: %d 条（总耗时 %ds）", _flush_count, int(_lookup_elapsed))
 
         yield f"data: {_json.dumps({'type': 'done', 'total': len(effective_bugids), 'success': total_success, 'skip': total_skip, 'timeout': total_timeout, 'fail': max(0, total_fail), 'total_elapsed': round(_time.time() - _t0, 1)}, ensure_ascii=False)}\n\n"
 
