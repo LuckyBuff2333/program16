@@ -1837,10 +1837,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         # 将 trace_id 写入结果（供飞书表格展示）
         if trace_id:
             results["traceid"] = trace_id
-        # traceid 排查报告：优先 ADP 报告链接，其次沙箱链接，最后本地报告路径
-        _report_url_for_trace = results.get("_report_url", "")
-        _sandbox_for_trace = out.get("_sandbox_url", "")
-        results["traceid排查"] = _report_url_for_trace or _sandbox_for_trace or ""
+        # traceid 排查报告：保留首次调用的链接（与首次 trace_id 对齐）
+        _first_trace_check = results.get("_report_url", "") or out.get("_sandbox_url", "") or ""
+        results["traceid排查"] = _first_trace_check
 
         # 前置判断：没有任何报告链接 → 标记“可疑未完成”，供续接与失败归因区分
         if not results.get("_report_url"):
@@ -2010,9 +2009,12 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             results = extract_adp_results(full_text, closeout_data, start_ts, end_ts, file_urls)
             if trace_id:
                 results["traceid"] = trace_id
-            # 续接后 results 被重建，补回 traceid排查
-            _report_url_for_trace = results.get("_report_url", "")
-            results["traceid排查"] = _report_url_for_trace or out.get("_sandbox_url", "") or ""
+            # 续接后 results 被重建，恢复首次调用的 traceid排查
+            if _first_trace_check:
+                results["traceid排查"] = _first_trace_check
+            elif not results.get("traceid排查"):
+                _cont_url = results.get("_report_url", "") or out.get("_sandbox_url", "") or ""
+                results["traceid排查"] = _cont_url
             out["text_len"] = len(full_text)
             out["text_preview"] = full_text[:2000]
             out["trace_id"] = trace_id
