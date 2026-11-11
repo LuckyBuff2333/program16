@@ -630,10 +630,10 @@ async def test_bitable_vcs_query(request: Request):
                 conditions = []
                 if date_from:
                     ts_from_str = str(int(ts_from))
-                    conditions.append({"field_name": "创建日期", "operator": "isGreaterEqual", "value": [ts_from_str]})
+                    conditions.append({"field_name": "创建日期", "operator": "isGreater", "value": ["exact date", ts_from_str]})
                 if date_to:
                     ts_to_str = str(int(ts_to))
-                    conditions.append({"field_name": "创建日期", "operator": "isLessEqual", "value": [ts_to_str]})
+                    conditions.append({"field_name": "创建日期", "operator": "isLess", "value": ["exact date", ts_to_str]})
                 filter_obj = {"conjunction": "and", "conditions": conditions}
                 records = await loop.run_in_executor(
                     None, lambda: _fc.search_bitable_records(
