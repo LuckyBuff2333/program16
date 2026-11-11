@@ -629,11 +629,13 @@ async def test_bitable_vcs_query(request: Request):
             try:
                 conditions = []
                 if date_from:
-                    ts_from_str = str(int(ts_from))
-                    conditions.append({"field_name": "创建日期", "operator": "isGreater", "value": ["exact date", ts_from_str]})
+                    # 日期字段只支持 isGreater/isLess；ExactDate 会归到当天零点，
+                    # 因此起始日减一天、结束日加一天，保证范围包含首尾两天。
+                    ts_from_str = str(int(ts_from - 86400000))
+                    conditions.append({"field_name": "创建日期", "operator": "isGreater", "value": ["ExactDate", ts_from_str]})
                 if date_to:
-                    ts_to_str = str(int(ts_to))
-                    conditions.append({"field_name": "创建日期", "operator": "isLess", "value": ["exact date", ts_to_str]})
+                    ts_to_str = str(int(ts_to + 86400000))
+                    conditions.append({"field_name": "创建日期", "operator": "isLess", "value": ["ExactDate", ts_to_str]})
                 filter_obj = {"conjunction": "and", "conditions": conditions}
                 records = await loop.run_in_executor(
                     None, lambda: _fc.search_bitable_records(
@@ -4680,8 +4682,10 @@ async def regression_form_query(request: Request):
         ts_from_str = str(int(ts_from))
         ts_to_str = str(int(ts_to))
         filter_obj = {"conjunction": "and", "conditions": [
-            {"field_name": "创建日期", "operator": "isGreaterEqual", "value": [ts_from_str]},
-            {"field_name": "创建日期", "operator": "isLessEqual", "value": [ts_to_str]},
+            {"field_name": "创建日期", "operator": "isGreater",
+             "value": ["ExactDate", str(int(ts_from - 86400000))]},
+            {"field_name": "创建日期", "operator": "isLess",
+             "value": ["ExactDate", str(int(ts_to + 86400000))]},
         ]}
         # 按需扩展查询字段
         field_names = ["jira号", "创建日期", "AI初步分析结果"]
