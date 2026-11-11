@@ -2079,6 +2079,19 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                             results["置信度"] = _cm.group(1)
                     except Exception:
                         pass
+                # root cause 也可能只在 HTML 报告正文中
+                if not str(results.get("agent分析的root cause", "") or "").strip() and local_path:
+                    try:
+                        import re as _re_rc
+                        with open(local_path, encoding="utf-8", errors="ignore") as _rf:
+                            _rtext = _re_rc.sub(r"\s+", " ",
+                                                _re_rc.sub(r"<[^>]+>", " ", _rf.read()))
+                        _rm = _re_rc.search(
+                            r"根因归属\s*[:：]\s*(.*?)(?:\｜\s*归责|置信|核心依据|$)", _rtext)
+                        if _rm:
+                            results["agent分析的root cause"] = _rm.group(1).strip()
+                    except Exception:
+                        pass
             else:
                 # 下载失败：根据错误码区分归类
                 results["完成状态"] = "分析失败"
