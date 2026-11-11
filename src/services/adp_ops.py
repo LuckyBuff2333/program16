@@ -2067,6 +2067,18 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 results["_report_file_token"] = file_token
                 results["报告链接（分析报告、可观测报告）"] = f"附件: {html_file or 'report.html'}"
                 out["_report_file_token"] = file_token
+                # 置信度可能在 HTML 报告正文中（raw results 没提取到）
+                if not str(results.get("置信度", "") or "").strip() and local_path:
+                    try:
+                        import re as _re_conf
+                        with open(local_path, encoding="utf-8", errors="ignore") as _cf:
+                            _ctext = _re_conf.sub(r"<[^>]+>", " ", _cf.read())
+                        _cm = (_re_conf.search(r"自评置信度\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)", _ctext)
+                               or _re_conf.search(r"置信度\s*[:：]\s*([0-9]+(?:\.[0-9]+)?)", _ctext))
+                        if _cm:
+                            results["置信度"] = _cm.group(1)
+                    except Exception:
+                        pass
             else:
                 # 下载失败：根据错误码区分归类
                 results["完成状态"] = "分析失败"
