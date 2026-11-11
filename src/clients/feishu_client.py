@@ -952,6 +952,31 @@ def create_bitable_table(app_token: str, name: str, fields: list) -> str:
     return table_id
 
 
+def update_bitable_field_name(app_token: str, table_id: str, field_id: str,
+                              field_name: str, field_type: int = 1) -> bool:
+    """修改多维表格字段名称（保留字段ID和所有数据）。"""
+    url = f"{_FEISHU_API}/bitable/v1/apps/{app_token}/tables/{table_id}/fields/{field_id}"
+    headers = _bitable_headers()
+    body = {"field_name": field_name, "type": field_type}
+    try:
+        resp = httpx.put(url, headers=headers, json=body, timeout=15, verify=False)
+        if resp.status_code == 401:
+            _token_cache["token"] = None
+            if _refresh_user_token() or get_tenant_access_token():
+                resp = httpx.put(url, headers=_bitable_headers(), json=body, timeout=15, verify=False)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.warning("修改字段名失败: %s.%s code=%s msg=%s",
+                           table_id, field_id, data.get("code"), data.get("msg"))
+            return False
+        logger.info("字段已改名: %s.%s -> %s", table_id, field_id, field_name)
+        return True
+    except Exception as e:
+        logger.warning("修改字段名异常 %s.%s: %s", table_id, field_id, e)
+        return False
+
+
 def create_bitable_field(app_token: str, table_id: str, field_name: str, field_type: int = 1) -> bool:
     """向多维表格数据表中添加字段
 

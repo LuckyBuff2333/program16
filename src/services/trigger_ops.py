@@ -23,6 +23,16 @@ from src.services.report_ops import _delete_default_bitable_table
 
 _CACHE_BATCH_PROGRESS_FILE = os.path.join(PROJECT_ROOT, "data", "cache_batch_progress.json")
 
+# 云端触发表字段名：历史表统一改名为“问题发生时间”，读取兼容旧名
+_TT_FIELD = "问题发生时间"
+_TT_FIELD_LEGACY = "触发时间"
+
+
+def _read_trigger_time(fields: dict) -> str:
+    if _TT_FIELD in fields:
+        return _bitable_text(fields.get(_TT_FIELD, ""))
+    return _bitable_text(fields.get(_TT_FIELD_LEGACY, ""))
+
 # ── 云端缓存状态 ──
 _trigger_time_table_cache = {"app_token": "", "table_ids": [], "inited": False}
 _trigger_time_bugid_cache = {}  # {jira号: (table_id, record_id, trigger_time)}
@@ -218,7 +228,7 @@ def _get_trigger_time_table_cfg() -> tuple:
     app_token = result["app_token"]
     fields = [
         {"field_name": "jira号", "type": 1},
-        {"field_name": "触发时间", "type": 1},
+        {"field_name": _TT_FIELD, "type": 1},
         {"field_name": "提取时间", "type": 1},
         # 新建表时直接带上扩展列，避免新表缺列导致 FieldNameNotFound
     ]
@@ -251,7 +261,7 @@ def _migrate_local_trigger_times_to_cloud(app_token: str, table_id: str):
     if not local_times:
         return
     records = [{"fields": {
-        "jira号": bugid, "触发时间": tt
+        "jira号": bugid, _TT_FIELD: tt
     }} for bugid, tt in local_times.items()]
     try:
         feishu_client.batch_create_records(app_token, table_id, records)
@@ -336,7 +346,7 @@ def _load_cloud_trigger_cache() -> tuple:
                     if not jira_no:
                         continue
                     keys.add(jira_no)
-                    tt = _bitable_text(fields.get("触发时间", ""))
+                    tt = _read_trigger_time(fields)
                     if tt:
                         times[jira_no] = tt
                     if not _trigger_time_bugid_cache or jira_no not in _trigger_time_bugid_cache:
@@ -390,7 +400,7 @@ def _load_trigger_times_from_cloud() -> dict:
                 for rec in records or []:
                     fields = rec.get("fields", {})
                     jira_no = _bitable_text(fields.get("jira号", ""))
-                    tt = _bitable_text(fields.get("触发时间", ""))
+                    tt = _read_trigger_time(fields)
                     if jira_no and tt:
                         result[jira_no] = tt
         logger.info("云端触发时间加载完成: %d 条", len(result))
@@ -442,7 +452,7 @@ def _load_all_cloud_trigger_records() -> list:
             for rec in records:
                 fields = rec.get("fields", {})
                 jira_no = _bitable_text(fields.get("jira号", ""))
-                tt = _bitable_text(fields.get("触发时间", ""))
+                tt = _read_trigger_time(fields)
                 if jira_no:
                     all_records.append({
                         "jira_no": jira_no,
@@ -468,7 +478,7 @@ def _ensure_trigger_time_bugid_cache():
             for rec in records:
                 fields = rec.get("fields", {})
                 jira_no = _bitable_text(fields.get("jira号", ""))
-                trigger_time = _bitable_text(fields.get("触发时间", ""))
+                trigger_time = _read_trigger_time(fields)
                 if jira_no:
                     _trigger_time_bugid_cache[jira_no] = (tid, rec["record_id"], trigger_time)
         except Exception as e:
@@ -497,7 +507,7 @@ def _search_trigger_time_single(bugid: str) -> dict:
             if records:
                 rec = records[0]
                 fields = rec.get("fields", {})
-                tt = _bitable_text(fields.get("触发时间", ""))
+                tt = _read_trigger_time(fields)
                 result = {"table_id": tid, "record_id": rec["record_id"], "trigger_time": tt}
                 # 填充缓存
                 _trigger_time_bugid_cache[bugid] = (tid, rec["record_id"], tt)
@@ -554,7 +564,7 @@ def _search_trigger_time_batch(bugids: list) -> dict:
                     fields = rec.get("fields", {})
                     jira_no = _bitable_text(fields.get("jira号", ""))
                     if jira_no and jira_no in remaining_set:
-                        tt = _bitable_text(fields.get("触发时间", ""))
+                        tt = _read_trigger_time(fields)
                         if tt:
                             result[jira_no] = tt
                         _trigger_time_bugid_cache[jira_no] = (tid, rec["record_id"], tt)
@@ -771,9 +781,9 @@ def _build_trigger_write_fields(trigger_time, source: str = "", ref_time: str = 
     避免不可用时间被下游 AI 日志分析消费（月度失败 72.4% 为时间过滤后日志为空）。
     """
     meta = _trigger_time_meta(trigger_time, source, ref_time, precision=precision)
-    fields = {"触发时间": trigger_time, **meta}
+    fields = {_TT_FIELD: trigger_time, **meta}
     if meta.get("时间状态") == "不可用":
-        fields["触发时间"] = ""
+        fields[_TT_FIELD] = ""
         fields["备注"] = _UNAVAILABLE_SELF_CHECK_NOTE
     return fields
 
@@ -893,7 +903,7 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "",
                 {"record_id": rec_id, "fields": dict(_wf)}
             ])
             # 更新缓存时间戳（以实际写入值为准：自检不可用时为空）
-            _trigger_time_bugid_cache[bugid] = (tid, rec_id, _wf.get("触发时间", ""))
+            _trigger_time_bugid_cache[bugid] = (tid, rec_id, _wf.get(_TT_FIELD, ""))
             logger.info("云端触发时间单条更新(缓存命中): %s -> %s", bugid, trigger_time)
             cloud_ok = True
         except Exception as e:
@@ -906,8 +916,8 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "",
         cloud_ok = _batch_save_trigger_times_to_cloud({bugid: trigger_time}, src_dict, ref_dict)
     # 云端成功后才写本地 CSV，避免云端失败时本地多余
     # M11：自检不可用的时间未写入触发时间字段，本地 CSV 同样不落地
-    if cloud_ok and _wf.get("触发时间"):
-        _save_trigger_time_to_csv(bugid, _wf["触发时间"])
+    if cloud_ok and _wf.get(_TT_FIELD):
+        _save_trigger_time_to_csv(bugid, _wf[_TT_FIELD])
         # 清除云端触发时间批量缓存，确保后续步骤能读到最新数据
         _bitable_bulk_cache.pop("cloud_trigger_cache", None)
         _bitable_bulk_cache.pop("trigger_times_cloud", None)
@@ -916,7 +926,7 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "",
 
 
 def _safe_update_records(app_token, table_id, recs, core_fields_only=lambda r: {"record_id": r["record_id"],
-                                                                              "fields": {"触发时间": r["fields"].get("触发时间", "")}}):
+                                                                              "fields": {_TT_FIELD: r["fields"].get(_TT_FIELD, "")}}):
     """带扩展列的写入：失败时退回核心字段重试，避免字段未迁移导致整条写失败"""
     from src.clients import feishu_client
     try:
@@ -955,7 +965,7 @@ def _safe_create_records(app_token, table_id, recs):
         except Exception as e_retry:
             logger.warning("触发时间补列后仍失败，退回核心字段: %s", e_retry)
         core = [{"fields": {k: v for k, v in r.get("fields", {}).items()
-                            if k in ("jira号", "触发时间", "提取时间", "备注")}} for r in recs]
+                            if k in ("jira号", _TT_FIELD, "提取时间", "备注")}} for r in recs]
         try:
             feishu_client.batch_create_records(app_token, table_id, core)
             return True
@@ -1003,13 +1013,13 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
                 _meta = _trigger_time_meta(trigger_time, sources.get(bugid, ""),
                                            _lookup_ref(bugid, ref_times),
                                            precision=precisions.get(bugid) or _resolve_time_precision(bugid, trigger_time))
-                upd_fields = {k: v for k, v in _meta.items() if k != "触发时间"}
+                upd_fields = {k: v for k, v in _meta.items() if k != _TT_FIELD}
                 if _meta.get("时间状态") == "不可用":
                     upd_fields["备注"] = _UNAVAILABLE_SELF_CHECK_NOTE
                     logger.warning("自检不可用，不写入触发时间，bugid=%s 改打待办标记: %s",
                                    bugid, trigger_time)
                 else:
-                    upd_fields["触发时间"] = trigger_time
+                    upd_fields[_TT_FIELD] = trigger_time
                 updates_by_table.setdefault(tid, []).append({
                     "record_id": rec_id,
                     "fields": upd_fields
@@ -1036,11 +1046,11 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
                     _meta = _trigger_time_meta(trigger_time, sources.get(bugid, ""),
                                                _lookup_ref(bugid, ref_times),
                                                precision=precisions.get(bugid) or _resolve_time_precision(bugid, trigger_time))
-                    upd_fields = {k: v for k, v in _meta.items() if k != "触发时间"}
+                    upd_fields = {k: v for k, v in _meta.items() if k != _TT_FIELD}
                     if _meta.get("时间状态") == "不可用":
                         upd_fields["备注"] = _UNAVAILABLE_SELF_CHECK_NOTE
                     else:
-                        upd_fields["触发时间"] = trigger_time
+                        upd_fields[_TT_FIELD] = trigger_time
                     updates_by_table.setdefault(tid, []).append({
                         "record_id": rec_id,
                         "fields": upd_fields
@@ -1061,7 +1071,7 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
                 if rec_id:
                     for b, (t, rid, _) in list(_trigger_time_bugid_cache.items()):
                         if rid == rec_id:
-                            tt = item["fields"].get("触发时间", "")
+                            tt = item["fields"].get(_TT_FIELD, "")
                             _trigger_time_bugid_cache[b] = (t, rid, tt)
                             break
         # 批量新建：按 500 条上限分批写入，优先填充空位最多的表
@@ -1153,7 +1163,7 @@ def _refresh_trigger_time_bugid_cache(app_token: str, table_ids: list):
             for rec in records:
                 fields = rec.get("fields", {})
                 jira_no = _bitable_text(fields.get("jira号", ""))
-                trigger_time = _bitable_text(fields.get("触发时间", ""))
+                trigger_time = _read_trigger_time(fields)
                 if jira_no:
                     _trigger_time_bugid_cache[jira_no] = (tid, rec["record_id"], trigger_time)
         except Exception as e:
@@ -1168,7 +1178,7 @@ def _create_trigger_time_subtable(app_token: str, index: int, existing_table_ids
     from src.clients import feishu_client
     fields = [
         {"field_name": "jira号", "type": 1},
-        {"field_name": "触发时间", "type": 1},
+        {"field_name": _TT_FIELD, "type": 1},
         {"field_name": "提取时间", "type": 1},
     ]
     # 新建表时直接带上扩展列，避免新表缺列导致 FieldNameNotFound
@@ -1292,7 +1302,7 @@ def rebalance_trigger_time_tables() -> dict:
                 fields = rec.get("fields", {})
                 new_fields = {
                     "jira号": _bitable_text(fields.get("jira号", "")),
-                    "触发时间": _bitable_text(fields.get("触发时间", "")),
+                    _TT_FIELD: _read_trigger_time(fields),
                     "提取时间": _bitable_text(fields.get("提取时间", "")),
                 }
                 # 再平衡时保留扩展列，避免搬表丢数据

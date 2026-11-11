@@ -60,7 +60,7 @@
       <el-table :data="rows" size="small" stripe border max-height="400">
         <el-table-column type="index" label="#" width="50" align="center"></el-table-column>
         <el-table-column prop="bugid" label="Jira号" width="140"></el-table-column>
-        <el-table-column prop="time" label="触发时间" min-width="160">
+        <el-table-column prop="time" label="问题发生时间" min-width="160">
           <template #default="{ row }">
             <span :style="row.time ? 'color:#67c23a' : 'color:#c0c4cc'">{{ formatMinute(row.time) || '—' }}</span>
           </template>

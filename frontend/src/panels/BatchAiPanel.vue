@@ -178,7 +178,7 @@
           <el-table-column label="结果" width="80">
             <template #default="{row}"><el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag></template>
           </el-table-column>
-          <el-table-column prop="触发时间" label="触发时间" width="160" show-overflow-tooltip></el-table-column>
+          <el-table-column prop="触发时间" label="问题发生时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="执行时间" label="执行时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="开始时间" label="开始时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="备注" label="备注" show-overflow-tooltip></el-table-column>
@@ -229,7 +229,7 @@
         <el-table v-if="aiDirect.timeRows.length" :data="aiDirect.timeRows" size="small" stripe border max-height="200" style="margin-top:10px">
           <el-table-column type="index" label="#" width="45"></el-table-column>
           <el-table-column prop="jira号" label="Jira号" width="130"></el-table-column>
-          <el-table-column prop="触发时间" label="触发时间" width="180">
+          <el-table-column prop="触发时间" label="问题发生时间" width="180">
             <template #default="{row}"><span :style="row['触发时间']?'':'color:#909399'">{{ row['触发时间'] || '未提取到' }}</span></template>
           </el-table-column>
           <el-table-column v-if="aiDirect.filterProblemTime" prop="问题发生时间" label="问题发生时间" width="180">
@@ -251,7 +251,7 @@
             <template #default="{row}"><el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag></template>
           </el-table-column>
           <el-table-column prop="备注" label="接口返回验证" min-width="220" show-overflow-tooltip></el-table-column>
-          <el-table-column prop="触发时间" label="触发时间" width="160" show-overflow-tooltip></el-table-column>
+          <el-table-column prop="触发时间" label="问题发生时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="执行时间" label="执行时间" width="160" show-overflow-tooltip></el-table-column>
         </el-table>
         <el-alert v-if="aiDirect.runDoneMsg" type="success" :closable="false" :title="aiDirect.runDoneMsg" style="margin-top:10px"></el-alert>
@@ -355,7 +355,7 @@
           <el-table-column label="结果" width="80">
             <template #default="{row}"><el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag></template>
           </el-table-column>
-          <el-table-column prop="触发时间" label="触发时间" width="160" show-overflow-tooltip></el-table-column>
+          <el-table-column prop="触发时间" label="问题发生时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="执行时间" label="执行时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="备注" label="备注" show-overflow-tooltip></el-table-column>
         </el-table>
