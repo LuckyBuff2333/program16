@@ -75,7 +75,7 @@
             <el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="触发时间" label="触发时间" width="160"></el-table-column>
+        <el-table-column prop="触发时间" label="问题发生时间" width="160"></el-table-column>
         <el-table-column prop="执行时间" label="执行时间" width="160"></el-table-column>
         <el-table-column prop="备注" label="备注" min-width="200" show-overflow-tooltip></el-table-column>
       </el-table>

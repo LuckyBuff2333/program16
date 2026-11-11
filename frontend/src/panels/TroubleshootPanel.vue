@@ -221,7 +221,7 @@
         <div class="diag-action-bar">
           <el-button size="small" type="warning" :loading="troubleshoot.exportingTriggerIssues" @click="exportTriggerTimeIssues"
             :disabled="!troubleshoot.diagResults.filter(r => r.category === '触发时间问题' || r.category?.includes('触发时间')).length">
-            生成触发时间问题表格
+            生成问题发生时间问题表格
           </el-button>
           <el-button size="small" type="success" :loading="troubleshoot.writingReview" @click="batchWriteReview"
             :disabled="!getFilteredDiagResults().filter(r => r.report && r.report.human_reason).length">
@@ -245,7 +245,7 @@
             <el-tag v-if="row.fallback_tag" type="warning" size="small" style="margin-left:4px">{{ row.fallback_tag }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="当前触发时间" width="180">
+        <el-table-column label="当前问题发生时间" width="180">
           <template #default="{row}">
             <span>{{ formatMinute(row.problem_time) || '-' }}</span>
           </template>
@@ -446,7 +446,7 @@
               <template #default="{row}"><el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag></template>
             </el-table-column>
             <el-table-column prop="报告长度" label="报告长度" width="90"></el-table-column>
-            <el-table-column prop="触发时间" label="触发时间" width="160" show-overflow-tooltip></el-table-column>
+            <el-table-column prop="触发时间" label="问题发生时间" width="160" show-overflow-tooltip></el-table-column>
             <el-table-column prop="执行时间" label="执行时间" width="160" show-overflow-tooltip></el-table-column>
             <el-table-column prop="备注" label="备注" min-width="160" show-overflow-tooltip></el-table-column>
           </el-table>
@@ -734,7 +734,7 @@ export default {
         const body = await api('/api/trigger_time/update', {
           method: 'POST', body: JSON.stringify({ bugid: row.bugid, new_time: newTime })
         });
-        ElMessage.success(`${row.bugid} 触发时间已替换为 ${newTime}（${body.message || '已保存'}）`);
+        ElMessage.success(`${row.bugid} 问题发生时间已替换为 ${newTime}（${body.message || '已保存'}）`);
         row.verify_status = 'corrected';
         row.correction_time = newTime;
       } catch (e) { /* 已提示 */ }
@@ -1119,7 +1119,7 @@ export default {
         });
         const catHint = newCategory ? `（归类：${newCategory}）` : '';
         ElMessage({ type: 'success', message: `${row.bugid} 保存成功${catHint}`, duration: 2500, showClose: true });
-        // 触发时间问题：提取时间并写入云端触发时间表
+        // 触发时间问题：提取时间并写入云端问题发生时间表
         if (newCategory === '触发时间问题') {
           const timeMatch = newReason.match(/(\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?)/);
           if (timeMatch) {
@@ -1129,7 +1129,7 @@ export default {
                 method: 'POST',
                 body: JSON.stringify({ items: [{ bugid: row.bugid, new_time: newTime }] }),
               });
-              ElMessage({ type: 'success', message: `云端触发时间已更新为 ${newTime}`, duration: 2000, showClose: true });
+              ElMessage({ type: 'success', message: `云端问题发生时间已更新为 ${newTime}`, duration: 2000, showClose: true });
             } catch (e2) {
               ElMessage({ type: 'warning', message: `云端写入失败: ${e2.message || e2}`, duration: 3000, showClose: true });
             }
@@ -1315,14 +1315,14 @@ export default {
           修正建议: formatMinute(r.suggested_time || ''),
           人工审核结果: formatHumanReason((r.report && r.report.human_reason) || r.correction_note || ''),
         }));
-      if (!triggerIssues.length) return ElMessage.warning('无触发时间问题记录');
+      if (!triggerIssues.length) return ElMessage.warning('无问题发生时间问题记录');
       this.troubleshoot.exportingTriggerIssues = true;
       try {
         const body = await api('/api/troubleshoot/export_trigger_time_issues', {
           method: 'POST', body: JSON.stringify({ items: triggerIssues })
         });
         const d = body.data;
-        let msg = `已生成触发时间问题表格: ${d.count} 条`;
+        let msg = `已生成问题发生时间问题表格: ${d.count} 条`;
         if (d.cloud_url) msg += `\n云端: ${d.cloud_url}`;
         ElMessage.success(msg);
       } catch (e) { ElMessage.error('生成失败: ' + (e.message || e)); }

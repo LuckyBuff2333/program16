@@ -2,7 +2,7 @@
   <div class="test-panel">
     <div class="section-title">时间批量提取</div>
     <el-alert type="info" :closable="false"
-      title="通过 JQL 查询或手动输入 Jira 号，批量提取触发时间（评论/字段 → 视频OCR → 图片OCR），20条一批写入云端"></el-alert>
+      title="通过 JQL 查询或手动输入 Jira 号，批量提取问题发生时间（评论/字段 → 视频OCR → 图片OCR），20条一批写入云端"></el-alert>
 
     <el-tabs v-model="activeTab" type="border-card" class="time-tabs" style="margin-top:12px">
       <!-- ====== Tab 1: JQL/手动提取 ====== -->
@@ -18,7 +18,7 @@
         <el-button size="small" @click="setJql('yesterday')">昨日新增 Bug</el-button>
         <el-button size="small" @click="setJql('week')">本周新增 Bug</el-button>
         <el-button size="small" @click="setJql('lastWeek')">上周新增 Bug</el-button>
-        <el-button size="small" @click="setJql('no_label')">无触发时间标签</el-button>
+        <el-button size="small" @click="setJql('no_label')">无问题发生时间标签</el-button>
       </div>
     </el-card>
 
@@ -98,7 +98,7 @@
       <el-tab-pane label="表格提取" name="table">
         <el-card shadow="never">
           <el-alert type="info" :closable="false" show-icon
-            title="上传 Excel/CSV 文件，自动识别 Jira 号和问题发生时间列，提取触发时间后与表格时间对比（差值≤5分钟视为一致）。结果仅保存本地，不写入云端。"></el-alert>
+            title="上传 Excel/CSV 文件，自动识别 Jira 号和问题发生时间列，提取问题发生时间后与表格时间对比（差值≤5分钟视为一致）。结果仅保存本地，不写入云端。"></el-alert>
           <div style="display:flex;gap:12px;align-items:flex-start;margin-top:12px">
             <el-upload ref="tableUploadRef" :auto-upload="false" :show-file-list="false"
               accept=".xlsx,.xls,.csv" :on-change="onTableFileChange">
@@ -208,7 +208,7 @@
       <el-tab-pane label="链接提取" name="link">
         <el-card shadow="never">
           <el-alert type="info" :closable="false" show-icon
-            title="粘贴云端多维表格链接，选择表格后提取时间并对比；对比完可一键写回锚点、或批量写入云端触发时间表。"></el-alert>
+            title="粘贴云端多维表格链接，选择表格后提取时间并对比；对比完可一键写回锚点、或批量写入云端问题发生时间表。"></el-alert>
           <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
             <el-input v-model="linkExtract.url" placeholder="https://xxx.feishu.cn/base/xxxx?table=tblxxxx" style="flex:1"
               @keydown.enter="parseLinkTables"></el-input>
@@ -277,7 +277,7 @@
       <!-- ====== Tab 4: 时间修改 ====== -->
       <el-tab-pane label="时间修改" name="timeEdit">
         <el-card shadow="never">
-          <div style="margin-bottom:8px;font-weight:600;color:#303133">按 Jira 号修改云端触发时间</div>
+          <div style="margin-bottom:8px;font-weight:600;color:#303133">按 Jira 号修改云端问题发生时间</div>
           <el-input v-model="timeEdit.input" type="textarea" :rows="3"
             placeholder="输入单个或多个 Jira 号，逗号/换行/空格分隔，如：VCU-123456, VCU-123457"
             @keydown.ctrl.enter="loadCloudTimes"></el-input>
@@ -287,7 +287,7 @@
             <span style="font-size:12px;color:#909399">{{ timeEdit.statusMsg }}</span>
           </div>
           <div style="margin-top:6px;font-size:12px;color:#c0c4cc">
-            读取的是云端缓存中的触发时间（缓存保留真实秒）；首次读取会加载云端全量缓存，可能需要几十秒。无记录的 Jira 可直接填写时间，保存到云端时秒自动补 00。
+            读取的是云端缓存中的问题发生时间（缓存保留真实秒）；首次读取会加载云端全量缓存，可能需要几十秒。无记录的 Jira 可直接填写时间，保存到云端时秒自动补 00。
           </div>
         </el-card>
 
@@ -768,7 +768,7 @@ export default {
       if (!items.length) return ElMessage.info('没有需要保存的修改');
       try {
         await ElMessageBox.confirm(
-          `将把 ${items.length} 条触发时间写回云端（并同步诊断缓存），确认保存？`,
+          `将把 ${items.length} 条问题发生时间写回云端（并同步诊断缓存），确认保存？`,
           '确认保存', { confirmButtonText: '保存', cancelButtonText: '取消', type: 'warning' });
       } catch { return; }
       this.timeEdit.saving = true;

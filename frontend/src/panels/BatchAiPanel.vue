@@ -269,7 +269,7 @@
               </el-upload>
               <span v-if="formExec.fileName" style="font-size:13px;color:#606266">{{ formExec.fileName }}</span>
               <el-tag v-if="formExec.keys.length" type="success" size="small">{{ formExec.keys.length }} 个 Jira 号</el-tag>
-              <el-tag v-if="formExec.csvTimeCount" type="info" size="small">{{ formExec.csvTimeCount }} 个有触发时间</el-tag>
+              <el-tag v-if="formExec.csvTimeCount" type="info" size="small">{{ formExec.csvTimeCount }} 个有问题发生时间</el-tag>
             </div>
             <div class="action-right">
               <el-button size="default" :loading="formExec.uploading" :disabled="!formExec.rawFile" @click="uploadFormFile">解析文件</el-button>
@@ -343,9 +343,9 @@
             <el-tag v-if="formExec.sampleStats.failed" type="danger" size="small">提取失败: {{ formExec.sampleStats.failed }}</el-tag>
           </div>
         </div>
-        <!-- 无触发时间的 Jira 号 -->
+        <!-- 无问题发生时间的 Jira 号 -->
         <div v-if="formExec.noTimeJiras.length" class="progress-card" style="margin-top:6px">
-          <div style="font-size:12px;font-weight:600;color:#f56c6c;margin-bottom:4px">无触发时间（{{ formExec.noTimeJiras.length }} 个）</div>
+          <div style="font-size:12px;font-weight:600;color:#f56c6c;margin-bottom:4px">无问题发生时间（{{ formExec.noTimeJiras.length }} 个）</div>
           <el-tag v-for="j in formExec.noTimeJiras" :key="j" type="danger" size="small" style="margin:2px">{{ j }}</el-tag>
         </div>
         <!-- 执行结果表格 -->
@@ -624,12 +624,12 @@ export default {
         this.batchAi.filteredKeys = this.batchAi.filteredKeys.filter(k => !this.batchAi.selected.includes(k));
         if (!this.batchAi.selected.length) throw new Error('动态队列抽样结果为空');
         if (this.batchAi.execMode === 'online') await this.batchAiRunOnline(); else await this.batchAiRun();
-        // 过滤无触发时间的幽灵项：后端 prod_batch_run 会静默丢弃无触发时间的 bugid，
+        // 过滤无问题发生时间的幽灵项：后端 prod_batch_run 会静默丢弃无问题发生时间的 bugid，
         // 如果不在此处过滤，它们会永远卡在在途列表中直到 55 分钟超时
         let inflight = this.batchAi.selected.filter(k => this.batchAi.triggerTimes[k]);
         const ghostCount = this.batchAi.selected.length - inflight.length;
         if (ghostCount) {
-          this.batchAi.sampleMsg = `抽样 ${this.batchAi.selected.length} 条，${ghostCount} 条无触发时间已跳过`;
+          this.batchAi.sampleMsg = `抽样 ${this.batchAi.selected.length} 条，${ghostCount} 条无问题发生时间已跳过`;
           this.batchAi.runTotal = inflight.length;  // 修正进度条总数
         }
         pending = pending.filter(k => !inflight.includes(k));
@@ -752,7 +752,7 @@ export default {
             const prevBatchIds = [...this.batchAi.selected];
             const prevSource = this.batchAi.execMode === 'online' ? 'parseFullTicket' : 'jira_analyze';
             const remaining = this.batchAi.filteredKeys.length;
-            this.batchAi.oneClickMsg = `第 ${i - 1} 轮完成 | 剩余 ${remaining} 个候选 | 正在预提取第 ${i}/${totalRounds} 轮触发时间...`;
+            this.batchAi.oneClickMsg = `第 ${i - 1} 轮完成 | 剩余 ${remaining} 个候选 | 正在预提取第 ${i}/${totalRounds} 轮问题发生时间...`;
             const preSamplePromise = this.batchAiSample(true).then(result => {
               if (result) { this.batchAi.preSample = { ready: true, selected: result.selected, trigger_times: result.trigger_times, sampleStats: result.sampleStats, error: null }; }
               else { this.batchAi.preSample = { ready: false, selected: [], trigger_times: {}, sampleStats: null, error: '预提取失败' }; }
@@ -877,8 +877,8 @@ export default {
         const times = evt.trigger_times || {}; const sources = evt.sources || {};
         this.aiDirect.triggerTimes = times;
         this.aiDirect.timeRows = this.aiDirect.parsed.map(k => ({ 'jira号': k, '触发时间': times[k] || '', '来源': sources[k] || '' }));
-        ElMessage.success(`提取完成: ${Object.keys(times).length}/${this.aiDirect.parsed.length} 有触发时间`);
-      } catch (e) { ElMessage.error('提取触发时间失败: ' + (e.message || '')); } finally { this.running.aiDirectExtract = false; }
+        ElMessage.success(`提取完成: ${Object.keys(times).length}/${this.aiDirect.parsed.length} 有问题发生时间`);
+      } catch (e) { ElMessage.error('提取问题发生时间失败: ' + (e.message || '')); } finally { this.running.aiDirectExtract = false; }
     },
     async runAiDirectAnalyze() {
       if (!this.aiDirect.parsed.length) { this.parseAiDirectBugids(); }
@@ -937,7 +937,7 @@ export default {
         this.aiDirect.parsed = ptKeys;
         this.aiDirect.timeRows = ptKeys.map(k => ({ 'jira号': k, '触发时间': this.aiDirect.problemTimes[k], '来源': '问题发生时间', '问题发生时间': this.aiDirect.problemTimes[k] }));
       } else {
-        try { await this.runAiDirectExtract(); } catch (e) { return ElMessage.error('获取触发时间失败: ' + (e.message || '')); }
+        try { await this.runAiDirectExtract(); } catch (e) { return ElMessage.error('获取问题发生时间失败: ' + (e.message || '')); }
       }
       this.running.aiDirectRun = true; this.aiDirect.runResults = []; this.aiDirect.runTotal = this.aiDirect.parsed.length; this.aiDirect.runDone = 0; this.aiDirect.runDoneMsg = '';
       this.aiDirectAbort = new AbortController();
@@ -1043,7 +1043,7 @@ export default {
                 this.formExec.doneMsg = `第 ${evt.round} 轮完成，等待 ${evt.interval_min} 分钟后开始下一轮...`;
               } else if (evt.type === 'done') {
                 let msg = `全部完成: ${evt.success}/${evt.total} 成功`;
-                if (evt.no_time_count) msg += `，${evt.no_time_count} 个无触发时间`;
+                if (evt.no_time_count) msg += `，${evt.no_time_count} 个无问题发生时间`;
                 if (evt.cloud_url) msg += `，已上传云端`;
                 this.formExec.doneMsg = msg;
               } else if (evt.type === 'stopped') {

@@ -12,7 +12,7 @@
           <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
             <div style="flex:1;min-width:260px">
               <div style="margin-bottom:8px;font-size:13px;color:#606266">
-                上传 Excel/CSV（自动识别列：Jira号、问题触发时间点、问题描述）
+                上传 Excel/CSV（自动识别列：Jira号、问题发生时间点、问题描述）
               </div>
               <el-upload ref="uploadRef" :auto-upload="false" :show-file-list="false"
                 accept=".xlsx,.xls,.csv" :on-change="onFileChange">
@@ -168,7 +168,7 @@
           <div v-if="single.jiraInfo" style="margin-top:12px">
             <el-descriptions :column="2" border size="small">
               <el-descriptions-item label="Jira 号"><span style="font-weight:600;color:#409eff">{{ single.bugid }}</span></el-descriptions-item>
-              <el-descriptions-item label="触发时间">{{ single.jiraInfo.trigger_time || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="问题发生时间">{{ single.jiraInfo.trigger_time || '-' }}</el-descriptions-item>
               <el-descriptions-item label="描述" :span="2">{{ single.jiraInfo.description || '-' }}</el-descriptions-item>
             </el-descriptions>
           </div>
@@ -242,7 +242,7 @@
             </el-select>
           </div>
           <el-alert type="info" :closable="false" show-icon
-            title="根据 Jira 号从 ADP 多维表格查找记录，读取描述和触发时间（缺失则用 Jira API 补全），调用 ADP 分析后写回该行（跳过一致性判定）。"></el-alert>
+            title="根据 Jira 号从 ADP 多维表格查找记录，读取描述和问题发生时间（缺失则用 Jira API 补全），调用 ADP 分析后写回该行（跳过一致性判定）。"></el-alert>
           <!-- 模式切换 -->
           <div style="display:flex;gap:16px;align-items:center;margin-top:12px">
             <el-radio-group v-model="lookup.mode" size="small">
@@ -552,7 +552,7 @@ export default {
             return '';
           };
           const jiraCol = findCol('jira号', 'Jira链接', 'jira_key', 'Jira号', 'jira');
-          const ttCol = findCol('问题触发时间点', '触发时间', 'trigger_time', '问题发生时间', '时间锚点');
+          const ttCol = findCol('问题发生时间点', '触发时间', 'trigger_time', '问题发生时间', '时间锚点');
           const descCol = findCol('描述', 'description', '问题描述');
           this.batch.colMap = {
             jira: jiraCol, trigger_time: ttCol, description: descCol,
@@ -601,7 +601,7 @@ export default {
           if (!item.description && e.description) { item.description = e.description; item._source = 'api'; filledDesc++; }
           if (!item.trigger_time && e.trigger_time) { item.trigger_time = e.trigger_time; item._source = 'api'; filledTime++; }
         }
-        this.$message.success(`补全完成: 描述 +${filledDesc}, 触发时间 +${filledTime}`);
+        this.$message.success(`补全完成: 描述 +${filledDesc}, 问题发生时间 +${filledTime}`);
       } catch (e) {
         this.$message.error(`补全请求失败: ${e.message}`);
       }

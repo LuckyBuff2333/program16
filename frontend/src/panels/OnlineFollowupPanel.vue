@@ -26,7 +26,7 @@
         <el-table-column type="index" label="#" width="45"></el-table-column>
         <el-table-column prop="jira号" label="Jira号" width="130"></el-table-column>
         <el-table-column prop="pc分析完成时间" label="PC完成时间" width="160"></el-table-column>
-        <el-table-column prop="触发时间" label="触发时间" width="160">
+        <el-table-column prop="触发时间" label="问题发生时间" width="160">
           <template #default="{row}"><span v-if="row['触发时间']" style="color:#67c23a">{{ row['触发时间'] }}</span><span v-else style="color:#c0c4cc">-</span></template>
         </el-table-column>
         <el-table-column prop="线上状态" label="线上状态" width="100">
@@ -50,7 +50,7 @@
         <el-button type="primary" :loading="onlineFollowup.running"
           :disabled="!onlineFollowup.selectedDiff.length" @click="runOnlineFollowup">开始执行</el-button>
         <el-button type="success" :loading="onlineFollowup.writingTriggerTime"
-          :disabled="!onlineFollowup.selectedDiff.length" @click="writeTriggerTimeBatch">一键写入触发时间</el-button>
+          :disabled="!onlineFollowup.selectedDiff.length" @click="writeTriggerTimeBatch">一键写入问题发生时间</el-button>
         <el-checkbox v-model="onlineFollowup.skipCloudCache">跳过云端缓存</el-checkbox>
         <el-tag v-if="onlineFollowup.runTotal">进度: {{ onlineFollowup.runDone }}/{{ onlineFollowup.runTotal }}</el-tag>
       </div>
@@ -60,7 +60,7 @@
         <el-table-column label="结果" width="80">
           <template #default="{row}"><el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag></template>
         </el-table-column>
-        <el-table-column prop="触发时间" label="触发时间" width="160"></el-table-column>
+        <el-table-column prop="触发时间" label="问题发生时间" width="160"></el-table-column>
         <el-table-column prop="备注" label="备注" min-width="200" show-overflow-tooltip></el-table-column>
       </el-table>
       <div v-if="onlineFollowup.runMsg" style="margin-top:6px;font-size:13px;color:#67c23a">{{ onlineFollowup.runMsg }}</div>
@@ -161,16 +161,16 @@ export default {
       const selected = this.onlineFollowup.selectedDiff;
       if (!selected.length) return ElMessage.warning('请先勾选要写入的记录');
       const withTime = selected.filter(r => r['触发时间']);
-      if (!withTime.length) return ElMessage.warning('勾选的记录均无触发时间');
+      if (!withTime.length) return ElMessage.warning('勾选的记录均无问题发生时间');
       const triggerTimes = {};
       withTime.forEach(r => { triggerTimes[r['jira号']] = r['触发时间']; });
       const noTimeCount = selected.length - withTime.length;
       const skipCache = this.onlineFollowup.skipCloudCache;
-      const skipMsg = skipCache ? '云端已有的自动跳过，仅写入缺失的' : '将强制覆盖云端所有触发时间';
+      const skipMsg = skipCache ? '云端已有的自动跳过，仅写入缺失的' : '将强制覆盖云端所有问题发生时间';
       try {
         await ElMessageBox.confirm(
-          `将把 ${withTime.length} 个有触发时间的记录写入云端缓存（${skipMsg}），不会重新提取。${noTimeCount ? '\n另有 ' + noTimeCount + ' 条无触发时间将被忽略。' : ''}`,
-          '确认写入触发时间', { type: 'info', confirmButtonText: '确认写入', cancelButtonText: '取消' }
+          `将把 ${withTime.length} 个有问题发生时间的记录写入云端缓存（${skipMsg}），不会重新提取。${noTimeCount ? '\n另有 ' + noTimeCount + ' 条无问题发生时间将被忽略。' : ''}`,
+          '确认写入问题发生时间', { type: 'info', confirmButtonText: '确认写入', cancelButtonText: '取消' }
         );
       } catch { return; }
       this.onlineFollowup.writingTriggerTime = true;

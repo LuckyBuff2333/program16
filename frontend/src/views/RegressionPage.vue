@@ -257,7 +257,7 @@
                 </span>
               </template>
             </el-table-column>
-            <el-table-column label="触发时间" min-width="180">
+            <el-table-column label="问题发生时间" min-width="180">
               <template #default="{ row }">
                 <el-tag v-if="row.has_cached_time" size="small" type="success">{{ row.cached_time }}</el-tag>
                 <el-tag v-else size="small" type="warning">待提取</el-tag>
@@ -273,13 +273,13 @@
           </el-table>
         </el-card>
 
-        <!-- Step 2: 提取触发时间 -->
+        <!-- Step 2: 提取问题发生时间 -->
         <el-card v-if="form.rows.length" shadow="never">
-          <template #header><span style="font-weight:700">② 提取触发时间</span></template>
+          <template #header><span style="font-weight:700">② 提取问题发生时间</span></template>
           <div class="exec-bar">
             <el-tag type="warning" size="small">待提取 {{ formStats.pending }} 条</el-tag>
             <el-button v-if="!form.extracting" type="primary" size="small" :disabled="formStats.pending === 0"
-              @click="formExtract">提取触发时间</el-button>
+              @click="formExtract">提取问题发生时间</el-button>
             <el-button v-if="form.extracting" type="warning" size="small" @click="formStop">停止提取</el-button>
           </div>
           <div v-if="form.extractProgress > 0" style="margin-top:8px">
@@ -640,7 +640,7 @@ export default {
     },
     async formRun() {
       const bugids = this.form.withTimeBugids;
-      if (!bugids.length) return ElMessage.warning('无有触发时间的记录');
+      if (!bugids.length) return ElMessage.warning('无有问题发生时间的记录');
       this.form.executing = true;
       this.form.execLogs = [];
       this.form.execSummary = null;

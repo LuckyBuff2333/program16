@@ -2,7 +2,7 @@
   <div class="test-panel">
     <div class="section-title">线上AI日志分析批量执行</div>
     <el-alert type="info" :closable="false"
-      title="支持两种输入方式：① 直接输入Jira号 ② 从功能11的未分析CSV中选择。提取触发时间(优先云端) → 去重 → 批量调用线上AI分析接口"></el-alert>
+      title="支持两种输入方式：① 直接输入Jira号 ② 从功能11的未分析CSV中选择。提取问题发生时间(优先云端) → 去重 → 批量调用线上AI分析接口"></el-alert>
     <!-- 方式1：直接输入Jira号 -->
     <el-card shadow="never" style="margin-top:12px">
       <template #header><span style="font-weight:600;font-size:13px">方式一：直接输入Jira号</span></template>
@@ -37,7 +37,7 @@
     </el-card>
     <!-- 执行 -->
     <el-card shadow="never" style="margin-top:12px" v-if="prodBatch.selectedCsvs.length || prodBatch.directInput.trim()">
-      <template #header><span style="font-weight:600;font-size:13px">提取触发时间 + 去重 + 批量执行</span></template>
+      <template #header><span style="font-weight:600;font-size:13px">提取问题发生时间 + 去重 + 批量执行</span></template>
       <el-checkbox v-model="prodBatch.skipExisting" @change="onProdFilterAllChange" style="margin-bottom:8px;display:block">重复过滤（跳过多维表格中 parseFullTicket已成功 + 人工审核无效bug）</el-checkbox>
       <div style="display:flex;gap:16px;margin-bottom:8px;flex-wrap:wrap">
         <el-checkbox v-model="prodBatch.filterPcOnly" @change="onProdFilterSourceChange">过滤PC正确和通用失败的</el-checkbox>
@@ -85,7 +85,7 @@
         <el-table-column label="结果" width="80">
           <template #default="{row}"><el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag></template>
         </el-table-column>
-        <el-table-column prop="触发时间" label="触发时间" width="160" show-overflow-tooltip></el-table-column>
+        <el-table-column prop="触发时间" label="问题发生时间" width="160" show-overflow-tooltip></el-table-column>
         <el-table-column prop="执行时间" label="执行时间" width="160" show-overflow-tooltip></el-table-column>
         <el-table-column prop="备注" label="备注" show-overflow-tooltip></el-table-column>
       </el-table>
@@ -181,9 +181,9 @@ export default {
                 const maxInfo = evt.max_count ? `，抽取上限 ${evt.max_count}` : '';
                 this.prodBatch.stage = `${roundLabel}开始执行：共 ${evt.total} 条（去重 ${evt.dedup}${skipInfo}${maxInfo}，原始 ${evt.raw}）`;
               } else if (evt.type === 'extract_progress') {
-                this.prodBatch.stage = `${roundLabel}提取触发时间：${evt.current}/${evt.total}，命中 ${evt.hit}`;
+                this.prodBatch.stage = `${roundLabel}提取问题发生时间：${evt.current}/${evt.total}，命中 ${evt.hit}`;
               } else if (evt.type === 'extract_done') {
-                this.prodBatch.stage = `${roundLabel}触发时间提取完成：有 ${evt.with_time}/${evt.total}，无 ${evt.without_time}`;
+                this.prodBatch.stage = `${roundLabel}问题发生时间提取完成：有 ${evt.with_time}/${evt.total}，无 ${evt.without_time}`;
               } else if (evt.type === 'progress') {
                 const row = { 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '触发时间': evt.exec_time, '执行时间': evt.analysis_time, '备注': evt.msg };
                 this.prodBatch.results.push(row);

@@ -68,7 +68,7 @@
           <!-- 分析中：执行时间、触发时间 -->
           <template v-else-if="activeCat === 'analyzing'">
             <el-table-column prop="exec_time" label="执行时间" width="180" />
-            <el-table-column prop="trigger_time" label="触发时间" min-width="180" />
+            <el-table-column prop="trigger_time" label="问题发生时间" min-width="180" />
           </template>
           <!-- 待办：分析开始时间、错误信息 -->
           <template v-else-if="activeCat === 'investigate'">
