@@ -1988,7 +1988,11 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                     _no_progress_rounds = 0
             file_urls.extend(cont_urls)
             if cont_tid:
-                trace_id = cont_tid  # 以最后一次续接的 traceid 为准
+                # 保留首次调用的 trace_id（与 records API 对齐），续接 trace_id 仅记录日志
+                if not trace_id:
+                    trace_id = cont_tid
+                elif cont_tid != trace_id:
+                    logger.info("ADP 续接 trace_id 不同: 首次=%s 续接=%s（保留首次）", trace_id, cont_tid)
             _sig_conv = (cont_sig or {}).get("conversation_id") or ""
             if _sig_conv:
                 signal_info["conversation_id"] = _sig_conv

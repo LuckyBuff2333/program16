@@ -82,7 +82,7 @@ def fetch_records(app_id, days, chat_script, cache_path, refresh):
     target = cache_path or os.path.join(
         tempfile.gettempdir(), "adp_records_%s.json" % app_id)
     with open(target, "w", encoding="utf-8") as out:
-        proc = subprocess.run(cmd, stdout=out, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.run(cmd, stdout=out, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="ignore")
     if proc.returncode != 0:
         fail(3, "adp_chat.py records 拉取失败(%d): %s" % (proc.returncode, proc.stderr.strip()[:300]))
     with open(target, encoding="utf-8") as f:
