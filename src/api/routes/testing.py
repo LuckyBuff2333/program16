@@ -1592,7 +1592,6 @@ async def test_batch_ai_run(request: Request):
     import queue
     from src.clients import ai_log_client
     from src.services.report_ops import _upload_batch_to_cloud
-    from src.services.trigger_ops import _load_trigger_times_from_cloud
     body = await request.json() or {}
     bugids = body.get("bugids") or []
     if bool(body.get("continuous")):
@@ -1609,20 +1608,10 @@ async def test_batch_ai_run(request: Request):
     }
     if not bugids:
         return _fail("待执行列表为空，请先执行步骤2")
-    # 从云端补全缺失的触发时间（用户可能跳过步骤2直接执行）
+    # 前端已提取触发时间，不再读云端补全（步骤2已保证时间完整性）
     missing = [b for b in bugids if b not in trigger_times]
     if missing:
-        try:
-            cloud_times = await asyncio.get_event_loop().run_in_executor(None, _load_trigger_times_from_cloud)
-            filled = 0
-            for b in missing:
-                if b in cloud_times and cloud_times[b]:
-                    trigger_times[b] = cloud_times[b]
-                    filled += 1
-            if filled:
-                logger.info("从云端补全 %d/%d 个缺失触发时间", filled, len(missing))
-        except Exception as e:
-            logger.warning("云端触发时间加载失败: %s", e)
+        logger.info("前端未提供 %d 条触发时间，将尝试在线提取", len(missing))
     # 步骤3已过滤多维表格成功记录，此处不再重复去重
     skipped_jiras = []
     
@@ -3039,6 +3028,7 @@ async def test_prod_batch_run(request: Request):
     filter_pc_only = body.get("filter_pc_only", False)  # 仅过滤PC来源的正确+通用失败
     filter_online_only = body.get("filter_online_only", False)  # 仅过滤线上来源的正确+通用失败
     max_count = int(body.get("max_count") or 0)  # 抽取数量上限，0 表示不限制
+    skip_cloud_dedup = body.get("skip_cloud_dedup", False)  # 单个执行跳过云端批次去重
     exec_mode = body.get("exec_mode") or ""  # 执行模式：online(线上) / pc
     # 兼容旧版前端未传 exec_mode 时，从 trigger_source 推断
     if not exec_mode:
@@ -3083,6 +3073,7 @@ async def test_prod_batch_run(request: Request):
     # 支持 skip_existing（全量过滤）和 filter_pc_only/filter_online_only（按来源过滤）
     any_filter = skip_existing or filter_pc_only or filter_online_only
     skipped_count = 0
+    bt_records = None  # 保存记录供 event_generator 复用，避免二次全量拉取
     if any_filter:
         try:
             from src.clients import feishu_client
@@ -3124,26 +3115,28 @@ async def test_prod_batch_run(request: Request):
         except Exception as e:
             logger.warning("多维表格重复过滤查询失败（跳过此检查）: %s", e)
 
-    # 云端批次执行记录去重：始终执行，不论 skip_existing 设置
-    # 规则：非全失败的批次整批排除，全失败(0/N)的批次允许重试
-    try:
-        if filter_pc_only and not filter_online_only:
-            _cloud_sources = ["jira_analyze"]
-        elif filter_online_only and not filter_pc_only:
-            _cloud_sources = ["parseFullTicket"]
-        else:
-            _cloud_sources = ["jira_analyze", "parseFullTicket"]
-        for _cs in _cloud_sources:
-            _cloud_exec = _get_same_source_executed_keys(_cs)
-            if _cloud_exec:
-                _before = len(bugids)
-                bugids = [b for b in bugids if b not in _cloud_exec]
-                _added = _before - len(bugids)
-                if _added:
-                    skipped_count += _added
-                    logger.info("云端批次去重(%s): 排除 %d 条", _cs, _added)
-    except Exception as e:
-        logger.warning("云端批次去重失败（继续）: %s", e)
+    # 云端批次执行记录去重：单个执行（skip_cloud_dedup）跳过，批量执行始终执行
+    if not skip_cloud_dedup:
+        try:
+            if filter_pc_only and not filter_online_only:
+                _cloud_sources = ["jira_analyze"]
+            elif filter_online_only and not filter_pc_only:
+                _cloud_sources = ["parseFullTicket"]
+            else:
+                _cloud_sources = ["jira_analyze", "parseFullTicket"]
+            for _cs in _cloud_sources:
+                _cloud_exec = _get_same_source_executed_keys(_cs)
+                if _cloud_exec:
+                    _before = len(bugids)
+                    bugids = [b for b in bugids if b not in _cloud_exec]
+                    _added = _before - len(bugids)
+                    if _added:
+                        skipped_count += _added
+                        logger.info("云端批次去重(%s): 排除 %d 条", _cs, _added)
+        except Exception as e:
+            logger.warning("云端批次去重失败（继续）: %s", e)
+    else:
+        logger.info("单个执行模式：跳过云端批次去重")
 
     async def event_generator():
         # 停止标志由 /api/test/prod_batch_run/stop 设置：当前在提取的 Jira 完成并写云端后，取消后续队列
@@ -3163,8 +3156,11 @@ async def test_prod_batch_run(request: Request):
         frontend_hit = len(trigger_times)
         cloud_keys = set()
         cloud_hit_count = 0
+        cloud_times = {}
         skip_empty_mark = 0
-        if not skip_cloud_cache:
+        # 仅在前端未覆盖全部触发时间时才加载云端缓存
+        _missing_trigger = sum(1 for b in run_bugids if b not in frontend_trigger_times or not frontend_trigger_times[b])
+        if not skip_cloud_cache and _missing_trigger > 0:
             try:
                 cloud_times, cloud_keys = await loop.run_in_executor(None, _load_cloud_trigger_cache)
                 for b in run_bugids:
@@ -3176,24 +3172,17 @@ async def test_prod_batch_run(request: Request):
                 logger.warning("云端触发时间加载失败: %s", e)
                 cloud_keys = set()
             cloud_hit_count = len(trigger_times) - frontend_hit
-        # 已有时间（前端/云端缓存）也做一次 gmlogger 对齐；已分析成功的 Jira 不再纠偏
+        # 复用外层已读取的 VCS BUG 表数据获取已成功 Jira，不再发起第二次全量拉取
         _success_jiras = set()
-        try:
-            from src.clients import feishu_client as _fc
-            _fcfg = load_config().get("feishu_bitable", {})
-            if _fcfg.get("app_token") and _fcfg.get("table_id"):
-                _frecs = await loop.run_in_executor(
-                    None, _fc.list_bitable_records, _fcfg["app_token"], _fcfg["table_id"])
-                _bset = set(run_bugids)
-                for _r in _frecs:
-                    _f = _r.get("fields") or {}
-                    _jk = _bitable_text(_f.get("jira号", ""))
-                    if _jk in _bset and _bitable_text(_f.get("分析结果", "")) == "成功":
-                        _success_jiras.add(_jk)
-                if _success_jiras:
-                    logger.info("时间对齐跳过已成功 Jira: %d 条", len(_success_jiras))
-        except Exception as _e:
-            logger.warning("查询已成功 Jira 失败（继续对齐）: %s", _e)
+        if bt_records:
+            _bset = set(run_bugids)
+            for _r in bt_records:
+                _f = _r.get("fields") or {}
+                _jk = _bitable_text(_f.get("jira号", ""))
+                if _jk in _bset and _bitable_text(_f.get("分析结果", "")) == "成功":
+                    _success_jiras.add(_jk)
+            if _success_jiras:
+                logger.info("时间对齐跳过已成功 Jira: %d 条（复用外层数据）", len(_success_jiras))
         # 云端已存的时间（含人工修正）保持不动，只纠偏前端传入/本次新提取的
         _cloud_locked = set(cloud_keys)
         try:

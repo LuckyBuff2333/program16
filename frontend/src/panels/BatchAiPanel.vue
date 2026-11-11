@@ -946,7 +946,7 @@ export default {
         const url = isOnline ? '/api/test/prod_batch_run' : '/api/test/batch_ai_run';
         const body = { bugids: this.aiDirect.parsed, trigger_times: this.aiDirect.triggerTimes,
           analysis_concurrency: this.aiDirect.analysisConcurrency, download_concurrency: this.aiDirect.downloadConcurrency,
-          model: this.aiDirect.model, trigger_source: this.aiDirect.triggerSource };
+          model: this.aiDirect.model, trigger_source: this.aiDirect.triggerSource, skip_cloud_dedup: true };
         if (isOnline) body.skip_existing = false;
         const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: this.aiDirectAbort.signal });
         const reader = resp.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
