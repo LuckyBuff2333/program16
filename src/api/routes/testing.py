@@ -3107,36 +3107,6 @@ async def test_prod_batch_run(request: Request):
         # 停止标志由 /api/test/prod_batch_run/stop 设置：当前在提取的 Jira 完成并写云端后，取消后续队列
         from src.api.routes.shared import prod_batch_stop_event as stop_event
         stop_event.clear()
-        # 线上批量：先探测线上分析服务，502/503 时直接报错，避免把整批 Jira 误记为分析失败
-        if exec_mode == "online":
-            import httpx as _httpx
-            _probe = None
-            _probe_err = ""
-            _probe_url = _get_prod_ai_url()
-            _loop_probe = asyncio.get_event_loop()
-            for _attempt in range(3):  # 首次 + 2 次重试
-                try:
-                    _probe = await _loop_probe.run_in_executor(
-                        None, lambda: _httpx.get(_probe_url, timeout=30, follow_redirects=True))
-                    if _probe.status_code < 500:
-                        _probe_err = ""
-                        break
-                    _probe_err = f"HTTP {_probe.status_code}"
-                    logger.warning("线上分析服务健康检查第 %d/3 次返回 %s", _attempt + 1, _probe.status_code)
-                except Exception as _e:
-                    _probe = None
-                    _probe_err = str(_e)
-                    logger.warning("线上分析服务健康检查第 %d/3 次失败: %s", _attempt + 1, _e)
-                if _attempt < 2:
-                    _retry_delay = 60
-                    logger.info("线上分析服务健康检查将在 %d 秒后重试", _retry_delay)
-                    await asyncio.sleep(_retry_delay)
-            if _probe is not None and _probe.status_code >= 500:
-                yield f"data: {_json.dumps({'type': 'error', 'message': f'线上分析服务不可用（{_probe.status_code} Bad Gateway，已重试 2 次），请稍后重试或联系平台恢复接口'}, ensure_ascii=False)}\n\n"
-                return
-            if _probe is None and _probe_err:
-                yield f"data: {_json.dumps({'type': 'error', 'message': f'线上分析服务不可达（已重试 2 次）：{_probe_err[:160]}'}, ensure_ascii=False)}\n\n"
-                return
         batch_start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         loop = asyncio.get_event_loop()
         run_bugids = list(bugids)  # 局部副本，避免闭包变量赋值冲突
