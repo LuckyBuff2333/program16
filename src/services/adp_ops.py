@@ -2006,6 +2006,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             results = extract_adp_results(full_text, closeout_data, start_ts, end_ts, file_urls)
             if trace_id:
                 results["traceid"] = trace_id
+            # 续接后 results 被重建，补回 traceid排查
+            _report_url_for_trace = results.get("_report_url", "")
+            results["traceid排查"] = _report_url_for_trace or out.get("_sandbox_url", "") or ""
             out["text_len"] = len(full_text)
             out["text_preview"] = full_text[:2000]
             out["trace_id"] = trace_id
