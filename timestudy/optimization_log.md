@@ -1064,3 +1064,13 @@
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>201. 时间提取统一优先使用本地 GLM-OCR（2026-11-12）</b></summary>
+
+- **问题**：时间批量提取、功能测试、问题排查三条链路都走视频帧状态栏 OCR，原实现只使用 RapidOCR；小字号时钟、车机 UI 数字/单位漏检较多。
+- **修复**：新增 `src/services/glm_ocr.py` 懒加载 GLM-OCR；`_ocr_frame_regions` 对时间相关 ROI 先走 GLM-OCR，只有识别到时间相关内容才采用，否则回退 RapidOCR；`ocr.glm_priority` 默认开启。三条链路均复用 `_diag_extract_time_from_video_simple`，无需分别改。
+- **验证**：16 帧全帧 GLM 时间命中 10/16，时钟 ROI 10/16 且约 1.4s/帧；363 tests passed。
+- **实现文件**：`src/services/glm_ocr.py`、`src/services/server_legacy.py`、`config/config.example.yaml`
+
+</details>

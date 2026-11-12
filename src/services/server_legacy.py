@@ -4970,10 +4970,22 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
         for (x1, y1, x2, y2) in regions:
             if x2 - x1 < 40 or y2 - y1 < 12:
                 continue
-            crop = frame[y1:y2, x1:x2]
-            crop = cv2.resize(crop, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
-            res = _ocr_readtext(None, crop, _already_enhanced=True) or []
-            txt = " ".join(str(r[1]) for r in res if len(r) > 1)
+            raw_crop = frame[y1:y2, x1:x2]
+            txt = ""
+            # GLM-OCR 优先：只对时间相关 ROI 使用，识别到时间才采用；失败回退 RapidOCR
+            try:
+                from src.config import load_config as _lc
+                if _lc().get("ocr", {}).get("glm_priority", False):
+                    from src.services.glm_ocr import ocr_text as _glm_ocr
+                    _glm_txt = _glm_ocr(raw_crop, max_new_tokens=64)
+                    if _glm_txt and _is_ocr_time_related_text(_glm_txt):
+                        txt = _glm_txt
+            except Exception:
+                txt = ""
+            if not txt:
+                crop = cv2.resize(raw_crop, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+                res = _ocr_readtext(None, crop, _already_enhanced=True) or []
+                txt = " ".join(str(r[1]) for r in res if len(r) > 1)
             if txt.strip():
                 parts.append(txt)
     except Exception:
