@@ -848,7 +848,22 @@ def update_bitable_records(app_token: str, table_id: str, records: list) -> dict
     url = f"{_FEISHU_API}/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_update"
     payload = {"records": [{"record_id": r["record_id"], "fields": r["fields"]} for r in records]}
     headers = _bitable_headers()
-    resp = httpx.post(url, headers=headers, json=payload, timeout=30, verify=False)
+    # 飞书写入偶发 ReadTimeout：重试 3 次，避免单次网络抖动打断整个 SSE 作业
+    resp = None
+    _last_exc = None
+    for _attempt in range(1, 4):
+        try:
+            resp = httpx.post(url, headers=headers, json=payload, timeout=60, verify=False)
+            _last_exc = None
+            break
+        except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.TransportError) as _e:
+            _last_exc = _e
+            logger.warning("Bitable 批量更新网络超时(第 %d/3 次): %s", _attempt, _e)
+            if _attempt < 3:
+                import time as _t
+                _t.sleep(_attempt * 2)
+    if resp is None:
+        raise _last_exc or RuntimeError("Bitable 批量更新网络异常")
     # HTTP 401/403：token 过期或无权限，尝试刷新 user token → 回退 tenant_access_token
     if resp.status_code in (401, 403):
         logger.info("Bitable 更新收到 HTTP %d，尝试刷新 token 或回退 tenant_access_token", resp.status_code)

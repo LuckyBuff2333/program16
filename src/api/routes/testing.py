@@ -6711,12 +6711,20 @@ async def test_adp_lookup(request: Request):
                 if record_id and write_fields:
                     update_records.append({"record_id": record_id, "fields": write_fields})
             if update_records:
+                _ok_count = 0
                 for _wi in range(0, len(update_records), 5):
                     _wchunk = update_records[_wi:_wi + 5]
-                    await loop.run_in_executor(
-                        None, lambda _c=_wchunk: feishu_client.update_bitable_records(app_token, table_id, _c))
-                _flush_count += len(update_records)
-                logger.info("ADP lookup 写回: %d 条（累计 %d 条）", len(update_records), _flush_count)
+                    try:
+                        await loop.run_in_executor(
+                            None, lambda _c=_wchunk: feishu_client.update_bitable_records(app_token, table_id, _c))
+                        _ok_count += len(_wchunk)
+                    except Exception as _we:
+                        # 单批写回失败不能中断整个 SSE 作业；记录后继续后续条目
+                        logger.error("ADP lookup 写回失败（%d 条，跳过继续）: %s",
+                                     len(_wchunk), str(_we)[:200])
+                _flush_count += _ok_count
+                logger.info("ADP lookup 写回: %d/%d 条（累计 %d 条）",
+                            _ok_count, len(update_records), _flush_count)
             if items is None:
                 _write_buffer = []
 
