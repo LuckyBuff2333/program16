@@ -1074,3 +1074,13 @@
 - **实现文件**：`src/services/glm_ocr.py`、`src/services/server_legacy.py`、`config/config.example.yaml`
 
 </details>
+
+<details>
+<summary><b>202. 英文月份补充 Sept 与“日-月”格式（2026-11-12）</b></summary>
+
+- **问题**：时间字典已有英文月份，但 `Sept` 缩写缺失；`9 Oct 2026`、`9-Oct-2026` 这类日-月倒序格式不识别。
+- **修复**：月份表加入 `sept`；新增 `_MONTH_DAY_RE`，支持 `9 Oct`、`9 Oct 2026`、`9-Oct-2026`；`_MONTH_RE` 增加 `(?!\d)`，避免把 `Oct 2026` 的年份前缀误判为日期。
+- **验证**：`Sept 9, 2026`、`9 Oct 2026`、`Oct 9`、`9-Oct-2026` 均归一化为正确日期并通过时间字典；363 tests passed。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>

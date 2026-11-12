@@ -304,7 +304,7 @@ _OCR_MONTH_MAP = {
     # 标准缩写
     'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
     'may': 5, 'jun': 6, 'jul': 7, 'aug': 8,
-    'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+    'sep': 9, 'sept': 9, 'oct': 10, 'nov': 11, 'dec': 12,
     # 完整拼写（常见于系统 UI）
     'january': 1, 'february': 2, 'march': 3, 'april': 4,
     'june': 6, 'july': 7, 'august': 8,
@@ -319,7 +319,13 @@ _OCR_MONTH_MAP = {
 # 构建月份正则（不区分大小写，优先匹配长词避免 "january" 被 "jan" 提前匹配）
 _MONTH_KEYS = sorted(_OCR_MONTH_MAP.keys(), key=len, reverse=True)
 _MONTH_RE = re.compile(
-    r'\b(' + '|'.join(re.escape(k) for k in _MONTH_KEYS) + r')[.]?\s*(\d{1,2})(?:[,.]\s*(\d{4}))?',
+    r'\b(' + '|'.join(re.escape(k) for k in _MONTH_KEYS) + r')[.]?\s*(\d{1,2})(?!\d)(?:[,.]\s*(\d{4}))?',
+    re.IGNORECASE
+)
+# 英文日期倒序：9 Oct / 9 Oct 2026 / 9-Oct-2026
+_MONTH_DAY_RE = re.compile(
+    r'\b(\d{1,2})\s*[-,/]?\s*(' + '|'.join(re.escape(k) for k in _MONTH_KEYS)
+    + r')[.]?(?:[\s,/-]*(\d{4}))?',
     re.IGNORECASE
 )
 
@@ -5011,7 +5017,7 @@ def _is_ocr_time_related_text(text: str) -> bool:
             or _OCR_RELATIVE_DATE_TIME_RE.search(norm)
             or _OCR_BARE_TIME_RE.search(norm) or _OCR_COMMA_TIME_RE.search(norm)):
         return True
-    if _MONTH_RE.search(norm):
+    if _MONTH_RE.search(norm) or _MONTH_DAY_RE.search(norm):
         return True
     # 中文日期 / 仅日期 / 单独年份（给“仅时间”补日期用）
     if re.search(r'(?<!\d)(?:19|20)\d{2}\s*[-/.年]\s*\d{1,2}', norm):
@@ -5224,7 +5230,17 @@ def _fix_ocr_month_abbrev(text: str) -> str:
         if _yr_match:
             _y = int(_yr_match.group(1))
         return f"{_y}-{month:02d}-{day:02d}"
-    return _MONTH_RE.sub(_replace_month, text)
+    text = _MONTH_RE.sub(_replace_month, text)
+    def _replace_day_month(m):
+        day = int(m.group(1))
+        month_word = m.group(2).lower()
+        year = m.group(3)
+        month = _OCR_MONTH_MAP.get(month_word)
+        if not month or day < 1 or day > 31:
+            return m.group(0)
+        _y = int(year) if year else _current_year_for_ocr()
+        return f"{_y}-{month:02d}-{day:02d}"
+    return _MONTH_DAY_RE.sub(_replace_day_month, text)
 
 
 def _preprocess_ocr_datetime(text: str) -> str:
