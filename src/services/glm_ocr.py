@@ -13,12 +13,23 @@ import numpy as np
 _LOCK = threading.Lock()
 _MODEL = None
 _PROCESSOR = None
-_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                           "models", "GLM-OCR")
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+_DEFAULT_MODEL_PATH = os.path.join(_PROJECT_ROOT, "models", "GLM-OCR")
+
+
+def model_path() -> str:
+    """每台机器可不同：环境变量 > config.yaml ocr.glm_model_path > 默认 models/GLM-OCR。"""
+    try:
+        from src.config import load_config
+        p = os.environ.get("GLM_OCR_MODEL_PATH") or load_config().get("ocr", {}).get("glm_model_path") or _DEFAULT_MODEL_PATH
+    except Exception:
+        p = os.environ.get("GLM_OCR_MODEL_PATH") or _DEFAULT_MODEL_PATH
+    return p if os.path.isabs(p) else os.path.join(_PROJECT_ROOT, p)
 
 
 def available() -> bool:
-    return os.path.isdir(_MODEL_PATH) and os.path.isfile(os.path.join(_MODEL_PATH, "model.safetensors"))
+    p = model_path()
+    return os.path.isdir(p) and os.path.isfile(os.path.join(p, "model.safetensors"))
 
 
 def _load():
@@ -27,9 +38,9 @@ def _load():
         return
     import torch
     from transformers import AutoProcessor, GlmOcrForConditionalGeneration
-    _PROCESSOR = AutoProcessor.from_pretrained(_MODEL_PATH, trust_remote_code=True)
+    _PROCESSOR = AutoProcessor.from_pretrained(model_path(), trust_remote_code=True)
     _MODEL = GlmOcrForConditionalGeneration.from_pretrained(
-        _MODEL_PATH, torch_dtype=torch.float32, device_map="cpu",
+        model_path(), torch_dtype=torch.float32, device_map="cpu",
         trust_remote_code=True).eval()
 
 

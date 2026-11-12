@@ -24,6 +24,7 @@ params:
 # ── OCR 配置（各机器独立，不跟随云端） ──
 ocr:
   glm_priority: true  # 时间区域优先用本地 GLM-OCR，失败回退 RapidOCR
+  glm_model_path: models/GLM-OCR  # 本机模型目录，可被 GLM_OCR_MODEL_PATH 覆盖
   engine: v5                  # OCR 引擎版本: v5(PP-OCRv5) / v4(PP-OCRv4)
   # 模型路径：本机独立配置，可写绝对路径；相对路径按项目根目录解析
   model_dir: models/ppocrv5
