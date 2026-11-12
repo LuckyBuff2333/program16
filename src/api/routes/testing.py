@@ -3356,6 +3356,7 @@ async def test_prod_batch_run(request: Request):
         _exec_sem = _th.Semaphore(_exec_concurrency)  # 执行阶段并发控制
         _MAX_RETRIES = 2  # 首次 + 2 次重试 = 最多 3 次
         _RETRY_DELAY = 5  # 重试基础间隔（秒），按 5/10 秒退避
+        _payload_logged = [False]  # 用列表包装以便闭包内修改
 
         def _run_one(bugid):
             if stop_event.is_set():
@@ -3379,6 +3380,9 @@ async def test_prod_batch_run(request: Request):
                     with _exec_sem:
                         if exec_mode == "online":
                             payload = _build_prod_ai_payload(bugid, exec_time, batch_id=_batch_id)
+                            if not _payload_logged[0]:  # 首条记录打印完整 payload 供验证
+                                _payload_logged[0] = True
+                                logger.info("线上执行 payload 示例: %s", payload)
                             resp = http_post(_get_prod_ai_url(), payload, timeout=_get_prod_ai_cfg()["timeout"])
                         else:
                             cfg = load_config()["ai_log_api"]
@@ -3454,11 +3458,12 @@ async def test_prod_batch_run(request: Request):
         with open(batch_csv, "w", newline="", encoding="utf-8-sig") as f:
             writer = _csv.writer(f)
             writer.writerow(["Jira号", "执行结果", "触发时间", "执行时间", "开始时间", "备注",
-                             "分析并发数", "下载并发数", "模型", "触发来源"])
+                             "批次号", "分析并发数", "下载并发数", "模型", "触发来源"])
             for r in results:
                 writer.writerow([r["Jira号"], r["执行结果"], r.get("触发时间", ""), r.get("执行时间", ""),
                                  r.get("开始时间", ""),
                                  r.get("备注", ""),
+                                 _batch_id or "",
                                  _batch_meta["分析并发数"], _batch_meta["下载并发数"],
                                  _batch_meta["模型"], _batch_meta["触发来源"]])
         success_count = sum(1 for r in results if r["执行结果"] == "成功")
