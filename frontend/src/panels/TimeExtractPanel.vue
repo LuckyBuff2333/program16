@@ -322,8 +322,8 @@
             <el-button type="success" :loading="timeEdit.saving" :disabled="!changedTimeRows.length" @click="saveCloudTimes">
               保存修改（{{ changedTimeRows.length }} 条）
             </el-button>
-            <el-button type="warning" :loading="timeEdit.writebackVcsLoading" :disabled="!changedTimeRows.length" @click="writebackVcsBug">
-              写回CSV BUG（{{ changedTimeRows.length }} 条）
+            <el-button type="warning" :loading="timeEdit.writebackVcsLoading" :disabled="!vcsPendingRows.length" @click="writebackVcsBug">
+              写回VCS BUG（{{ vcsPendingRows.length }} 条）
             </el-button>
             <span style="font-size:12px;color:#e6a23c" v-if="changedTimeRows.length">修改仅写回云端，请确认后再保存</span>
           </div>
@@ -412,6 +412,9 @@ export default {
     },
     changedTimeRows() {
       return this.timeEdit.rows.filter((r: any) => r.new_time && r.new_time !== r.current_time);
+    },
+    vcsPendingRows() {
+      return this.timeEdit.rows.filter((r: any) => r.new_time && r.new_time !== r.vcs_time);
     },
   },
   deactivated() {
@@ -755,7 +758,7 @@ export default {
         });
         const rows = (res.data && res.data.rows) || [];
         this.timeEdit.rows = rows.map((r: any) => ({
-          bugid: r.bugid, current_time: r.current_time || '', new_time: r.current_time || '',
+          bugid: r.bugid, current_time: r.current_time || '', new_time: r.current_time || '', vcs_time: r.current_time || '',
         }));
         const hit = (res.data && res.data.hit) || 0;
         this.timeEdit.statusMsg = res.message || `读取 ${rows.length} 个，${hit} 个有云端时间`;
@@ -792,7 +795,7 @@ export default {
       }
     },
     async writebackVcsBug() {
-      const items = this.changedTimeRows.map((r: any) => ({ bugid: r.bugid, new_time: formatMinute(r.new_time) }));
+      const items = this.vcsPendingRows.map((r: any) => ({ bugid: r.bugid, new_time: formatMinute(r.new_time) }));
       if (!items.length) return ElMessage.info('没有需要写回的数据');
       try {
         await ElMessageBox.confirm(
@@ -804,6 +807,10 @@ export default {
         const res = await api('/api/trigger_time/writeback_vcs_bug', {
           method: 'POST', body: JSON.stringify({ items }),
         });
+        for (const it of items) {
+          const row = this.timeEdit.rows.find((r: any) => r.bugid === it.bugid);
+          if (row) row.vcs_time = it.new_time;
+        }
         ElMessage.success(res.message || `已写回 ${items.length} 条`);
       } catch (e) {
         // api() 已提示错误

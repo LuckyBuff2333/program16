@@ -7,7 +7,7 @@
     "time_reject_offset_sec": 300,
     "timeout": "15",
     "trigger_time_field": "problem_time",
-    "url": "http://10.22.126.136:8001/jira/analyze",
+    "url": "http://10.22.126.139:8001/jira/analyze",
     "custom_header": "X-Test-Header"
   },
   "adp": {
@@ -41,7 +41,7 @@
     "pc": {
       "debug_endpoint": "/api/logs/debug",
       "endpoint": "/api/logs/download",
-      "host": "10.22.126.136",
+      "host": "10.22.126.139",
       "port": 8001
     }
   },
