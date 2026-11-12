@@ -11,8 +11,8 @@
     "custom_header": "X-Test-Header"
   },
   "adp": {
-    "app_key": "skOjTaUWsqWhWYamAtTTaQpRXiqgGirNGEoJmwRlEptJQTDduXplKpFHcTwapQYOVxhbXKmTxuzKjtWuYSJCyPYLptOCLkGuvhQBwkXYXOHjvZtPPLiTdPuffyzorKKQ",
-    "app_id": "2107062858696560449",
+    "app_key": "BJnyRexwNaDjekQujSyltQCYxOTIhoTazlvQaUKQjptgCOsnjHlNcFhzikGUTNWmRgWEfYnzoerXjgBGuhEjhwSxeruWkDkIAePmjECQxHEZvqtcTgLwJoISQwkVXzUs",
+    "app_id": "2120334459637990016",
     "space_id": "default_space",
     "mcp_api_key": "11IgBMeaQ15GQGUn6R9x92pghT38yMFANLy4vC75kaFUDJoxwWmyJpPDDMSQS1dI8",
     "mcp_url": "https://adp.cloud.tencent.com/plugin/mcp/921ad3a1-0def-4b8a-aaa6-4e5be898f511/mcp",
