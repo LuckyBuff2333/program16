@@ -858,7 +858,14 @@ def update_bitable_records(app_token: str, table_id: str, records: list) -> dict
             break
         except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.TransportError) as _e:
             _last_exc = _e
-            logger.warning("Bitable 批量更新网络超时(第 %d/3 次): %s", _attempt, _e)
+            try:
+                import json as _js
+                _plen = len(_js.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            except Exception:
+                _plen = -1
+            logger.warning("Bitable 批量更新网络超时(第 %d/3 次): %s, records=%d, payload_bytes=%d, ids=%s",
+                           _attempt, _e, len(records), _plen,
+                           [r.get("record_id", "") for r in records][:5])
             if _attempt < 3:
                 import time as _t
                 _t.sleep(_attempt * 2)
