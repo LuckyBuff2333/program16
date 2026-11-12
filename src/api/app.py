@@ -94,6 +94,13 @@ async def _on_startup():
 
     # 重置中断标志
     _shared.interrupted = False
+    # 重置所有停止事件（Ctrl+C 会设置它们，重启后需清除以免影响新任务）
+    _shared.prod_batch_stop_event.clear()
+    _shared.batch_extract_stop_event.clear()
+    _shared.cache_batch_stop_event.clear()
+    _shared.adp_lookup_stop_event.clear()
+    _shared.regression_stop_event.clear()
+    _shared.form_exec_stop_event.clear()
     try:
         signal.signal(signal.SIGINT, _shared.handle_sigint)
     except (ValueError, OSError):

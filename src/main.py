@@ -218,6 +218,7 @@ def cmd_web(args):
                     log_level="info")
     else:
         if args.reload:
+            os.environ["APP_RELOAD_MODE"] = "1"  # 标记 reload 模式，Ctrl+C 时连带杀 reloader 父进程
             print(f"前端页面已启动: {url}（开发模式：代码修改自动重载，按 Ctrl+C 停止）")
             uvicorn.run("src.api.app:app", host="127.0.0.1", port=args.port,
                         log_level="info", reload=True, reload_dirs=["src"])

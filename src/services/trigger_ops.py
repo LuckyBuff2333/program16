@@ -518,17 +518,19 @@ def _search_trigger_time_single(bugid: str) -> dict:
     return None
 
 
-def _search_trigger_time_batch(bugids: list) -> dict:
-    """用 filter_expr OR 分块搜索 Jira 号，返回 {bugid: trigger_time}
+def _search_trigger_time_batch(bugids: list) -> tuple:
+    """用 filter_expr OR 分块搜索 Jira 号，返回 ({bugid: trigger_time}, {已记录的bugid})
 
     每次查 20 个，最多 5 轮（100 条），适合 < 100 个 bugid 的场景。
     超过 100 条应走全量加载 _load_cloud_trigger_cache。
+    第二个返回值为云端已存在的所有 bugid（含空时间记录），用于避免重复提取。
     """
     from src.clients import feishu_client
     if not bugids:
-        return {}
+        return {}, set()
     app_token, table_ids = _get_trigger_time_table_cfg()
     result = {}
+    all_found_keys = set()  # 云端已存在的所有 jira号（含空时间）
     remaining = list(bugids)
     chunk_size = 20
     max_rounds = 5
@@ -567,16 +569,21 @@ def _search_trigger_time_batch(bugids: list) -> dict:
                         tt = _read_trigger_time(fields)
                         if tt:
                             result[jira_no] = tt
+                        all_found_keys.add(jira_no)
                         _trigger_time_bugid_cache[jira_no] = (tid, rec["record_id"], tt)
                         remaining_set.discard(jira_no)
                 if not remaining_set:
+                    # 全部找到，取消未完成的查询
+                    for _f in futures:
+                        _f.cancel()
                     break
         logger.info("触发时间搜索第 %d/%d 轮: %d 条中 %d 命中",
                     round_idx + 1, max_rounds, len(chunk), len(chunk) - len(remaining_set))
         total_rounds = round_idx + 1
     found = len(bugids) - len(remaining)
-    logger.info("触发时间批量搜索: %d/%d 命中（%d 轮）", found, len(bugids), total_rounds)
-    return result
+    logger.info("触发时间批量搜索: %d/%d 命中（%d 轮），%d 条已记录",
+                len(result), len(bugids), total_rounds, len(all_found_keys))
+    return result, all_found_keys
 
 
 def _refresh_table_counts():

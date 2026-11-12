@@ -38,31 +38,37 @@ SERVER_BOOT_ID = uuid.uuid4().hex
 
 
 def _force_exit_after_delay():
-    """Ctrl+C 后 30 秒仍未退出则强制终止进程（兜底，防止后台线程阻塞关闭）"""
+    """停止按钮点击后 30 秒仍未退出则强制终止进程（兜底，防止后台线程阻塞关闭）"""
     import time as _time
     _time.sleep(30)
     os._exit(1)
 
 
 def handle_sigint(signum, frame):
-    """SIGINT 处理：设置中断标志 + 取消诊断任务，3秒后强制退出"""
+    """SIGINT 处理：Ctrl+C 直接退出服务，取消所有任务"""
     global interrupted
     if interrupted:
-        # 第二次 Ctrl+C：立即强制退出
         os._exit(1)
     interrupted = True
     for bugid in list(diag_cancel):
         diag_cancel[bugid] = True
-    # 设置所有停止事件，让各路由的批量循环及时退出
-    batch_extract_stop_event.set()
-    cache_batch_stop_event.set()
-    adp_lookup_stop_event.set()
-    regression_stop_event.set()
-    form_exec_stop_event.set()
-    prod_batch_stop_event.set()
-    logger.warning("收到 Ctrl+C，正在停止服务...")
-    # 启动强制退出守护线程：3秒内 uvicorn 正常关闭则进程自然退出，否则兜底强杀
-    threading.Thread(target=_force_exit_after_delay, daemon=True).start()
+    logger.warning("收到 Ctrl+C，立即退出服务")
+    # reload 模式下 worker 是子进程，os._exit(1) 只杀 worker，
+    # reloader 父进程会自动重启新 worker，必须连带杀掉父进程
+    if os.environ.get("APP_RELOAD_MODE") and sys.platform == "win32":
+        try:
+            import subprocess
+            ppid = os.getppid()
+            if ppid > 0 and ppid != os.getpid():
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(ppid)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    timeout=5)
+                logger.info("已杀掉 reloader 父进程 PID=%d", ppid)
+        except Exception:
+            pass
+    os._exit(1)
 
 # 批量提取触发时间停止标志
 batch_extract_stop_event = threading.Event()
@@ -434,7 +440,7 @@ def build_prod_ai_payload(bugid: str, exec_time: str = None, batch_id: str = Non
         else:
             payload[pai["trigger_time_field"]] = exec_time
     if batch_id:
-        payload["批次号"] = batch_id
+        payload["batchNo"] = batch_id
     return payload
 
 

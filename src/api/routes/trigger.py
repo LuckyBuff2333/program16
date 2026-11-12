@@ -57,7 +57,7 @@ async def batch_read_trigger_times(req: BugidListRequest):
     # 自动选择策略：少量用 filter 搜索，批量用全量缓存
     if len(bugids) <= _FILTER_SEARCH_THRESHOLD:
         logger.info("触发时间读取: %d 个 bugid，使用 filter 搜索策略", len(bugids))
-        local_times = await loop.run_in_executor(None, _search_trigger_time_batch, bugids)
+        local_times, _ = await loop.run_in_executor(None, _search_trigger_time_batch, bugids)
     else:
         logger.info("触发时间读取: %d 个 bugid，使用全量缓存策略", len(bugids))
         local_times = await loop.run_in_executor(None, _load_trigger_times_from_cloud)
@@ -344,9 +344,11 @@ async def cache_batch_scan(req: CacheBatchScanRequest):
 @router.post("/api/trigger_time/cache_batch_extract/stop", response_model=ApiResponse)
 def stop_cache_batch_extract():
     """触发云端缓存批量提取停止信号"""
-    from src.api.routes.shared import cache_batch_stop_event as _cache_batch_stop_event, ok
+    from src.api.routes.shared import cache_batch_stop_event as _cache_batch_stop_event, ok, _force_exit_after_delay
     _cache_batch_stop_event.set()
     logger.info("收到云端缓存批量提取停止信号")
+    import threading as _th
+    _th.Thread(target=_force_exit_after_delay, daemon=True, name="stop-force-exit").start()
     return ok(None, "停止信号已发送，当前条目完成后停止")
 
 
@@ -779,9 +781,11 @@ async def batch_extract_time(request: Request):
 @router.post("/api/trigger/batch_extract_time/stop", response_model=ApiResponse)
 def stop_batch_extract_time():
     """停止批量提取触发时间"""
-    from src.api.routes.shared import batch_extract_stop_event as _stop_event, ok
+    from src.api.routes.shared import batch_extract_stop_event as _stop_event, ok, _force_exit_after_delay
     _stop_event.set()
     logger.info("收到批量提取触发时间停止信号")
+    import threading as _th
+    _th.Thread(target=_force_exit_after_delay, daemon=True, name="stop-force-exit").start()
     return ok(None, "停止信号已发送，当前提取完成后停止")
 
 

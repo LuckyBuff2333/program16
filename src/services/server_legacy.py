@@ -5737,7 +5737,16 @@ def _save_video_time_cache():
             _cache_snapshot = dict(_video_time_cache)  # 拷贝快照，防止其他线程修改导致 iteration 异常
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(_cache_snapshot, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, cache_path)
+            # Windows 下目标文件被占用时 os.replace 会报拒绝访问，重试 3 次
+            for _retry in range(3):
+                try:
+                    os.replace(tmp_path, cache_path)
+                    break
+                except PermissionError:
+                    import time as _t
+                    _t.sleep(0.3)
+            else:
+                os.replace(tmp_path, cache_path)  # 最后一次不捕获，让外层 except 处理
         except Exception as e:
             logger.warning("视频时间缓存保存失败: %s", e)
             try:

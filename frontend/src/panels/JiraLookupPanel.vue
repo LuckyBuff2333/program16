@@ -26,6 +26,7 @@
             <el-button size="small" type="primary" @click="fillSummaryQuery">描述查 Jira 号</el-button>
             <el-divider direction="vertical" style="margin:0 4px"></el-divider>
             <el-checkbox v-model="filterAiPreliminary" size="small">过滤AI初步分析结果</el-checkbox>
+            <el-checkbox v-model="filterCloudCache" size="small">云端已有缓存</el-checkbox>
           </div>
         </el-card>
 
@@ -36,6 +37,7 @@
               <el-tag type="info" size="small">总数 <b>{{ rows.length }}</b></el-tag>
               <el-tag type="warning" size="small">待执行 <b>{{ pendingCount }}</b></el-tag>
               <el-tag type="success" size="small">已分析 <b>{{ analyzedCount }}</b></el-tag>
+              <el-tag type="info" size="small">有缓存 <b>{{ cloudCacheCount }}</b></el-tag>
               <el-tag v-if="errors.length" type="danger" size="small">失败 {{ errors.length }}</el-tag>
             </div>
             <el-tag type="info" size="small">{{ mode === 'jql' ? 'JQL 模式' : 'Key 模式' }}</el-tag>
@@ -60,6 +62,11 @@
               </template>
             </el-table-column>
             <el-table-column prop="created" label="创建日期" width="120" sortable></el-table-column>
+            <el-table-column prop="has_cloud_cache" label="云端缓存" width="90" align="center" sortable>
+              <template #default="{ row }">
+                <el-tag :type="row.has_cloud_cache ? 'success' : 'info'" size="small">{{ row.has_cloud_cache ? '有' : '无' }}</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column prop="has_ai_preliminary" label="AI初步" width="80" align="center" sortable>
               <template #default="{ row }">
                 <el-tag :type="row.has_ai_preliminary ? 'success' : 'info'" size="small">{{ row.has_ai_preliminary ? '有' : '无' }}</el-tag>
@@ -179,6 +186,7 @@ export default {
       weekBugLoading: false,
       lastWeekBugLoading: false,
       filterAiPreliminary: true,
+      filterCloudCache: false,
       rows: [] as any[],
       errors: [] as any[],
       mode: 'keys',
@@ -197,14 +205,19 @@ export default {
   computed: {
     // Jira查询 computed
     displayedRows() {
-      if (!this.filterAiPreliminary) return this.rows;
-      return this.rows.filter((r: any) => !r.has_ai_preliminary);
+      let r = this.rows;
+      if (this.filterAiPreliminary) r = r.filter((x: any) => !x.has_ai_preliminary);
+      if (this.filterCloudCache) r = r.filter((x: any) => x.has_cloud_cache);
+      return r;
     },
     analyzedCount() {
       return this.rows.filter((r: any) => r.has_ai_preliminary).length;
     },
     pendingCount() {
       return this.rows.length - this.analyzedCount;
+    },
+    cloudCacheCount() {
+      return this.rows.filter((r: any) => r.has_cloud_cache).length;
     },
     // 表格查询 computed
     tblDisplayedRows() {
@@ -281,6 +294,7 @@ export default {
         ElMessage.error('查询失败: ' + e.message);
       } finally {
         this.loading = false;
+        this.enrichWithCloudCache();
       }
     },
     async queryTodayNewBugs() {
@@ -302,6 +316,7 @@ export default {
       } finally {
         this.loading = false;
         this.todayBugLoading = false;
+        this.enrichWithCloudCache();
       }
     },
     async queryYesterdayNewBugs() {
@@ -323,6 +338,7 @@ export default {
       } finally {
         this.loading = false;
         this.yesterdayBugLoading = false;
+        this.enrichWithCloudCache();
       }
     },
     weekStartDate() {
@@ -353,6 +369,7 @@ export default {
       } finally {
         this.loading = false;
         this.weekBugLoading = false;
+        this.enrichWithCloudCache();
       }
     },
     async queryLastWeekNewBugs() {
@@ -374,10 +391,27 @@ export default {
       } finally {
         this.loading = false;
         this.lastWeekBugLoading = false;
+        this.enrichWithCloudCache();
+      }
+    },
+    async enrichWithCloudCache() {
+      if (!this.rows.length) return;
+      try {
+        const keys = this.rows.map((r: any) => r.key);
+        const result = await api('/api/trigger_time/batch_read', {
+          method: 'POST', body: JSON.stringify({ bugids: keys, cache_only: true }),
+        });
+        const timeMap = {} as Record<string, boolean>;
+        (result.data?.rows || []).forEach((r: any) => {
+          timeMap[r.bugid] = !!r.current_time;
+        });
+        this.rows = this.rows.map((r: any) => ({ ...r, has_cloud_cache: !!timeMap[r.key] }));
+      } catch (e) {
+        // 缓存检查失败不阻塞主流程
       }
     },
     copyAllKeys() {
-      const list = this.filterAiPreliminary ? this.displayedRows : this.rows;
+      const list = this.displayedRows;
       if (!list.length) return ElMessage.warning('暂无结果');
       const text = list.map((r: any) => r.key).join(', ');
       navigator.clipboard.writeText(text).then(() => ElMessage.success(`已复制 ${list.length} 个 Key`));

@@ -733,9 +733,11 @@ async def vcs_problem_time_query(request: Request):
 def stop_batch_ai_extract_times():
     """触发批量提取停止信号（优雅停止：当前条目完成后停止后续）"""
     import os, re, json
-    from src.api.routes.shared import batch_extract_stop_event as _batch_extract_stop_event
+    from src.api.routes.shared import batch_extract_stop_event as _batch_extract_stop_event, _force_exit_after_delay
     _batch_extract_stop_event.set()
     logger.info("收到批量提取停止信号，当前条目完成后将停止后续处理")
+    import threading as _th
+    _th.Thread(target=_force_exit_after_delay, daemon=True, name="stop-force-exit").start()
     return _ok(None, "停止信号已发送，当前条目完成后停止")
 
 
@@ -825,8 +827,7 @@ async def test_batch_ai_extract_times(request: Request):
             # < 100 条用 filter 分块搜索（每轮 20 条，最多 5 轮），>= 100 条走全量加载
             if len(keys) < 100:
                 from src.services.trigger_ops import _search_trigger_time_batch
-                cloud_times = await loop.run_in_executor(None, _search_trigger_time_batch, keys)
-                cloud_keys = set(cloud_times)
+                cloud_times, cloud_keys = await loop.run_in_executor(None, _search_trigger_time_batch, keys)
                 success_jiras = set()
                 logger.info("少量 Jira 搜索触发时间: %d 条", len(keys))
             else:
@@ -3002,9 +3003,11 @@ async def test_prod_csv_bitable(request: Request):
 @router.post("/api/test/prod_batch_run/stop", response_model=ApiResponse)
 def stop_prod_batch_run():
     """功能测试「批量执行」停止：当前正在提取的 Jira 完成并写云端后，取消后续提取/执行队列"""
-    from src.api.routes.shared import prod_batch_stop_event as _stop
+    from src.api.routes.shared import prod_batch_stop_event as _stop, _force_exit_after_delay
     _stop.set()
     logger.info("收到功能测试批量执行停止信号：当前提取完成后停止，后续队列取消")
+    import threading as _th
+    _th.Thread(target=_force_exit_after_delay, daemon=True, name="stop-force-exit").start()
     return _ok(None, "已请求停止：当前正在提取的 Jira 保存后停止，后续队列取消")
 
 
@@ -3428,8 +3431,15 @@ async def test_prod_batch_run(request: Request):
                               "开始时间": item_start,
                               "status": "fail", "msg": f"{retry_note}{last_err[:100]}"})
 
-        for bugid in run_bugids:
-            loop.run_in_executor(None, _run_one, bugid)
+        # 渐进式提交：不再一次性全部入池，断开/停止后不再提交后续任务
+        _pending_bugids = list(run_bugids)
+        _futures = set()
+        _submitted_count = 0
+        # 先提交首批（并发数上限个）
+        for _ in range(min(_exec_concurrency, len(_pending_bugids))):
+            _b = _pending_bugids.pop(0)
+            _futures.add(loop.run_in_executor(None, _run_one, _b))
+            _submitted_count += 1
 
         results = []
         consecutive_fail = 0
@@ -3448,8 +3458,18 @@ async def test_prod_batch_run(request: Request):
                     stop_event.set()
                     logger.warning("线上批量连续 3 条提交失败，停止后续队列")
                     break
+                # 有任务完成，补充新任务（仅在未停止/未断开时）
+                if _pending_bugids and not stop_event.is_set():
+                    _b = _pending_bugids.pop(0)
+                    _futures.add(loop.run_in_executor(None, _run_one, _b))
+                    _submitted_count += 1
             except queue.Empty:
+                # 清理已完成的 future
+                _futures = {f for f in _futures if not f.done()}
                 await asyncio.sleep(1)
+        # 断开或停止时，stop_event 已设置，_run_one 入口会检查并跳过未开始的任务
+        if stop_event.is_set() and _pending_bugids:
+            logger.info("批量执行提前终止：%d 条未提交", len(_pending_bugids))
         # 保存结果 CSV（同时写入 docs 目录供每日播报统计）
         date_str = datetime.now().strftime("%Y-%m-%d")
         time_str = datetime.now().strftime("%H%M%S")
@@ -5829,9 +5849,11 @@ async def form_upload(file: UploadFile = File(None)):
 @router.post("/api/test/form_exec/stop", response_model=ApiResponse)
 def stop_form_exec():
     """表单执行停止：当前正在提取的 Jira 完成并写云端后，取消后续提取/执行队列"""
-    from src.api.routes.shared import form_exec_stop_event as _stop
+    from src.api.routes.shared import form_exec_stop_event as _stop, _force_exit_after_delay
     _stop.set()
     logger.info("收到表单执行停止信号：当前提取完成后停止，后续队列取消")
+    import threading as _th
+    _th.Thread(target=_force_exit_after_delay, daemon=True, name="stop-force-exit").start()
     return _ok(None, "已请求停止：当前正在提取的 Jira 保存后停止，后续队列取消")
 
 
