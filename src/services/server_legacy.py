@@ -309,12 +309,16 @@ _OCR_MONTH_MAP = {
     'january': 1, 'february': 2, 'march': 3, 'april': 4,
     'june': 6, 'july': 7, 'august': 8,
     'september': 9, 'october': 10, 'november': 11, 'december': 12,
-    # OCR 误读: O→Q/0, c→e, n→r, v→u/y, p→q
-    'qan': 1, 'qct': 10, '0ct': 10, '0et': 10,
-    'nou': 11, 'riov': 11,
-    'deo': 12, 'jar': 1, 'jari': 1,
-    'mau': 5, 'jur': 6,
-    'seq': 9, 'auq': 8, 'teb': 2,
+    # OCR 误读: O→Q/0, c→e/t, n→r, v→u/y, p→q, 字母顺序颠倒
+    'qan': 1, '1an': 1, 'lan': 1, 'jar': 1, 'jari': 1,
+    'qct': 10, '0ct': 10, 'otc': 10, '0tc': 10, 'qtc': 10,
+    '0et': 10, 'qet': 10, 'oet': 10, 'oc7': 10, '0c7': 10,
+    'nou': 11, 'riov': 11, 'n0v': 11, 'hov': 11,
+    'deo': 12, '0ec': 12, 'oec': 12, 'd3c': 12,
+    'mau': 5, 'jur': 6, 'iun': 6, 'ju1': 6, 'jui': 7,
+    'seq': 9, 'sept': 9, '5ep': 9, 'auq': 8, '4ug': 8,
+    'teb': 2, 'fob': 2, 'fe6': 2, 'war': 3, 'm4r': 3,
+    '4pr': 4, 'apn': 4,
 }
 # 构建月份正则（不区分大小写，优先匹配长词避免 "january" 被 "jan" 提前匹配）
 _MONTH_KEYS = sorted(_OCR_MONTH_MAP.keys(), key=len, reverse=True)

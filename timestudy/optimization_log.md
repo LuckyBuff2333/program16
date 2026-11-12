@@ -1084,3 +1084,13 @@
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>203. 补充 Otc 等英文月份 OCR 误读变体（2026-11-12）</b></summary>
+
+- **问题**：英文月份字典虽含 Qct/0ct 等，但缺少字母顺序颠倒 `Otc/0tc`、`Qet`、`N0v`、`Sept`、`5ep` 等常见 OCR 变体，导致 GLM/RapidOCR 已识别月份仍过不了时间字典。
+- **修复**：扩充 `_OCR_MONTH_MAP`，覆盖 Jan-Dec 的数字/字母形近和顺序颠倒变体；仍复用 `_MONTH_RE`/`_MONTH_DAY_RE` 归一化。
+- **验证**：`Otc 9, 2026 13:43`、`0tc 9`、`Qet 9`、`N0v 9`、`9 Otc 2026` 均归一化为正确日期；363 tests passed。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>
