@@ -414,7 +414,7 @@ export default {
       return this.timeEdit.rows.filter((r: any) => r.new_time && r.new_time !== r.current_time);
     },
     vcsPendingRows() {
-      return this.timeEdit.rows.filter((r: any) => r.new_time && r.new_time !== r.vcs_time);
+      return this.timeEdit.rows.filter((r: any) => r.new_time);
     },
   },
   deactivated() {
