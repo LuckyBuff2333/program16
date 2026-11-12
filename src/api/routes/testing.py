@@ -6712,8 +6712,8 @@ async def test_adp_lookup(request: Request):
                     update_records.append({"record_id": record_id, "fields": write_fields})
             if update_records:
                 _ok_count = 0
-                for _wi in range(0, len(update_records), 5):
-                    _wchunk = update_records[_wi:_wi + 5]
+                # 逐条写回：单条大字段/网络超时不会拖垮整批
+                for _wchunk in ([_rec] for _rec in update_records):
                     try:
                         await loop.run_in_executor(
                             None, lambda _c=_wchunk: feishu_client.update_bitable_records(app_token, table_id, _c))
