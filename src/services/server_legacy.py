@@ -4953,6 +4953,7 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
         regions = [
             (0, 0, w, max(1, int(h * 0.15))),                  # 顶部状态栏（扩展 10%→15%）
             (int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),  # 中央顶部（车载 HMI 居中时钟）
+            (int(w * 0.55), int(h * 0.22), int(w * 0.95), int(h * 0.55)),  # 车机右侧中部时钟（HMI 主界面）
             (int(w * 0.45), int(h * 0.60), w, h),              # 右下任务栏（水印相机时间/位置块）
             (int(w * 0.20), int(h * 0.70), int(w * 0.80), h),  # 底部中央导航栏（导航应用时间，字体较大）
         ]
@@ -4960,6 +4961,7 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
             regions = [
                 (0, 0, w, max(1, int(h * 0.15))),
                 (int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),
+                (int(w * 0.55), int(h * 0.22), int(w * 0.95), int(h * 0.55)),  # 车机右侧中部时钟
                 (0, 0, int(w * 0.55), int(h * 0.55)),
                 (int(w * 0.45), int(h * 0.60), w, h),
                 (int(w * 0.40), int(h * 0.18), w, int(h * 0.70)),

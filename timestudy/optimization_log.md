@@ -1054,3 +1054,13 @@
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>200. 状态栏 ROI 增加车机右侧中部时钟区域（2026-11-12）</b></summary>
+
+- **问题**：部分车机 HMI 时钟位于画面右侧中部（约 x 55%~95%、y 22%~55%），原状态栏 ROI 只覆盖顶部/右下/底部，导致时钟漏检。
+- **修复**：`_ocr_frame_regions` 的 `status_only` 和全区域列表都加入右侧中部时钟 ROI，保持原有 2.5x 放大策略。
+- **验证**：363 tests passed；16 帧抽样中该 ROI 可稳定识别 `12:52`。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>
