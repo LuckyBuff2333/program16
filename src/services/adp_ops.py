@@ -1004,6 +1004,21 @@ def _resolve_lke_short_link(url: str, timeout: int = 15) -> str:
     return url
 
 
+def _generated_report_path(text: str) -> str:
+    """从交付物文本中还原报告 HTML 的完整 /workdir 路径。
+
+    ADP 常把目录和相对文件名分两行输出，例如：
+      /workdir/case_.../
+      - 分析报告：out/report_full_....html
+    """
+    base_m = re.search(r"(/workdir/case_[A-Za-z0-9_\-]+/)", text or "")
+    name_m = re.search(r"out/(report_(?:full|degraded|sanitized)[A-Za-z0-9_\-]*\.html)", text or "")
+    if base_m and name_m:
+        return base_m.group(1) + "out/" + name_m.group(1)
+    full_m = re.search(r"(/workdir/case_[A-Za-z0-9_\-]+/out/report_[A-Za-z0-9_\-]+\.html)", text or "")
+    return full_m.group(1) if full_m else ""
+
+
 def _extract_report_url(text: str, file_urls: list) -> tuple:
     """从文本或 file_urls 中提取报告链接（兼容三种域名 + lke 短链 + 沙箱路径）
     优先级（签名 URL 始终优先于无签名 URL，避免 403 Forbidden）：
@@ -1064,10 +1079,10 @@ def _extract_report_url(text: str, file_urls: list) -> tuple:
         url = m.group(1)
         name = re.search(r'(report_[^\s)"\'/?]*\.html)', url)
         return (name.group(1) if name else "report.html"), url
-    # 4b. 文本中的沙箱报告路径（如 /workdir/case_.../out/report_full_....html）
-    m = re.search(r'(/workdir/case_[A-Za-z0-9_\-]+/out/(report_[A-Za-z0-9_\-]+\.html))', text)
-    if m:
-        path, name = m.group(1), m.group(2)
+    # 4b. 文本中的沙箱报告路径（兼容“目录 + out/相对文件名”分行输出）
+    path = _generated_report_path(text)
+    if path:
+        name = path.rsplit("/", 1)[-1]
         return name, f"https://sandbox.adp.cloud.tencent.com/files?path={path}"
     return "", ""
 
@@ -1902,8 +1917,14 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                     logger.warning("ADP 已收口且连续 3 次补报告仍无链接: %s", jira_key)
                     break
                 _report_requested += 1
+                _report_path = _generated_report_path(full_text or "")
                 _html_m = re.search(r"(report_(?:full|degraded|sanitized)[^\s<>`]*\.html)", full_text or "")
-                if _html_m:
+                if _report_path:
+                    _continue_prompt = (
+                        f"报告文件 {_report_path} 已生成，请只执行 FileToURL 上传这个精确路径并返回下载链接，"
+                        "不要重新分析，不要重复生成报告"
+                    )
+                elif _html_m:
                     _continue_prompt = (
                         f"报告文件 {_html_m.group(1)} 已生成，请只执行 FileToURL 上传该文件并返回下载链接，"
                         "不要重新分析，不要重复生成报告"
