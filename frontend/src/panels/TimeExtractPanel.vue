@@ -318,9 +318,12 @@
               </template>
             </el-table-column>
           </el-table>
-          <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+          <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <el-button type="success" :loading="timeEdit.saving" :disabled="!changedTimeRows.length" @click="saveCloudTimes">
               保存修改（{{ changedTimeRows.length }} 条）
+            </el-button>
+            <el-button type="warning" :loading="timeEdit.writebackVcsLoading" :disabled="!changedTimeRows.length" @click="writebackVcsBug">
+              写回CSV BUG（{{ changedTimeRows.length }} 条）
             </el-button>
             <span style="font-size:12px;color:#e6a23c" v-if="changedTimeRows.length">修改仅写回云端，请确认后再保存</span>
           </div>
@@ -387,7 +390,7 @@ export default {
         statusMsg: '', rows: [] as any[], savedPath: '',
       },
       timeEdit: {
-        input: '', rows: [] as any[], loading: false, saving: false, statusMsg: '',
+        input: '', rows: [] as any[], loading: false, saving: false, writebackVcsLoading: false, statusMsg: '',
       },
     };
   },
@@ -786,6 +789,26 @@ export default {
         // api() 已提示错误
       } finally {
         this.timeEdit.saving = false;
+      }
+    },
+    async writebackVcsBug() {
+      const items = this.changedTimeRows.map((r: any) => ({ bugid: r.bugid, new_time: formatMinute(r.new_time) }));
+      if (!items.length) return ElMessage.info('没有需要写回的数据');
+      try {
+        await ElMessageBox.confirm(
+          `将把 ${items.length} 条问题发生时间写回 VCS BUG 多维表格，确认写回？`,
+          '确认写回', { confirmButtonText: '写回', cancelButtonText: '取消', type: 'warning' });
+      } catch { return; }
+      this.timeEdit.writebackVcsLoading = true;
+      try {
+        const res = await api('/api/trigger_time/writeback_vcs_bug', {
+          method: 'POST', body: JSON.stringify({ items }),
+        });
+        ElMessage.success(res.message || `已写回 ${items.length} 条`);
+      } catch (e) {
+        // api() 已提示错误
+      } finally {
+        this.timeEdit.writebackVcsLoading = false;
       }
     },
   },

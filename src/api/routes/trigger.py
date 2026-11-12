@@ -165,6 +165,61 @@ def batch_update_trigger_time(req: BatchUpdateRequest):
     return _ok({"success": success, "failed": 0}, msg)
 
 
+@router.post("/api/trigger_time/writeback_vcs_bug", response_model=ApiResponse)
+async def writeback_vcs_bug(req: BatchUpdateRequest):
+    """将问题发生时间写回 VCS BUG 多维表格（按 jira号 匹配记录并更新）"""
+    from src.clients import feishu_client as _fc
+    from src.api.routes.shared import ok as _ok, fail as _fail, bitable_text as _bitable_text
+    items = req.items
+    if not items:
+        return _fail("待写回列表为空")
+    valid_items = {}
+    for item in items:
+        bugid = item.bugid.strip()
+        new_time = item.new_time.strip()
+        if bugid and new_time:
+            valid_items[bugid] = new_time
+    if not valid_items:
+        return _fail("无有效的写回数据")
+    app_token = "HOARbsrB0aSViFs5AjNchSQ0nAf"
+    table_id = "tblr4oboVbKsV6y1"
+    loop = asyncio.get_event_loop()
+    # 分批查询 record_id（每批 20 条）
+    bugids = list(valid_items.keys())
+    record_map = {}  # {record_id: new_time}
+    chunk_size = 20
+    for i in range(0, len(bugids), chunk_size):
+        chunk = bugids[i:i + chunk_size]
+        conditions = [f'CurrentValue.[jira号] = "{b}"' for b in chunk]
+        expr = conditions[0] if len(conditions) == 1 else "OR(" + ",".join(conditions) + ")"
+        try:
+            records = await loop.run_in_executor(
+                None, lambda e=expr: _fc.list_bitable_records(app_token, table_id, filter_expr=e))
+            for rec in records:
+                fields = rec.get("fields", {})
+                jira_no = _bitable_text(fields.get("jira号", ""))
+                if jira_no in valid_items:
+                    record_map[rec["record_id"]] = valid_items[jira_no]
+        except Exception as e:
+            logger.warning("查询 VCS BUG 记录失败(chunk %d): %s", i // chunk_size + 1, e)
+    if not record_map:
+        return _fail("未找到任何匹配的 VCS BUG 记录")
+    # 分批更新（每批 50 条）
+    updated = 0
+    update_recs = [{"record_id": rid, "fields": {"问题发生时间": t}} for rid, t in record_map.items()]
+    for i in range(0, len(update_recs), 50):
+        batch = update_recs[i:i + 50]
+        try:
+            await loop.run_in_executor(
+                None, lambda b=batch: _fc.update_bitable_records(app_token, table_id, b))
+            updated += len(batch)
+        except Exception as e:
+            logger.warning("VCS BUG 写回失败(batch %d): %s", i // 50 + 1, e)
+    logger.info("VCS BUG 问题发生时间写回完成: %d/%d", updated, len(valid_items))
+    return _ok({"updated": updated, "total": len(valid_items)},
+               f"写回 VCS BUG 完成：{updated}/{len(valid_items)} 条")
+
+
 @router.post("/api/trigger_time/re_extract_scan", response_model=ApiResponse)
 async def re_extract_scan(req: ReExtractScanRequest, request: Request):
     """扫描云端触发时间记录，找出触发时间为空的候选项"""

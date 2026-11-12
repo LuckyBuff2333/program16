@@ -907,6 +907,8 @@ def update_bitable_records(app_token: str, table_id: str, records: list) -> dict
         err_msg = data.get("msg", "未知错误")
         logger.error("Bitable 批量更新失败: code=%s, msg=%s, records=%d",
                      data.get("code"), err_msg, len(records))
+        import json as _json
+        logger.error("失败 payload: %s", _json.dumps(payload, ensure_ascii=False)[:1500])
         raise ValueError(f"Bitable 批量更新失败: {err_msg} (code={data.get('code')})")
     logger.info("Bitable 批量更新成功: app=%s, table=%s, 共 %d 条",
                 app_token, table_id, len(records))
@@ -1031,6 +1033,41 @@ def create_bitable_field(app_token: str, table_id: str, field_name: str, field_t
                       app_token, table_id, field_name, data.get("msg"))
         return False
     logger.info("字段已添加: app=%s, table=%s, field=%s", app_token, table_id, field_name)
+    return True
+
+
+def rename_bitable_field(app_token: str, table_id: str, field_id: str, new_name: str) -> bool:
+    """重命名多维表格字段
+
+    :param app_token: 多维表格 app_token
+    :param table_id: 数据表 ID
+    :param field_id: 字段 ID
+    :param new_name: 新字段名
+    :return: 是否成功
+    """
+    url = f"{_FEISHU_API}/bitable/v1/apps/{app_token}/tables/{table_id}/fields/{field_id}"
+    body = {"field_name": new_name}
+    headers = _bitable_headers()
+    resp = httpx.put(url, headers=headers, json=body, timeout=30, verify=False)
+    if resp.status_code in (401, 400, 403):
+        err_data = resp.json()
+        _refreshed = False
+        if err_data.get("code") in (99991677, 99991672, 99991668):
+            _refreshed = _refresh_user_token(force=True)
+        if not _refreshed and resp.status_code == 403:
+            _refreshed = _refresh_user_token(force=True)
+        if not _refreshed:
+            _clear_stale_user_token()
+            _token_cache["token"] = None
+        headers = _bitable_headers()
+        resp = httpx.put(url, headers=headers, json=body, timeout=30, verify=False)
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("code") != 0:
+        logger.warning("重命名字段失败: field_id=%s, new_name=%s, msg=%s",
+                      field_id, new_name, data.get("msg"))
+        return False
+    logger.info("字段已重命名: table=%s, field_id=%s -> %s", table_id, field_id, new_name)
     return True
 
 
