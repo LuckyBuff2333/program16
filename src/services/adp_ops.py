@@ -340,29 +340,17 @@ def _query_attachments_jira(jira_key: str):
         return None
 
 
-def query_attachments(jira_key: str):
-    """查询 JIRA 附件列表（带本地短期缓存）。
-
-    通过 adp.attach_source 配置切换数据源：
-      - 'jira': 使用 Jira REST API（直接读取 issue 附件字段）
-      - 'dpportal'（默认）: 使用 dpportal 接口
-
-    返回:
-      - list: 正常（可能为空列表，表示确实没有附件）
-      - None: 接口异常（非 JSON / 5xx / 重试后仍失败）——与“无附件”区分开，避免误标为无法分析
-    """
+def _query_attachments_dpportal(jira_key: str):
+    """查询 dpportal 附件，返回带签名的、ADP 可直接下载的 URL。"""
     adp_cfg = _get_adp_cfg()
-    source = adp_cfg.get("attach_source", "dpportal")
-    if source == "jira":
-        return _query_attachments_jira(jira_key)
-
-    # ── dpportal 接口（原有逻辑）──
+    attach_key = adp_cfg.get("attach_api_key") or os.environ.get("ADP_ATTACH_API_KEY", "")
+    if not attach_key:
+        logger.warning("dpportal 附件查询缺少 attach_api_key/ADP_ATTACH_API_KEY")
+        return None
     import time as _t
 
-    # 本地缓存：同一 Jira 在 TTL 内复用，避免重复慢查询
     ttl = adp_cfg.get("attach_cache_ttl", 300)
     with _ATTACH_CACHE_LOCK:
-        # 缓存容量保护：超出上限时清理过期条目
         if len(_ATTACH_CACHE) >= _ATTACH_CACHE_MAX_SIZE:
             _prune_attach_cache()
         hit = _ATTACH_CACHE.get(jira_key)
@@ -376,11 +364,10 @@ def query_attachments(jira_key: str):
         try:
             resp = httpx.post(
                 adp_cfg["attach_api"],
-                headers={"Content-Type": "application/json", "X-API-Key": adp_cfg["attach_api_key"]},
+                headers={"Content-Type": "application/json", "X-API-Key": attach_key},
                 json={"jiraKey": jira_key},
                 timeout=adp_cfg.get("attach_timeout", 120),
             )
-            # 非 200 / 非 JSON：按传输异常处理（网关 502、空响应等）
             body_head = (resp.text or "")[:200].replace("\n", " ")
             if resp.status_code != 200:
                 raise httpx.HTTPError(f"HTTP {resp.status_code}: {body_head}")
@@ -399,7 +386,6 @@ def query_attachments(jira_key: str):
             return attachments
         except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError, httpx.HTTPError) as e:
             if attempt < max_attempts:
-                # 指数退避: 10s, 30s, 60s
                 wait = adp_cfg.get("attach_retry_interval", 10) * (2 ** (attempt - 1))
                 logger.warning("dpportal 附件查询异常（第 %d/%d 次）: %s -> %s，%ds 后重试",
                                attempt, max_attempts, jira_key, str(e)[:120], wait)
@@ -411,6 +397,26 @@ def query_attachments(jira_key: str):
             logger.error("dpportal 附件查询异常（不可重试）: %s -> %s", jira_key, e)
             return None
     return None
+
+
+def query_attachments(jira_key: str):
+    """查询 JIRA 附件列表（带本地短期缓存）。
+
+    通过 adp.attach_source 配置切换数据源：
+      - 'jira': 使用 Jira REST API；若配置了 dpportal key，则优先换成签名 URL
+      - 'dpportal'（默认）: 使用 dpportal 接口
+    """
+    adp_cfg = _get_adp_cfg()
+    source = adp_cfg.get("attach_source", "dpportal")
+    if source == "jira":
+        if adp_cfg.get("attach_api_key") or os.environ.get("ADP_ATTACH_API_KEY"):
+            signed = _query_attachments_dpportal(jira_key)
+            if signed:
+                logger.info("Jira 附件已替换为 dpportal 签名链接: %s（%d 个）", jira_key, len(signed))
+                return signed
+        return _query_attachments_jira(jira_key)
+
+    return _query_attachments_dpportal(jira_key)
 
 
 # ===== Step 2: 构建消息 + 调用 ADP SSE =====
