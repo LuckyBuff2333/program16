@@ -1159,3 +1159,14 @@
 - **实现文件**：`src/services/server_legacy.py`、`config/config.yaml`（本机）
 
 </details>
+
+<details>
+<summary><b>210. PP-OCRv5 server 同批 100 视频对照（2026-11-13）</b></summary>
+
+- **同一批数据**：数据沉淀线上成功记录前 100 个视频，对比 mobile+2.5x 与 server+3x+白名单。
+- **mobile**：找到 100/100，匹配 32/100=32%，平均 3.08 秒/视频、22.9 ROI/视频。
+- **server**：找到 99/100，匹配 48/100=48%，平均 3.56 秒/视频、17.9 ROI/视频。
+- **结论**：准确率 +16 个百分点（相对提升 50%），耗时增加约 0.48 秒/视频；ROI 数减少。
+- **结果文件**：`data/roi_bench/server100_same_sample.json`
+
+</details>
