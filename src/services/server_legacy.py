@@ -5097,10 +5097,12 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
                 enlarged = cv2.resize(raw_crop, (int(crop_w * 3.0), int(crop_h * 3.0)),
                                       interpolation=cv2.INTER_CUBIC)
                 gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
-                enhanced = cv2.adaptiveThreshold(
-                    gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                    cv2.THRESH_BINARY, 15, 5)
-                enhanced = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+                # CLAHE + 去噪 + unsharp：比硬二值化更适合车机小字号时钟
+                gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+                gray = cv2.GaussianBlur(gray, (3, 3), 0)
+                sharp = cv2.addWeighted(
+                    gray, 1.6, cv2.GaussianBlur(gray, (0, 0), 3), -0.6, 0)
+                enhanced = cv2.cvtColor(sharp, cv2.COLOR_GRAY2BGR)
                 # RapidOCR 识别（已放大，跳过 _run_ocr 内部放大）
                 roi_results = _ocr_readtext(None, enhanced, _already_enhanced=True)
                 txt = " ".join(r[1] for r in roi_results if len(r) > 1)
