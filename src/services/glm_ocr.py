@@ -10,7 +10,8 @@ import threading
 import cv2
 import numpy as np
 
-_LOCK = threading.Lock()
+_LOCK = threading.Semaphore(2)  # 允许 2 路并行推理
+_LOAD_LOCK = threading.Lock()    # 模型加载互斥，防止重复加载
 _MODEL = None
 _PROCESSOR = None
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -36,12 +37,15 @@ def _load():
     global _MODEL, _PROCESSOR
     if _MODEL is not None:
         return
-    import torch
-    from transformers import AutoProcessor, GlmOcrForConditionalGeneration
-    _PROCESSOR = AutoProcessor.from_pretrained(model_path(), trust_remote_code=True)
-    _MODEL = GlmOcrForConditionalGeneration.from_pretrained(
-        model_path(), torch_dtype=torch.float32, device_map="cpu",
-        trust_remote_code=True).eval()
+    with _LOAD_LOCK:
+        if _MODEL is not None:
+            return
+        import torch
+        from transformers import AutoProcessor, GlmOcrForConditionalGeneration
+        _PROCESSOR = AutoProcessor.from_pretrained(model_path(), trust_remote_code=True)
+        _MODEL = GlmOcrForConditionalGeneration.from_pretrained(
+            model_path(), torch_dtype=torch.float32, device_map="cpu",
+            trust_remote_code=True).eval()
 
 
 def ocr_text(image_bgr: np.ndarray, max_new_tokens: int = 64) -> str:

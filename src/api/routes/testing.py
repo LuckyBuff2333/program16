@@ -489,7 +489,7 @@ async def test_batch_ai_search(request: Request):
         return _fail("JQL 查询语句不能为空")
     try:
         from src.clients import jira_client
-        issues = await _run_blocking(jira_client.search_issues, jql, max_results=5000)
+        issues = await _run_blocking(jira_client.search_issues, jql, max_results=500)
         vcu_issues = [i for i in issues if "VCU" in (i.get("key") or "").upper()]
         rows = []
         for i in vcu_issues:
@@ -500,8 +500,11 @@ async def test_batch_ai_search(request: Request):
                 "status": ((fields.get("status") or {}).get("name") or ""),
                 "created": (fields.get("created") or "")[:10],
             })
-        return _ok({"total": len(issues), "vcu_count": len(rows), "rows": rows},
-                    f"搜索到 {len(issues)} 条，其中 VCU {len(rows)} 条")
+        capped = len(issues) >= 500
+        msg = f"搜索到 {len(issues)} 条，其中 VCU {len(rows)} 条"
+        if capped:
+            msg += "（已达 500 条上限，请缩小 JQL 范围）"
+        return _ok({"total": len(issues), "vcu_count": len(rows), "rows": rows, "capped": capped}, msg)
     except Exception as e:
         logger.error("批量搜索失败: %s", e)
         return _fail(str(e))
@@ -557,7 +560,7 @@ async def test_jira_lookup(request: Request):
                     _fields += "," + _rc_field
                 issues = await _run_blocking(
                     jira_client.search_issues, raw,
-                    max_results=5000, fields=_fields)
+                    max_results=500, fields=_fields)
                 # 直接使用 JQL 返回字段，避免对每条 Jira 再发详情请求（5000 条会非常慢）
                 for issue in issues:
                     key = (issue.get("key") or "").strip()
@@ -601,93 +604,119 @@ async def test_jira_lookup(request: Request):
 
 @router.post("/api/test/bitable_vcs_query", response_model=ApiResponse)
 async def test_bitable_vcs_query(request: Request):
-    """表格查询：从 VCS BUG 多维表格按创建日期范围查询记录，可选过滤AI初步分析结果非空的记录
+    """表格查询：从 VCS BUG 多维表格按创建日期范围查询记录
 
-    查询策略：有日期范围时用 search API 精确过滤（~300-1600条）；
-    search 失败或无日期时回退全量拉取 + Python 侧筛选。
+    查询策略：
+    1. 有日期范围 → search API（ExactDate 过滤，20s 快速超时）
+    2. search 失败 → 全量拉取 + Python 侧日期筛选（55s 超时）
+    3. 无日期范围 → 全量拉取（55s 超时）
+    整体受 90s asyncio.wait_for 保护（20+55=75s < 90s），防止无限挂起。
     """
     body = await request.json() or {}
-    date_from = (body.get("date_from") or "").strip()  # 如 "2026-11-02"
-    date_to = (body.get("date_to") or "").strip()      # 如 "2026-11-08"
-    filter_ai = body.get("filter_ai", False)  # 是否过滤AI初步分析结果非空的记录
+    date_from = (body.get("date_from") or "").strip()
+    date_to = (body.get("date_to") or "").strip()
+    filter_ai = body.get("filter_ai", False)
     try:
-        from src.clients import feishu_client as _fc
-        app_token = "HOARbsrB0aSViFs5AjNchSQ0nAf"
-        table_id = "tblr4oboVbKsV6y1"
-        loop = asyncio.get_event_loop()
-        records = None
-        use_search = bool(date_from or date_to)
-        # 始终解析日期范围边界（无论哪种策略都需要 Python 侧兆底过滤）
-        ts_from = 0
-        ts_to = float('inf')
-        if date_from:
-            ts_from = datetime.strptime(date_from, "%Y-%m-%d").timestamp() * 1000
-        if date_to:
-            ts_to = (datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000
-        # 策略 1：search API（有日期范围时优先，服务端过滤，只拉命中记录）
-        if use_search:
-            try:
-                conditions = []
-                if date_from:
-                    # 日期字段只支持 isGreater/isLess；ExactDate 会归到当天零点，
-                    # 因此起始日减一天、结束日加一天，保证范围包含首尾两天。
-                    ts_from_str = str(int(ts_from - 86400000))
-                    conditions.append({"field_name": "创建日期", "operator": "isGreater", "value": ["ExactDate", ts_from_str]})
-                if date_to:
-                    ts_to_str = str(int(ts_to + 86400000))
-                    conditions.append({"field_name": "创建日期", "operator": "isLess", "value": ["ExactDate", ts_to_str]})
-                filter_obj = {"conjunction": "and", "conditions": conditions}
-                records = await loop.run_in_executor(
-                    None, lambda: _fc.search_bitable_records(
-                        app_token, table_id, filter_obj=filter_obj,
-                        field_names=["jira号", "创建日期", "AI初步分析结果", "问题发生时间"]))
-                logger.info("表格查询使用 search API，命中 %d 条", len(records))
-            except Exception as e:
-                logger.warning("search API 失败(%s)，回退全量拉取", e)
-                records = None
-        # 策略 2：全量拉取 + Python 侧筛选（search 失败或无日期范围时）
-        if records is None:
-            records = await loop.run_in_executor(
-                None, lambda: _fc.list_bitable_records(app_token, table_id))
-            logger.info("表格查询使用全量拉取，共 %d 条", len(records))
-        # 解析记录（始终做 Python 侧日期兆底过滤，防止 search API 过滤无效）
-        rows = []
-        for rec in records:
-            fields = rec.get("fields", {})
-            # 日期过滤（search API 可能过滤无效，始终兆底）
-            created_ts = fields.get("创建日期", "")
-            if not isinstance(created_ts, (int, float)) or created_ts <= 0:
-                if use_search:
-                    continue
-                created_ts = 0
-            else:
-                if ts_from and created_ts < ts_from:
-                    continue
-                if ts_to != float('inf') and created_ts >= ts_to:
-                    continue
-            jira_no = _bitable_text(fields.get("jira号", ""))
-            ai_result = _bitable_text(fields.get("AI初步分析结果", ""))
-            problem_time = _bitable_text(fields.get("问题发生时间", ""))
-            # AI过滤：跳过AI初步分析结果非空的记录
-            if filter_ai and ai_result and ai_result not in ("-", "None"):
-                continue
-            # 创建日期转可读格式
-            created_str = ""
-            if isinstance(created_ts, (int, float)) and created_ts > 0:
-                created_str = datetime.fromtimestamp(created_ts / 1000).strftime("%Y-%m-%d %H:%M")
-            rows.append({
-                "jira号": jira_no,
-                "创建日期": created_str,
-                "问题发生时间": problem_time,
-                "AI初步分析结果": ai_result,
-            })
-        # 按创建日期降序
-        rows.sort(key=lambda r: r["创建日期"] or "", reverse=True)
-        return _ok({"rows": rows, "total": len(rows)},
-                   f"查询到 {len(rows)} 条记录")
+        return await asyncio.wait_for(
+            _do_bitable_vcs_query(date_from, date_to, filter_ai),
+            timeout=90)
+    except asyncio.TimeoutError:
+        logger.error("表格查询超时(>90s)，date_from=%s, date_to=%s", date_from, date_to)
+        return _fail("查询超时（90s），请缩小日期范围后重试")
     except Exception as e:
         logger.error("表格查询失败: %s", e)
         return _fail(str(e))
+
+
+async def _do_bitable_vcs_query(date_from: str, date_to: str, filter_ai: bool):
+    """表格查询核心逻辑（受 asyncio.wait_for 保护）"""
+    from src.clients import feishu_client as _fc
+    app_token = "HOARbsrB0aSViFs5AjNchSQ0nAf"
+    table_id = "tblr4oboVbKsV6y1"
+    loop = asyncio.get_event_loop()
+    records = None
+    use_search = bool(date_from or date_to)
+    ts_from = 0
+    ts_to = float('inf')
+    if date_from:
+        ts_from = datetime.strptime(date_from, "%Y-%m-%d").timestamp() * 1000
+    if date_to:
+        ts_to = (datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000
+    # 策略 1：search API（按天拆分，每天 ~375 条不超飞书 500 条上限）
+    if use_search:
+        try:
+            date_from_dt = datetime.strptime(date_from, "%Y-%m-%d") if date_from else None
+            date_to_dt = datetime.strptime(date_to, "%Y-%m-%d") if date_to else date_from_dt
+            if date_from_dt and date_to_dt:
+                total_days = (date_to_dt - date_from_dt).days + 1
+            else:
+                total_days = 1
+            # 超过 14 天直接全量拉取更快，避免逐天调用过多
+            if total_days <= 14:
+                all_records = []
+                chunk_start = date_from_dt or date_to_dt
+                end_dt = date_to_dt or date_from_dt
+                while chunk_start <= end_dt:
+                    c_ts_from = chunk_start.timestamp() * 1000
+                    c_ts_to = (chunk_start + timedelta(days=1)).timestamp() * 1000
+                    conditions = [
+                        {"field_name": "创建日期", "operator": "isGreater",
+                         "value": ["ExactDate", str(int(c_ts_from - 86400000))]},
+                        {"field_name": "创建日期", "operator": "isLess",
+                         "value": ["ExactDate", str(int(c_ts_to + 86400000))]},
+                    ]
+                    filter_obj = {"conjunction": "and", "conditions": conditions}
+                    chunk = await loop.run_in_executor(
+                        None, lambda fo=filter_obj: _fc.search_bitable_records(
+                            app_token, table_id, filter_obj=fo,
+                            field_names=["jira号", "创建日期", "AI初步分析结果", "问题发生时间"],
+                            page_size=200, timeout=15))
+                    all_records.extend(chunk)
+                    chunk_start += timedelta(days=1)
+                records = all_records
+                logger.info("表格查询 search API 命中 %d 条（%d 天）", len(records), total_days)
+            else:
+                records = None  # 超过 14 天直接走策略 2 全量拉取
+                logger.info("表格查询日期跨度 %d 天 > 14，跳过 search 走全量拉取", total_days)
+        except Exception as e:
+            logger.warning("search API 失败(%s)，回退全量拉取", e)
+            records = None
+    # 策略 2：全量拉取 + Python 侧日期筛选（search 失败或无日期范围时）
+    if records is None:
+        records = await loop.run_in_executor(
+            None, lambda: _fc.list_bitable_records(app_token, table_id, timeout=55))
+        logger.info("表格查询全量拉取 %d 条", len(records))
+    # 解析记录（Python 侧日期兜底过滤）
+    rows = []
+    for rec in records:
+        fields = rec.get("fields", {})
+        created_ts = fields.get("创建日期", "")
+        if not isinstance(created_ts, (int, float)) or created_ts <= 0:
+            if use_search:
+                continue
+            created_ts = 0
+        else:
+            if ts_from and created_ts < ts_from:
+                continue
+            if ts_to != float('inf') and created_ts >= ts_to:
+                continue
+        jira_no = _bitable_text(fields.get("jira号", ""))
+        ai_result = _bitable_text(fields.get("AI初步分析结果", ""))
+        problem_time = _bitable_text(fields.get("问题发生时间", ""))
+        if filter_ai and ai_result and ai_result not in ("-", "None"):
+            continue
+        created_str = ""
+        if isinstance(created_ts, (int, float)) and created_ts > 0:
+            created_str = datetime.fromtimestamp(created_ts / 1000).strftime("%Y-%m-%d %H:%M")
+        rows.append({
+            "jira号": jira_no,
+            "创建日期": created_str,
+            "问题发生时间": problem_time,
+            "AI初步分析结果": ai_result,
+        })
+    rows.sort(key=lambda r: r["创建日期"] or "", reverse=True)
+    return _ok({"rows": rows, "total": len(rows)},
+               f"查询到 {len(rows)} 条记录")
 
 
 @router.post("/api/test/vcs_problem_time_query", response_model=ApiResponse)
@@ -1179,12 +1208,14 @@ async def test_batch_ai_extract_times(request: Request):
 
 @router.get("/api/test/video_ocr_stats", response_model=ApiResponse)
 def video_ocr_stats():
-    """视频 OCR 统计（进程内累计）：整帧/ROI/跳帧/投票命中
+    """视频 OCR 统计（进程内累计）：整帧/ROI/跳帧/投票命中 + 各 ROI 区域命中计数
 
-    用于观察几天真实数据后，判断 ROI 兜底是否值得保留。
+    用于观察几天真实数据后，判断 ROI 兆底是否值得保留、哪些区域产出最多。
     """
-    from src.services.server_legacy import _VIDEO_OCR_STATS
-    return _ok(dict(_VIDEO_OCR_STATS), "视频 OCR 统计（服务重启后清零）")
+    from src.services.server_legacy import _VIDEO_OCR_STATS, _ROI_REGION_STATS
+    data = dict(_VIDEO_OCR_STATS)
+    data["region_hits"] = dict(_ROI_REGION_STATS)
+    return _ok(data, "视频 OCR 统计（服务重启后清零）")
 
 
 @router.post("/api/test/batch_ai_filter", response_model=ApiResponse)

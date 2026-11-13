@@ -2,6 +2,9 @@
 build/
 dist/
 
+# 本地模型文件（太大，不上传）
+models/GLM-OCR/
+
 # 大文件 - jre 压缩包（手动传输）
 tools/jre*.zip
 tools/node-v*/

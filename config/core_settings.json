@@ -19,7 +19,7 @@
     "url": "https://wss.lke.cloud.tencent.com/adp/v2/chat",
     "sandbox_base": "https://sandbox.adp.cloud.tencent.com/files?path=",
     "attach_api": "https://dpportal.apps.saic-gm.com/api/logAnalysis/attachments",
-    "attach_api_key": "c2e9188021fe686418627992aace130062e663940bc27629ba191672ba91547f",
+    "attach_api_key": "",
     "timeout": 3600,
     "bitable_app_token": "K7wibpzjIaqm9DsXKfKcMDxjnQb",
     "bitable_table_id": "tblbZDBbuidowRhX",
@@ -60,12 +60,12 @@
     "url": "sqlite:///data/app.db"
   },
   "diana": {
-    "api_key": "1fea2cc6-9ee3-4095-8715-a93976447fe0",
-    "client_id": "PVCS0l3wUS3xhb1V2Y721hIQV25SmjGVECDodz612xyYYz249G22s2771a0",
+    "api_key": "",
+    "client_id": "",
     "env": "prod",
     "mock": false,
     "model": "deepseek-v-flash",
-    "prod_client_id": "PVCS0Kmt3F0lSxLNZw1kalEhdT1vdnB28NpZ2Jnse7BO5rfo7xYs42uC428",
+    "prod_client_id": "",
     "prod_model": "deepseek-v-flash",
     "prod_url": "http://zonea-gw01.silk.saic-gm.com/aibd-diana/dianaDeepSeekVFlash/v1/chat/completions",
     "url": "http://aigw01.apps-qa.saic-gm.com/diana-text/v1/chat/completions"

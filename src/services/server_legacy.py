@@ -243,6 +243,7 @@ def _get_ocr_cfg() -> dict:
     _ocr_cfg_cache.setdefault("oom_cooldown_sec", 300)
     _ocr_cfg_cache.setdefault("easyocr_languages", ["en", "ch_sim"])
     _ocr_cfg_cache.setdefault("engine", "v5")
+    _ocr_cfg_cache.setdefault("time_only_dict", True)
     return _ocr_cfg_cache
 
 # ── OCR 全局并发限流信号量 ──
@@ -4610,6 +4611,14 @@ def _apply_ocr_runtime_config(ycfg: dict, use_cuda: bool) -> dict:
             keys_path = os.path.join(model_dir, "ppocrv5_dict.txt")
         if keys_path:
             rec_cfg["rec_keys_path"] = _resolve_ocr_model_path(keys_path, proj_root)
+        # 时间专用字典：非时间字符全部映射为 CTC 空白，识别模型只输出时间相关字符
+        if cfg.get("time_only_dict", True):
+            _orig_path = rec_cfg.get("rec_keys_path", "")
+            if _orig_path:
+                _time_path = _orig_path.replace("ppocrv5_dict.txt", "ppocrv5_time_dict.txt")
+                if os.path.exists(_time_path):
+                    rec_cfg["rec_keys_path"] = _time_path
+                    logger.info("OCR 使用时间专用字典: %s", os.path.basename(_time_path))
 
     def _set(section: str, key: str, cfg_key: str = None):
         val = cfg.get(cfg_key or key)
@@ -4802,6 +4811,7 @@ def _run_ocr(engine, image, _already_enhanced: bool, tag: str = ""):
     _box_t = float(_ocfg.get("box_thresh", 0.3))
     _txt_s = float(_ocfg.get("text_score", 0.15))
     h, w = image.shape[:2]
+    _orig_w, _orig_h = w, h
     pixel_area = h * w
 
     # ── 大图预缩放：防止 GPU OOM ──
@@ -4816,11 +4826,13 @@ def _run_ocr(engine, image, _already_enhanced: bool, tag: str = ""):
     # 自适应放大：根据视频分辨率自动计算最佳倍率（目标宽度 2560px，PP-OCRv5 最优识别区间）
     # 低分辨率视频（如 720p/640x480）→ 自动放大更多倍；高分辨率（1080p+）→ 不放大或微放大
     # 放大后像素上限 6M，避免 CPU 推理过慢
+    # 用 min(w,h) 确保宽扁图/窄长图的短边也能放大到目标尺寸（文字高度由短边决定）
     _target_w = int(_ocfg.get("target_width", 2560))
     _max_mag = float(_ocfg.get("max_mag", 2.5))
     _mag_cap = 6_000_000
     if not _already_enhanced:
-        _adaptive_mag = max(1.0, min(_target_w / max(w, 1), _max_mag))
+        _short_side = min(w, h)
+        _adaptive_mag = max(1.0, min(_target_w / max(_short_side, 1), _max_mag))
         _mag_px = int(w * _adaptive_mag) * int(h * _adaptive_mag)
         if _mag_px > _mag_cap:
             _adaptive_mag = max(1.0, (_mag_cap / (w * h)) ** 0.5)
@@ -4835,9 +4847,15 @@ def _run_ocr(engine, image, _already_enhanced: bool, tag: str = ""):
         mag_ratio = 1.0
         enlarged = image
     scale = enlarged.shape[0] / h if enlarged is not image else 1.0
+    _enlarged_h, _enlarged_w = enlarged.shape[:2]
     # box_thresh/text_score/use_cls 从配置读取，确保 PP-OCRv4 回退路径同样生效
     result, elapse = engine(enlarged, box_thresh=_box_t, text_score=_txt_s, use_cls=False)
     if not result:
+        # 诊断日志：区分“真无文字”还是“检测不到”
+        logger.info("RapidOCR 未识别到文本: 原图%dx%d → 预缩放%dx%d → 放大%.1fx(%dx%d) box_thresh=%.2f text_score=%.2f tag=%s",
+                    _orig_w, _orig_h, w, h,
+                    mag_ratio if scale != 1.0 else 1.0, _enlarged_w, _enlarged_h,
+                    _box_t, _txt_s, tag)
         return []
     items = []
     for bbox, text, conf in result:
@@ -4895,6 +4913,8 @@ def _get_ocr_reader():
 
 # 视频 OCR 统计（ROI 命中 / 整帧 / 静帧跳过 / 投票命中），用于后续调参
 _VIDEO_OCR_STATS = {"videos": 0, "roi_frames": 0, "full_frames": 0, "skipped_frames": 0, "vote_hits": 0}
+# 各 ROI 区域命中时间统计（用于调参：哪些区域产出时间最多、哪些可删除）
+_ROI_REGION_STATS = {"top_bar": 0, "center_top": 0, "right_mid": 0, "left_top": 0, "bottom_right": 0, "right_center": 0, "bottom_center": 0}
 
 
 def _frame_signature(frame):
@@ -4954,30 +4974,37 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     录屏时间通常出现在：手机顶部状态栏、车载 HMI 中央顶部、Windows 右下角任务栏、
     导航应用底部中央导航栏（时间字体较大）。
     裁剪这些区域放大 2.5x 再识别，区域小、速度快、抗内容干扰。
+
+    返回合并文本，同时更新 _ROI_REGION_STATS 各区域命中计数。
     """
     import cv2
+    import numpy as np
     parts = []
     try:
         h, w = frame.shape[:2]
-        # 扩展区域：车载 HMI 时钟常出现在顶部状态栏、中央顶部、右下任务栏、底部中央导航栏
+        # 带标签的区域：车载 HMI 时钟常出现在顶部状态栏、中央大时钟、右下任务栏、底部中央导航栏
         regions = [
-            (0, 0, w, max(1, int(h * 0.15))),                  # 顶部状态栏（扩展 10%→15%）
-            (int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),  # 中央顶部（车载 HMI 居中时钟）
-            (int(w * 0.55), int(h * 0.22), int(w * 0.95), int(h * 0.55)),  # 车机右侧中部时钟（HMI 主界面）
-            (int(w * 0.45), int(h * 0.60), w, h),              # 右下任务栏（水印相机时间/位置块）
-            (int(w * 0.20), int(h * 0.70), int(w * 0.80), h),  # 底部中央导航栏（导航应用时间，字体较大）
+            ("top_bar",       0, 0, w, max(1, int(h * 0.15))),                  # 顶部状态栏（扩展 10%→15%）
+            ("center_top",    int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),  # 中央顶部（车载 HMI 居中时钟）
+            ("right_mid",     int(w * 0.55), int(h * 0.22), int(w * 0.95), int(h * 0.55)),  # 车机右侧中部时钟（HMI 主界面）
+            ("bottom_right",  int(w * 0.45), int(h * 0.60), w, h),              # 右下任务栏（水印相机时间/位置块）
+            ("bottom_center", int(w * 0.20), int(h * 0.70), int(w * 0.80), h),  # 底部中央导航栏（导航应用时间，字体较大）
         ]
         if not status_only:
             regions = [
-                (0, 0, w, max(1, int(h * 0.15))),
-                (int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),
-                (int(w * 0.55), int(h * 0.22), int(w * 0.95), int(h * 0.55)),  # 车机右侧中部时钟
-                (0, 0, int(w * 0.55), int(h * 0.55)),
-                (int(w * 0.45), int(h * 0.60), w, h),
-                (int(w * 0.40), int(h * 0.18), w, int(h * 0.70)),
-                (int(w * 0.20), int(h * 0.70), int(w * 0.80), h),
+                ("top_bar",       0, 0, w, max(1, int(h * 0.15))),
+                ("center_top",    int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),
+                ("right_mid",     int(w * 0.55), int(h * 0.22), int(w * 0.95), int(h * 0.55)),
+                ("left_top",      0, 0, int(w * 0.55), int(h * 0.55)),
+                ("bottom_right",  int(w * 0.45), int(h * 0.60), w, h),
+                ("right_center",  int(w * 0.40), int(h * 0.18), w, int(h * 0.70)),
+                ("bottom_center", int(w * 0.20), int(h * 0.70), int(w * 0.80), h),
             ]
-        for (x1, y1, x2, y2) in regions:
+        _time_re = _OCR_TIME_FULL_RE if '_OCR_TIME_FULL_RE' in dir() else None
+        import re as _re_roi
+        _t_chk = _re_roi.compile(r'\d[.:;,\-]\d{2}')
+        for region in regions:
+            name, x1, y1, x2, y2 = region
             if x2 - x1 < 40 or y2 - y1 < 12:
                 continue
             raw_crop = frame[y1:y2, x1:x2]
@@ -4998,6 +5025,9 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
                 txt = " ".join(str(r[1]) for r in res if len(r) > 1)
             if txt.strip():
                 parts.append(txt)
+                # 统计该区域是否识别到时间类文本
+                if name in _ROI_REGION_STATS and _t_chk.search(txt):
+                    _ROI_REGION_STATS[name] += 1
     except Exception:
         return ""
     return _strip_progress_bar(" ".join(parts))
@@ -5077,8 +5107,10 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
                 break
     # RapidOCR 已识别到时间文本时跳过 EasyOCR 回退（节省 ~5s/帧，我们只需要时间）
     _skip_easyocr = _rapid_has_time and not _already_enhanced
-    # RapidOCR 失败或质量差时回退 EasyOCR（延迟初始化，避免不必要的模型下载）
-    if not results or (_avg_conf < 0.3 and not _skip_easyocr):
+    # RapidOCR 完全无结果时跳过 EasyOCR（统计显示此类帧 EasyOCR 回退几乎也无效，节省 ~3-5s/帧）
+    _empty_skip = not results and not _already_enhanced
+    # RapidOCR 质量差时回退 EasyOCR（延迟初始化，避免不必要的模型下载）
+    if not _empty_skip and (not results or (_avg_conf < 0.3 and not _skip_easyocr)):
         if reader is None:
             reader = _get_ocr_reader()
         if reader is not None:
@@ -6373,6 +6405,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
         _roi_start = _VIDEO_OCR_STATS["roi_frames"]
         _skip_start = _VIDEO_OCR_STATS["skipped_frames"]
         _vote_start = _VIDEO_OCR_STATS["vote_hits"]
+        _region_start = dict(_ROI_REGION_STATS)
         ts = None  # 初始化：避免 OCR/文件名解析均未命中时 UnboundLocalError
         video_label = f"{bugid} [{vi+1}/{len(ranked_videos)}] {video_name}"
         # 为当前视频找到最接近的 gmlogger（按接近度排序 ref_pool）
@@ -6481,29 +6514,35 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                         logger.debug("视频兜底提取(%s)：第%d秒与上一帧相同，跳过 OCR", video_label, sec + 1)
                         continue
                     _prev_sig = _sig
-                    # 状态栏 ROI 优先：只 OCR 顶部/右下小区域，命中时间就不再做整帧 OCR
-                    _roi_text = ""
+                    # 整帧优先：先全图 OCR，找到时间就结束；找不到再 ROI 放大兜底
+                    _roi_has_time = False
                     try:
-                        _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
-                    except Exception:
+                        results = _ocr_readtext(None, frame) or []
+                    except Exception as e:
+                        logger.warning("视频兜底提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
+                        continue
+                    all_text = _strip_progress_bar(" ".join(r[1] for r in results))
+                    _has_time = bool(all_text) and bool(
+                        _OCR_TIME_FULL_RE.search(all_text) or _OCR_TIME_ONLY_RE.search(all_text))
+                    # 整帧未找到时间 → ROI 放大 2.5x 兜底（小字号/低对比度时钟）
+                    if not _has_time:
                         _roi_text = ""
-                    _roi_text = _strip_progress_bar(_roi_text)
-                    _roi_has_time = bool(_roi_text) and bool(
-                        _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
-                    if _roi_has_time:
-                        results = []
-                        all_text = _roi_text
-                        _has_time = True
-                    else:
                         try:
-                            results = _ocr_readtext(None, frame) or []
-                        except Exception as e:
-                            logger.warning("视频兜底提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
-                            continue
-                        all_text = _strip_progress_bar(" ".join(r[1] for r in results))
-                        _has_time = bool(all_text) and bool(
-                            _OCR_TIME_FULL_RE.search(all_text) or _OCR_TIME_ONLY_RE.search(all_text))
-                    _VIDEO_OCR_STATS["roi_frames" if _roi_has_time else "full_frames"] += 1
+                            _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
+                        except Exception:
+                            _roi_text = ""
+                        _roi_text = _strip_progress_bar(_roi_text)
+                        _roi_has_time = bool(_roi_text) and bool(
+                            _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
+                        if _roi_has_time:
+                            all_text = _roi_text
+                            _has_time = True
+                            _VIDEO_OCR_STATS["roi_frames"] += 1
+                            logger.info("视频兜底提取(%s)：第%d秒整帧未命中，ROI 兜底命中时间", video_label, sec + 1)
+                        else:
+                            _VIDEO_OCR_STATS["full_frames"] += 1
+                    else:
+                        _VIDEO_OCR_STATS["full_frames"] += 1
                     _collected_texts.append((sec, all_text))
                     # 诊断日志：打印 OCR 实际读到的原文
                     logger.info("视频兜底提取(%s)：第%d秒 OCR 原文: %s", video_label, sec + 1, (all_text[:120] or "(空)"))
@@ -6884,6 +6923,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
         _roi_start = _VIDEO_OCR_STATS["roi_frames"]
         _skip_start = _VIDEO_OCR_STATS["skipped_frames"]
         _vote_start = _VIDEO_OCR_STATS["vote_hits"]
+        _region_start = dict(_ROI_REGION_STATS)
         try:
             # 下载子块：单独捕获下载异常，失败则跳过当前视频（临时目录由外层 finally 统一清理）
             try:
@@ -6938,36 +6978,37 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                         logger.debug("视频帧提取(%s)：第%d秒与上一帧相同，跳过 OCR", video_label, sec + 1)
                         continue
                     _prev_sig = _sig
-                    # 状态栏 ROI 优先：只 OCR 顶部/右下小区域，命中时间就不再做整帧 OCR
-                    # （避免地图POI/聊天消息/系统UI等大量无关文本干扰，同时节省 ~5s/帧）
-                    _roi_text = ""
+                    # 整帧优先：先全图 OCR，找到时间就结束；找不到再 ROI 放大兜底
+                    _roi_has_time = False
                     try:
-                        _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
-                    except Exception:
+                        results = _ocr_readtext(None, frame) or []
+                    except Exception as e:
+                        logger.warning("视频帧提取：OCR 第%d秒失败: %s", sec, e)
+                        continue
+                    # 只保留时间类文本块，过滤地图POI/聊天消息/系统UI等无关内容
+                    _time_items = [r for r in results if _is_ocr_time_related_text(r[1] if len(r) > 1 else "")]
+                    if _time_items:
+                        results = _time_items
+                    all_text = _strip_progress_bar(" ".join(r[1] for r in results))
+                    _has_time = bool(all_text) and bool(
+                        _OCR_TIME_FULL_RE.search(all_text) or _OCR_TIME_ONLY_RE.search(all_text))
+                    # 整帧未找到时间 → ROI 放大 2.5x 兜底（小字号/低对比度时钟）
+                    if not _has_time:
                         _roi_text = ""
-                    _roi_text = _strip_progress_bar(_roi_text)
-                    _roi_has_time = bool(_roi_text) and bool(
-                        _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
-                    if _roi_has_time:
-                        results = []
-                        all_text = _roi_text
-                        _VIDEO_OCR_STATS["roi_frames"] += 1
-                        # ROI 已含完整日期时间，跳过整帧 OCR（节省 ~5s，避免无关文本噪音）
-                        if _OCR_TIME_FULL_RE.search(_roi_text):
-                            logger.info("视频帧提取(%s)：第%d秒 ROI 命中完整日期时间，跳过整帧 OCR", video_label, sec + 1)
-                    else:
                         try:
-                            results = _ocr_readtext(None, frame) or []
-                        except Exception as e:
-                            logger.warning("视频帧提取：OCR 第%d秒失败: %s", sec, e)
-                            continue
-                        # 只保留时间类文本块，过滤地图POI/聊天消息/系统UI等无关内容
-                        _time_items = [r for r in results if _is_ocr_time_related_text(r[1] if len(r) > 1 else "")]
-                        if _time_items:
-                            results = _time_items
-                        all_text = _strip_progress_bar(" ".join(r[1] for r in results))
-                        if _roi_text:
-                            all_text = f"{_roi_text} {all_text}".strip()
+                            _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
+                        except Exception:
+                            _roi_text = ""
+                        _roi_text = _strip_progress_bar(_roi_text)
+                        _roi_has_time = bool(_roi_text) and bool(
+                            _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
+                        if _roi_has_time:
+                            all_text = _roi_text
+                            _VIDEO_OCR_STATS["roi_frames"] += 1
+                            logger.info("视频帧提取(%s)：第%d秒整帧未命中，ROI 兜底命中时间", video_label, sec + 1)
+                        else:
+                            _VIDEO_OCR_STATS["full_frames"] += 1
+                    else:
                         _VIDEO_OCR_STATS["full_frames"] += 1
                     logger.info("视频帧提取(%s)：第%d秒 OCR%s: %s", video_label, sec + 1,
                                 " (ROI)" if _roi_has_time else "",
@@ -7201,12 +7242,13 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
             logger.warning("视频帧提取：处理视频 %s 时异常: %s", video_label, e)
         finally:
             # 每视频统计：便于观察 ROI/投票是否真的有价值（连续几天 roi_frames 恒为 0 就可以删 ROI）
-            logger.info("视频 OCR 统计(%s): 整帧帧=%d ROI帧=%d 跳过帧=%d 投票命中=%d",
+            logger.info("视频 OCR 统计(%s): 整帧帧=%d ROI帧=%d 跳过帧=%d 投票命中=%d 区域命中=%s",
                         video_name,
                         max(0, _VIDEO_OCR_STATS["full_frames"] - _full_start),
                         max(0, _VIDEO_OCR_STATS["roi_frames"] - _roi_start),
                         max(0, _VIDEO_OCR_STATS["skipped_frames"] - _skip_start),
-                        max(0, _VIDEO_OCR_STATS["vote_hits"] - _vote_start))
+                        max(0, _VIDEO_OCR_STATS["vote_hits"] - _vote_start),
+                        {k: max(0, _ROI_REGION_STATS[k] - _region_start.get(k, 0)) for k in _ROI_REGION_STATS})
             # 统一清理临时目录：无论成功、失败、命中返回还是 continue，都删除下载的视频文件
             if tmp_dir:
                 shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -1081,8 +1081,8 @@ export default {
       if (/磁盘空间不足|no space left/.test(t)) return '磁盘空间不足';
       // 分析can信号
       if (/分析can信号|can信号/.test(t)) return '分析can信号导致超时';
-      // 待后端开发排查
-      if (/待后端开发排查|httpstatuserror/.test(t)) return '待后端开发排查';
+      // 待分析（含旧的“待后端开发排查”文本匹配）
+      if (/待后端开发排查|待分析|httpstatuserror/.test(t)) return '待分析';
       // 日志待补充（仅人工标记：确认了触发时间但日志里没有对应时间段）
       if (/日志待补充|待补充日志|日志不全|日志里没有|没有.*日志|日志缺失/.test(text)) return '日志待补充';
       // 日志过滤逻辑
@@ -1103,7 +1103,7 @@ export default {
       if (newCategory) {
         row.category = newCategory;
         // 更新 needs_analysis 标记：跳过类别设为 false
-        const skipCats = new Set(['待后端开发排查', '磁盘空间不足', '服务关闭', '并发过多', 'IT侧服务停止',
+        const skipCats = new Set(['待分析', '磁盘空间不足', '服务关闭', '并发过多', 'IT侧服务停止',
           '接口连接问题', '接口响应问题', '分析任务执行超时，跳过排查', '问题重复', '问题未复现', '无gmlogger', '日志待补充']);
         row.needs_analysis = !skipCats.has(newCategory);
       }
