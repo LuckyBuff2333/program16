@@ -4928,7 +4928,7 @@ def _get_ocr_reader():
 # 视频 OCR 统计（ROI 命中 / 整帧 / 静帧跳过 / 投票命中），用于后续调参
 _VIDEO_OCR_STATS = {"videos": 0, "roi_frames": 0, "full_frames": 0, "skipped_frames": 0, "vote_hits": 0}
 # 各 ROI 区域命中时间统计（用于调参：哪些区域产出时间最多、哪些可删除）
-_ROI_REGION_STATS = {"top_bar": 0, "center_top": 0, "right_mid": 0, "left_top": 0, "bottom_right": 0, "right_center": 0, "bottom_center": 0}
+_ROI_REGION_STATS = {"top_bar": 0, "right_upper": 0, "center_time": 0, "right_lower": 0, "left_mid": 0}
 
 
 def _frame_signature(frame):
@@ -5016,23 +5016,17 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     try:
         h, w = frame.shape[:2]
         # 带标签的区域：车载 HMI 时钟常出现在顶部状态栏、中央大时钟、右下任务栏、底部中央导航栏
+        # 基于 30 个视频 141 个时间文本块的位置统计（归一化坐标）：
+        # 顶部、右侧上/中、中央、右侧下、左侧中下覆盖全部统计样本。
         regions = [
-            ("top_bar",       0, 0, w, max(1, int(h * 0.15))),                  # 顶部状态栏
-            ("center_top",    int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),  # 中央顶部
-            ("right_mid",     int(w * 0.55), int(h * 0.22), int(w * 0.95), int(h * 0.55)),  # 车机右侧中部
-            ("bottom_right",  int(w * 0.45), int(h * 0.60), w, h),              # 右下任务栏
-            ("bottom_center", int(w * 0.20), int(h * 0.70), int(w * 0.80), h),  # 底部中央导航栏
+            ("top_bar",      0, 0, w, int(h * 0.16)),
+            ("right_upper",  int(w * 0.55), int(h * 0.02), w, int(h * 0.46)),
+            ("center_time",  int(w * 0.40), int(h * 0.20), int(w * 0.90), int(h * 0.68)),
+            ("right_lower",  int(w * 0.58), int(h * 0.58), w, int(h * 0.97)),
+            ("left_mid",     int(w * 0.10), int(h * 0.22), int(w * 0.55), int(h * 0.95)),
         ]
         if not status_only:
-            regions = [
-                ("top_bar",       0, 0, w, max(1, int(h * 0.15))),
-                ("center_top",    int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),
-                ("right_mid",     int(w * 0.55), int(h * 0.22), int(w * 0.95), int(h * 0.55)),
-                ("left_top",      0, 0, int(w * 0.55), int(h * 0.55)),
-                ("bottom_right",  int(w * 0.45), int(h * 0.60), w, h),
-                ("right_center",  int(w * 0.40), int(h * 0.18), w, int(h * 0.70)),
-                ("bottom_center", int(w * 0.20), int(h * 0.70), int(w * 0.80), h),
-            ]
+            regions = list(regions)
         import re as _re_roi
         _t_chk = _re_roi.compile(r'\d[.:;,\-]\d{2}')
         for region in regions:
@@ -5040,18 +5034,29 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
             if x2 - x1 < 40 or y2 - y1 < 12:
                 continue
             raw_crop = frame[y1:y2, x1:x2]
-            # ── ROI 放大 2.5x + 自适应二值化，提升小字号识别率 ──
-            crop_h, crop_w = raw_crop.shape[:2]
-            enlarged = cv2.resize(raw_crop, (int(crop_w * 2.5), int(crop_h * 2.5)),
-                                  interpolation=cv2.INTER_CUBIC)
-            gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
-            enhanced = cv2.adaptiveThreshold(
-                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY, 15, 5)
-            enhanced = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
-            # RapidOCR 识别（已放大，跳过 _run_ocr 内部放大）
-            roi_results = _ocr_readtext(None, enhanced, _already_enhanced=True)
-            txt = " ".join(r[1] for r in roi_results if len(r) > 1)
+            txt = ""
+            # GLM-OCR 优先：原始 ROI 直接识别，过时间字典才采用
+            try:
+                if _check_glm_priority():
+                    from src.services.glm_ocr import ocr_text as _glm_ocr
+                    _glm_txt = _glm_ocr(raw_crop, max_new_tokens=64)
+                    if _glm_txt and _is_ocr_time_related_text(_glm_txt):
+                        txt = _glm_txt
+            except Exception:
+                txt = ""
+            if not txt:
+                # ── ROI 放大 2.5x + 自适应二值化，提升小字号识别率 ──
+                crop_h, crop_w = raw_crop.shape[:2]
+                enlarged = cv2.resize(raw_crop, (int(crop_w * 2.5), int(crop_h * 2.5)),
+                                      interpolation=cv2.INTER_CUBIC)
+                gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
+                enhanced = cv2.adaptiveThreshold(
+                    gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY, 15, 5)
+                enhanced = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+                # RapidOCR 识别（已放大，跳过 _run_ocr 内部放大）
+                roi_results = _ocr_readtext(None, enhanced, _already_enhanced=True)
+                txt = " ".join(r[1] for r in roi_results if len(r) > 1)
             if txt.strip():
                 parts.append(txt)
                 logger.info("RapidOCR ROI[%s] 识别到: %s", name, txt[:80])
