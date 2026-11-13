@@ -86,6 +86,14 @@ def load_config(config_path: str = None) -> dict:
                 merged = json.load(f) or {}
         except Exception:
             merged = {}
+    # 加密配置叠加在公共配置之上、本机明文之下；密钥放 config.enc，
+    # 本机 config.yaml 仍可覆盖非敏感项（并行数、模型路径等）。
+    if config_path is None and os.path.exists(CONFIG_ENC_PATH):
+        try:
+            enc_cfg = _read_encrypted_yaml()
+            merged = _deep_merge(merged, enc_cfg)
+        except Exception as e:
+            logging.getLogger(__name__).warning("读取加密配置失败，跳过: %s", e)
     _CONFIG = _deep_merge(merged, local_cfg)
     return _CONFIG
 
