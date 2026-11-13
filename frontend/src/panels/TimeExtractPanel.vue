@@ -326,6 +326,9 @@
             <el-button type="warning" :loading="timeEdit.writebackVcsLoading" :disabled="!vcsPendingRows.length" @click="writebackVcsBug">
               写回VCS BUG（{{ vcsPendingRows.length }} 条）
             </el-button>
+            <el-button type="info" plain size="small" :icon="CopyDocument" :disabled="!vcsPendingRows.length" @click="copyTimeEditKeys">
+              复制有时间Key（{{ vcsPendingRows.length }}）
+            </el-button>
             <span style="font-size:12px;color:#e6a23c" v-if="changedTimeRows.length">修改仅写回云端，请确认后再保存</span>
           </div>
         </el-card>
@@ -429,6 +432,11 @@ export default {
       const ids = this.rows.filter(r => r.time).map(r => r.bugid).filter(Boolean);
       if (!ids.length) return ElMessage.warning('无命中记录');
       navigator.clipboard.writeText(ids.join(',')).then(() => ElMessage.success(`已复制 ${ids.length} 个Jira号`)).catch(() => ElMessage.error('复制失败'));
+    },
+    copyTimeEditKeys() {
+      const ids = this.vcsPendingRows.map(r => r.bugid).filter(Boolean);
+      if (!ids.length) return ElMessage.warning('无有时间的记录');
+      navigator.clipboard.writeText(ids.join(',')).then(() => ElMessage.success(`已复制 ${ids.length} 个Key`)).catch(() => ElMessage.error('复制失败'));
     },
     judgeTagType(judge: string) {
       const map: Record<string, string> = {
