@@ -547,7 +547,8 @@ def _paginate_get(url: str, headers: dict, params: dict,
 
 
 def _paginate_post(url: str, headers: dict, body: dict,
-                   log_msg: str = "", timeout: int = 30) -> list:
+                   log_msg: str = "", timeout: int = 30,
+                   max_pages: int = 20) -> list:
     """飞书 API POST 分页拉取通用辅助（search 接口用）
 
     :param url: API 地址
@@ -555,10 +556,13 @@ def _paginate_post(url: str, headers: dict, body: dict,
     :param body: POST body（page_token 由内部自动管理）
     :param log_msg: 日志描述
     :param timeout: 单页请求超时秒数
+    :param max_pages: 最大翻页数（防止飞书 API 翻页 bug 导致死循环）
     :return: 所有页的 items 列表
     """
     all_items = []
     page_token = None
+    seen_tokens = set()
+    page_count = 0
     while True:
         if page_token:
             body["page_token"] = page_token
@@ -579,9 +583,19 @@ def _paginate_post(url: str, headers: dict, body: dict,
             raise ValueError(f"{log_msg}: {data.get('msg')} (code={data.get('code')})")
         items = data.get("data", {}).get("items", [])
         all_items.extend(items)
+        page_count += 1
         if not data.get("data", {}).get("has_more", False):
             break
         page_token = data.get("data", {}).get("page_token")
+        # 安全防护：防止飞书翻页 bug 导致死循环
+        if page_count >= max_pages:
+            logger.warning("%s: 已达最大翻页数 %d，停止分页（已获取 %d 条）", log_msg, max_pages, len(all_items))
+            break
+        if page_token and page_token in seen_tokens:
+            logger.warning("%s: 检测到重复 page_token，停止分页（已获取 %d 条）", log_msg, len(all_items))
+            break
+        if page_token:
+            seen_tokens.add(page_token)
     return all_items
 
 

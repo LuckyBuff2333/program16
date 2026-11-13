@@ -140,16 +140,23 @@ def claim(chat_id: str, date_str: str, time_str: str = "") -> tuple:
         if existing:
             existing.sort(key=lambda r: r["record_id"])
             head = existing[0]
-            stale = head["status"] == "claiming" and _age_seconds(head["updated"]) > CLAIM_TTL
-            if not stale:
+            head_status = head["status"]
+            head_age = _age_seconds(head["updated"])
+            stale = head_status == "claiming" and head_age > CLAIM_TTL
+            # 上次播报失败的记录允许接管重试，避免永远被阻塞
+            retryable = head_status == "failed"
+            if not stale and not retryable:
+                logger.info("播报状态：发现已有记录 chat=%s date=%s status=%s age=%.0fs",
+                            chat_id[:12], date_str, head_status, head_age)
                 return "exists", head["record_id"]
-            # 旧 claim 已超时（机器中途挂了）：接管这条记录
+            reason = "接管超时 claim" if stale else "接管失败记录重试"
             feishu_client.update_bitable_records(app_token, table_id, [{
                 "record_id": head["record_id"],
                 "fields": {"状态": "claiming", "机器": _machine(),
-                           "更新时间": now_str, "播报时间": time_str, "详情": "接管超时 claim"},
+                           "更新时间": now_str, "播报时间": time_str, "详情": reason},
             }])
-            logger.info("播报状态：接管超时 claim chat=%s date=%s", chat_id[:12], date_str)
+            logger.info("播报状态：%s chat=%s date=%s (原状态=%s, 存活=%.0fs)",
+                        reason, chat_id[:12], date_str, head_status, head_age)
             return "claimed", head["record_id"]
         resp = feishu_client.batch_create_records(app_token, table_id, [{
             "fields": {"群ID": chat_id, "播报日期": date_str, "播报时间": time_str,

@@ -172,7 +172,10 @@
             <el-tag v-if="batchAi.selected.length > 20" type="info" size="small">...还有 {{ batchAi.selected.length - 20 }} 条</el-tag>
           </div>
         </div>
-        <el-table v-if="batchAi.runResults.length" :data="batchAi.runResults" size="small" stripe border max-height="260" style="margin-top:10px">
+        <div v-if="batchAi.runResults.length" style="margin-top:10px;display:flex;justify-content:flex-end">
+          <el-button type="success" size="small" plain :icon="CopyDocument" @click="copySuccessJiras('batch')">复制成功Jira号</el-button>
+        </div>
+        <el-table v-if="batchAi.runResults.length" :data="batchAi.runResults" size="small" stripe border max-height="260" style="margin-top:6px">
           <el-table-column type="index" label="#" width="45"></el-table-column>
           <el-table-column prop="jira号" label="Jira号" width="130"></el-table-column>
           <el-table-column label="结果" width="80">
@@ -244,7 +247,10 @@
             </template>
           </el-table-column>
         </el-table>
-        <el-table v-if="aiDirect.runResults.length" :data="aiDirect.runResults" size="small" stripe border max-height="260" style="margin-top:10px">
+        <div v-if="aiDirect.runResults.length" style="margin-top:10px;display:flex;justify-content:flex-end">
+          <el-button type="success" size="small" plain :icon="CopyDocument" @click="copySuccessJiras('direct')">复制成功Jira号</el-button>
+        </div>
+        <el-table v-if="aiDirect.runResults.length" :data="aiDirect.runResults" size="small" stripe border max-height="260" style="margin-top:6px">
           <el-table-column type="index" label="#" width="45"></el-table-column>
           <el-table-column prop="jira号" label="Jira号" width="130"></el-table-column>
           <el-table-column prop="执行结果" label="结果" width="80">
@@ -367,6 +373,7 @@
 <script lang="ts">
 // @ts-nocheck
 import { ElMessage } from 'element-plus';
+import { CopyDocument } from '@element-plus/icons-vue';
 import { api } from '../composables/utils';
 export default {
   name: 'BatchAiPanel',
@@ -408,6 +415,12 @@ export default {
     ctrls.forEach(c => { if (c && !c.signal.aborted) c.abort(); });
   },
   methods: {
+    copySuccessJiras(source = 'batch') {
+      const results = source === 'batch' ? this.batchAi.runResults : this.aiDirect.runResults;
+      const ids = results.filter(r => r['执行结果'] === '成功').map(r => r['jira号']).filter(Boolean);
+      if (!ids.length) return ElMessage.warning('无成功记录');
+      navigator.clipboard.writeText(ids.join(',')).then(() => ElMessage.success(`已复制 ${ids.length} 个Jira号`)).catch(() => ElMessage.error('复制失败'));
+    },
     async loadBatchEnv() {
       // 软件版本等环境设置持久化在后端 config.yaml，页面打开时自动回填
       try {
@@ -551,7 +564,7 @@ export default {
 
     setBatchMeta(target, mode) {
       const defaults = mode === 'online'
-        ? { analysisConcurrency: 5, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上',
+        ? { analysisConcurrency: 6, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上',
             filterExistingSuccess: false, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false }
         : { analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC',
             filterExistingSuccess: false, filterAllExisting: false, filterPcOnly: false, filterOnlineOnly: false, filterAiPreliminary: false };

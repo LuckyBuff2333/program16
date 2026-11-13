@@ -114,7 +114,10 @@
             <el-button type="primary" size="small" :loading="tbl.loading" @click="tblQueryCustom">查询</el-button>
             <el-divider direction="vertical" style="margin:0 4px"></el-divider>
             <el-checkbox v-model="tbl.filterAi" size="small">过滤AI初步分析结果</el-checkbox>
-            <el-checkbox v-model="tbl.filterHasTime" size="small">有问题发生时间</el-checkbox>
+            <el-select v-model="tbl.filterTime" size="small" clearable placeholder="问题发生时间" style="width:160px" @change="onFilterTimeChange">
+              <el-option label="有问题发生时间" value="has" />
+              <el-option label="无问题发生时间" value="no" />
+            </el-select>
           </div>
         </el-card>
 
@@ -125,7 +128,8 @@
               <el-tag type="info" size="small">总数 <b>{{ tbl.rows.length }}</b></el-tag>
               <el-tag type="warning" size="small">待分析 <b>{{ tblPendingCount }}</b></el-tag>
               <el-tag type="success" size="small">已分析 <b>{{ tblAnalyzedCount }}</b></el-tag>
-              <el-tag v-if="tbl.filterHasTime" type="" size="small">有时间 <b>{{ tblTimeCount }}</b></el-tag>
+              <el-tag v-if="tbl.filterTime === 'has'" type="success" size="small">有时间 <b>{{ tblTimeCount }}</b></el-tag>
+              <el-tag v-else-if="tbl.filterTime === 'no'" type="danger" size="small">无时间 <b>{{ tblNoTimeCount }}</b></el-tag>
             </div>
             <el-tag v-if="tbl.dateLabel" type="info" size="small">{{ tbl.dateLabel }}</el-tag>
             <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
@@ -196,7 +200,7 @@ export default {
         queried: false,
         dateRange: null as [string, string] | null,
         filterAi: true,
-        filterHasTime: false,
+        filterTime: '' as '' | 'has' | 'no',
         rows: [] as any[],
         dateLabel: '',
       },
@@ -225,8 +229,10 @@ export default {
       if (this.tbl.filterAi) {
         rows = rows.filter((r: any) => !r['AI初步分析结果'] || r['AI初步分析结果'] === '-');
       }
-      if (this.tbl.filterHasTime) {
+      if (this.tbl.filterTime === 'has') {
         rows = rows.filter((r: any) => r['问题发生时间'] && r['问题发生时间'].trim());
+      } else if (this.tbl.filterTime === 'no') {
+        rows = rows.filter((r: any) => !r['问题发生时间'] || !r['问题发生时间'].trim());
       }
       return rows;
     },
@@ -243,8 +249,16 @@ export default {
       }
       return rows.filter((r: any) => r['问题发生时间'] && r['问题发生时间'].trim()).length;
     },
+    tblNoTimeCount() {
+      let rows = this.tbl.rows;
+      if (this.tbl.filterAi) {
+        rows = rows.filter((r: any) => !r['AI初步分析结果'] || r['AI初步分析结果'] === '-');
+      }
+      return rows.filter((r: any) => !r['问题发生时间'] || !r['问题发生时间'].trim()).length;
+    },
   },
   methods: {
+    onFilterTimeChange() { /* 筛选通过 computed 自动生效，无需额外操作 */ },
     // ─── Jira查询 methods（原有逻辑不变） ───
     statusType(s: string) {
       const st = (s || '').toLowerCase();

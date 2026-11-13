@@ -604,7 +604,7 @@ def _review_category(review: str) -> str:
     if "服务关闭" in review or "服务有报错" in review:
         return "服务关闭"
     if "待后端开发排查" in review:
-        return "待后端开发排查"
+        return "待分析"
     if "时间添加" in review or "时间异常" in review or "触发时间错误" in review or "触发时间问题" in review:
         return "触发时间问题"
     if "无gmlogger" in review or "无日志附件" in review or "gmlogger文件已上传" in review:
@@ -708,10 +708,10 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
     # 磁盘空间不足
     if "no space left on device" in err_info.lower() or "Errno 28" in err_info:
         return "磁盘空间不足"
-    # HTTPStatusError → 待后端开发排查
+    # HTTPStatusError → 待分析
     if "HTTPStatusError" in err_info:
-        return "待后端开发排查"
-    return "待后端开发排查"
+        return "待分析"
+    return "待分析"
 
 
 def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -> str:
@@ -1340,7 +1340,7 @@ def _upload_weekly_report_to_cloud(report: dict, date_str: str) -> str:
                 f"{r.get('执行时间', '')} | {r.get('分析耗时', '')} | "
                 f"{r.get('分析结果', '') or r.get('备注', '')[:50]} |")
     for label, group in [(f"分析失败（{len(failed_rows)}条）", failed_rows),
-                         (f"待开发排查（{len(pending_rows)}条）", pending_rows),
+                         (f"待分析（{len(pending_rows)}条）", pending_rows),
                          (f"耗时过长（{len(too_long_rows)}条）", too_long_rows),
                          (f"分析成功（{len(normal_rows)}条）", normal_rows)]:
         lines.append(f"### {label}")
@@ -1695,11 +1695,11 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         human_reason = "IT侧服务停止"
         retry_result = ""
         final_category = "IT侧服务停止"
-    elif category == "待后端开发排查" or "HTTPStatusError" in msg:
+    elif category == "待分析" or "HTTPStatusError" in msg:
         ai_reason = msg or "HTTPStatusError"
-        human_reason = "待后端开发排查"
+        human_reason = "待分析"
         retry_result = ""
-        final_category = "待后端开发排查"
+        final_category = "待分析"
     elif category == "磁盘空间不足":
         ai_reason = msg or "No space left on device"
         human_reason = "磁盘空间不足"

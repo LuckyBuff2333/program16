@@ -79,7 +79,11 @@
       <div v-if="prodBatch.stage && !(prodBatch.continuous && prodBatch.continuousRunning)" style="margin-top:8px">
         <el-tag type="warning">{{ prodBatch.stage }}</el-tag>
       </div>
-      <el-table v-if="prodBatch.results.length" :data="prodBatch.results" size="small" stripe border max-height="300" style="margin-top:10px">
+      <div v-if="prodBatch.results.length" style="margin-top:10px;display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:13px;font-weight:600;color:#303133">运行结果</span>
+        <el-button type="success" size="small" plain :icon="CopyDocument" @click="copySuccessJiras">复制成功Jira号</el-button>
+      </div>
+      <el-table v-if="prodBatch.results.length" :data="prodBatch.results" size="small" stripe border max-height="300" style="margin-top:6px">
         <el-table-column type="index" label="#" width="45"></el-table-column>
         <el-table-column prop="jira号" label="Jira号" width="130"></el-table-column>
         <el-table-column label="结果" width="80">
@@ -98,6 +102,7 @@
 <script lang="ts">
 // @ts-nocheck
 import { ElMessage } from 'element-plus';
+import { CopyDocument } from '@element-plus/icons-vue';
 import { api } from '../composables/utils';
 export default {
   name: 'ProdBatchPanel',
@@ -108,7 +113,7 @@ export default {
         csvFiles: [], selectedCsvs: [], directInput: '',
         skipExisting: true, filterPcOnly: false, filterOnlineOnly: false, maxCount: 0, msg: '', error: false, stage: '',
         results: [], doneMsg: '', cloudUrl: '',
-        analysisConcurrency: 5, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上',
+        analysisConcurrency: 6, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上',
         jqlInput: 'issuetype = bug AND status != closed AND created >= "2026/09/01"',
         jqlSearching: false, jqlSearchMsg: '',
         continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false,
@@ -117,6 +122,11 @@ export default {
     };
   },
   methods: {
+    copySuccessJiras() {
+      const ids = this.prodBatch.results.filter(r => r['执行结果'] === '成功').map(r => r['jira号']).filter(Boolean);
+      if (!ids.length) return ElMessage.warning('无成功记录');
+      navigator.clipboard.writeText(ids.join(',')).then(() => ElMessage.success(`已复制 ${ids.length} 个Jira号`)).catch(() => ElMessage.error('复制失败'));
+    },
     onProdFilterAllChange(val) {
       if (val) { this.prodBatch.filterPcOnly = false; this.prodBatch.filterOnlineOnly = false; }
     },

@@ -98,6 +98,7 @@ def _get_adp_cfg() -> dict:
         "sandbox_base": cfg.get("sandbox_base", "https://sandbox.adp.cloud.tencent.com/files?path="),
         "attach_api": cfg.get("attach_api", "https://dpportal.apps.saic-gm.com/api/logAnalysis/attachments"),
         "attach_api_key": cfg.get("attach_api_key", ""),
+        "attach_source": cfg.get("attach_source", "dpportal"),
         "attach_timeout": int(cfg.get("attach_timeout", 120)),
         "attach_retry_interval": int(cfg.get("attach_retry_interval", 10)),
         "attach_cache_ttl": int(cfg.get("attach_cache_ttl", 300)),
@@ -296,14 +297,66 @@ def _cache_attach_root_cause(jira_key: str, payload) -> None:
             _ATTACH_ROOT_CACHE[jira_key] = root
 
 
+def _query_attachments_jira(jira_key: str):
+    """通过 Jira REST API 查询附件列表（作为 dpportal 的备选方案）。
+
+    返回格式与 dpportal 一致：[{filename, downloadUrl, size, ...}, ...]
+    返回值同 query_attachments：list 表示正常，None 表示接口异常。
+    """
+    import time as _t
+    adp_cfg = _get_adp_cfg()
+
+    # 本地缓存复用
+    ttl = adp_cfg.get("attach_cache_ttl", 300)
+    with _ATTACH_CACHE_LOCK:
+        if len(_ATTACH_CACHE) >= _ATTACH_CACHE_MAX_SIZE:
+            _prune_attach_cache()
+        hit = _ATTACH_CACHE.get(jira_key)
+        if hit and _t.time() - hit[0] < ttl:
+            logger.info("Jira REST 附件查询: %s 命中缓存（%d 个附件）", jira_key, len(hit[1]))
+            return list(hit[1])
+
+    logger.info("Jira REST 查询附件: %s", jira_key)
+    try:
+        from src.clients import jira_client as _jc
+        issue = _jc.fetch_issue(jira_key)
+        raw_atts = (issue.get("fields") or {}).get("attachment") or []
+        # 映射为 dpportal 兼容格式
+        attachments = []
+        for att in raw_atts:
+            attachments.append({
+                "filename": att.get("filename", ""),
+                "downloadUrl": att.get("content", ""),
+                "size": att.get("size", 0),
+                "mimeType": att.get("mimeType", ""),
+                "id": str(att.get("id", "")),
+            })
+        logger.info("Jira REST 附件查询: %s 找到 %d 个附件", jira_key, len(attachments))
+        with _ATTACH_CACHE_LOCK:
+            _ATTACH_CACHE[jira_key] = (_t.time(), list(attachments))
+        return attachments
+    except Exception as e:
+        logger.error("Jira REST 附件查询失败: %s -> %s", jira_key, e)
+        return None
+
+
 def query_attachments(jira_key: str):
-    """查询 JIRA 附件列表（dpportal 接口，带本地短期缓存）。
+    """查询 JIRA 附件列表（带本地短期缓存）。
+
+    通过 adp.attach_source 配置切换数据源：
+      - 'jira': 使用 Jira REST API（直接读取 issue 附件字段）
+      - 'dpportal'（默认）: 使用 dpportal 接口
 
     返回:
       - list: 正常（可能为空列表，表示确实没有附件）
       - None: 接口异常（非 JSON / 5xx / 重试后仍失败）——与“无附件”区分开，避免误标为无法分析
     """
     adp_cfg = _get_adp_cfg()
+    source = adp_cfg.get("attach_source", "dpportal")
+    if source == "jira":
+        return _query_attachments_jira(jira_key)
+
+    # ── dpportal 接口（原有逻辑）──
     import time as _t
 
     # 本地缓存：同一 Jira 在 TTL 内复用，避免重复慢查询

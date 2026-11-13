@@ -56,6 +56,7 @@
     <el-card v-if="rows.length" shadow="never" style="margin-top:14px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <span style="font-weight:600">提取结果（共 {{ rows.length }} 条，命中 {{ hitCount }}）</span>
+        <el-button type="success" size="small" plain :icon="CopyDocument" @click="copySuccessJiras">复制命中Jira号</el-button>
       </div>
       <el-table :data="rows" size="small" stripe border max-height="400">
         <el-table-column type="index" label="#" width="50" align="center"></el-table-column>
@@ -325,6 +326,9 @@
             <el-button type="warning" :loading="timeEdit.writebackVcsLoading" :disabled="!vcsPendingRows.length" @click="writebackVcsBug">
               写回VCS BUG（{{ vcsPendingRows.length }} 条）
             </el-button>
+            <el-button type="info" plain size="small" :icon="CopyDocument" :disabled="!timeEditWithTimeCount" @click="copyTimeEditKeys">
+              复制有时间Key（{{ timeEditWithTimeCount }}）
+            </el-button>
             <span style="font-size:12px;color:#e6a23c" v-if="changedTimeRows.length">修改仅写回云端，请确认后再保存</span>
           </div>
         </el-card>
@@ -337,6 +341,7 @@
 <script lang="ts">
 // @ts-nocheck
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { CopyDocument } from '@element-plus/icons-vue';
 import { api, formatMinute } from '../composables/utils';
 
 const JQL_PRESETS = {
@@ -416,6 +421,9 @@ export default {
     vcsPendingRows() {
       return this.timeEdit.rows.filter((r: any) => r.new_time);
     },
+    timeEditWithTimeCount() {
+      return this.timeEdit.rows.filter((r: any) => r.current_time || r.new_time).length;
+    },
   },
   deactivated() {
     // keep-alive 切换走时中止进行中的提取请求
@@ -423,6 +431,16 @@ export default {
   },
   methods: {
     formatMinute,
+    copySuccessJiras() {
+      const ids = this.rows.filter(r => r.time).map(r => r.bugid).filter(Boolean);
+      if (!ids.length) return ElMessage.warning('无命中记录');
+      navigator.clipboard.writeText(ids.join(',')).then(() => ElMessage.success(`已复制 ${ids.length} 个Jira号`)).catch(() => ElMessage.error('复制失败'));
+    },
+    copyTimeEditKeys() {
+      const ids = this.timeEdit.rows.filter((r: any) => r.current_time || r.new_time).map((r: any) => r.bugid).filter(Boolean);
+      if (!ids.length) return ElMessage.warning('无有时间的记录');
+      navigator.clipboard.writeText(ids.join(',')).then(() => ElMessage.success(`已复制 ${ids.length} 个Key`)).catch(() => ElMessage.error('复制失败'));
+    },
     judgeTagType(judge: string) {
       const map: Record<string, string> = {
         '正常': 'success',

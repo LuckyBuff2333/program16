@@ -448,7 +448,7 @@ def report_daily_refresh(date: str = Query(default=None, description="日期 YYY
     def _fail_sort_key(r):
         both = r.get("_both", False)
         cat = r.get("失败分类", "")
-        is_pending = cat == "待开发排查"
+        is_pending = cat == "待分析"
         return (0 if both else 1, 1 if is_pending else 0, cat, r.get("jira号", ""))
     failed_rows.sort(key=_fail_sort_key)
     pending_rows.sort(key=lambda r: r.get("jira号", ""))

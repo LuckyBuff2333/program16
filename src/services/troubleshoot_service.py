@@ -519,7 +519,7 @@ def export_trigger_time_issues(items: list[dict], folder_token: str = "") -> dic
 # 无需深入分析的预归类类别（前端优先展示，单独成表）
 # 注意：待人工排查不在此集合，必须进入深度分析，不能当作“跳过”。
 _SKIP_ANALYSIS_CATEGORIES = {
-    "待后端开发排查", "磁盘空间不足", "服务关闭",
+    "待分析", "磁盘空间不足", "服务关闭",
     "并发过多", "IT侧服务停止", "接口连接问题", "接口响应问题",
     "分析任务执行超时，跳过排查", "问题重复", "问题未复现",
     "无gmlogger", "无gmlogger文件",
@@ -682,7 +682,7 @@ def _diag_pre_classify(err_msg: str, error_class: str = "", error_type: str = ""
             or "连接失败" in msg or "无法连接" in msg or "connection refused" in low):
         return "服务关闭"
     if "HTTPStatusError" in msg:
-        return "待后端开发排查"
+        return "待分析"
     # 时间过滤为空：触发时间问题，走正常深度分析
     if "时间过滤后日志为空" in msg:
         return "触发时间问题"
@@ -748,7 +748,7 @@ def batch_pre_classify(records: list[dict]) -> dict:
             elif "服务关闭" in human_review or "服务有报错" in human_review:
                 category = "服务关闭"
             elif "待后端开发排查" in human_review:
-                category = "待后端开发排查"
+                category = "待分析"
             elif "接口无响应" in human_review or "连接失败" in human_review:
                 category = "接口响应问题"
             elif "JIRA Server" in human_review or "过载" in human_review or "网络抖动" in human_review:

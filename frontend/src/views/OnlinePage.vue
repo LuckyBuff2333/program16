@@ -48,6 +48,7 @@
         <div class="to-table-head">
           <span class="to-table-title">{{ activeCatTitle }}</span>
           <span class="to-table-count">{{ activeRows.length }} 条</span>
+          <el-button size="small" type="primary" link style="margin-left:auto" @click="copyActiveJiras">复制所有 Jira 号</el-button>
         </div>
         <el-table :data="activeRows" size="small" stripe border :max-height="tableMaxHeight"
           :header-cell-style="{background:'#f5f7fa',color:'#303133',fontWeight:600}" style="width:100%">
@@ -619,6 +620,21 @@ export default {
         document.body.appendChild(ta); ta.select(); document.execCommand('copy');
         document.body.removeChild(ta);
         ElMessage.success(`已复制 ${records.length} 个 Jira 号`);
+      }
+    },
+    async copyActiveJiras() {
+      const rows = this.activeRows;
+      if (!rows.length) return ElMessage.warning('无数据可复制');
+      const text = rows.map((r: any) => r.jira).filter(Boolean).join(',');
+      try {
+        await navigator.clipboard.writeText(text);
+        ElMessage.success(`已复制 ${rows.length} 个 Jira 号`);
+      } catch {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+        document.body.removeChild(ta);
+        ElMessage.success(`已复制 ${rows.length} 个 Jira 号`);
       }
     },
     async deleteDirtyData() {
