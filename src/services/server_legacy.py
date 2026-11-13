@@ -5001,6 +5001,20 @@ def _check_glm_priority() -> bool:
     return _glm_priority_cache["val"]
 
 
+def _strip_video_progress_times(text: str, lower: bool = False) -> str:
+    """过滤视频播放器进度条/总时长，避免被当成触发时间。"""
+    if not text:
+        return text
+    # 进度比例：02:41/04:30
+    text = re.sub(r"\b\d{1,2}[:：]\d{2}\s*/\s*\d{1,2}[:：]\d{2}\b", " ", text)
+    # 播放器起点/总时长
+    text = re.sub(r"\b0?0[:：]00\b", " ", text)
+    # 底部三段时间（总时长/播放进度），保留普通 HH:MM 状态栏时钟
+    if lower:
+        text = re.sub(r"\b\d{1,2}[:：]\d{2}[:：]\d{2}\b", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     """对状态栏/任务栏等小区域做高倍 OCR（RapidOCR + 2.5x 放大 + 自适应二值化）
 
@@ -5018,12 +5032,15 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
         # 带标签的区域：车载 HMI 时钟常出现在顶部状态栏、中央大时钟、右下任务栏、底部中央导航栏
         # 基于数据沉淀「线上成功且带视频」记录的 2023 个时间文本块统计：
         # 顶部、左上、右上、中央偏右、右下、左下覆盖了绝大多数时间位置。
+        # 按 2023 个时间块统计的命中率从高到低排序，命中即停：
+        # right_upper 69.2% > top_bar 30.0% > center_right 22.8%
+        # > right_lower 14.0% > left_upper 11.6% > left_lower 10.7%
         regions = [
-            ("top_bar",      0, 0, w, int(h * 0.17)),
-            ("left_upper",   0, 0, int(w * 0.50), int(h * 0.48)),
             ("right_upper",  int(w * 0.44), 0, w, int(h * 0.46)),
+            ("top_bar",      0, 0, w, int(h * 0.17)),
             ("center_right", int(w * 0.50), int(h * 0.32), w, int(h * 0.73)),
             ("right_lower",  int(w * 0.58), int(h * 0.60), w, h),
+            ("left_upper",   0, 0, int(w * 0.50), int(h * 0.48)),
             ("left_lower",   0, int(h * 0.38), int(w * 0.60), h),
         ]
         if not status_only:
@@ -5058,6 +5075,8 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
                 # RapidOCR 识别（已放大，跳过 _run_ocr 内部放大）
                 roi_results = _ocr_readtext(None, enhanced, _already_enhanced=True)
                 txt = " ".join(r[1] for r in roi_results if len(r) > 1)
+            # 排除视频播放器进度条/总时长：00:00、02:41/04:30、01:34:33
+            txt = _strip_video_progress_times(txt, lower=(y1 >= int(h * 0.55)))
             if txt.strip():
                 parts.append(txt)
                 logger.info("RapidOCR ROI[%s] 识别到: %s", name, txt[:80])

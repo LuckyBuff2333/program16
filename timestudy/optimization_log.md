@@ -1136,3 +1136,15 @@
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>208. ROI 按命中率排序并在命中后跳过剩余区域（2026-11-13）</b></summary>
+
+- **统计**：数据沉淀线上成功视频的 2023 个时间块中，排除 128 个进度条/总时长块；1450 帧有时间。
+- **区域命中率**：right_upper 69.2%、top_bar 30.0%、center_right 22.8%、right_lower 14.0%、left_upper 11.6%、left_lower 10.7%。
+- **优化**：ROI 按上述顺序 OCR，首次命中时间即停；平均读取区域从 2.73 降到 1.88，少约 31% ROI OCR。
+- **排除进度条**：新增 `_strip_video_progress_times`，过滤 `02:41/04:30`、`00:00`、底部 `HH:MM:SS` 总时长。
+- **验证**：363 tests passed。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>
