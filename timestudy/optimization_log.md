@@ -1094,3 +1094,13 @@
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>204. OCR 支持 AMD DirectML GPU 加速（2026-11-13）</b></summary>
+
+- **问题**：机器为 AMD Radeon RX 9070 XT，`_has_gpu_runtime` 只检测 NVIDIA/CUDA，导致 RapidOCR 始终走 CPU。
+- **修复**：安装 `onnxruntime-directml`；`_get_rapid_ocr` 同时检测 `DmlExecutionProvider`，AMD/Intel 走 DirectML，NVIDIA 仍优先 CUDA；日志显示 `PP-OCRv5+DirectML`。配置 `ocr.use_dml: true`。
+- **验证**：16 帧全帧 OCR 平均 0.19s/帧（CPU 约 0.86s/帧），检测+识别约 0.23s；363 tests passed。
+- **实现文件**：`src/services/server_legacy.py`、`config/config.example.yaml`
+
+</details>

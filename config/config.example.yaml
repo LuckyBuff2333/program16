@@ -33,7 +33,7 @@ ocr:
   rec_model_path: models/ppocrv5/rec.onnx
   rec_keys_path: models/ppocrv5/ppocrv5_dict.txt
   use_cuda: true              # NVIDIA独显+onnxruntime-gpu已安装时自动启用；集显/无独显自动关闭，设false可强制CPU
-  use_dml: false              # AMD/其他显卡可改用 DirectML
+  use_dml: true              # AMD/其他显卡可改用 DirectML
   intra_op_num_threads: 1
   inter_op_num_threads: 1
   limit_side_len: 736

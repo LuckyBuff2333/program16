@@ -4656,19 +4656,23 @@ def _get_rapid_ocr():
             _ocr_engine_ver = _get_ocr_cfg().get("engine", "v5")
             if os.path.exists(_v5_cfg) and _ocr_engine_ver != "v4" and os.environ.get("OCR_ENGINE", "").lower() != "v4":
                 try:
-                    # 自动检测 GPU：有独显且 onnxruntime-gpu 已安装才开 CUDA
-                    _gpu = _has_gpu_runtime()
+                    # 自动检测 GPU：NVIDIA 走 CUDA；AMD/Intel 走 DirectML
+                    _cuda = _has_gpu_runtime()
+                    _dml = False
                     try:
                         import onnxruntime as _ort
-                        _gpu = _gpu and "CUDAExecutionProvider" in _ort.get_available_providers()
+                        _providers = _ort.get_available_providers()
+                        _cuda = _cuda and "CUDAExecutionProvider" in _providers
+                        _dml = bool(_get_ocr_cfg().get("use_dml", False)) and "DmlExecutionProvider" in _providers
                     except ImportError:
-                        _gpu = False
+                        _cuda = False
+                    _gpu = _cuda or _dml
                     # 读取 yaml 并将相对路径转为绝对路径（RapidOCR 默认从包目录解析相对路径）
                     import yaml as _yaml
                     _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                     with open(_v5_cfg) as _f:
                         _ycfg = _yaml.safe_load(_f)
-                    _apply_ocr_runtime_config(_ycfg, use_cuda=_gpu)
+                    _apply_ocr_runtime_config(_ycfg, use_cuda=_cuda)
                     import tempfile
                     _tmp_cfg = os.path.join(tempfile.gettempdir(), "rapidocr_v5_runtime.yaml")
                     with open(_tmp_cfg, "w") as _f:
@@ -4676,7 +4680,8 @@ def _get_rapid_ocr():
                     global _rapid_ocr_is_gpu
                     _rapid_ocr_is_gpu = _gpu
                     _rapid_ocr_engine = RapidOCR(config_path=_tmp_cfg)
-                    _mode = "PP-OCRv5+GPU" if _gpu else "PP-OCRv5+CPU"
+                    _mode = ("PP-OCRv5+CUDA" if _cuda else
+                             ("PP-OCRv5+DirectML" if _dml else "PP-OCRv5+CPU"))
                     logger.info("RapidOCR 引擎初始化完成（%s）", _mode)
                 except Exception as e:
                     logger.warning("PP-OCRv5 初始化失败，回退 PP-OCRv4: %s", e)
