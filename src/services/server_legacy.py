@@ -1009,7 +1009,7 @@ def _process_bot_command(chat_id: str, text: str):
         if choice == "1":
             # 基础信息修改：根据功能判断默认模式
             mode = "online" if cmd == "10.1" else "pc"
-            defaults = {"analysis_concurrency": "5", "download_concurrency": "2", "model": "deepseek-v-pro", "trigger_source": "线上"} if mode == "online" else {"analysis_concurrency": "10", "download_concurrency": "4", "model": "deepseek-v-pro", "trigger_source": "PC"}
+            defaults = {"analysis_concurrency": "6", "download_concurrency": "2", "model": "deepseek-v-pro", "trigger_source": "线上"} if mode == "online" else {"analysis_concurrency": "10", "download_concurrency": "4", "model": "deepseek-v-pro", "trigger_source": "PC"}
             meta = session.get("batch_meta", defaults)
             _set_bot_session(chat_id, "wait_batch_meta", cmd=cmd, batch_meta=meta)
             feishu_client.send_bot_message(chat_id,
@@ -4968,8 +4968,27 @@ def _vote_from_texts(texts, ref_pool, gm_ref_dt, tol):
     return cand, n
 
 
+# ── GLM-OCR 配置缓存（60 秒 TTL，避免每帧重复读配置）──
+_glm_priority_cache = {"val": False, "ts": 0}
+_glm_priority_warned = [False]  # 首帧警告标记，仅警告一次
+
+
+def _check_glm_priority() -> bool:
+    """检查 ocr.glm_priority 配置（60s 缓存）"""
+    import time as _t
+    now = _t.time()
+    if now - _glm_priority_cache["ts"] > 60:
+        try:
+            from src.config import load_config as _lc
+            _glm_priority_cache["val"] = _lc().get("ocr", {}).get("glm_priority", False)
+        except Exception:
+            _glm_priority_cache["val"] = False
+        _glm_priority_cache["ts"] = now
+    return _glm_priority_cache["val"]
+
+
 def _ocr_frame_regions(frame, status_only: bool = False) -> str:
-    """对状态栏/任务栏等小区域做高倍 OCR
+    """对状态栏/任务栏等小区域做高倍 OCR（RapidOCR + 2.5x 放大 + 自适应二值化）
 
     录屏时间通常出现在：手机顶部状态栏、车载 HMI 中央顶部、Windows 右下角任务栏、
     导航应用底部中央导航栏（时间字体较大）。
@@ -4984,11 +5003,11 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
         h, w = frame.shape[:2]
         # 带标签的区域：车载 HMI 时钟常出现在顶部状态栏、中央大时钟、右下任务栏、底部中央导航栏
         regions = [
-            ("top_bar",       0, 0, w, max(1, int(h * 0.15))),                  # 顶部状态栏（扩展 10%→15%）
-            ("center_top",    int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),  # 中央顶部（车载 HMI 居中时钟）
-            ("right_mid",     int(w * 0.55), int(h * 0.22), int(w * 0.95), int(h * 0.55)),  # 车机右侧中部时钟（HMI 主界面）
-            ("bottom_right",  int(w * 0.45), int(h * 0.60), w, h),              # 右下任务栏（水印相机时间/位置块）
-            ("bottom_center", int(w * 0.20), int(h * 0.70), int(w * 0.80), h),  # 底部中央导航栏（导航应用时间，字体较大）
+            ("top_bar",       0, 0, w, max(1, int(h * 0.15))),                  # 顶部状态栏
+            ("center_top",    int(w * 0.30), 0, int(w * 0.70), int(h * 0.12)),  # 中央顶部
+            ("right_mid",     int(w * 0.55), int(h * 0.22), int(w * 0.95), int(h * 0.55)),  # 车机右侧中部
+            ("bottom_right",  int(w * 0.45), int(h * 0.60), w, h),              # 右下任务栏
+            ("bottom_center", int(w * 0.20), int(h * 0.70), int(w * 0.80), h),  # 底部中央导航栏
         ]
         if not status_only:
             regions = [
@@ -5000,7 +5019,6 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
                 ("right_center",  int(w * 0.40), int(h * 0.18), w, int(h * 0.70)),
                 ("bottom_center", int(w * 0.20), int(h * 0.70), int(w * 0.80), h),
             ]
-        _time_re = _OCR_TIME_FULL_RE if '_OCR_TIME_FULL_RE' in dir() else None
         import re as _re_roi
         _t_chk = _re_roi.compile(r'\d[.:;,\-]\d{2}')
         for region in regions:
@@ -5008,27 +5026,31 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
             if x2 - x1 < 40 or y2 - y1 < 12:
                 continue
             raw_crop = frame[y1:y2, x1:x2]
-            txt = ""
-            # GLM-OCR 优先：只对时间相关 ROI 使用，识别到时间才采用；失败回退 RapidOCR
-            try:
-                from src.config import load_config as _lc
-                if _lc().get("ocr", {}).get("glm_priority", False):
-                    from src.services.glm_ocr import ocr_text as _glm_ocr
-                    _glm_txt = _glm_ocr(raw_crop, max_new_tokens=64)
-                    if _glm_txt and _is_ocr_time_related_text(_glm_txt):
-                        txt = _glm_txt
-            except Exception:
-                txt = ""
-            if not txt:
-                crop = cv2.resize(raw_crop, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
-                res = _ocr_readtext(None, crop, _already_enhanced=True) or []
-                txt = " ".join(str(r[1]) for r in res if len(r) > 1)
+            # ── ROI 放大 2.5x + 自适应二值化，提升小字号识别率 ──
+            crop_h, crop_w = raw_crop.shape[:2]
+            enlarged = cv2.resize(raw_crop, (int(crop_w * 2.5), int(crop_h * 2.5)),
+                                  interpolation=cv2.INTER_CUBIC)
+            gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
+            enhanced = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 15, 5)
+            enhanced = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+            # RapidOCR 识别（已放大，跳过 _run_ocr 内部放大）
+            roi_results = _ocr_readtext(None, enhanced, _already_enhanced=True)
+            txt = " ".join(r[1] for r in roi_results if len(r) > 1)
             if txt.strip():
                 parts.append(txt)
-                # 统计该区域是否识别到时间类文本
+                logger.info("RapidOCR ROI[%s] 识别到: %s", name, txt[:80])
                 if name in _ROI_REGION_STATS and _t_chk.search(txt):
                     _ROI_REGION_STATS[name] += 1
-    except Exception:
+                # ── ROI 命中时间即停：当前区域已识别到时间，跳过剩余区域 ──
+                if _t_chk.search(txt):
+                    logger.info("RapidOCR ROI[%s] 命中时间，跳过剩余区域", name)
+                    break
+            else:
+                logger.info("RapidOCR ROI[%s] 未识别到文本", name)
+    except Exception as _roi_err:
+        logger.warning("RapidOCR _ocr_frame_regions 外层异常: %s", _roi_err, exc_info=True)
         return ""
     return _strip_progress_bar(" ".join(parts))
 
@@ -5618,14 +5640,14 @@ def _pick_best_video(videos: list, attachments: list) -> dict:
     return selected
 
 
-def _extract_video_frames_gpu(video_path: str, positions: list = None, num_frames: int = 6, use_gpu: bool = True) -> list:
-    """从视频文件中提取指定位置的帧，优先使用 GPU 硬件加速解码。
+def _extract_video_frames_gpu(video_path: str, positions: list = None, num_frames: int = 6, use_gpu: bool = False) -> list:
+    """从视频文件中提取指定位置的帧，优先 PyAV 解码，回退 OpenCV。
 
     参数:
         positions: 要提取的秒数位置列表，如 [0, 1, 3, 6]。若为 None，则提取前 num_frames 秒的帧。
         num_frames: 当 positions 为 None 时，提取前 N 秒的帧
     返回: [(秒数, numpy_bgr_array), ...] 列表。
-    GPU 不可用或解码失败时自动回退到 CPU。"""
+    PyAV 不可用或解码失败时自动回退到 OpenCV。"""
     import numpy as np
     if positions is None:
         positions = list(range(num_frames))
@@ -5633,50 +5655,49 @@ def _extract_video_frames_gpu(video_path: str, positions: list = None, num_frame
         return []
     positions = sorted(set(positions))  # 去重排序
     frames = []
-    # 优先尝试 PyAV + GPU 解码
-    if use_gpu:
-        container = None
-        try:
-            import av
-            container = av.open(video_path)
-            stream = container.streams.video[0]
-            stream.thread_type = 'AUTO'
-            fps = float(stream.average_rate or stream.base_rate or 30)
-            logger.info("视频帧提取：使用 PyAV (GPU优先) FPS=%.1f", fps)
-            for sec in positions:
-                try:
-                    if sec == 0:
-                        # 第一帧：直接解码，避免 seek 到错误位置
-                        for frame in container.decode(video=0):
+    # 优先尝试 PyAV 解码（CPU，速度快）
+    container = None
+    try:
+        import av
+        container = av.open(video_path)
+        stream = container.streams.video[0]
+        stream.thread_type = 'AUTO'
+        fps = float(stream.average_rate or stream.base_rate or 30)
+        logger.info("视频帧提取：使用 PyAV (CPU) FPS=%.1f", fps)
+        for sec in positions:
+            try:
+                if sec == 0:
+                    # 第一帧：直接解码，避免 seek 到错误位置
+                    for frame in container.decode(video=0):
+                        img = frame.to_ndarray(format='bgr24')
+                        frames.append((sec, img))
+                        break
+                else:
+                    target_ts = int(sec * stream.time_base.denominator / (stream.time_base.numerator * fps))
+                    container.seek(target_ts, any_frame=False, backward=True, stream=stream)
+                    for frame in container.decode(video=0):
+                        frame_sec = float(frame.pts * stream.time_base) if frame.pts is not None else sec
+                        if frame_sec >= sec - 0.5:  # 允许 0.5秒误差
                             img = frame.to_ndarray(format='bgr24')
                             frames.append((sec, img))
                             break
-                    else:
-                        target_ts = int(sec * stream.time_base.denominator / (stream.time_base.numerator * fps))
-                        container.seek(target_ts, any_frame=False, backward=True, stream=stream)
-                        for frame in container.decode(video=0):
-                            frame_sec = float(frame.pts * stream.time_base) if frame.pts is not None else sec
-                            if frame_sec >= sec - 0.5:  # 允许 0.5秒误差
-                                img = frame.to_ndarray(format='bgr24')
-                                frames.append((sec, img))
-                                break
-                except Exception as e:
-                    logger.warning("视频帧提取：PyAV 第%d秒提取失败: %s", sec, e)
-            if frames:
-                logger.info("视频帧提取：PyAV GPU 解码成功，截取 %d 帧", len(frames))
-                return frames
-            logger.warning("视频帧提取：PyAV GPU 解码未获取到帧，回退 CPU")
-        except ImportError:
-            logger.info("视频帧提取：PyAV 未安装，回退 OpenCV")
-        except Exception as e:
-            logger.warning("视频帧提取：PyAV GPU 解码异常: %s，回退 CPU", e)
-        finally:
-            # 确保 PyAV 容器始终关闭，防止 GPU 解码器内存泄漏
-            if container is not None:
-                try:
-                    container.close()
-                except Exception:
-                    pass
+            except Exception as e:
+                logger.warning("视频帧提取：PyAV 第%d秒提取失败: %s", sec, e)
+        if frames:
+            logger.info("视频帧提取：PyAV 解码成功，截取 %d 帧", len(frames))
+            return frames
+        logger.warning("视频帧提取：PyAV 解码未获取到帧，回退 OpenCV")
+    except ImportError:
+        logger.info("视频帧提取：PyAV 未安装，回退 OpenCV")
+    except Exception as e:
+        logger.warning("视频帧提取：PyAV 解码异常: %s，回退 OpenCV", e)
+    finally:
+        # 确保 PyAV 容器始终关闭，防止内存泄漏
+        if container is not None:
+            try:
+                container.close()
+            except Exception:
+                pass
     # 回退: OpenCV CPU 解码
     try:
         import cv2
@@ -6488,7 +6509,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
             # 步骤1：一次性截帧：0~8 秒每秒 1 帧 + 10/15 秒兜底帧
             # 依据 2026-10-27 实测：时钟最晚在第 5 秒出现，且单帧 OCR 不稳定（相邻帧时有时无）
             video_positions = [0, 1, 2, 3, 5, 8]
-            frames = _extract_video_frames_gpu(video_path, positions=video_positions, use_gpu=True) or []
+            frames = _extract_video_frames_gpu(video_path, positions=video_positions) or []
             if not frames:
                 logger.warning("视频兜底提取：无法提取视频帧 %s，尝试下一个", video_label)
                 _timestudy_trace(bugid, "frame:fail")
@@ -6514,35 +6535,26 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                         logger.debug("视频兜底提取(%s)：第%d秒与上一帧相同，跳过 OCR", video_label, sec + 1)
                         continue
                     _prev_sig = _sig
-                    # 整帧优先：先全图 OCR，找到时间就结束；找不到再 ROI 放大兜底
+                    _has_time = False
                     _roi_has_time = False
+                    results = []
+                    all_text = ""
+                    # ── RapidOCR ROI：固定区域放大识别（状态栏/任务栏等）──
                     try:
-                        results = _ocr_readtext(None, frame) or []
-                    except Exception as e:
-                        logger.warning("视频兜底提取(%s)：OCR 第%d秒失败: %s", video_label, sec, e)
-                        continue
-                    all_text = _strip_progress_bar(" ".join(r[1] for r in results))
-                    _has_time = bool(all_text) and bool(
-                        _OCR_TIME_FULL_RE.search(all_text) or _OCR_TIME_ONLY_RE.search(all_text))
-                    # 整帧未找到时间 → ROI 放大 2.5x 兜底（小字号/低对比度时钟）
-                    if not _has_time:
-                        _roi_text = ""
-                        try:
-                            _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
-                        except Exception:
-                            _roi_text = ""
+                        _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
                         _roi_text = _strip_progress_bar(_roi_text)
                         _roi_has_time = bool(_roi_text) and bool(
                             _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
                         if _roi_has_time:
                             all_text = _roi_text
+                            results = [(_roi_text, 1.0)]
                             _has_time = True
                             _VIDEO_OCR_STATS["roi_frames"] += 1
-                            logger.info("视频兜底提取(%s)：第%d秒整帧未命中，ROI 兜底命中时间", video_label, sec + 1)
-                        else:
-                            _VIDEO_OCR_STATS["full_frames"] += 1
-                    else:
-                        _VIDEO_OCR_STATS["full_frames"] += 1
+                            logger.info("视频兗底提取(%s)：第%d秒 ROI RapidOCR 命中时间: %s",
+                                        video_label, sec + 1, all_text[:80])
+                    except Exception as e:
+                        logger.warning("视频兗底提取(%s)：第%d秒 ROI RapidOCR 异常: %s",
+                                       video_label, sec + 1, e)
                     _collected_texts.append((sec, all_text))
                     # 诊断日志：打印 OCR 实际读到的原文
                     logger.info("视频兜底提取(%s)：第%d秒 OCR 原文: %s", video_label, sec + 1, (all_text[:120] or "(空)"))
@@ -6693,6 +6705,10 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                                         best_12h_cand = (ts, ext_dt)
                                 if ts and not first_partial:
                                     first_partial = ts
+                    # ── 前一帧识别到时间即停：ROI 命中或解析成功都直接跳出 ──
+                    if first_full or first_partial or _roi_has_time:
+                        logger.info("视频兗底提取(%s)：第%d秒已提取到有效时间，跳过后续帧", video_label, sec + 1)
+                        break
             # 循环结束仍未命中：用已 OCR 文本做多帧投票（同一时间 ≥2 次且通过校验才采用）
             if not first_full and not first_partial and _collected_texts:
                 try:
@@ -6947,7 +6963,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                 logger.warning("视频帧提取：视频文件不存在 %s", video_label)
                 continue
             # 截帧 + OCR：先封面，再第2~6秒
-            cover_frames = _extract_video_frames_gpu(video_path, positions=[0], use_gpu=True) or []
+            cover_frames = _extract_video_frames_gpu(video_path, positions=[0]) or []
             if not cover_frames:
                 logger.warning("视频帧提取：无法提取封面帧 %s，尝试下一个", video_label)
                 continue
@@ -6962,7 +6978,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                 else:
                     if first_full or first_partial:
                         break
-                    other_frames = _extract_video_frames_gpu(video_path, positions=[1, 2, 3, 4, 5], use_gpu=True) or []
+                    other_frames = _extract_video_frames_gpu(video_path, positions=[1, 2, 3, 4, 5]) or []
                     if not other_frames:
                         break
                     frames = other_frames
@@ -6978,38 +6994,26 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                         logger.debug("视频帧提取(%s)：第%d秒与上一帧相同，跳过 OCR", video_label, sec + 1)
                         continue
                     _prev_sig = _sig
-                    # 整帧优先：先全图 OCR，找到时间就结束；找不到再 ROI 放大兜底
+                    _has_time = False
                     _roi_has_time = False
+                    results = []
+                    all_text = ""
+                    # ── RapidOCR ROI：固定区域放大识别（状态栏/任务栏等）──
                     try:
-                        results = _ocr_readtext(None, frame) or []
-                    except Exception as e:
-                        logger.warning("视频帧提取：OCR 第%d秒失败: %s", sec, e)
-                        continue
-                    # 只保留时间类文本块，过滤地图POI/聊天消息/系统UI等无关内容
-                    _time_items = [r for r in results if _is_ocr_time_related_text(r[1] if len(r) > 1 else "")]
-                    if _time_items:
-                        results = _time_items
-                    all_text = _strip_progress_bar(" ".join(r[1] for r in results))
-                    _has_time = bool(all_text) and bool(
-                        _OCR_TIME_FULL_RE.search(all_text) or _OCR_TIME_ONLY_RE.search(all_text))
-                    # 整帧未找到时间 → ROI 放大 2.5x 兜底（小字号/低对比度时钟）
-                    if not _has_time:
-                        _roi_text = ""
-                        try:
-                            _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
-                        except Exception:
-                            _roi_text = ""
+                        _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
                         _roi_text = _strip_progress_bar(_roi_text)
                         _roi_has_time = bool(_roi_text) and bool(
                             _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
                         if _roi_has_time:
                             all_text = _roi_text
+                            results = [(_roi_text, 1.0)]
+                            _has_time = True
                             _VIDEO_OCR_STATS["roi_frames"] += 1
-                            logger.info("视频帧提取(%s)：第%d秒整帧未命中，ROI 兜底命中时间", video_label, sec + 1)
-                        else:
-                            _VIDEO_OCR_STATS["full_frames"] += 1
-                    else:
-                        _VIDEO_OCR_STATS["full_frames"] += 1
+                            logger.info("视频帧提取(%s)：第%d秒 ROI RapidOCR 命中时间: %s",
+                                        video_label, sec + 1, all_text[:80])
+                    except Exception as e:
+                        logger.warning("视频帧提取(%s)：第%d秒 ROI RapidOCR 异常: %s",
+                                       video_label, sec + 1, e)
                     logger.info("视频帧提取(%s)：第%d秒 OCR%s: %s", video_label, sec + 1,
                                 " (ROI)" if _roi_has_time else "",
                                 all_text[:200] if all_text else "(空)")
@@ -7172,6 +7176,10 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                         # 没有日志包日期可补：保留 OCR 的时分，交给诊断用 Jira 创建日期补全
                         first_partial = time_str
                         first_detail = f"从视频{video_label}第{sec+1}秒 OCR 识别到 {time_str}（未与日志包匹配，供参考）"
+                    # ── 前一帧识别到时间即停：ROI 命中或解析成功都直接跳出 ──
+                    if first_full or first_partial or _roi_has_time:
+                        logger.info("视频帧提取(%s)：第%d秒已提取到有效时间，跳过后续帧", video_label, sec + 1)
+                        break
             # OCR 完全失败时，尝试从视频文件名提取时间（回退方案）
             if not first_full and not first_partial:
                 fn_time = _parse_video_filename_time(video_name)
@@ -7315,7 +7323,7 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
                                  bugid=bugid, max_bytes=_MAX_MEDIA_BYTES,
                                  filename=fname or "image.bin", use_cache=False,
                                  stop_event=stop_event)
-                # OCR 识别（返回 bbox + 文字 + 置信度）
+                # OCR 识别：RapidOCR
                 img = _cv_imread_unicode(img_path)
                 if img is None:
                     logger.warning("%s图片 OCR: cv2.imread 失败 %s", f"{bugid} " if bugid else "", fname)

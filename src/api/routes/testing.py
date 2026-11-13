@@ -654,6 +654,7 @@ async def _do_bitable_vcs_query(date_from: str, date_to: str, filter_ai: bool):
             # 超过 14 天直接全量拉取更快，避免逐天调用过多
             if total_days <= 14:
                 all_records = []
+                _seen_jira = set()  # 按 Jira 号去重（避免跨天边界重复）
                 chunk_start = date_from_dt or date_to_dt
                 end_dt = date_to_dt or date_from_dt
                 while chunk_start <= end_dt:
@@ -661,9 +662,9 @@ async def _do_bitable_vcs_query(date_from: str, date_to: str, filter_ai: bool):
                     c_ts_to = (chunk_start + timedelta(days=1)).timestamp() * 1000
                     conditions = [
                         {"field_name": "创建日期", "operator": "isGreater",
-                         "value": ["ExactDate", str(int(c_ts_from - 86400000))]},
+                         "value": ["ExactDate", str(int(c_ts_from - 1000))]},
                         {"field_name": "创建日期", "operator": "isLess",
-                         "value": ["ExactDate", str(int(c_ts_to + 86400000))]},
+                         "value": ["ExactDate", str(int(c_ts_to + 1000))]},
                     ]
                     filter_obj = {"conjunction": "and", "conditions": conditions}
                     chunk = await loop.run_in_executor(
@@ -671,7 +672,12 @@ async def _do_bitable_vcs_query(date_from: str, date_to: str, filter_ai: bool):
                             app_token, table_id, filter_obj=fo,
                             field_names=["jira号", "创建日期", "AI初步分析结果", "问题发生时间"],
                             page_size=200, timeout=15))
-                    all_records.extend(chunk)
+                    # 去重：跨天边界可能有少量重叠
+                    for rec in chunk:
+                        jk = _bitable_text(rec.get("fields", {}).get("jira号", ""))
+                        if jk and jk not in _seen_jira:
+                            _seen_jira.add(jk)
+                            all_records.append(rec)
                     chunk_start += timedelta(days=1)
                 records = all_records
                 logger.info("表格查询 search API 命中 %d 条（%d 天）", len(records), total_days)
@@ -3075,7 +3081,7 @@ async def test_prod_batch_run(request: Request):
     # 批量执行元数据
     mode_label = "线上" if exec_mode == "online" else "PC"
     _batch_meta = {
-        "分析并发数": str(body.get("analysis_concurrency", "5")),
+        "分析并发数": str(body.get("analysis_concurrency", "6")),
         "下载并发数": str(body.get("download_concurrency", "2")),
         "模型": str(body.get("model", "deepseek-v-pro")),
         "触发来源": str(body.get("trigger_source", mode_label)),
@@ -3386,7 +3392,7 @@ async def test_prod_batch_run(request: Request):
         # 批量执行接口（支持PC/线上模式）
         result_queue = queue.Queue()
         import threading as _th
-        _exec_concurrency = int(body.get("analysis_concurrency") or 5)
+        _exec_concurrency = int(body.get("analysis_concurrency") or 6)
         _exec_sem = _th.Semaphore(_exec_concurrency)  # 执行阶段并发控制
         _MAX_RETRIES = 2  # 首次 + 2 次重试 = 最多 3 次
         _RETRY_DELAY = 5  # 重试基础间隔（秒），按 5/10 秒退避
@@ -4138,7 +4144,7 @@ async def auto_detect_run(request: Request):
     interval_min = max(1, int(body.get("interval", 6)))
     max_rounds = int(body.get("rounds", 0))  # 0=持续执行
     _batch_meta = {
-        "分析并发数": str(body.get("analysis_concurrency", "5")),
+        "分析并发数": str(body.get("analysis_concurrency", "6")),
         "下载并发数": str(body.get("download_concurrency", "2")),
         "模型": str(body.get("model", "deepseek-v-pro")),
         "触发来源": str(body.get("trigger_source", "线上")),
@@ -4516,7 +4522,7 @@ async def regression_run(request: Request):
     input_bugids = body.get("bugids") or []  # 前端传入的已勾选批次 Jira 号
     filter_ai_preliminary = bool(body.get("filter_ai_preliminary", False))
     _batch_meta = {
-        "分析并发数": str(body.get("analysis_concurrency", "5")),
+        "分析并发数": str(body.get("analysis_concurrency", "6")),
         "下载并发数": str(body.get("download_concurrency", "2")),
         "模型": str(body.get("model", "deepseek-v-pro")),
         "触发来源": str(body.get("trigger_source", "线上" if exec_mode == "online" else "PC")),

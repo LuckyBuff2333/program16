@@ -108,7 +108,7 @@ export default {
         csvFiles: [], selectedCsvs: [], directInput: '',
         skipExisting: true, filterPcOnly: false, filterOnlineOnly: false, maxCount: 0, msg: '', error: false, stage: '',
         results: [], doneMsg: '', cloudUrl: '',
-        analysisConcurrency: 5, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上',
+        analysisConcurrency: 6, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上',
         jqlInput: 'issuetype = bug AND status != closed AND created >= "2026/09/01"',
         jqlSearching: false, jqlSearchMsg: '',
         continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false,

@@ -20,6 +20,7 @@
     "sandbox_base": "https://sandbox.adp.cloud.tencent.com/files?path=",
     "attach_api": "https://dpportal.apps.saic-gm.com/api/logAnalysis/attachments",
     "attach_api_key": "",
+    "attach_source": "jira",
     "timeout": 3600,
     "bitable_app_token": "K7wibpzjIaqm9DsXKfKcMDxjnQb",
     "bitable_table_id": "tblbZDBbuidowRhX",
@@ -179,6 +180,10 @@
   },
   "web": {
     "browser": "chrome"
+  },
+  "ocr": {
+    "glm_priority": true,
+    "glm_model_path": "models/GLM-OCR"
   },
   "batch_env": {
     "software_version": "V1.0.4"
