@@ -1104,3 +1104,13 @@
 - **实现文件**：`src/services/server_legacy.py`、`config/config.example.yaml`
 
 </details>
+
+<details>
+<summary><b>205. OCR 推理串行锁与本地模型/并行配置（2026-11-13）</b></summary>
+
+- **问题**：DirectML 下多个线程同时调用同一个 RapidOCR 引擎会崩溃；模型路径需明确走本地。
+- **修复**：新增 `_ocr_infer_lock` 串行化 RapidOCR/DirectML 推理；本机 `ocr_parallel` 设为 1，模型路径改为 `D:/program16/models/ppocrv5/*`，GLM 路径 `D:/program16/models/GLM-OCR`；`use_dml: true`。
+- **验证**：3 线程并发 9 帧无崩溃；50 帧 CPU 0.98s/帧 vs DirectML 0.12s/帧，识别结果 50/50 一致；363 tests passed。
+- **实现文件**：`src/services/server_legacy.py`、`config/config.yaml`（本机）
+
+</details>

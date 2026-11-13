@@ -216,6 +216,7 @@ _rapid_ocr_engine = None
 _rapid_ocr_is_gpu = False  # 主引擎是否使用 GPU 加速
 
 _rapid_ocr_lock = threading.Lock()  # 防止 RapidOCR 并发初始化
+_ocr_infer_lock = threading.RLock()  # RapidOCR/DirectML 推理串行锁
 _rapid_ocr_cpu_engine = None  # OOM 回退用 CPU-only 引擎
 _ocr_oom_cooldown_until = 0.0  # OOM 冷却截止时间戳
 _ocr_max_pixels = 4_000_000  # GPU 推理最大像素面积（默认值，实际从配置读取）
@@ -4861,7 +4862,8 @@ def _run_ocr(engine, image, _already_enhanced: bool, tag: str = ""):
     scale = enlarged.shape[0] / h if enlarged is not image else 1.0
     _enlarged_h, _enlarged_w = enlarged.shape[:2]
     # box_thresh/text_score/use_cls 从配置读取，确保 PP-OCRv4 回退路径同样生效
-    result, elapse = engine(enlarged, box_thresh=_box_t, text_score=_txt_s, use_cls=False)
+    with _ocr_infer_lock:
+        result, elapse = engine(enlarged, box_thresh=_box_t, text_score=_txt_s, use_cls=False)
     if not result:
         # 诊断日志：区分“真无文字”还是“检测不到”
         logger.info("RapidOCR 未识别到文本: 原图%dx%d → 预缩放%dx%d → 放大%.1fx(%dx%d) box_thresh=%.2f text_score=%.2f tag=%s",
