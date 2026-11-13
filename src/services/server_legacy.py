@@ -2477,16 +2477,23 @@ def _daily_scheduler_loop():
                         continue  # 今天已播过
                     # 播报前一工作日的数据
                     prev_workday = _get_prev_chinese_workday(now)
-                    # 跨机器共享状态：别的机器已播过这个报告日期就跳过，避免重复播报
+                    # 跨机器共享状态：别的机器已成功播报过这个报告日期就跳过，避免重复播报
                     claim_state, claim_rec = broadcast_state.claim(chat_id, prev_workday, cur_time)
                     if claim_state == "exists":
+                        # 查询已有记录的状态，补充日志便于排查
+                        try:
+                            state_info = broadcast_state.get_state(chat_id, prev_workday)
+                            _exist_status = state_info.get("status", "unknown")
+                            _exist_machine = state_info.get("machine", "unknown")
+                        except Exception:
+                            _exist_status, _exist_machine = "unknown", "unknown"
                         chat_cfg["last_run_date"] = cur_date  # 本地记账，避免每 30 秒反复查云端
                         try:
                             _save_daily_broadcast_config(cfg)
                         except Exception:
                             pass
-                        logger.info("跳过昨日播报(%s): chat=%s 已由其他机器播报",
-                                    prev_workday, chat_id[:12])
+                        logger.info("跳过昨日播报(%s): chat=%s 已由其他机器播报(status=%s, machine=%s)",
+                                    prev_workday, chat_id[:12], _exist_status, _exist_machine)
                         continue
                     if claim_state == "unavailable":
                         # 云端不可用：回退本地文件锁，仍能防同机多进程重复播报
