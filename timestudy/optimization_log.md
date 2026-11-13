@@ -1181,3 +1181,13 @@
 - **下一步**：逐位切分投票/时序候选投票、只保留 HH:MM、按置信度决定是否早停。
 
 </details>
+
+<details>
+<summary><b>212. OCR 模型按独显自动切换（2026-11-13）</b></summary>
+
+- **GPU**：检测 CUDA/DirectML 成功时使用本地 `models/ppocrv5_server`（server det/rec）+ 3x ROI。
+- **纯 CPU**：自动切到本地 `models/ppocrv5`（mobile det/rec）+ 2x ROI，避免 server 在 CPU 上单 ROI 约 26 秒。
+- **配置**：`config/config.yaml` 保留本机绝对路径与并行数量；`config/config.example.yaml` 只放相对路径模板。
+- **验证**：GPU/CPU 路径选择正确；363 tests passed。
+
+</details>

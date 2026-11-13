@@ -4584,22 +4584,32 @@ def _resolve_ocr_model_path(path: str, proj_root: str) -> str:
     return path if os.path.isabs(path) else os.path.join(proj_root, path)
 
 
-def _apply_ocr_runtime_config(ycfg: dict, use_cuda: bool) -> dict:
+def _apply_ocr_runtime_config(ycfg: dict, use_cuda: bool, use_gpu: bool = True) -> dict:
     """把 config.yaml 的 ocr 段覆盖到 RapidOCR 的 yaml。
 
-    模型路径和 OCR 参数属于本机配置：不同电脑可各自设置绝对路径/线程数/阈值，
-    公共的 models/ppocrv5/rapidocr_v5.yaml 只保留通用默认值。
+    GPU 可用时使用 model_dir 指向的 server 模型 + DirectML；
+    无独显时自动切到 cpu_* 指向的 mobile 模型，仍使用本地路径。
     """
     cfg = _get_ocr_cfg()
     proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    model_dir = cfg.get("model_dir", "")
+    if use_gpu:
+        model_dir = cfg.get("model_dir", "")
+        path_keys = {
+            "Det": ("det_model_path", "det.onnx"),
+            "Cls": ("cls_model_path", "cls.onnx"),
+            "Rec": ("rec_model_path", "rec.onnx"),
+        }
+        keys_path = cfg.get("rec_keys_path", "")
+    else:
+        model_dir = cfg.get("cpu_model_dir", os.path.join(proj_root, "models", "ppocrv5"))
+        path_keys = {
+            "Det": ("cpu_det_model_path", "det.onnx"),
+            "Cls": ("cpu_cls_model_path", "cls.onnx"),
+            "Rec": ("cpu_rec_model_path", "rec.onnx"),
+        }
+        keys_path = cfg.get("cpu_rec_keys_path", "")
     # 模型路径：优先显式 *_model_path，其次 model_dir + 默认文件名
-    model_keys = {
-        "Det": ("det_model_path", "det.onnx"),
-        "Cls": ("cls_model_path", "cls.onnx"),
-        "Rec": ("rec_model_path", "rec.onnx"),
-    }
-    for sec, (key, default_name) in model_keys.items():
+    for sec, (key, default_name) in path_keys.items():
         sec_cfg = ycfg.get(sec)
         if sec_cfg is None:
             continue
@@ -4609,12 +4619,10 @@ def _apply_ocr_runtime_config(ycfg: dict, use_cuda: bool) -> dict:
         if not path:
             path = sec_cfg.get("model_path", "")
         sec_cfg["model_path"] = _resolve_ocr_model_path(path, proj_root)
-        sec_cfg["use_cuda"] = bool(use_cuda and cfg.get("use_cuda", True))
-        if "use_dml" in cfg:
-            sec_cfg["use_dml"] = bool(cfg["use_dml"])
+        sec_cfg["use_cuda"] = bool(use_gpu and use_cuda and cfg.get("use_cuda", True))
+        sec_cfg["use_dml"] = bool(use_gpu and cfg.get("use_dml", False))
     rec_cfg = ycfg.get("Rec")
     if rec_cfg is not None:
-        keys_path = cfg.get("rec_keys_path", "")
         if not keys_path and model_dir:
             keys_path = os.path.join(model_dir, "ppocrv5_dict.txt")
         if keys_path:
@@ -4689,7 +4697,7 @@ def _get_rapid_ocr():
                     _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                     with open(_v5_cfg) as _f:
                         _ycfg = _yaml.safe_load(_f)
-                    _apply_ocr_runtime_config(_ycfg, use_cuda=_cuda)
+                    _apply_ocr_runtime_config(_ycfg, use_cuda=_cuda, use_gpu=_gpu)
                     import tempfile
                     _tmp_cfg = os.path.join(tempfile.gettempdir(), "rapidocr_v5_runtime.yaml")
                     with open(_tmp_cfg, "w") as _f:
@@ -4733,7 +4741,7 @@ def _get_rapid_ocr_cpu():
                     _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                     with open(_v5_cfg) as _f:
                         _ycfg = _yaml.safe_load(_f)
-                    _apply_ocr_runtime_config(_ycfg, use_cuda=False)
+                    _apply_ocr_runtime_config(_ycfg, use_cuda=False, use_gpu=False)
                     import tempfile
                     _tmp_cfg = os.path.join(tempfile.gettempdir(), "rapidocr_v5_cpu_runtime.yaml")
                     with open(_tmp_cfg, "w") as _f:
@@ -4928,7 +4936,7 @@ def _get_ocr_reader():
 # 视频 OCR 统计（ROI 命中 / 整帧 / 静帧跳过 / 投票命中），用于后续调参
 _VIDEO_OCR_STATS = {"videos": 0, "roi_frames": 0, "full_frames": 0, "skipped_frames": 0, "vote_hits": 0}
 # 各 ROI 区域命中时间统计（用于调参：哪些区域产出时间最多、哪些可删除）
-_ROI_REGION_STATS = {"top_bar": 0, "left_upper": 0, "right_upper": 0, "center_right": 0, "right_lower": 0, "left_lower": 0}
+_ROI_REGION_STATS = {"top_bar": 0, "left_upper": 0, "right_upper": 0, "right_clock": 0, "center_right": 0, "right_lower": 0, "left_lower": 0}
 
 
 def _frame_signature(frame):
@@ -5058,6 +5066,14 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     parts = []
     try:
         h, w = frame.shape[:2]
+        # 自动关联：有独显时 server 模型 + 3x；纯 CPU 时 mobile 模型 + 2x
+        try:
+            _get_rapid_ocr()
+        except Exception:
+            pass
+        _cfg_ocr = _get_ocr_cfg()
+        _roi_scale = float(_cfg_ocr.get("gpu_roi_scale", 3.0) if _rapid_ocr_is_gpu
+                           else _cfg_ocr.get("cpu_roi_scale", 2.0))
         # 带标签的区域：车载 HMI 时钟常出现在顶部状态栏、中央大时钟、右下任务栏、底部中央导航栏
         # 基于数据沉淀「线上成功且带视频」记录的 2023 个时间文本块统计：
         # 顶部、左上、右上、中央偏右、右下、左下覆盖了绝大多数时间位置。
@@ -5065,6 +5081,7 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
         # right_upper 69.2% > top_bar 30.0% > center_right 22.8%
         # > right_lower 14.0% > left_upper 11.6% > left_lower 10.7%
         regions = [
+            ("right_clock",  int(w * 0.55), int(h * 0.10), int(w * 0.95), int(h * 0.55)),
             ("right_upper",  int(w * 0.44), 0, w, int(h * 0.46)),
             ("top_bar",      0, 0, w, int(h * 0.17)),
             ("center_right", int(w * 0.50), int(h * 0.32), w, int(h * 0.73)),
@@ -5094,7 +5111,7 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
             if not txt:
                 # ── ROI 放大 2.5x + 自适应二值化，提升小字号识别率 ──
                 crop_h, crop_w = raw_crop.shape[:2]
-                enlarged = cv2.resize(raw_crop, (int(crop_w * 3.0), int(crop_h * 3.0)),
+                enlarged = cv2.resize(raw_crop, (int(crop_w * _roi_scale), int(crop_h * _roi_scale)),
                                       interpolation=cv2.INTER_CUBIC)
                 gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
                 # CLAHE + 去噪 + unsharp：比硬二值化更适合车机小字号时钟
@@ -5116,7 +5133,7 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
                 if name in _ROI_REGION_STATS and _t_chk.search(txt):
                     _ROI_REGION_STATS[name] += 1
                 # ── 只有状态栏高置信区域才早停；中央/底部可能是导航/内容时间 ──
-                if _valid_time_tokens(txt) and name in ("right_upper", "top_bar"):
+                if _valid_time_tokens(txt) and name in ("right_clock", "right_upper", "top_bar"):
                     logger.info("RapidOCR ROI[%s] 命中状态栏时间，跳过剩余区域", name)
                     break
             else:
