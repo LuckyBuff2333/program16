@@ -1125,3 +1125,14 @@
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>207. 数据沉淀线上成功视频的 ROI 六区域统计（2026-11-13）</b></summary>
+
+- **数据范围**：数据沉淀 `分析结果=成功` 且 `触发来源=parseFullTicket` 共 4721 条；其中 4366 条带视频，视频文件 5786 个、约 115GB。
+- **统计样本**：已处理 490 条记录、2023 个时间文本块；全量视频逐帧 OCR 约需 1.5 小时，进度与结果已落盘，可续跑。
+- **ROI 更新**：改为 6 区域：top_bar、left_upper、right_upper、center_right、right_lower、left_lower；对已统计时间块覆盖 1983/2023=98.0%。
+- **验证**：363 tests passed。
+- **实现文件**：`src/services/server_legacy.py`
+
+</details>

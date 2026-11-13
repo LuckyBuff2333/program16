@@ -4928,7 +4928,7 @@ def _get_ocr_reader():
 # 视频 OCR 统计（ROI 命中 / 整帧 / 静帧跳过 / 投票命中），用于后续调参
 _VIDEO_OCR_STATS = {"videos": 0, "roi_frames": 0, "full_frames": 0, "skipped_frames": 0, "vote_hits": 0}
 # 各 ROI 区域命中时间统计（用于调参：哪些区域产出时间最多、哪些可删除）
-_ROI_REGION_STATS = {"top_bar": 0, "right_upper": 0, "center_time": 0, "right_lower": 0, "left_mid": 0}
+_ROI_REGION_STATS = {"top_bar": 0, "left_upper": 0, "right_upper": 0, "center_right": 0, "right_lower": 0, "left_lower": 0}
 
 
 def _frame_signature(frame):
@@ -5016,14 +5016,15 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     try:
         h, w = frame.shape[:2]
         # 带标签的区域：车载 HMI 时钟常出现在顶部状态栏、中央大时钟、右下任务栏、底部中央导航栏
-        # 基于 30 个视频 141 个时间文本块的位置统计（归一化坐标）：
-        # 顶部、右侧上/中、中央、右侧下、左侧中下覆盖全部统计样本。
+        # 基于数据沉淀「线上成功且带视频」记录的 2023 个时间文本块统计：
+        # 顶部、左上、右上、中央偏右、右下、左下覆盖了绝大多数时间位置。
         regions = [
-            ("top_bar",      0, 0, w, int(h * 0.16)),
-            ("right_upper",  int(w * 0.55), int(h * 0.02), w, int(h * 0.46)),
-            ("center_time",  int(w * 0.40), int(h * 0.20), int(w * 0.90), int(h * 0.68)),
-            ("right_lower",  int(w * 0.58), int(h * 0.58), w, int(h * 0.97)),
-            ("left_mid",     int(w * 0.10), int(h * 0.22), int(w * 0.55), int(h * 0.95)),
+            ("top_bar",      0, 0, w, int(h * 0.17)),
+            ("left_upper",   0, 0, int(w * 0.50), int(h * 0.48)),
+            ("right_upper",  int(w * 0.44), 0, w, int(h * 0.46)),
+            ("center_right", int(w * 0.50), int(h * 0.32), w, int(h * 0.73)),
+            ("right_lower",  int(w * 0.58), int(h * 0.60), w, h),
+            ("left_lower",   0, int(h * 0.38), int(w * 0.60), h),
         ]
         if not status_only:
             regions = list(regions)
