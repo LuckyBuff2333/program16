@@ -1148,3 +1148,14 @@
 - **实现文件**：`src/services/server_legacy.py`
 
 </details>
+
+<details>
+<summary><b>209. PP-OCRv5 server + 3x + 时间白名单（2026-11-13）</b></summary>
+
+- **模型**：本地新增 `models/ppocrv5_server`（server det 88MB、rec 84MB、dict），配置切到 server；DirectML 推理。
+- **预处理**：ROI 放大从 2.5x 改为 3.0x，提升小字号时钟高度。
+- **白名单/校验**：新增 `_normalize_time_spacing` 合并 `12 :52`，`_valid_time_tokens` 只接受 00:00~23:59；进度条/导航时间过滤保留。
+- **50 视频实测**：找到时间 49/50；以数据沉淀问题时间 ±5 分钟计，匹配 24/50=48%；平均 3.7 秒/视频、17.4 ROI/视频，871 个 ROI。
+- **实现文件**：`src/services/server_legacy.py`、`config/config.yaml`（本机）
+
+</details>

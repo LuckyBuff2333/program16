@@ -5015,6 +5015,35 @@ def _strip_video_progress_times(text: str, lower: bool = False) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _normalize_time_spacing(text: str) -> str:
+    """合并 OCR 拆开的 12 :52 / 12： 52，便于正则校验。"""
+    if not text:
+        return text
+    return re.sub(r"(\d)\s*[:：]\s*(\d{2})", r"\1:\2", text)
+
+
+def _valid_time_tokens(text: str) -> list:
+    """白名单正则：只接受 00:00~23:59，返回合法时分。"""
+    t = _normalize_time_spacing(text)
+    out = []
+    for m in re.finditer(r"(?<!\d)([01]?\d|2[0-3])[:：]([0-5]\d)(?!\d)", t):
+        out.append((int(m.group(1)), int(m.group(2))))
+    return out
+
+
+def _strip_navigation_times(text: str) -> str:
+    """剔除导航到达时间、预计时间、时间区间，避免被当成状态栏时钟。"""
+    if not text:
+        return text
+    # 12:56到达 / 预计12:56 / 约 12:56 / 12:56 分钟
+    text = re.sub(
+        r"(?:预计|约|大约)?\s*\b\d{1,2}[:：]\d{2}\s*(?:到达|分钟|公里|km|小时|路况)",
+        " ", text, flags=re.IGNORECASE)
+    # 14:40-14:40 / 14:40~15:10 / 14:40至15:10
+    text = re.sub(r"\b\d{1,2}[:：]\d{2}\s*[-~至]\s*\d{1,2}[:：]\d{2}\b", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     """对状态栏/任务栏等小区域做高倍 OCR（RapidOCR + 2.5x 放大 + 自适应二值化）
 
@@ -5065,7 +5094,7 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
             if not txt:
                 # ── ROI 放大 2.5x + 自适应二值化，提升小字号识别率 ──
                 crop_h, crop_w = raw_crop.shape[:2]
-                enlarged = cv2.resize(raw_crop, (int(crop_w * 2.5), int(crop_h * 2.5)),
+                enlarged = cv2.resize(raw_crop, (int(crop_w * 3.0), int(crop_h * 3.0)),
                                       interpolation=cv2.INTER_CUBIC)
                 gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
                 enhanced = cv2.adaptiveThreshold(
@@ -5075,16 +5104,18 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
                 # RapidOCR 识别（已放大，跳过 _run_ocr 内部放大）
                 roi_results = _ocr_readtext(None, enhanced, _already_enhanced=True)
                 txt = " ".join(r[1] for r in roi_results if len(r) > 1)
-            # 排除视频播放器进度条/总时长：00:00、02:41/04:30、01:34:33
+            # 排除视频播放器进度条/总时长，以及导航到达/预计时间
+            txt = _normalize_time_spacing(txt)
             txt = _strip_video_progress_times(txt, lower=(y1 >= int(h * 0.55)))
+            txt = _strip_navigation_times(txt)
             if txt.strip():
                 parts.append(txt)
                 logger.info("RapidOCR ROI[%s] 识别到: %s", name, txt[:80])
                 if name in _ROI_REGION_STATS and _t_chk.search(txt):
                     _ROI_REGION_STATS[name] += 1
-                # ── ROI 命中时间即停：当前区域已识别到时间，跳过剩余区域 ──
-                if _t_chk.search(txt):
-                    logger.info("RapidOCR ROI[%s] 命中时间，跳过剩余区域", name)
+                # ── 只有状态栏高置信区域才早停；中央/底部可能是导航/内容时间 ──
+                if _valid_time_tokens(txt) and name in ("right_upper", "top_bar"):
+                    logger.info("RapidOCR ROI[%s] 命中状态栏时间，跳过剩余区域", name)
                     break
             else:
                 logger.info("RapidOCR ROI[%s] 未识别到文本", name)
