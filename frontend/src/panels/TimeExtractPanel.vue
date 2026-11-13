@@ -56,6 +56,7 @@
     <el-card v-if="rows.length" shadow="never" style="margin-top:14px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <span style="font-weight:600">提取结果（共 {{ rows.length }} 条，命中 {{ hitCount }}）</span>
+        <el-button type="success" size="small" plain :icon="CopyDocument" @click="copySuccessJiras">复制命中Jira号</el-button>
       </div>
       <el-table :data="rows" size="small" stripe border max-height="400">
         <el-table-column type="index" label="#" width="50" align="center"></el-table-column>
@@ -337,6 +338,7 @@
 <script lang="ts">
 // @ts-nocheck
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { CopyDocument } from '@element-plus/icons-vue';
 import { api, formatMinute } from '../composables/utils';
 
 const JQL_PRESETS = {
@@ -423,6 +425,11 @@ export default {
   },
   methods: {
     formatMinute,
+    copySuccessJiras() {
+      const ids = this.rows.filter(r => r.time).map(r => r.bugid).filter(Boolean);
+      if (!ids.length) return ElMessage.warning('无命中记录');
+      navigator.clipboard.writeText(ids.join(',')).then(() => ElMessage.success(`已复制 ${ids.length} 个Jira号`)).catch(() => ElMessage.error('复制失败'));
+    },
     judgeTagType(judge: string) {
       const map: Record<string, string> = {
         '正常': 'success',
