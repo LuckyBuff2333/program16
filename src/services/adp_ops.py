@@ -1024,17 +1024,16 @@ def _generated_report_path(text: str) -> str:
 
 
 def _extract_report_url(text: str, file_urls: list) -> tuple:
-    """从文本或 file_urls 中提取报告链接（兼容三种域名 + lke 短链 + 沙箱路径）
-    优先级（签名 URL 始终优先于无签名 URL，避免 403 Forbidden）：
-      1a) reply 文本中 agent.adp-cos.com 的直签 CDN URL（含 q-signature）
-      1b) reply 文本中 agent.adp-cos.com 无签名 URL（降级，可能 403）
-      2)  reply 文本中 lke.cloud.tencent.com/s/xxx 分享短链（302 → COS 签名 URL）
-      3)  file_urls 中带签名的 .html 文件（content.added 事件）
-      3b) file_urls 中无签名的 .html 文件（降级兜底）
-      4)  文本中的沙箱报告路径（sandbox.adp，401 不可下载，仅作链接展示）
-    返回: (html_filename, direct_url)
+    """从文本或 file_urls 中提取报告链接。
+
+    优先级：
+      1) 文本中 signed agent.adp-cos.com
+      2) file_urls 中 signed .html
+      3) lke 短链（解析成功才用；失败继续 fallback）
+      4) 无签名 HTML
+      5) sandbox 报告路径
     """
-    # 1. agent.adp-cos.com CDN URL（区分签名/无签名）
+    # 1. 文本中 agent.adp-cos.com 的签名/无签名 URL
     signed_url, signed_name = "", ""
     unsigned_url, unsigned_name = "", ""
     for m in re.finditer(r'(https?://agent\.adp-cos\.com/[^\s)"\']*(?:report_|out/)[^\s)"\']*\.html[^\s)"\']*)', text):
@@ -1045,45 +1044,56 @@ def _extract_report_url(text: str, file_urls: list) -> tuple:
             signed_url, signed_name = url, name
         elif "q-sign" not in url and not unsigned_url:
             unsigned_url, unsigned_name = url, name
-    # 签名 URL 优先（无签名的裸路径会被 COS 拒绝返回 403）
     if signed_url:
         return signed_name, signed_url
-    # 2. lke.cloud.tencent.com/s/xxx 分享短链（302 跳转到 COS 签名 URL）
+
+    # 2. file_urls 中 signed .html（优先于 lke 短链，避免短链 404 时丢掉真报告）
+    signed_fu, unsigned_fu = None, None
+    lke_candidates = []
+    for f in (file_urls or []):
+        name = f.get("name", "")
+        url = f.get("url", "")
+        if not (name.endswith(".html") and "meta" not in name.lower() and url):
+            continue
+        if "lke.cloud.tencent.com" in url:
+            resolved = _resolve_lke_short_link(url)
+            if resolved and resolved != url:
+                if "q-sign" in resolved and not signed_fu:
+                    signed_fu = (name, resolved)
+                else:
+                    lke_candidates.append((name, resolved))
+            else:
+                lke_candidates.append((name, url))
+            continue
+        if "q-sign" in url and not signed_fu:
+            signed_fu = (name, url)
+        elif not unsigned_fu:
+            unsigned_fu = (name, url)
+    if signed_fu:
+        return signed_fu
+
+    # 3. 文本中的 lke 短链：解析失败不能直接返回原短链，继续 fallback
     m = re.search(r'(https?://lke\.cloud\.tencent\.com/s/[A-Za-z0-9]+)', text)
     if m:
         url = m.group(1)
         name = re.search(r'(report_[A-Za-z0-9_\-]+\.html)', text[max(0, m.start() - 500):m.end() + 200])
-        # 立即解析短链，拿到签名 URL 避免后续 404
         resolved = _resolve_lke_short_link(url)
-        return (name.group(1) if name else "adp_report.html"), resolved
-    # 3. file_urls（content.added / reference.added 事件），同样签名优先
-    signed_fu, unsigned_fu = None, None
-    for f in (file_urls or []):
-        name = f.get("name", "")
-        url = f.get("url", "")
-        if name.endswith(".html") and "meta" not in name.lower() and url:
-            # file_urls 中的 lke 短链也立即解析
-            if "lke.cloud.tencent.com" in url:
-                url = _resolve_lke_short_link(url)
-            if "q-sign" in url and not signed_fu:
-                signed_fu = (name, url)
-            elif not unsigned_fu:
-                unsigned_fu = (name, url)
-    if signed_fu:
-        return signed_fu
+        if resolved and resolved != url:
+            return (name.group(1) if name else "adp_report.html"), resolved
+        logger.warning("ADP lke 短链未能解析，继续使用 file_urls/无签名报告 fallback: %s", url)
+
+    # 4. 无签名 HTML（file_urls 优先于文本裸链接）
     if unsigned_fu:
         return unsigned_fu
-    # 1b 降级：文本中无签名的 agent.adp-cos.com URL（可能 403）
     if unsigned_url:
         return unsigned_name, unsigned_url
-    # 4. 沙箱报告路径（sandbox.adp，401 不可下载，仅作为链接展示）
-    # 4a. 已有完整 sandbox URL
-    m = re.search(r'(https?://sandbox\.adp\.cloud\.tencent\.com/files\?path=[^\s)"\']*report_[^\s)"\']*\.html)', text)
-    if m:
-        url = m.group(1)
+
+    # 5. sandbox 报告路径（401 不可下载，仅作链接展示）
+    mm = re.search(r'(https?://sandbox\.adp\.cloud\.tencent\.com/files\?path=[^\s)"\']*report_[^\s)"\']*\.html)', text)
+    if mm:
+        url = mm.group(1)
         name = re.search(r'(report_[^\s)"\'/?]*\.html)', url)
         return (name.group(1) if name else "report.html"), url
-    # 4b. 文本中的沙箱报告路径（兼容“目录 + out/相对文件名”分行输出）
     path = _generated_report_path(text)
     if path:
         name = path.rsplit("/", 1)[-1]
