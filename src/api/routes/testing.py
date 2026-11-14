@@ -6976,53 +6976,65 @@ async def test_adp_lookup(request: Request):
         if _write_buffer:
             await _flush_write_buffer()
 
-        # 空返回项：全部跑完后统一重试一次
+        # 空返回项：全部跑完后统一重试一次（最多 6 个并行）
         _empty_retry = [r for r in batch_results
                         if ((r.get("results") or {}).get("分析失败归因") == "ADP 无返回"
                             or "ADP 无返回" in (r.get("error") or ""))]
         if _empty_retry:
-            logger.info("ADP lookup 空返回重试: %d 条", len(_empty_retry))
-            for _old in list(_empty_retry):
-                bugid = _old.get("jira_key", "")
-                _retry_start_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': bugid, 'retry': 'empty'}, ensure_ascii=False)}\n\n"
-                try:
-                    rr = await loop.run_in_executor(None, _run_one_adp, bugid)
-                except Exception as e:
-                    rr = {"result": {"ok": False, "error": str(e)[:100]}, "has_html": False, "info": {}}
-                info = rr.get("info") or {"bugid": bugid, "rec": bt_map.get(bugid), "bt_desc": "", "bt_time": ""}
-                result = rr.get("result", {})
-                rd = result.get("results") or {}
-                has_html = rr.get("has_html", False)
-                if not has_html and rd.get("完成状态") != "无法分析":
-                    rd["完成状态"] = "分析失败"
-                    if not rd.get("分析失败归因"):
-                        rd["分析失败归因"] = classify_adp_failure(
-                            error=result.get("error", ""), full_text=result.get("full_text", ""),
-                            attachment_count=result.get("attachment_count", 0))
-                item = {
-                    "jira_key": bugid, "ok": bool(result.get("ok")) and has_html,
-                    "has_html": has_html, "skipped": rd.get("完成状态") == "无法分析",
-                    "results": rd, "error": result.get("error", ""),
-                    "bt_found": info.get("rec") is not None,
-                    "desc_source": "bitable" if info.get("bt_desc") else ("api" if info.get("desc") else "none"),
-                    "time_source": "bitable" if info.get("bt_time") else ("api" if info.get("tt") else "none"),
-                    "fail_type": _adp_fail_type(result),
-                    "report_doc_url": result.get("report_doc_url", ""),
-                    "start_time": _retry_start_str,
-                    "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    **_adp_text_payload(result), "file_urls": result.get("file_urls", []),
-                }
-                # 重试结果直接并入原行对象：保留原行，只补结果字段，不新增/替换
-                _old.update(item)
-                # 重试成功时清空“分析失败归因”，避免残留首次失败的原因
-                if item.get("ok") and item.get("has_html"):
-                    _rd = item.get("results") or {}
-                    _rd["分析失败归因"] = ""
-                    item["results"] = _rd
-                # 重试结果立即写回飞书（覆盖首次的失败记录）
-                await _flush_write_buffer([item])
-                yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
+            import concurrent.futures as _cf
+            _retry_workers = 6
+            logger.info("ADP lookup 空返回并行重试: %d 条（并发 %d）", len(_empty_retry), _retry_workers)
+            _retry_pool = _cf.ThreadPoolExecutor(max_workers=_retry_workers)
+            try:
+                for _start in range(0, len(_empty_retry), _retry_workers):
+                    _chunk = _empty_retry[_start:_start + _retry_workers]
+                    _pending = []
+                    for _old in _chunk:
+                        bugid = _old.get("jira_key", "")
+                        _retry_start_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        yield f"data: {_json.dumps({'type': 'item_start', 'jira_key': bugid, 'retry': 'empty'}, ensure_ascii=False)}\n\n"
+                        _fut = loop.run_in_executor(_retry_pool, _run_one_adp, bugid)
+                        _pending.append((_old, bugid, _retry_start_str, _fut))
+                    for _old, bugid, _retry_start_str, _fut in _pending:
+                        try:
+                            rr = await _fut
+                        except Exception as e:
+                            rr = {"result": {"ok": False, "error": str(e)[:100]}, "has_html": False, "info": {}}
+                        info = rr.get("info") or {"bugid": bugid, "rec": bt_map.get(bugid), "bt_desc": "", "bt_time": ""}
+                        result = rr.get("result", {})
+                        rd = result.get("results") or {}
+                        has_html = rr.get("has_html", False)
+                        if not has_html and rd.get("完成状态") != "无法分析":
+                            rd["完成状态"] = "分析失败"
+                            if not rd.get("分析失败归因"):
+                                rd["分析失败归因"] = classify_adp_failure(
+                                    error=result.get("error", ""), full_text=result.get("full_text", ""),
+                                    attachment_count=result.get("attachment_count", 0))
+                        item = {
+                            "jira_key": bugid, "ok": bool(result.get("ok")) and has_html,
+                            "has_html": has_html, "skipped": rd.get("完成状态") == "无法分析",
+                            "results": rd, "error": result.get("error", ""),
+                            "bt_found": info.get("rec") is not None,
+                            "desc_source": "bitable" if info.get("bt_desc") else ("api" if info.get("desc") else "none"),
+                            "time_source": "bitable" if info.get("bt_time") else ("api" if info.get("tt") else "none"),
+                            "fail_type": _adp_fail_type(result),
+                            "report_doc_url": result.get("report_doc_url", ""),
+                            "start_time": _retry_start_str,
+                            "end_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            **_adp_text_payload(result), "file_urls": result.get("file_urls", []),
+                        }
+                        # 重试结果直接并入原行对象：保留原行，只补结果字段，不新增/替换
+                        _old.update(item)
+                        # 重试成功时清空“分析失败归因”，避免残留首次失败的原因
+                        if item.get("ok") and item.get("has_html"):
+                            _rd = item.get("results") or {}
+                            _rd["分析失败归因"] = ""
+                            item["results"] = _rd
+                        # 重试结果立即写回飞书（覆盖首次的失败记录）
+                        await _flush_write_buffer([item])
+                        yield f"data: {_json.dumps({'type': 'item_done', **item}, ensure_ascii=False)}\n\n"
+            finally:
+                _retry_pool.shutdown(wait=False)
 
         # 空返回重试后，刷写孤儿任务遗留的缓冲（正常流程已无剩余）
         if _write_buffer:
