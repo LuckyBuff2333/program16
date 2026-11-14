@@ -1650,11 +1650,16 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             elif not _is_specific_module(_module):
                 write_fields["完成状态"] = "降级完成-但没模块信息"
                 write_fields.pop("agent分析的问题模块", None)
-        # 已有成功记录时，后续失败/取消尝试不得覆盖成功记录的任何字段
-        if prev_status == "完成" and str(write_fields.get("完成状态", "")) != "完成":
-            logger.info("ADP %s 已有成功记录，忽略本次失败/取消结果，保留成功耗时与 traceid", jira_key)
+        # 状态优先级：完成 > 降级完成 > 失败。
+        # 注意：降级完成算成功；降级完成-但没模块信息算失败，允许被覆盖。
+        _status_rank = {"完成": 2, "降级完成": 1}
+        _prev_rank = _status_rank.get(prev_status, 0)
+        _cur_rank = _status_rank.get(str(write_fields.get("完成状态", "")), 0)
+        if _prev_rank > _cur_rank:
+            logger.info("ADP %s 已有更高优先级状态(%s)，忽略本次(%s)结果",
+                        jira_key, prev_status, write_fields.get("完成状态", ""))
             return {"ok": True, "record_id": record_id,
-                    "message": "保留已有成功记录，忽略失败/取消结果"}
+                    "message": f"保留已有状态 {prev_status}，忽略本次低优先级结果"}
         # 只记录本次分析耗时，不叠加历史值
         _cur_dur = write_fields.get("耗时(分)")
         if _cur_dur not in (None, ""):
@@ -1684,7 +1689,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         feishu_client.update_bitable_records(app_token, table_id,
                                               [{"record_id": record_id, "fields": write_fields}])
         # 单条流程：成功时把本条耗时累计到数据表总耗时（不回写批次表）
-        if fields_dict.get("完成状态") == "完成":
+        if fields_dict.get("完成状态") in ("完成", "降级完成"):
             _minutes = _parse_total_minutes(fields_dict.get("耗时(分)"))
             _master_id = _get_adp_cfg().get("bitable_master_table_id", "")
             apply_adp_batch_total(app_token, "", _master_id, _minutes, True)
