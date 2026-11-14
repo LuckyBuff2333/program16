@@ -5052,7 +5052,7 @@ def _strip_navigation_times(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _ocr_frame_regions(frame, status_only: bool = False) -> str:
+def _ocr_frame_regions(frame, status_only: bool = False, allow_glm: bool = True) -> str:
     """对状态栏/任务栏等小区域做高倍 OCR（RapidOCR + 2.5x 放大 + 自适应二值化）
 
     录屏时间通常出现在：手机顶部状态栏、车载 HMI 中央顶部、Windows 右下角任务栏、
@@ -5098,31 +5098,33 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
             if x2 - x1 < 40 or y2 - y1 < 12:
                 continue
             raw_crop = frame[y1:y2, x1:x2]
-            txt = ""
-            # GLM-OCR 优先：原始 ROI 直接识别，过时间字典才采用
-            try:
-                if _check_glm_priority():
+            # ── 先用 RapidOCR：正常时钟 0.2s 内完成；GLM 只在必要时兜底 ──
+            crop_h, crop_w = raw_crop.shape[:2]
+            enlarged = cv2.resize(raw_crop, (int(crop_w * _roi_scale), int(crop_h * _roi_scale)),
+                                  interpolation=cv2.INTER_CUBIC)
+            gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
+            # CLAHE + 去噪 + unsharp：比硬二值化更适合车机小字号时钟
+            gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+            gray = cv2.GaussianBlur(gray, (3, 3), 0)
+            sharp = cv2.addWeighted(
+                gray, 1.6, cv2.GaussianBlur(gray, (0, 0), 3), -0.6, 0)
+            enhanced = cv2.cvtColor(sharp, cv2.COLOR_GRAY2BGR)
+            roi_results = _ocr_readtext(None, enhanced, _already_enhanced=True)
+            txt = " ".join(r[1] for r in roi_results if len(r) > 1)
+            # 先修复 1433→14:33 这类漏冒号，避免为此调用 GLM
+            txt = _fix_ocr_missing_colon(txt)
+            # 仅当 RapidOCR 连数字都没读到时才尝试 GLM，且只对高置信时钟区域
+            if (allow_glm and not _valid_time_tokens(txt) and not _re_roi.search(r"\d{2}", txt)
+                    and _check_glm_priority()
+                    and name in ("right_clock", "right_upper", "top_bar")):
+                try:
                     from src.services.glm_ocr import ocr_text as _glm_ocr
                     _glm_txt = _glm_ocr(raw_crop, max_new_tokens=64)
                     if _glm_txt and _is_ocr_time_related_text(_glm_txt):
                         txt = _glm_txt
-            except Exception:
-                txt = ""
-            if not txt:
-                # ── ROI 放大 2.5x + 自适应二值化，提升小字号识别率 ──
-                crop_h, crop_w = raw_crop.shape[:2]
-                enlarged = cv2.resize(raw_crop, (int(crop_w * _roi_scale), int(crop_h * _roi_scale)),
-                                      interpolation=cv2.INTER_CUBIC)
-                gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
-                # CLAHE + 去噪 + unsharp：比硬二值化更适合车机小字号时钟
-                gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-                gray = cv2.GaussianBlur(gray, (3, 3), 0)
-                sharp = cv2.addWeighted(
-                    gray, 1.6, cv2.GaussianBlur(gray, (0, 0), 3), -0.6, 0)
-                enhanced = cv2.cvtColor(sharp, cv2.COLOR_GRAY2BGR)
-                # RapidOCR 识别（已放大，跳过 _run_ocr 内部放大）
-                roi_results = _ocr_readtext(None, enhanced, _already_enhanced=True)
-                txt = " ".join(r[1] for r in roi_results if len(r) > 1)
+                        logger.info("GLM-OCR 兜底命中 ROI[%s]", name)
+                except Exception:
+                    pass
             # 排除视频播放器进度条/总时长，以及导航到达/预计时间
             txt = _normalize_time_spacing(txt)
             txt = _strip_video_progress_times(txt, lower=(y1 >= int(h * 0.55)))
@@ -6630,7 +6632,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                     all_text = ""
                     # ── RapidOCR ROI：固定区域放大识别（状态栏/任务栏等）──
                     try:
-                        _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
+                        _roi_text = _ocr_frame_regions(frame, status_only=True, allow_glm=False) or ""
                         _roi_text = _strip_progress_bar(_roi_text)
                         _roi_has_time = bool(_roi_text) and bool(
                             _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
