@@ -776,6 +776,57 @@ def stop_batch_ai_extract_times():
     return _ok(None, "停止信号已发送，当前条目完成后停止")
 
 
+@router.post("/api/test/filter_ai_preliminary_jiras", response_model=ApiResponse)
+async def filter_ai_preliminary_jiras(request: Request):
+    """用 Jira REST API 查询自定义字段 customfield_13714（AI 初步分析结果）。
+
+    返回已填写 AI 初步分析结果的 Jira 号，供前端单条执行过滤。
+    """
+    import asyncio
+    import requests as _req
+    body = await request.json() or {}
+    bugids = [str(x).strip() for x in (body.get("bugids") or []) if str(x).strip()]
+    if not bugids:
+        return _ok({"ai_preliminary": [], "count": 0})
+    try:
+        cfg = load_config()["jira_api"]
+        search_url = cfg["url"].rsplit("/issue", 1)[0] + "/search"
+        headers = {"Content-Type": "application/json"}
+        auth = None
+        token = cfg.get("token", "")
+        if token:
+            auth_type = cfg.get("auth_type", "bearer").lower()
+            if auth_type == "bearer":
+                headers["Authorization"] = f"Bearer {token}"
+            elif cfg.get("username"):
+                auth = (cfg["username"], token)
+        field_id = "customfield_13714"
+        found = set()
+        batch_size = 50
+        for start in range(0, len(bugids), batch_size):
+            chunk = bugids[start:start + batch_size]
+            jql = f'key in ({",".join(chunk)})'
+            try:
+                resp = await asyncio.to_thread(
+                    _req.post, search_url,
+                    json={"jql": jql, "maxResults": len(chunk), "startAt": 0,
+                          "fields": [field_id]},
+                    headers=headers, auth=auth, timeout=cfg.get("timeout", 30))
+                resp.raise_for_status()
+                for iss in (resp.json().get("issues") or []):
+                    key = str(iss.get("key") or "").strip()
+                    val = (iss.get("fields") or {}).get(field_id)
+                    if key and val is not None and str(val).strip().lower() not in ("", "none", "null"):
+                        found.add(key)
+            except Exception as e:
+                logger.warning("AI初步分析字段查询失败 chunk %d-%d: %s", start, start + len(chunk), e)
+        logger.info("过滤AI初步分析结果: 命中 %d/%d", len(found), len(bugids))
+        return _ok({"ai_preliminary": sorted(found), "count": len(found)})
+    except Exception as e:
+        logger.warning("过滤AI初步分析结果失败: %s", e)
+        return _ok({"ai_preliminary": [], "count": 0, "error": str(e)[:120]})
+
+
 @router.post("/api/test/filter_success_jiras", response_model=ApiResponse)
 async def filter_success_jiras(request: Request):
     """查询多维表格中已分析成功的 Jira 号（分PC/线上），用于前端过滤"""

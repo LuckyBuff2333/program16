@@ -201,8 +201,8 @@
         <div v-if="aiDirect.parsed.length" class="exec-section">
           <div class="filter-row">
             <el-checkbox v-model="aiDirect.filterPcSuccess" size="small">过滤 PC 已成功</el-checkbox>
-            <el-checkbox v-model="aiDirect.filterOnlineSuccess" size="small">过滤线上已成功</el-checkbox>
-            <el-button v-if="aiDirect.filterPcSuccess || aiDirect.filterOnlineSuccess" type="warning" size="small" :loading="aiDirect.filterLoading" @click="applyAiDirectFilter">应用过滤</el-button>
+            <el-checkbox v-model="aiDirect.filterAiPreliminary" size="small">过滤AI初步分析结果</el-checkbox>
+            <el-button v-if="aiDirect.filterPcSuccess || aiDirect.filterAiPreliminary" type="warning" size="small" :loading="aiDirect.filterLoading" @click="applyAiDirectFilter">应用过滤</el-button>
             <el-tag v-if="aiDirect.filterInfo" type="success" size="small">{{ aiDirect.filterInfo }}</el-tag>
           </div>
         </div>
@@ -390,7 +390,7 @@ export default {
         runResults: [], runTotal: 0, runDone: 0, runDoneMsg: '',
         execMode: '',
         analysisConcurrency: 10, downloadConcurrency: 4, model: 'deepseek-v-pro', triggerSource: 'PC', softwareVersion: '',
-        filterPcSuccess: false, filterOnlineSuccess: false,
+        filterPcSuccess: false, filterAiPreliminary: false,
         filterLoading: false, filterInfo: '',
         filterProblemTime: false, problemTimeLoading: false, problemTimes: {}, problemTimeHit: 0,
       },
@@ -846,15 +846,24 @@ export default {
       if (!this.aiDirect.parsed.length) return;
       this.aiDirect.filterLoading = true; this.aiDirect.filterInfo = '';
       try {
-        const body = await api('/api/test/filter_success_jiras', { method: 'POST', body: JSON.stringify({ bugids: this.aiDirect.parsed }) });
-        const data = body.data || {};
-        const pcSet = new Set(data.pc_success || []); const onlineSet = new Set(data.online_success || []);
-        const before = this.aiDirect.parsed.length; const exclude = new Set();
-        if (this.aiDirect.filterPcSuccess) pcSet.forEach(k => exclude.add(k));
-        if (this.aiDirect.filterOnlineSuccess) onlineSet.forEach(k => exclude.add(k));
+        const before = this.aiDirect.parsed.length;
+        const exclude = new Set();
+        let pcRemoved = 0, aiRemoved = 0;
+        if (this.aiDirect.filterPcSuccess) {
+          const body = await api('/api/test/filter_success_jiras', { method: 'POST', body: JSON.stringify({ bugids: this.aiDirect.parsed }) });
+          const pcSet = new Set((body.data || {}).pc_success || []);
+          pcSet.forEach(k => exclude.add(k));
+          pcRemoved = pcSet.size;
+        }
+        if (this.aiDirect.filterAiPreliminary) {
+          const body = await api('/api/test/filter_ai_preliminary_jiras', { method: 'POST', body: JSON.stringify({ bugids: this.aiDirect.parsed }) });
+          const aiSet = new Set((body.data || {}).ai_preliminary || []);
+          aiSet.forEach(k => exclude.add(k));
+          aiRemoved = aiSet.size;
+        }
         this.aiDirect.parsed = this.aiDirect.parsed.filter(k => !exclude.has(k));
         for (const k of exclude) delete this.aiDirect.triggerTimes[k];
-        this.aiDirect.filterInfo = `过滤前 ${before} 条，排除 ${exclude.size} 条已成功，剩余 ${this.aiDirect.parsed.length} 条`;
+        this.aiDirect.filterInfo = `过滤前 ${before} 条，PC 排除 ${pcRemoved} 条，AI初步分析排除 ${aiRemoved} 条，剩余 ${this.aiDirect.parsed.length} 条`;
       } catch (e) { ElMessage.error('过滤失败: ' + (e.message || '')); } finally { this.aiDirect.filterLoading = false; }
     },
     async queryVcsProblemTime() {
