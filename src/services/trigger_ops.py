@@ -788,9 +788,9 @@ def _build_trigger_write_fields(trigger_time, source: str = "", ref_time: str = 
     避免不可用时间被下游 AI 日志分析消费（月度失败 72.4% 为时间过滤后日志为空）。
     """
     meta = _trigger_time_meta(trigger_time, source, ref_time, precision=precision)
+    # 自检结果只作为状态/备注保留，不再丢弃时间；否则时间修改页看不到记录。
     fields = {_TT_FIELD: trigger_time, **meta}
     if meta.get("时间状态") == "不可用":
-        fields[_TT_FIELD] = ""
         fields["备注"] = _UNAVAILABLE_SELF_CHECK_NOTE
     return fields
 
@@ -1021,12 +1021,11 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
                                            _lookup_ref(bugid, ref_times),
                                            precision=precisions.get(bugid) or _resolve_time_precision(bugid, trigger_time))
                 upd_fields = {k: v for k, v in _meta.items() if k != _TT_FIELD}
+                upd_fields[_TT_FIELD] = trigger_time
                 if _meta.get("时间状态") == "不可用":
                     upd_fields["备注"] = _UNAVAILABLE_SELF_CHECK_NOTE
-                    logger.warning("自检不可用，不写入触发时间，bugid=%s 改打待办标记: %s",
+                    logger.warning("自检不可用，仍写入触发时间并标记待确认: %s -> %s",
                                    bugid, trigger_time)
-                else:
-                    upd_fields[_TT_FIELD] = trigger_time
                 updates_by_table.setdefault(tid, []).append({
                     "record_id": rec_id,
                     "fields": upd_fields
@@ -1054,10 +1053,9 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
                                                _lookup_ref(bugid, ref_times),
                                                precision=precisions.get(bugid) or _resolve_time_precision(bugid, trigger_time))
                     upd_fields = {k: v for k, v in _meta.items() if k != _TT_FIELD}
+                    upd_fields[_TT_FIELD] = trigger_time
                     if _meta.get("时间状态") == "不可用":
                         upd_fields["备注"] = _UNAVAILABLE_SELF_CHECK_NOTE
-                    else:
-                        upd_fields[_TT_FIELD] = trigger_time
                     updates_by_table.setdefault(tid, []).append({
                         "record_id": rec_id,
                         "fields": upd_fields

@@ -80,11 +80,41 @@ def test_batch_save_includes_meta(monkeypatch):
     ok = t._batch_save_trigger_times_to_cloud({"VCU-9002": "2026-10-23 16:08:00"}, {"VCU-9002": "视频提取"})
     assert ok is True
     fields = captured["update"][2][0]["fields"]
-    assert fields["触发时间"] == "2026-10-23 16:08:00"
+    assert fields[t._TT_FIELD] == "2026-10-23 16:08:00"
     assert fields["时间来源"] == "视频提取"
     assert fields["时间差秒"] == "20"
     assert fields["窗口命中"] == "是"
     assert fields["时间状态"] == "正常"
+
+
+@allure.feature("触发时间自检")
+@allure.story("不可用也写入")
+def test_batch_save_unavailable_still_writes_time(monkeypatch):
+    from src.clients import feishu_client
+
+    captured = {}
+
+    def fake_update(app_token, table_id, recs):
+        captured["update"] = (app_token, table_id, recs)
+
+    monkeypatch.setattr(feishu_client, "update_bitable_records", fake_update)
+    monkeypatch.setattr(t, "_ensure_fields_once", lambda: None)
+    monkeypatch.setattr(t, "_get_trigger_time_table_cfg", lambda: ("app", ["tbl"]))
+    monkeypatch.setattr(t, "_bitable_bulk_cache", {})
+
+    t._trigger_time_bugid_cache.clear()
+    t._trigger_time_bugid_cache["VCU-9003"] = ("tbl", "rec-2", "旧时间")
+    t._TRIGGER_TIME_REF_CACHE.clear()
+    t.remember_ref_time("VCU-9003", "2026-10-23 16:08:20")
+
+    # 早于抓包 2 小时 → 不可用，但时间仍要写入，只加待确认标记
+    ok = t._batch_save_trigger_times_to_cloud(
+        {"VCU-9003": "2026-10-23 14:08:00"}, {"VCU-9003": "评论"})
+    assert ok is True
+    fields = captured["update"][2][0]["fields"]
+    assert fields[t._TT_FIELD] == "2026-10-23 14:08:00"
+    assert fields["时间状态"] == "不可用"
+    assert fields["备注"] == "时间待确认-自检不可用"
 
 
 @allure.feature("触发时间自检")
