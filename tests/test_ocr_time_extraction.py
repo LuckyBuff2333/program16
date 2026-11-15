@@ -1001,3 +1001,12 @@ def test_pipeline_preserves_valid_input():
     assert result["full_raw"] == raw
     assert result["full_normalized"] == raw
     assert result["only_raw"] == "17:15:00"
+
+def test_parse_ocr_hhmm_dot_separator():
+    from src.services.server_legacy import _parse_ocr_hhmm
+
+    assert _parse_ocr_hhmm("1.00") == (1, 0, 0)
+    assert _parse_ocr_hhmm("1:00") == (1, 0, 0)
+    assert _parse_ocr_hhmm("01.23.45") == (1, 23, 45)
+    assert _parse_ocr_hhmm("25:00") is None
+    assert _parse_ocr_hhmm("abc") is None

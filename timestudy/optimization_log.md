@@ -1221,3 +1221,13 @@
 - **验证**：`test_time_check.py` 7 passed（含写入跳过自检用例）。
 
 </details>
+
+<details>
+<summary><b>217. 修复图片 OCR 的 1.00 时间解析异常（2026-11-15）</b></summary>
+
+- **现象**：VCU-562879 图片 OCR 标记命中 `1:00`/`1.00` 后批量行报 `invalid literal for int() with base 10: '1.'`。
+- **原因**：`_diag_extract_time_from_images` 用 `ts[:2]`/`ts[3:5]` 直接切片，遇到点分隔 `1.00` 时把 `1.` 传给 `int()`；该分支在图片级 try 之外，异常冒到批量行。
+- **修复**：新增 `_parse_ocr_hhmm()` 统一解析 `1.00`/`1:00`/`1,00`，校验时分秒范围；两条补日期分支都改用它。
+- **验证**：新增解析测试；364 OCR tests passed。
+
+</details>

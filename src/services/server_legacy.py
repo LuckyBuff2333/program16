@@ -7508,8 +7508,10 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
             gm_times = _diag_gmlogger_times(attachments)
             if gm_times:
                 ref_date = gm_times[0][1]
-                dt = ref_date.replace(hour=int(ts[:2]), minute=int(ts[3:5]),
-                                      second=int(ts[6:8]) if len(ts) >= 8 else 0)
+                _hms = _parse_ocr_hhmm(ts)
+                if not _hms:
+                    return "", ""
+                dt = ref_date.replace(hour=_hms[0], minute=_hms[1], second=_hms[2])
                 ts = dt.strftime("%Y-%m-%d %H:%M:%S")
         if dt:
             return ts, f"图片 OCR 标记时间（{dt.strftime('%Y-%m-%d %H:%M:%S')}）"
@@ -7533,13 +7535,26 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
             ref_date = gm_times[0][1]
             ts = partial_times[0][0]
             try:
-                hh, mm = int(ts[:2]), int(ts[3:5])
-                ss = int(ts[6:8]) if len(ts) >= 8 else 0
+                _hms = _parse_ocr_hhmm(ts)
+                if not _hms:
+                    raise ValueError(f"无法解析 OCR 时间: {ts!r}")
+                hh, mm, ss = _hms
                 dt = ref_date.replace(hour=hh, minute=mm, second=ss)
                 return dt.strftime("%Y-%m-%d %H:%M:%S"), f"图片 OCR 时间（无日期，补 gmlogger 日期 {dt.strftime('%Y-%m-%d %H:%M:%S')}）"
             except Exception:
                 pass
     return "", ""
+
+
+def _parse_ocr_hhmm(ts: str):
+    """把 OCR 的 1.00 / 1:00 / 1,00 统一解析为 (hh, mm, ss)。"""
+    m = re.match(r"^\s*(\d{1,2})[.:,;](\d{2})(?:[.:,;](\d{2}))?\s*$", str(ts or ""))
+    if not m:
+        return None
+    hh, mm, ss = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+    if 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59:
+        return hh, mm, ss
+    return None
 
 
 def _check_time_marked(img_path: str, bbox: list, all_results: list, img_array=None) -> bool:
