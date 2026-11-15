@@ -201,7 +201,7 @@
         <div v-if="aiDirect.parsed.length" class="exec-section">
           <div class="filter-row">
             <el-checkbox v-model="aiDirect.filterPcSuccess" size="small">过滤 PC 已成功</el-checkbox>
-            <el-checkbox v-model="aiDirect.filterAiPreliminary" size="small" @change="onAiDirectFilterChange">过滤AI初步分析结果</el-checkbox>
+            <el-checkbox v-model="aiDirect.filterAiPreliminary" size="small">过滤AI初步分析结果</el-checkbox>
             <el-button v-if="aiDirect.filterPcSuccess || aiDirect.filterAiPreliminary" type="warning" size="small" :loading="aiDirect.filterLoading" @click="applyAiDirectFilter">应用过滤</el-button>
             <el-tag v-if="aiDirect.filterInfo" type="success" size="small">{{ aiDirect.filterInfo }}</el-tag>
           </div>
@@ -842,9 +842,6 @@ export default {
       this.aiDirect.parsed = [...new Set(ids)];
       this.aiDirect.timeRows = []; this.aiDirect.triggerTimes = {}; this.aiDirect.filterInfo = '';
     },
-    onAiDirectFilterChange(val) {
-      if (val) this.applyAiDirectFilter();
-    },
     async applyAiDirectFilter() {
       if (!this.aiDirect.parsed.length) return;
       this.aiDirect.filterLoading = true; this.aiDirect.filterInfo = '';
@@ -951,6 +948,11 @@ export default {
       if (!this.aiDirect.parsed.length) { this.parseAiDirectBugids(); }
       if (!this.aiDirect.parsed.length) return ElMessage.warning('请先输入 Jira 号');
       if (!this.aiDirect.execMode) return ElMessage.warning('请选择执行模式');
+      // 点执行时再应用已勾选的过滤条件（不在勾选瞬间改列表）
+      if (this.aiDirect.filterPcSuccess || this.aiDirect.filterAiPreliminary) {
+        await this.applyAiDirectFilter();
+        if (!this.aiDirect.parsed.length) return ElMessage.warning('过滤后没有剩余 Jira');
+      }
       // 查询问题发生时间：勾选后查询并仅执行有时间的 Jira
       if (this.aiDirect.filterProblemTime) {
         if (!Object.keys(this.aiDirect.problemTimes).length) {
