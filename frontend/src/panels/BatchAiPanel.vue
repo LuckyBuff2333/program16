@@ -201,7 +201,7 @@
         <div v-if="aiDirect.parsed.length" class="exec-section">
           <div class="filter-row">
             <el-checkbox v-model="aiDirect.filterPcSuccess" size="small">过滤 PC 已成功</el-checkbox>
-            <el-checkbox v-model="aiDirect.filterAiPreliminary" size="small">过滤AI初步分析结果</el-checkbox>
+            <el-checkbox v-model="aiDirect.filterAiPreliminary" size="small" @change="onAiDirectFilterChange">过滤AI初步分析结果</el-checkbox>
             <el-button v-if="aiDirect.filterPcSuccess || aiDirect.filterAiPreliminary" type="warning" size="small" :loading="aiDirect.filterLoading" @click="applyAiDirectFilter">应用过滤</el-button>
             <el-tag v-if="aiDirect.filterInfo" type="success" size="small">{{ aiDirect.filterInfo }}</el-tag>
           </div>
@@ -841,6 +841,9 @@ export default {
       const ids = this.aiDirect.bugidsRaw.split(/[\s,，;；]+/).map(s => s.trim()).filter(Boolean);
       this.aiDirect.parsed = [...new Set(ids)];
       this.aiDirect.timeRows = []; this.aiDirect.triggerTimes = {}; this.aiDirect.filterInfo = '';
+    },
+    onAiDirectFilterChange(val) {
+      if (val) this.applyAiDirectFilter();
     },
     async applyAiDirectFilter() {
       if (!this.aiDirect.parsed.length) return;
