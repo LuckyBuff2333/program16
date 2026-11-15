@@ -82,14 +82,13 @@ def test_batch_save_includes_meta(monkeypatch):
     fields = captured["update"][2][0]["fields"]
     assert fields[t._TT_FIELD] == "2026-10-23 16:08:00"
     assert fields["时间来源"] == "视频提取"
-    assert fields["时间差秒"] == "20"
-    assert fields["窗口命中"] == "是"
-    assert fields["时间状态"] == "正常"
+    assert fields["时间状态"] == "未自检"
+    assert fields["窗口命中"] == "未自检"
 
 
 @allure.feature("触发时间自检")
 @allure.story("不可用也写入")
-def test_batch_save_unavailable_still_writes_time(monkeypatch):
+def test_batch_save_skips_self_check(monkeypatch):
     from src.clients import feishu_client
 
     captured = {}
@@ -107,14 +106,14 @@ def test_batch_save_unavailable_still_writes_time(monkeypatch):
     t._TRIGGER_TIME_REF_CACHE.clear()
     t.remember_ref_time("VCU-9003", "2026-10-23 16:08:20")
 
-    # 早于抓包 2 小时 → 不可用，但时间仍要写入，只加待确认标记
+    # 写入不做自检：即使远离参考时间也照常写入，只标记未自检
     ok = t._batch_save_trigger_times_to_cloud(
         {"VCU-9003": "2026-10-23 14:08:00"}, {"VCU-9003": "评论"})
     assert ok is True
     fields = captured["update"][2][0]["fields"]
     assert fields[t._TT_FIELD] == "2026-10-23 14:08:00"
-    assert fields["时间状态"] == "不可用"
-    assert fields["备注"] == "时间待确认-自检不可用"
+    assert fields["时间状态"] == "未自检"
+    assert "备注" not in fields
 
 
 @allure.feature("触发时间自检")

@@ -766,10 +766,23 @@ def self_check_trigger_time(trigger_time, ref_time="", warn_sec: int = None,
 
 
 def _trigger_time_meta(trigger_time, source: str = "", ref_time: str = "",
-                       precision: str = "") -> dict:
-    """构造扩展列字段值（写表用）；precision 为空时按秒位自动推断（H1）"""
+                       precision: str = "", self_check: bool = True) -> dict:
+    """构造扩展列字段值（写表用）；precision 为空时按秒位自动推断（H1）。
+
+    self_check=False 用于批量写入：写入不拦截、不判定，只标记“未自检”；
+    问题排查链路仍可显式调用 self_check_trigger_time() 做自检。
+    """
     if not precision:
         precision = _infer_time_precision(trigger_time)
+    if not self_check:
+        return {
+            "时间来源": (source or "")[:200],
+            "参考时间": "",
+            "时间差秒": "",
+            "窗口命中": "未自检",
+            "时间状态": "未自检",
+            "时间精度": precision,
+        }
     check = self_check_trigger_time(trigger_time, ref_time, precision=precision)
     return {
         "时间来源": (source or "")[:200],
@@ -787,12 +800,9 @@ def _build_trigger_write_fields(trigger_time, source: str = "", ref_time: str = 
     自检「不可用」的时间不写入触发时间字段，改为在备注列打待办标记，
     避免不可用时间被下游 AI 日志分析消费（月度失败 72.4% 为时间过滤后日志为空）。
     """
-    meta = _trigger_time_meta(trigger_time, source, ref_time, precision=precision)
-    # 自检结果只作为状态/备注保留，不再丢弃时间；否则时间修改页看不到记录。
-    fields = {_TT_FIELD: trigger_time, **meta}
-    if meta.get("时间状态") == "不可用":
-        fields["备注"] = _UNAVAILABLE_SELF_CHECK_NOTE
-    return fields
+    # 写入路径不做自检，只标记未自检；问题排查在分析前单独自检。
+    meta = _trigger_time_meta(trigger_time, source, ref_time, precision=precision, self_check=False)
+    return {_TT_FIELD: trigger_time, **meta}
 
 
 def ensure_trigger_time_fields(app_token: str = "", table_ids: list = None) -> dict:
@@ -1019,13 +1029,10 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
                 # H1/M11：按精度自检；不可用时不覆盖触发时间字段，仅写自检列+备注待办标记
                 _meta = _trigger_time_meta(trigger_time, sources.get(bugid, ""),
                                            _lookup_ref(bugid, ref_times),
-                                           precision=precisions.get(bugid) or _resolve_time_precision(bugid, trigger_time))
+                                           precision=precisions.get(bugid) or _resolve_time_precision(bugid, trigger_time),
+                                           self_check=False)
                 upd_fields = {k: v for k, v in _meta.items() if k != _TT_FIELD}
                 upd_fields[_TT_FIELD] = trigger_time
-                if _meta.get("时间状态") == "不可用":
-                    upd_fields["备注"] = _UNAVAILABLE_SELF_CHECK_NOTE
-                    logger.warning("自检不可用，仍写入触发时间并标记待确认: %s -> %s",
-                                   bugid, trigger_time)
                 updates_by_table.setdefault(tid, []).append({
                     "record_id": rec_id,
                     "fields": upd_fields
@@ -1051,11 +1058,10 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
                     # H1/M11：同缓存命中分支，不可用时不覆盖触发时间字段
                     _meta = _trigger_time_meta(trigger_time, sources.get(bugid, ""),
                                                _lookup_ref(bugid, ref_times),
-                                               precision=precisions.get(bugid) or _resolve_time_precision(bugid, trigger_time))
+                                               precision=precisions.get(bugid) or _resolve_time_precision(bugid, trigger_time),
+                                               self_check=False)
                     upd_fields = {k: v for k, v in _meta.items() if k != _TT_FIELD}
                     upd_fields[_TT_FIELD] = trigger_time
-                    if _meta.get("时间状态") == "不可用":
-                        upd_fields["备注"] = _UNAVAILABLE_SELF_CHECK_NOTE
                     updates_by_table.setdefault(tid, []).append({
                         "record_id": rec_id,
                         "fields": upd_fields

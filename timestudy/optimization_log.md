@@ -1211,3 +1211,13 @@
 - **验证**：新增不可用仍写入测试；7 条时间自检测试通过。
 
 </details>
+
+<details>
+<summary><b>216. 写云端不做自检，仅问题排查自检（2026-11-15）</b></summary>
+
+- **写入路径**：`_batch_save_trigger_times_to_cloud` / `_save_trigger_time_to_cloud` / `_build_trigger_write_fields` 不再调用自检；`时间状态` 固定写 `未自检`，但始终写入 `问题发生时间`。
+- **问题排查**：`server_legacy` 分析前的 `self_check_trigger_time()` 保留，继续按 gmlogger 抓包时间判断正常/待确认/不可用。
+- **效果**：批量提取命中即写云端，不再出现“记录存在但时间为空，时间修改查不到”。
+- **验证**：`test_time_check.py` 7 passed（含写入跳过自检用例）。
+
+</details>
