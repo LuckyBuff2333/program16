@@ -5486,11 +5486,18 @@ def _parse_video_filename_time(filename: str) -> str:
     m = re.search(r'(?<!\d)([01]\d|2[0-3])([0-5]\d)([0-5]\d)(?!\d)', name)
     if m:
         return f"{m.group(1)}:{m.group(2)}:{m.group(3)}"
-    # 3. 紧凑时间 HHMM
+    # 3. 4 位 MMDD 日期后缀：VCU-553562-1008.mp4 中的 -1008 是 10 月 08 日，
+    # 不能当成 10:08。若前两位 01~12、后两位 01~31 且在文件名末尾，优先按日期处理。
+    m_date = re.search(r'[-_]([01]\d)([0-3]\d)$', name)
+    if m_date:
+        _mm, _dd = int(m_date.group(1)), int(m_date.group(2))
+        if 1 <= _mm <= 12 and 1 <= _dd <= 31:
+            return ""
+    # 4. 紧凑时间 HHMM
     m = re.search(r'(?<!\d)([01]\d|2[0-3])([0-5]\d)(?!\d)', name)
     if m:
         return f"{m.group(1)}:{m.group(2)}:00"
-    # 4. 带分隔符时间 HH-MM-SS 或 HH_MM_SS
+    # 5. 带分隔符时间 HH-MM-SS 或 HH_MM_SS
     m = re.search(r'(?<!\d)([01]\d|2[0-3])[-_]([0-5]\d)(?:[-_]([0-5]\d))?(?!\d)', name)
     if m:
         ss = m.group(3) or "00"
