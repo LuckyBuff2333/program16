@@ -7207,26 +7207,24 @@ async def data_cleanup_preview(request: Request):
                 {"field_name": "分析开始时间", "operator": "contains", "value": [ds]}
             ]})
             day += timedelta(days=1)
-        # 额外查一次无日期的失败记录（max_records=500 避免撞重复 page_token）
-        day_fos.append({"conjunction": "and", "conditions": [
-            {"field_name": "分析结果", "operator": "is", "value": ["失败"]},
-            {"field_name": "分析开始时间", "operator": "doesNotContain", "value": ["2026-"]}
-        ]})
+        # 额外查无日期的失败记录（按触发来源分 3 类，每类 < 1000 不撞 page_token 上限）
+        for src in ["jira_analyze", "parseFullTicket", "feishu_bot"]:
+            day_fos.append({"conjunction": "and", "conditions": [
+                {"field_name": "分析结果", "operator": "is", "value": ["失败"]},
+                {"field_name": "分析开始时间", "operator": "doesNotContain", "value": ["2026-"]},
+                {"field_name": "触发来源", "operator": "is", "value": [src]}
+            ]})
 
         _sem = __import__("asyncio").Semaphore(10)
-        _empty_fo_idx = len(day_fos) - 1  # 最后一个查询是空时间查询
 
-        async def _q(idx, fo):
+        async def _q(fo):
             async with _sem:
-                # 空时间查询限制 500 条，避免撞重复 page_token
-                mr = 500 if idx == _empty_fo_idx else 0
                 return await _loop.run_in_executor(
-                    None, lambda f=fo, m=mr: feishu_client.search_bitable_records(
-                        app_token, table_id, filter_obj=f, page_size=500,
-                        timeout=15, max_records=m))
+                    None, lambda f=fo: feishu_client.search_bitable_records(
+                        app_token, table_id, filter_obj=f, page_size=500, timeout=15))
 
         results = await __import__("asyncio").gather(
-            *[_q(i, fo) for i, fo in enumerate(day_fos)], return_exceptions=True)
+            *[_q(fo) for fo in day_fos], return_exceptions=True)
         records = []
         for r in results:
             if isinstance(r, Exception):
