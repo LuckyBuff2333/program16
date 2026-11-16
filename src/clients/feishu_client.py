@@ -441,16 +441,23 @@ def _paginate_get(url: str, headers: dict, params: dict,
     except Exception:
         pass
     _timeout_retry = 0  # 超时重试计数
+    # 网络错误重试策略：渐进增大超时和等待间隔，给飞书 API 恢复时间
+    _retry_wait = [3, 8, 15]  # 秒：3s, 8s, 15s
+    _retry_timeout_scale = [1.0, 1.5, 2.0]  # 超时倍数
     while True:
         if page_token:
             params["page_token"] = page_token
+        # 网络重试时使用递增超时，避免持续短超时反复失败
+        _cur_timeout = int(timeout * _retry_timeout_scale[min(_timeout_retry, len(_retry_timeout_scale) - 1)])
         try:
-            resp = httpx.get(url, headers=headers, params=params, timeout=30, verify=False)
+            resp = httpx.get(url, headers=headers, params=params, timeout=_cur_timeout, verify=False)
         except httpx.TransportError as _te:
             _timeout_retry += 1
             if _timeout_retry <= 3:
-                logger.info("%s: 网络错误(%s)，第 %d 次重试", log_msg, type(_te).__name__, _timeout_retry)
-                time.sleep(_timeout_retry)
+                _wait = _retry_wait[min(_timeout_retry - 1, len(_retry_wait) - 1)]
+                logger.info("%s: 网络错误(%s)，第 %d 次重试（超时 %ds，等待 %ds）",
+                            log_msg, type(_te).__name__, _timeout_retry, _cur_timeout, _wait)
+                time.sleep(_wait)
                 continue
             raise
         _timeout_retry = 0  # 成功后重置
@@ -563,14 +570,25 @@ def _paginate_post(url: str, headers: dict, body: dict,
     page_token = None
     seen_tokens = set()
     page_count = 0
+    _timeout_retry = 0
+    _retry_wait = [3, 8, 15]
+    _retry_timeout_scale = [1.0, 1.5, 2.0]
     while True:
         if page_token:
             body["page_token"] = page_token
+        _cur_timeout = int(timeout * _retry_timeout_scale[min(_timeout_retry, len(_retry_timeout_scale) - 1)])
         try:
-            resp = httpx.post(url, headers=headers, json=body, timeout=timeout, verify=False)
+            resp = httpx.post(url, headers=headers, json=body, timeout=_cur_timeout, verify=False)
         except httpx.TransportError as _te:
-            logger.warning("%s: 网络错误(%s)", log_msg, type(_te).__name__)
+            _timeout_retry += 1
+            if _timeout_retry <= 3:
+                _wait = _retry_wait[min(_timeout_retry - 1, len(_retry_wait) - 1)]
+                logger.info("%s: 网络错误(%s)，第 %d 次重试（超时 %ds，等待 %ds）",
+                            log_msg, type(_te).__name__, _timeout_retry, _cur_timeout, _wait)
+                time.sleep(_wait)
+                continue
             raise
+        _timeout_retry = 0
         if resp.status_code >= 400:
             err_body = {}
             try:

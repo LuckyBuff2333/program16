@@ -7195,9 +7195,35 @@ async def data_cleanup_preview(request: Request):
     end = _parse(end_s)
     if not start or not end or start > end:
         return _ok({"rows": [], "total": 0}, "时间范围不合法")
+    _loop = __import__("asyncio").get_running_loop()
     try:
-        records = await __import__("asyncio").get_running_loop().run_in_executor(
-            None, lambda: feishu_client.list_bitable_records(app_token, table_id))
+        # 引用上周 bitable_vcs_query 的成功策略：按天拆分 + contains 文本过滤
+        # "分析开始时间" 是文本字段(type=1)，用 contains 匹配日期字符串，每天 ~250 条远低于 500 上限
+        day = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_day = end.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_queries = []
+        while day <= end_day:
+            date_str = day.strftime("%Y-%m-%d")
+            fo = {"conjunction": "and", "conditions": [
+                {"field_name": "分析开始时间", "operator": "contains", "value": [date_str]}
+            ]}
+            day_queries.append(fo)
+            day += timedelta(days=1)
+
+        async def _query_day(filter_obj):
+            return await _loop.run_in_executor(
+                None, lambda fo=filter_obj: feishu_client.search_bitable_records(
+                    app_token, table_id, filter_obj=fo, timeout=15))
+
+        day_results = await __import__("asyncio").gather(
+            *[_query_day(fo) for fo in day_queries], return_exceptions=True)
+        records = []
+        for r in day_results:
+            if isinstance(r, Exception):
+                logger.warning("data_cleanup: 某天查询失败: %s", r)
+                continue
+            records.extend(r)
+        logger.info("data_cleanup: 按天拆分查询完成，%d 天共 %d 条", len(day_queries), len(records))
     except Exception as e:
         return _ok({"rows": [], "total": 0}, f"读取数据沉淀失败: {str(e)[:120]}")
 
