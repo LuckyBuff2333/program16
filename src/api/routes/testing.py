@@ -7197,7 +7197,7 @@ async def data_cleanup_preview(request: Request):
         return _ok({"rows": [], "total": 0}, "时间范围不合法")
     _loop = __import__("asyncio").get_running_loop()
     try:
-        # 按天拆分查询（search API 硬上限 1000 条，按天拆分每次 ~250 条不擮上限）
+        # 按天拆分查询（每天 ~250 条，不撞 500 上限）
         day = start.replace(hour=0, minute=0, second=0, microsecond=0)
         end_day = end.replace(hour=0, minute=0, second=0, microsecond=0)
         day_fos = []
@@ -7207,7 +7207,7 @@ async def data_cleanup_preview(request: Request):
                 {"field_name": "分析开始时间", "operator": "contains", "value": [ds]}
             ]})
             day += timedelta(days=1)
-        # 额外查无日期的失败记录（按触发来源分 3 类，每类 < 1000 不撞 page_token 上限）
+        # 额外查无日期的失败记录（按触发来源拆分，每类 max_records=500）
         for src in ["jira_analyze", "parseFullTicket", "feishu_bot"]:
             day_fos.append({"conjunction": "and", "conditions": [
                 {"field_name": "分析结果", "operator": "is", "value": ["失败"]},
@@ -7221,7 +7221,8 @@ async def data_cleanup_preview(request: Request):
             async with _sem:
                 return await _loop.run_in_executor(
                     None, lambda f=fo: feishu_client.search_bitable_records(
-                        app_token, table_id, filter_obj=f, page_size=500, timeout=15))
+                        app_token, table_id, filter_obj=f, page_size=500,
+                        timeout=15, max_records=500))
 
         results = await __import__("asyncio").gather(
             *[_q(fo) for fo in day_fos], return_exceptions=True)
