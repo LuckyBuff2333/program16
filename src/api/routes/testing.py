@@ -7197,36 +7197,43 @@ async def data_cleanup_preview(request: Request):
         return _ok({"rows": [], "total": 0}, "时间范围不合法")
     _loop = __import__("asyncio").get_running_loop()
     try:
-        # 引用上周 bitable_vcs_query 的成功策略：按天拆分 + contains 文本过滤
-        # "分析开始时间" 是文本字段(type=1)，用 contains 匹配日期字符串，每天 ~250 条远低于 500 上限
+        # 按天拆分查询（search API 硬上限 1000 条，按天拆分每次 ~250 条不擮上限）
         day = start.replace(hour=0, minute=0, second=0, microsecond=0)
         end_day = end.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_queries = []
+        day_fos = []
         while day <= end_day:
-            date_str = day.strftime("%Y-%m-%d")
-            fo = {"conjunction": "and", "conditions": [
-                {"field_name": "分析开始时间", "operator": "contains", "value": [date_str]}
-            ]}
-            day_queries.append(fo)
+            ds = day.strftime("%Y-%m-%d")
+            day_fos.append({"conjunction": "and", "conditions": [
+                {"field_name": "分析开始时间", "operator": "contains", "value": [ds]}
+            ]})
             day += timedelta(days=1)
+        # 额外查一次无日期的失败记录（max_records=500 避免撞重复 page_token）
+        day_fos.append({"conjunction": "and", "conditions": [
+            {"field_name": "分析结果", "operator": "is", "value": ["失败"]},
+            {"field_name": "分析开始时间", "operator": "doesNotContain", "value": ["2026-"]}
+        ]})
 
-        _sem = __import__("asyncio").Semaphore(10)  # 并发上限 10，避免飞书 TooManyRequest
+        _sem = __import__("asyncio").Semaphore(10)
+        _empty_fo_idx = len(day_fos) - 1  # 最后一个查询是空时间查询
 
-        async def _query_day(filter_obj):
+        async def _q(idx, fo):
             async with _sem:
+                # 空时间查询限制 500 条，避免撞重复 page_token
+                mr = 500 if idx == _empty_fo_idx else 0
                 return await _loop.run_in_executor(
-                    None, lambda fo=filter_obj: feishu_client.search_bitable_records(
-                        app_token, table_id, filter_obj=fo, timeout=15))
+                    None, lambda f=fo, m=mr: feishu_client.search_bitable_records(
+                        app_token, table_id, filter_obj=f, page_size=500,
+                        timeout=15, max_records=m))
 
-        day_results = await __import__("asyncio").gather(
-            *[_query_day(fo) for fo in day_queries], return_exceptions=True)
+        results = await __import__("asyncio").gather(
+            *[_q(i, fo) for i, fo in enumerate(day_fos)], return_exceptions=True)
         records = []
-        for r in day_results:
+        for r in results:
             if isinstance(r, Exception):
-                logger.warning("data_cleanup: 某天查询失败: %s", r)
+                logger.warning("data_cleanup: 查询失败: %s", r)
                 continue
             records.extend(r)
-        logger.info("data_cleanup: 按天拆分查询完成，%d 天共 %d 条", len(day_queries), len(records))
+        logger.info("data_cleanup: 查询完成，%d 次查询共 %d 条", len(day_fos), len(records))
     except Exception as e:
         return _ok({"rows": [], "total": 0}, f"读取数据沉淀失败: {str(e)[:120]}")
 

@@ -555,7 +555,7 @@ def _paginate_get(url: str, headers: dict, params: dict,
 
 def _paginate_post(url: str, headers: dict, body: dict,
                    log_msg: str = "", timeout: int = 30,
-                   max_pages: int = 20) -> list:
+                   max_pages: int = 20, max_records: int = 0) -> list:
     """飞书 API POST 分页拉取通用辅助（search 接口用）
 
     :param url: API 地址
@@ -564,6 +564,7 @@ def _paginate_post(url: str, headers: dict, body: dict,
     :param log_msg: 日志描述
     :param timeout: 单页请求超时秒数
     :param max_pages: 最大翻页数（防止飞书 API 翻页 bug 导致死循环）
+    :param max_records: 最大返回条数，0=不限制；到达后停止翻页
     :return: 所有页的 items 列表
     """
     all_items = []
@@ -602,6 +603,10 @@ def _paginate_post(url: str, headers: dict, body: dict,
         items = data.get("data", {}).get("items", [])
         all_items.extend(items)
         page_count += 1
+        # 达到最大记录数，停止翻页
+        if max_records and len(all_items) >= max_records:
+            all_items = all_items[:max_records]
+            break
         if not data.get("data", {}).get("has_more", False):
             break
         page_token = data.get("data", {}).get("page_token")
@@ -619,7 +624,8 @@ def _paginate_post(url: str, headers: dict, body: dict,
 
 def search_bitable_records(app_token: str, table_id: str,
                            filter_obj: dict = None, field_names: list = None,
-                           page_size: int = 500, timeout: int = 30) -> list:
+                           page_size: int = 500, timeout: int = 30,
+                           max_records: int = 0) -> list:
     """多维表格 search API：支持结构化过滤（日期、数字等），比 list + filter 表达式更强大
 
     :param app_token: 多维表格 app_token
@@ -628,6 +634,7 @@ def search_bitable_records(app_token: str, table_id: str,
     :param field_names: 指定返回字段列表（为空则返回全部）
     :param page_size: 每页记录数（最大 500）
     :param timeout: 单页请求超时秒数
+    :param max_records: 最大返回条数，0=不限制；设为 500 可避免撞重复 page_token
     :return: 记录列表，每条为 {"record_id": str, "fields": dict}
     """
     url = f"{_FEISHU_API}/bitable/v1/apps/{app_token}/tables/{table_id}/records/search"
@@ -637,7 +644,8 @@ def search_bitable_records(app_token: str, table_id: str,
     if field_names:
         body["field_names"] = field_names
     records = _paginate_post(url, _bitable_headers(), body,
-                             log_msg="Bitable search", timeout=timeout)
+                             log_msg="Bitable search", timeout=timeout,
+                             max_records=max_records)
     logger.info("Bitable search 完成: app=%s, table=%s, 共 %d 条",
                 app_token, table_id, len(records))
     return records
