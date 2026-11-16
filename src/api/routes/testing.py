@@ -7210,10 +7210,13 @@ async def data_cleanup_preview(request: Request):
             day_queries.append(fo)
             day += timedelta(days=1)
 
+        _sem = __import__("asyncio").Semaphore(10)  # 并发上限 10，避免飞书 TooManyRequest
+
         async def _query_day(filter_obj):
-            return await _loop.run_in_executor(
-                None, lambda fo=filter_obj: feishu_client.search_bitable_records(
-                    app_token, table_id, filter_obj=fo, timeout=15))
+            async with _sem:
+                return await _loop.run_in_executor(
+                    None, lambda fo=filter_obj: feishu_client.search_bitable_records(
+                        app_token, table_id, filter_obj=fo, timeout=15))
 
         day_results = await __import__("asyncio").gather(
             *[_query_day(fo) for fo in day_queries], return_exceptions=True)
