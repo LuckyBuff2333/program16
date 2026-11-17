@@ -250,6 +250,15 @@
             <span>{{ formatMinute(row.problem_time) || '-' }}</span>
           </template>
         </el-table-column>
+        <el-table-column prop="err_msg" label="错误信息" min-width="200" show-overflow-tooltip>
+          <template #default="{row}">
+            <el-popover v-if="row.err_msg" placement="top" :width="400" trigger="hover">
+              <template #reference><span class="text-truncate-cell" style="color:#f56c6c">{{ row.err_msg }}</span></template>
+              <div style="white-space:pre-wrap;word-break:break-all;user-select:text;cursor:text;font-size:12px">{{ row.err_msg }}</div>
+            </el-popover>
+            <span v-else style="color:#c0c4cc">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="人工审核结果" min-width="220" show-overflow-tooltip>
           <template #default="{row}">
             <div v-if="troubleshoot.editingSkipBugid === row.bugid" style="display:flex;align-items:center;gap:4px">
@@ -652,6 +661,8 @@ export default {
           signal,
         });
         const d = body.data || {};
+        // 确保 err_msg 始终有值（API 可能未注入，用原始记录补全）
+        if (!d.err_msg && row['错误信息']) d.err_msg = (row['错误信息'] || '').slice(0, 300);
         this.normalizeDiagReview([d]);
         const idx = this.troubleshoot.diagResults.findIndex(r => r.bugid === bugid);
         if (idx >= 0) { this.troubleshoot.diagResults.splice(idx, 1, d); }
@@ -669,6 +680,7 @@ export default {
           ElMessage.warning(`${bugid} 诊断超时（15分钟），请稍后重试`);
           const idx = this.troubleshoot.diagResults.findIndex(r => r.bugid === bugid);
           const fallback = { bugid, category: '诊断超时', problem_time: row['分析问题时间'] || '',
+            err_msg: (row['错误信息'] || '').slice(0, 300),
             archive_files: [], detail: '诊断接口响应超时（15分钟），请稍后重试',
             verify_status: '', suggested_time: '', report: {}, done_time: row['分析开始时间'] || '' };
           if (idx >= 0) { this.troubleshoot.diagResults.splice(idx, 1, fallback); }
@@ -685,6 +697,7 @@ export default {
         ElMessage.warning(`${bugid} ${msg || '诊断异常'}`);
         const idx = this.troubleshoot.diagResults.findIndex(r => r.bugid === bugid);
         const fallback = { bugid, category: '诊断异常', problem_time: row['分析问题时间'] || '',
+          err_msg: (row['错误信息'] || '').slice(0, 300),
           archive_files: [], detail: `诊断请求异常: ${msg || e?.name || '未知错误'}`,
           verify_status: '', suggested_time: '', report: {}, done_time: row['分析开始时间'] || '' };
         if (idx >= 0) { this.troubleshoot.diagResults.splice(idx, 1, fallback); }

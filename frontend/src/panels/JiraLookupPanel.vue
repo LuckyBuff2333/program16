@@ -25,6 +25,9 @@
             <el-button size="small" type="info" :loading="lastWeekBugLoading" @click="queryLastWeekNewBugs">上周新增 Bug</el-button>
             <el-button size="small" type="primary" @click="fillSummaryQuery">描述查 Jira 号</el-button>
             <el-divider direction="vertical" style="margin:0 4px"></el-divider>
+            <el-date-picker v-model="customDate" type="date" value-format="YYYY-MM-DD" placeholder="选择日期" size="small" style="width:140px" />
+            <el-button size="small" type="success" :loading="customDateBugLoading" @click="queryCustomDateBugs">日期查询</el-button>
+            <el-divider direction="vertical" style="margin:0 4px"></el-divider>
             <el-checkbox v-model="filterAiPreliminary" size="small">过滤AI初步分析结果</el-checkbox>
             <el-checkbox v-model="filterCloudCache" size="small">云端已有缓存</el-checkbox>
           </div>
@@ -189,6 +192,8 @@ export default {
       yesterdayBugLoading: false,
       weekBugLoading: false,
       lastWeekBugLoading: false,
+      customDate: '',
+      customDateBugLoading: false,
       filterAiPreliminary: true,
       filterCloudCache: false,
       rows: [] as any[],
@@ -405,6 +410,36 @@ export default {
       } finally {
         this.loading = false;
         this.lastWeekBugLoading = false;
+        this.enrichWithCloudCache();
+      }
+    },
+    async queryCustomDateBugs() {
+      if (!this.customDate) { ElMessage.warning('请先选择日期'); return; }
+      if (!this.checkLookupCooldown('customDate')) return;
+      // 将 YYYY-MM-DD 转为 Jira JQL 格式 YYYY/MM/DD，并计算次日
+      const parts = this.customDate.split('-');
+      const dateStr = `${parts[0]}/${parts[1]}/${parts[2]}`;
+      const dt = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+      dt.setDate(dt.getDate() + 1);
+      const p2 = (n: number) => String(n).padStart(2, '0');
+      const nextStr = `${dt.getFullYear()}/${p2(dt.getMonth() + 1)}/${p2(dt.getDate())}`;
+      const jql = `created >= "${dateStr}" AND created < "${nextStr}" AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira`;
+      this.query = jql;
+      this.customDateBugLoading = true;
+      this.loading = true; this.queried = true; this.rows = []; this.errors = [];
+      try {
+        const result = await api('/api/test/jira_lookup', { method: 'POST', body: JSON.stringify({ query: jql }) });
+        const data = result.data || {};
+        this.rows = data.rows || [];
+        this.errors = data.errors || [];
+        this.mode = data.mode || 'jql';
+        if (!this.rows.length) ElMessage.info(`${this.customDate} 无新增 Bug`);
+        else ElMessage.success(`${this.customDate} 新增 ${this.rows.length} 个 Bug`);
+      } catch (e: any) {
+        ElMessage.error('查询失败: ' + e.message);
+      } finally {
+        this.loading = false;
+        this.customDateBugLoading = false;
         this.enrichWithCloudCache();
       }
     },

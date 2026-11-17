@@ -572,9 +572,9 @@ def _diag_pre_classify(err_msg: str, error_class: str = "", error_type: str = ""
         # 处理后没有有效日志包：走深度分析，实际查看Jira附件是否有日志文件
         if "处理后未找到有效的日志文件" in ec:
             return ""
-        # 解压后未找到可识别日志：走深度分析，实际查看Jira附件是否有日志文件
+        # 解压后未找到可识别日志：无gmlogger（附件格式不支持或非日志文件）
         if "解压后未找到可识别的日志文件" in ec:
-            return ""
+            return "无gmlogger"
         # 日志文件均不在时间范围内：触发时间问题，走深度排查
         if "日志文件均不在时间范围内" in ec:
             return "触发时间问题"
@@ -689,9 +689,9 @@ def _diag_pre_classify(err_msg: str, error_class: str = "", error_type: str = ""
     # 处理后未找到有效日志：预处理无gmlogger
     if "处理后未找到有效的日志文件" in msg:
         return "无gmlogger"
-    # 解压后未找到可识别日志：直接映射为解压问题，跳过深度分析
+    # 解压后未找到可识别日志：无gmlogger（附件格式不支持或非日志文件）
     if "解压后未找到可识别的日志文件" in msg:
-        return "解压问题"
+        return "无gmlogger"
     return ""
 
 

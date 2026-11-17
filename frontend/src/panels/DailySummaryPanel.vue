@@ -18,7 +18,7 @@
           <template v-if="daily.data">
             <div class="summary-metrics">
               <div class="metric-item"><span class="metric-label">执行总数</span><span class="metric-value">{{ daily.data.total }}</span></div>
-              <div class="metric-item"><span class="metric-label">💻 PC</span><span class="metric-value">{{ daily.data.pc_count || 0 }}</span></div>
+              <div class="metric-item"><span class="metric-label">🔁 回归</span><span class="metric-value" style="color:#e6a23c">{{ daily.data.regression || 0 }}</span></div>
               <div class="metric-item"><span class="metric-label">🌐 线上</span><span class="metric-value">{{ daily.data.online_count || 0 }}</span></div>
               <div class="metric-item"><span class="metric-label">成功</span><span class="metric-value" style="color:#67c23a">{{ daily.data.success }}</span></div>
               <div class="metric-item"><span class="metric-label">失败</span><span class="metric-value" style="color:#f56c6c">{{ daily.data.fail }}</span></div>
@@ -61,13 +61,12 @@
           <template v-if="weekly.data">
             <div class="summary-metrics">
               <div class="metric-item"><span class="metric-label">执行总数</span><span class="metric-value">{{ weekly.data.total }}</span></div>
-              <div class="metric-item"><span class="metric-label">💻 PC</span><span class="metric-value">{{ weekly.data.pc_count || 0 }}</span></div>
+              <div class="metric-item"><span class="metric-label">🔁 回归</span><span class="metric-value" style="color:#e6a23c">{{ weekly.data.regression || 0 }}</span></div>
               <div class="metric-item"><span class="metric-label">🌐 线上</span><span class="metric-value">{{ weekly.data.online_count || 0 }}</span></div>
               <div class="metric-item"><span class="metric-label">成功</span><span class="metric-value" style="color:#67c23a">{{ weekly.data.success }}</span></div>
               <div class="metric-item"><span class="metric-label">失败</span><span class="metric-value" style="color:#f56c6c">{{ weekly.data.fail }}</span></div>
               <div class="metric-item"><span class="metric-label">待分析</span><span class="metric-value" style="color:#e6a23c">{{ weekly.data.pending }}</span></div>
               <div class="metric-item"><span class="metric-label">去重</span><span class="metric-value">{{ weekly.data.dedup }}</span></div>
-              <div class="metric-item"><span class="metric-label">回归</span><span class="metric-value">{{ weekly.data.regression }}</span></div>
               <div class="metric-item"><span class="metric-label">成功率</span><span class="metric-value" style="color:#409eff;font-weight:700">{{ weekly.data.weekly_rate }}</span></div>
               <div class="metric-item"><span class="metric-label">耗时过高</span><span class="metric-value">{{ weekly.data.too_long || 0 }} 条</span></div>
             </div>
@@ -113,13 +112,12 @@
           <template v-if="range.data">
             <div class="summary-metrics">
               <div class="metric-item"><span class="metric-label">执行总数</span><span class="metric-value">{{ range.data.total }}</span></div>
-              <div class="metric-item"><span class="metric-label">💻 PC</span><span class="metric-value">{{ range.data.pc_count || 0 }}</span></div>
+              <div class="metric-item"><span class="metric-label">🔁 回归</span><span class="metric-value" style="color:#e6a23c">{{ range.data.regression || 0 }}</span></div>
               <div class="metric-item"><span class="metric-label">🌐 线上</span><span class="metric-value">{{ range.data.online_count || 0 }}</span></div>
               <div class="metric-item"><span class="metric-label">成功</span><span class="metric-value" style="color:#67c23a">{{ range.data.success }}</span></div>
               <div class="metric-item"><span class="metric-label">失败</span><span class="metric-value" style="color:#f56c6c">{{ range.data.fail }}</span></div>
               <div class="metric-item"><span class="metric-label">待分析</span><span class="metric-value" style="color:#e6a23c">{{ range.data.pending }}</span></div>
               <div class="metric-item"><span class="metric-label">去重</span><span class="metric-value">{{ range.data.dedup }}</span></div>
-              <div class="metric-item"><span class="metric-label">回归</span><span class="metric-value">{{ range.data.regression }}</span></div>
               <div class="metric-item"><span class="metric-label">成功率</span><span class="metric-value" style="color:#409eff;font-weight:700">{{ range.data.weekly_rate }}</span></div>
               <div class="metric-item"><span class="metric-label">耗时过高</span><span class="metric-value">{{ range.data.too_long || 0 }} 条</span></div>
             </div>

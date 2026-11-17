@@ -16,7 +16,6 @@ pytest>=7.4.0
 allure-pytest>=2.13.0
 opencv-python-headless>=4.8.0
 av>=14.0.0
-easyocr>=1.7.0
 rapidocr_onnxruntime>=1.4.0
 transformers>=5.14.0
 openpyxl>=3.1.0

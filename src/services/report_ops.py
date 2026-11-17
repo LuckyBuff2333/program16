@@ -273,27 +273,29 @@ def _format_dur(sec: float) -> str:
     return f"{m}分{s}秒" if m else f"{s}秒"
 
 
-def _generate_daily_report_from_table(date_str: str) -> dict:
+def _generate_daily_report_from_table(date_str: str, local_only: bool = False) -> dict:
     """每日播报：直接统计数据沉淀中分析开始时间落在报告日期范围内的记录。
 
     不再依赖批量执行记录里的 Jira 号；失败与待分析统一计入失败数。
+    :param local_only: 仅统计本机执行的记录（手动触发时使用）
     """
     report_dates = _get_report_date_range(date_str)
     date_set = set(report_dates)
 
+    # ── 昨日新增Bug统计（暂时停用，将来恢复时取消注释）──
     yesterday_new = 0
     yesterday_done = 0
-    try:
-        from src.clients import jira_client as _jc
-        jql = 'issuetype = bug AND created >= startOfDay(\'-1d\') AND created <= endOfDay(\'-1d\')'
-        issues = _jc.search_issues(jql, max_results=1000, fields="customfield_13714")
-        yesterday_new = len(issues)
-        for iss in issues:
-            f = (iss.get("fields") or {}).get("customfield_13714")
-            if f and str(f).strip() and str(f).strip().lower() not in ("none", "null"):
-                yesterday_done += 1
-    except Exception as e:
-        logger.warning("每日播报：昨日新增Bug查询失败: %s", e)
+    # try:
+    #     from src.clients import jira_client as _jc
+    #     jql = 'issuetype = bug AND created >= startOfDay(\'-1d\') AND created <= endOfDay(\'-1d\')'
+    #     issues = _jc.search_issues(jql, max_results=1000, fields="customfield_13714")
+    #     yesterday_new = len(issues)
+    #     for iss in issues:
+    #         f = (iss.get("fields") or {}).get("customfield_13714")
+    #         if f and str(f).strip() and str(f).strip().lower() not in ("none", "null"):
+    #             yesterday_done += 1
+    # except Exception as e:
+    #     logger.warning("每日播报：昨日新增Bug查询失败: %s", e)
 
     from src.clients import feishu_client
     cfg = load_config().get("feishu_bitable", {})
@@ -301,9 +303,31 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
     bugid_field = cfg.get("bugid_field", "jira号")
     report_field = cfg.get("report_field", "AI分析结果(飞书链接)")
     rows = []
+    # 回归统计：收集报告日期之前的历史 Jira 号，用于判断是否为回归执行
+    earliest_date = min(report_dates)
+    historical_jiras = set()
+    # 手动触发时仅统计本机数据：读取本地批次记录获取本机 Jira 号集合
+    local_jiras = None
+    if local_only:
+        local_jiras = set()
+        for d in report_dates:
+            local_records, _ = _read_local_batch_records(d)
+            local_jiras.update(local_records.keys())
+        logger.info("手动播报：本机执行 Jira 数 = %d", len(local_jiras))
     if app_token and table_id:
         try:
             records = feishu_client.list_bitable_records(app_token, table_id)
+            for rec in records:
+                fields = rec.get("fields", {})
+                completed = _bitable_text(fields.get("分析开始时间", "")).strip()
+                if not completed:
+                    continue
+                jira_key = _bitable_text(fields.get(bugid_field, ""))
+                if not jira_key:
+                    continue
+                # 记录报告日期之前的所有执行 Jira 号（用于回归判断）
+                if completed[:10] < earliest_date and jira_key:
+                    historical_jiras.add(jira_key)
             for rec in records:
                 fields = rec.get("fields", {})
                 completed = _bitable_text(fields.get("分析开始时间", "")).strip()
@@ -312,9 +336,16 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
                 version = _bitable_text(fields.get("版本号", "")).strip()
                 if is_chinese_version(version):
                     continue
+                # 仅统计线上数据，排除 PC（jira_analyze）来源
+                source = _bitable_text(fields.get("触发来源", "")).strip()
+                if source and source != "parseFullTicket":
+                    continue
                 row = _flatten_bitable_record_all(fields, report_field)
                 row["jira号"] = _bitable_text(fields.get(bugid_field, "")) or row.get("jira号", "")
                 row["分析开始时间"] = completed[:19]
+                # 手动触发时仅统计本机执行的 Jira
+                if local_jiras is not None and row["jira号"] not in local_jiras:
+                    continue
                 # 同一 Jira 可能因重试产生多条记录：优先人工审核记录，其次最新完成
                 prev = next((r for r in rows if r.get("jira号") == row["jira号"]), None)
                 if prev is None:
@@ -381,7 +412,8 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
     rows.sort(key=lambda r: r.get("jira号", ""))
     total = len(rows)
     fail_count = fail_actual + pending_count
-    regression_count = total
+    # 回归数：昨天的 Jira 号在昨天之前的主表格中有过执行记录的数量
+    regression_count = sum(1 for r in rows if r.get("jira号", "") in historical_jiras)
 
     counted = total or 1
     avg_total_duration = _format_dur(sum(durations) / counted) if durations else "-"
@@ -416,32 +448,33 @@ def _generate_daily_report_from_table(date_str: str) -> dict:
     }
 
 
-def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: tuple = None) -> dict:
+def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: tuple = None, local_only: bool = False) -> dict:
     """生成指定工作日的结论汇总，自动扩展到后续非工作日（含周末/法定假日）
 
     :param date_str: 日期字符串
     :param bt_map: 可选，预查询的多维表格数据 {jira_no: [records]}，避免重复查询
     :param preloaded_batch: 可选，预读取的批次记录 (jira_exec, dedup_count)，避免重复读取
+    :param local_only: 仅统计本机执行的记录（手动触发时使用）
     """
     # 每日播报（不传批量预读数据）直接统计数据沉淀
     if bt_map is None and preloaded_batch is None:
-        return _generate_daily_report_from_table(date_str)
+        return _generate_daily_report_from_table(date_str, local_only=local_only)
     # 计算播报覆盖的日期范围（工作日 + 后续非工作日）
     report_dates = _get_report_date_range(date_str)
-    # 昨日新增Bug / 昨日已完成（有AI初步分析结果 customfield_13714）
+    # ── 昨日新增Bug / 昨日已完成（暂时停用，将来恢复时取消注释）──
     yesterday_new = 0
     yesterday_done = 0
-    try:
-        from src.clients import jira_client as _jc
-        jql = 'issuetype = bug AND created >= startOfDay(\'-1d\') AND created <= endOfDay(\'-1d\')'
-        issues = _jc.search_issues(jql, max_results=1000, fields="customfield_13714")
-        yesterday_new = len(issues)
-        for iss in issues:
-            f = (iss.get("fields") or {}).get("customfield_13714")
-            if f and str(f).strip() and str(f).strip().lower() not in ("none", "null"):
-                yesterday_done += 1
-    except Exception as e:
-        logger.warning("每日播报：昨日新增Bug查询失败: %s", e)
+    # try:
+    #     from src.clients import jira_client as _jc
+    #     jql = 'issuetype = bug AND created >= startOfDay(\'-1d\') AND created <= endOfDay(\'-1d\')'
+    #     issues = _jc.search_issues(jql, max_results=1000, fields="customfield_13714")
+    #     yesterday_new = len(issues)
+    #     for iss in issues:
+    #         f = (iss.get("fields") or {}).get("customfield_13714")
+    #         if f and str(f).strip() and str(f).strip().lower() not in ("none", "null"):
+    #             yesterday_done += 1
+    # except Exception as e:
+    #     logger.warning("每日播报：昨日新增Bug查询失败: %s", e)
     # 读取批次记录（支持外部传入，避免重复读取云端文档）
     if preloaded_batch is not None:
         jira_exec, dedup_count = preloaded_batch
@@ -483,6 +516,9 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
     too_long_threshold = 900  # 15分钟
     rows = []
     for jira_no, exec_info in jira_exec.items():
+        # 仅统计线上数据，排除 PC（jira_analyze）来源
+        if exec_info.get("触发来源", "") and exec_info.get("触发来源", "") != "parseFullTicket":
+            continue
         bt_records = bt_map.get(jira_no, [])
         row = {"jira号": jira_no}
         row.update(exec_info)
@@ -699,6 +735,9 @@ def _classify_failure(jira_no: str, bf: dict) -> str:
     # 没有可下载的日志附件 → 无gmlogger
     if "没有可下载的日志附件" in err_info:
         return "无gmlogger"
+    # 解压后未找到可识别日志 → 无gmlogger
+    if "解压后未找到可识别的日志文件" in err_info:
+        return "无gmlogger"
     # 分析报告生成失败 → 并发过多
     if "分析报告生成失败" in err_info:
         return "并发过多"
@@ -722,10 +761,10 @@ def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -
     pending = report.get("pending", 0)
     if total == 0:
         msg = f"📊 {date_str} 每日结论\n\n"
-        yn = report.get("yesterday_new", 0)
-        yd = report.get("yesterday_done", 0)
-        if yn or yd:
-            msg += f"📝 昨日新增Bug：{yn} | 昨日已完成：{yd}\n\n"
+        # yn = report.get("yesterday_new", 0)
+        # yd = report.get("yesterday_done", 0)
+        # if yn or yd:
+        #     msg += f"📝 昨日新增Bug：{yn} | 昨日已完成：{yd}\n\n"
         msg += "当日无分析记录"
         return msg
     rate = f"{success / total * 100:.0f}%" if total > 0 else "0%"
@@ -736,10 +775,10 @@ def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -
     else:
         date_label = date_str
     msg = f"📊 {date_label} 每日结论\n\n"
-    yesterday_new = report.get("yesterday_new", 0)
-    yesterday_done = report.get("yesterday_done", 0)
-    if yesterday_new or yesterday_done:
-        msg += f"📝 昨日新增Bug：{yesterday_new} | 昨日已完成：{yesterday_done}\n"
+    # yesterday_new = report.get("yesterday_new", 0)
+    # yesterday_done = report.get("yesterday_done", 0)
+    # if yesterday_new or yesterday_done:
+    #     msg += f"📝 昨日新增Bug：{yesterday_new} | 昨日已完成：{yesterday_done}\n"
     msg += f"执行总数：{total}\n"
     pc_count = report.get("pc_count", 0)
     online_count = report.get("online_count", 0)
@@ -761,14 +800,12 @@ def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -
         if dup:
             parts.append(f"重复{dup}")
         return f"（{', '.join(parts)}）" if parts else ""
-    if pc_count or online_count:
-        pc_info = _meta_str(report.get("pc_meta", {}), report.get("pc_dup", 0))
+    if online_count:
         online_info = _meta_str(report.get("online_meta", {}), report.get("online_dup", 0))
-        if pc_count:
-            msg += f"💻 PC：{pc_count} {pc_info}\n"
-        if online_count:
-            msg += f"🌐 线上：{online_count} {online_info}\n"
-    msg += f"🔁 回归：{report.get('regression', 0)}\n"
+        msg += f"🌐 线上：{online_count} {online_info}\n"
+    regression = report.get("regression", 0)
+    if regression:
+        msg += f"🔁 回归：{regression}\n"
     msg += f"✅ 成功：{success}\n"
     msg += f"❌ 失败：{fail}\n"
     dedup = report.get("dedup", 0)
@@ -797,147 +834,251 @@ def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -
     return msg
 
 
-def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
-    """将每日结论上传到云端指定文件夹（先删后建，确保不产生重复文档）"""
-    from src.clients import feishu_client
+def _generate_daily_report_html(report: dict, date_str: str) -> str:
+    """生成每日结论 HTML 报告文件（仅线上数据），返回本地文件路径"""
+    import json as _json
     report_dates = report.get("report_dates", [date_str])
-    if len(report_dates) > 1:
-        doc_title = f"每日结论_{report_dates[0]}~{report_dates[-1]}"
-    else:
-        doc_title = f"每日结论_{date_str}"
-    # 查找所有同名文档（可能有历史重复）
-    existing_docs = []  # [(token, url)]
-    try:
-        existing = feishu_client.list_folder_files(_DAILY_BROADCAST_FOLDER)
-        for f in existing:
-            if f.get("name") == doc_title and f.get("type") == "docx":
-                existing_docs.append((f["token"], f.get("url", "")))
-        logger.info("查找每日结论文档: 标题='%s', 文件夹共 %d 个文件, 匹配 %d 个同名文档",
-                    doc_title, len(existing), len(existing_docs))
-    except Exception as e:
-        logger.warning("查找旧每日结论文档失败: %s", e)
-    # 生成 Markdown 内容：结论→详情
-    total = report['total']
-    success = report['success']
-    fail = report['fail']
-    rate = f"{success / total * 100:.1f}%" if total > 0 else "0%"
-    # 基础信息格式化
-    def _md_meta_str(meta: dict, dup: int) -> str:
-        if not meta:
-            return ""
-        parts = []
-        ac = meta.get("分析并发数", "-")
-        dc = meta.get("下载并发数", "-")
-        model = meta.get("模型", "-")
-        ver = meta.get("版本", "-")
-        if ac != "-" or dc != "-":
-            parts.append(f"并发{ac}/{dc}")
-        if model != "-":
-            parts.append(model)
-        if ver != "-":
-            parts.append(f"版本{ver}")
-        if dup:
-            parts.append(f"重复{dup}")
-        return f"（{', '.join(parts)}）" if parts else ""
-    pc_info = _md_meta_str(report.get("pc_meta", {}), report.get("pc_dup", 0))
-    online_info = _md_meta_str(report.get("online_meta", {}), report.get("online_dup", 0))
-    lines = [f"# {doc_title}", "",
-             "## 结论", "",
-             f"- 昨日新增Bug：{report.get('yesterday_new', 0)} | 昨日已完成：{report.get('yesterday_done', 0)}",
-             f"- 执行总数：{total}",
-             f"- 💻 PC：{report.get('pc_count', 0)} {pc_info}",
-             f"- 🌐 线上：{report.get('online_count', 0)} {online_info}",
-             f"- 回归：{report.get('regression', 0)}",
-             f"- 成功：{success}",
-             f"- 失败：{fail}",
-             f"- 去重：{report.get('dedup', 0)}",
-             f"- 成功率：{rate}",
-             f"- 平均总耗时：{report.get('avg_total_duration', '-')}",
-             f"- 平均分析耗时：{report.get('avg_analysis_duration', '-')}{('，耗时过高 ' + str(report['too_long']) + ' 条') if report.get('too_long') else ''}", ""]
-    # 失败分析
+    date_label = f"{report_dates[0]} ~ {report_dates[-1]}" if len(report_dates) > 1 else date_str
+    title = f"每日结论 · {date_label}"
+    total = report.get("total", 0)
+    success = report.get("success", 0)
+    fail = report.get("fail", 0)
+    pending = report.get("pending", 0)
+    regression = report.get("regression", 0)
+    dedup = report.get("dedup", 0)
+    too_long = report.get("too_long", 0)
+    rate = f"{success / total * 100:.1f}" if total > 0 else "0"
+    online_meta = report.get("online_meta", {})
     failures = report.get("failures", {})
-    lines.append("## 失败分析")
-    lines.append("")
-    if failures:
-        for cat, cnt in failures.items():
-            lines.append(f"- {cat}：{cnt} 条")
+    failure_jiras = report.get("failure_jiras", {})
+    avg_total = report.get("avg_total_duration", "-")
+    avg_analysis = report.get("avg_analysis_duration", "-")
+    # 线上元信息
+    def _meta_str(meta):
+        if not meta:
+            return "-"
+        parts = []
+        ac, dc, model, ver = meta.get("分析并发数", "-"), meta.get("下载并发数", "-"), meta.get("模型", "-"), meta.get("版本", "-")
+        if ac != "-" or dc != "-": parts.append(f"并发{ac}/{dc}")
+        if model != "-": parts.append(model)
+        if ver != "-": parts.append(ver if ver.startswith("v") else f"v{ver}")
+        return ", ".join(parts) or "-"
+    online_info = _meta_str(online_meta)
+    # 失败详情行
+    fail_rows_html = ""
+    for cat, jiras in sorted(failure_jiras.items(), key=lambda x: -len(x[1])):
+        for j in jiras:
+            err = (j.get("错误信息", "") or "-").replace("<", "&lt;").replace(">", "&gt;")
+            jira = j.get("jira号", "")
+            fail_rows_html += f'<tr><td><span class="tag tag-fail">{cat}</span></td><td style="font-weight:600">{jira}</td><td style="font-size:11px;color:var(--muted)">{err}</td></tr>\n'
+    if not fail_rows_html:
+        fail_rows_html = '<tr><td colspan="3" style="text-align:center;color:var(--muted)">无失败记录</td></tr>'
+    # 失败分类标签
+    fail_tags_html = ""
+    for cat, cnt in sorted(failures.items(), key=lambda x: -x[1]):
+        fail_tags_html += f'<span class="src-pill" style="background:rgba(239,68,68,.12);color:var(--red)">{cat}：{cnt}</span>\n'
+    # 耗时分布数据
+    durations_sec = []
+    dur_count = 0
+    for row in report.get("rows", []):
+        d = _parse_dur_sec(row.get("分析耗时", ""))
+        if d > 0:
+            durations_sec.append(round(d))
+            dur_count += 1
+    durations_json = _json.dumps(durations_sec)
+    # 耗时公式
+    avg_total_sec = sum(durations_sec) / dur_count if dur_count else 0
+    total_dur_sum = sum(durations_sec)
+    avg_analysis_sec = 0
+    analysis_dur_list = []
+    for row in report.get("rows", []):
+        d = _parse_dur_sec(row.get("分析耗时", ""))
+        if d > 0:
+            analysis_dur_list.append(d)
+    if analysis_dur_list:
+        avg_analysis_sec = sum(analysis_dur_list) / len(analysis_dur_list)
+    formula_total = f"Σ总耗时({total_dur_sum:.0f}s) ÷ {dur_count}条 = {avg_total_sec:.0f}s" if dur_count else "-"
+    formula_analysis = f"Σ分析耗时({sum(analysis_dur_list):.0f}s) ÷ {len(analysis_dur_list)}条 = {avg_analysis_sec:.0f}s" if analysis_dur_list else "-"
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    # 内联 ECharts 库，避免 CDN 加载失败
+    _echarts_js = ""
+    _echarts_path = os.path.join(PROJECT_ROOT, "frontend", "node_modules", "echarts", "dist", "echarts.min.js")
+    if os.path.isfile(_echarts_path):
+        with open(_echarts_path, "r", encoding="utf-8") as _ef:
+            _echarts_js = _ef.read()
+    # ── HTML 模板 ──
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+__ECHARTS_SCRIPT__
+<style>
+:root{{--bg:#0f1117;--card:#1a1d2e;--border:#2a2d3e;--text:#e2e8f0;--muted:#8892a8;--accent:#6366f1;--green:#22c55e;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;--cyan:#06b6d4;--purple:#a78bfa}}
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);line-height:1.7;padding:20px}}
+.container{{max-width:1200px;margin:0 auto}}
+h1{{font-size:26px;font-weight:700;background:linear-gradient(135deg,#6366f1,#a78bfa);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}}
+.subtitle{{color:var(--muted);font-size:13px;margin:4px 0 24px}}
+.grid-2{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}
+.grid-4{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}
+.grid-5{{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}}
+@media(max-width:900px){{.grid-2,.grid-4,.grid-5{{grid-template-columns:1fr}}}}
+.card{{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px}}
+.card-label{{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}}
+.card-value{{font-size:28px;font-weight:700;margin:4px 0}}
+.card-sub{{font-size:11px;color:var(--muted)}}
+.section{{margin:28px 0}}
+.section-title{{font-size:16px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:8px}}
+.section-title::before{{content:'';display:inline-block;width:4px;height:18px;background:var(--accent);border-radius:2px}}
+.chart-box{{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:20px}}
+.chart-title{{font-size:14px;font-weight:600;margin-bottom:10px}}
+table{{width:100%;border-collapse:collapse;font-size:12px}}
+th,td{{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}}
+th{{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.3px;position:sticky;top:0;background:var(--card)}}
+tr:hover{{background:rgba(99,102,241,.06)}}
+.tag{{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}}
+.tag-ok{{background:rgba(34,197,94,.15);color:var(--green)}}
+.tag-fail{{background:rgba(239,68,68,.15);color:var(--red)}}
+.tag-warn{{background:rgba(245,158,11,.15);color:var(--orange)}}
+.green{{color:var(--green)}}.red{{color:var(--red)}}.orange{{color:var(--orange)}}.blue{{color:var(--blue)}}.cyan{{color:var(--cyan)}}.purple{{color:var(--purple)}}
+.table-wrap{{max-height:500px;overflow:auto;border-radius:8px;border:1px solid var(--border)}}
+.src-pill{{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}}
+.conclusion{{background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(167,139,250,.05));border:1px solid rgba(99,102,241,.25);border-radius:12px;padding:20px;margin-top:24px}}
+.conclusion h3{{font-size:15px;color:var(--accent);margin-bottom:12px}}
+.conclusion li{{margin:6px 0;font-size:13px;line-height:1.7}}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>📊 每日结论 · {date_label}</h1>
+<p class="subtitle">数据来源：多维表格线上数据沉淀 · 生成时间：{now_str} · {online_info}</p>
+<!-- KPI 概览 -->
+<div class="grid-5">
+  <div class="card"><div class="card-label">执行总数</div><div class="card-value cyan">{total}</div><div class="card-sub">线上</div></div>
+  <div class="card"><div class="card-label">🔁 回归</div><div class="card-value orange">{regression}</div><div class="card-sub">历史已执行过的 Jira</div></div>
+  <div class="card"><div class="card-label">成功率</div><div class="card-value {"green" if float(rate or 0) >= 85 else "orange"}">{rate}%</div><div class="card-sub">成功 {success} / 失败 {fail}</div></div>
+  <div class="card"><div class="card-label">去重</div><div class="card-value purple">{dedup}</div><div class="card-sub">待分析 {pending}</div></div>
+  <div class="card"><div class="card-label">耗时过高</div><div class="card-value {"red" if too_long else "green"}">{too_long}</div><div class="card-sub">阈值 &gt;15min</div></div>
+</div>
+<!-- 图表区 -->
+<div class="section">
+  <div class="section-title">分析耗时分布</div>
+  <div class="chart-box">
+    <div id="chart_hist" style="height:320px"></div>
+  </div>
+</div>
+<!-- 失败分析 -->
+<div class="section">
+  <div class="section-title">失败分析</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">{fail_tags_html}</div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>失败分类</th><th>Jira号</th><th>错误信息</th></tr></thead>
+    <tbody>{fail_rows_html}</tbody>
+  </table>
+  </div>
+</div>
+<!-- 耗时统计 -->
+<div class="section">
+  <div class="section-title">耗时统计</div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-label">平均总耗时</div>
+      <div class="card-value cyan">{avg_total}</div>
+      <div class="card-sub">{formula_total}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">平均分析耗时</div>
+      <div class="card-value purple">{avg_analysis}</div>
+      <div class="card-sub">{formula_analysis}</div>
+    </div>
+  </div>
+</div>
+<!-- 结论 -->
+<div class="conclusion">
+  <h3>核心结论</h3>
+  <ol>
+    <li><strong>{date_label} 线上共执行 {total} 条</strong></li>
+    <li><strong>成功率 {rate}%</strong>（成功 {success}，失败 {fail}，待分析 {pending}）</li>
+    {"<li><strong>失败分布</strong>：" + "、".join(f"{k} {v}条" for k,v in sorted(failures.items(), key=lambda x:-x[1])) + "</li>" if failures else "<li>无失败记录 ✅</li>"}
+    <li><strong>平均分析耗时 {avg_analysis}</strong>，{f"其中 {too_long} 条超过15分钟" if too_long else "无超时记录"}</li>
+  </ol>
+</div>
+</div>
+<script>
+const durations={durations_json};
+const bins=[0,120,300,600,900,1200,1500],binLabels=['<2min','2-5min','5-10min','10-15min','15-20min','20min+'];
+const binCounts=new Array(binLabels.length).fill(0);
+durations.forEach(function(d){{for(var i=0;i<bins.length;i++){{if(i===bins.length-1){{if(d>=bins[i])binCounts[i]++;}}else if(d>=bins[i]&&d<bins[i+1]){{binCounts[i]++;break;}}}}}});
+const binColors=['#22c55e','#22c55e','#3b82f6','#3b82f6','#f59e0b','#ef4444'];
+const chartHist=echarts.init(document.getElementById('chart_hist'));
+chartHist.setOption({{tooltip:{{trigger:'axis'}},grid:{{left:40,right:15,bottom:30,top:20}},xAxis:{{type:'category',data:binLabels,axisLabel:{{color:'#8892a8'}},axisLine:{{lineStyle:{{color:'#2a2d3e'}}}}}},yAxis:{{type:'value',name:'Bug数',nameTextStyle:{{color:'#8892a8'}},axisLabel:{{color:'#8892a8'}},splitLine:{{lineStyle:{{color:'#1e2030'}}}}}},series:[{{type:'bar',data:binCounts.map(function(v,i){{return{{value:v,itemStyle:{{color:binColors[i]}}}};}}),barWidth:'65%',label:{{show:true,position:'top',color:'#8892a8',fontSize:11}}}}]}});
+window.addEventListener('resize',function(){{chartHist.resize()}});
+</script>
+</body>
+</html>"""
+    # 替换 ECharts 内联脚本（避免 CDN 加载失败）
+    if _echarts_js:
+        html = html.replace("__ECHARTS_SCRIPT__", f"<script>{_echarts_js}</script>")
     else:
-        lines.append("无")
-    lines.append("")
-    # 执行详情
-    lines.append("## 执行详情")
-    lines.append("")
-    rows = report.get("rows", [])
-    failed_rows, pending_rows, success_rows = [], [], []
-    for r in rows:
-        analysis_result = r.get("分析结果", "") or ""
-        if analysis_result == "失败":
-            failed_rows.append(r)
-        elif not analysis_result or analysis_result == "分析中":
-            pending_rows.append(r)
-        else:
-            success_rows.append(r)
+        # 回退到 CDN
+        html = html.replace("__ECHARTS_SCRIPT__",
+                            '<script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.5.1/echarts.min.js"></script>')
+    # 保存到本地
+    reports_dir = os.path.join(PROJECT_ROOT, "reports")
+    os.makedirs(reports_dir, exist_ok=True)
+    if len(report_dates) > 1:
+        fname = f"每日结论_{report_dates[0]}~{report_dates[-1]}.html"
+    else:
+        fname = f"每日结论_{date_str}.html"
+    fpath = os.path.join(reports_dir, fname)
+    with open(fpath, "w", encoding="utf-8") as f:
+        f.write(html)
+    logger.info("每日结论 HTML 已生成: %s", fpath)
+    return fpath
 
-    def _jira_lines(group):
-        """一行两个 Jira 号，不带表头。"""
-        out = []
-        for i in range(0, len(group), 2):
-            out.append("  ".join(str(r.get("jira号", "")) for r in group[i:i + 2]))
-        return out
 
-    lines.append(f"### 分析失败（{len(failed_rows)}条）")
-    lines.append("")
-    if failed_rows:
-        fail_groups = {}
-        for r in failed_rows:
-            cat = _classify_failure(r.get("jira号", ""), r)
-            fail_groups.setdefault(cat, []).append(r)
-        for cat, group_rows in sorted(fail_groups.items(), key=lambda x: -len(x[1])):
-            lines.append(f"#### {cat}（{len(group_rows)}条）")
-            lines.append("")
-            if cat == "触发时间问题":
-                for r in group_rows:
-                    lines.append(f"{r.get('jira号', '')}  {r.get('触发时间', '')}")
-            else:
-                lines.extend(_jira_lines(group_rows))
-            lines.append("")
-    else:
-        lines.append("无")
-        lines.append("")
-    if pending_rows:
-        lines.append(f"#### 待分析（{len(pending_rows)}条）")
-        lines.append("")
-        lines.extend(_jira_lines(pending_rows))
-        lines.append("")
-    lines.append(f"### 分析成功（{len(success_rows)}条）")
-    lines.append("")
-    if success_rows:
-        lines.extend(_jira_lines(success_rows))
-    else:
-        lines.append("无")
-    lines.append("")
-    md_content = "\n".join(lines)
-    # 上传：原地覆盖内容，保持链接不变
+def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
+    """生成 HTML 每日结论报告并上传到云端文件夹，每次删除同日期旧文档"""
+    from src.clients import feishu_client
+    html_url = ""
     try:
-        if existing_docs:
-            # 用第一个文档原地覆盖内容（全选替换）
-            main_token, main_url = existing_docs[0]
-            ok = feishu_client.update_docx_content(main_token, md_content)
-            if ok:
-                logger.info("每日结论文档已原地覆盖: %s", main_url)
-                return main_url
-            logger.warning("每日结论文档原地覆盖失败")
-            return ""
-        # 无同名文档：创建新文档
-        doc_result = feishu_client.create_docx_document(
-            doc_title, md_content, folder_token=_DAILY_BROADCAST_FOLDER)
-        url = doc_result.get("url", "")
-        if url:
-            logger.info("每日结论文档已创建: %s", url)
-        return url
+        # 清理云端同日期旧文档
+        report_dates = report.get("report_dates", [date_str])
+        try:
+            existing = feishu_client.list_folder_files(_DAILY_BROADCAST_FOLDER)
+            for f in existing:
+                fname = f.get("name", "")
+                ftoken = f.get("token", "")
+                if not ftoken or not fname.endswith(".html"):
+                    continue
+                # 单日报告：精确匹配文件名
+                if len(report_dates) == 1 and fname == f"每日结论_{date_str}.html":
+                    feishu_client.delete_drive_file(ftoken, file_type="file")
+                    logger.info("已删除旧日报: %s", fname)
+                # 多日报告：匹配包含起始或结束日期的文件
+                elif len(report_dates) > 1 and (report_dates[0] in fname or report_dates[-1] in fname):
+                    feishu_client.delete_drive_file(ftoken, file_type="file")
+                    logger.info("已删除旧日报: %s", fname)
+        except Exception as e:
+            logger.warning("清理旧日报失败: %s", e)
+        # 生成并上传新文档
+        html_path = _generate_daily_report_html(report, date_str)
+        if html_path and os.path.isfile(html_path):
+            html_result = feishu_client.upload_file_to_drive(
+                html_path, folder_token=_DAILY_BROADCAST_FOLDER, content_type="text/html")
+            html_url = html_result.get("url", "")
+            if html_url:
+                logger.info("每日结论 HTML 已上传: %s", html_url)
+            try:
+                os.remove(html_path)
+            except Exception:
+                pass
     except Exception as e:
-        logger.warning("每日结论文档上传失败: %s", e)
-        return ""
+        logger.warning("每日结论 HTML 上传失败: %s", e)
+    return html_url
 
 
 def _sync_daily_stats_to_bitable(report: dict, date_str: str):
@@ -959,12 +1100,12 @@ def _sync_daily_stats_to_bitable(report: dict, date_str: str):
         success = report.get("success", 0)
         fail = report.get("fail", 0)
         rate_val = round(success / total * 100, 1) if total else 0
-        # 失败分析标签
+        # 失败分析标签（多选字段需要数组格式）
         failures = report.get("failures", {})
         fail_tags = [f"{cat} {cnt}条" for cat, cnt in sorted(failures.items(), key=lambda x: -x[1])]
-        # 耗时转秒数（数字类型），"-" 写 0
-        avg_total_sec = round(_parse_dur_sec(report.get("avg_total_duration", "-")), 1)
-        avg_analysis_sec = round(_parse_dur_sec(report.get("avg_analysis_duration", "-")), 1)
+        # 耗时转秒数，文本字段需要字符串格式
+        avg_total_sec = report.get("avg_total_duration", "-")
+        avg_analysis_sec = report.get("avg_analysis_duration", "-")
         fields_to_write = {
             "日期": date_ts,
             "测试总数": int(total),
@@ -975,7 +1116,7 @@ def _sync_daily_stats_to_bitable(report: dict, date_str: str):
             "成功率": float(rate_val),
             "平均总耗时": avg_total_sec,
             "平均分析耗时": avg_analysis_sec,
-            "失败分析": "\n".join(fail_tags) if fail_tags else "",
+            "失败分析": fail_tags if fail_tags else [],
         }
         # 查找是否已有同日记录，有则更新，无则新建
         records = feishu_client.list_bitable_records(app_token, stats_table_id)
@@ -1431,6 +1572,52 @@ def _get_report_date_range(date_str: str) -> list:
             break  # 遇到下一个工作日就停止
         dates.append(next_day.strftime("%Y-%m-%d"))
     return dates
+
+
+def _read_local_batch_records(date_str: str) -> tuple:
+    """仅读取本机批量执行记录（docs + data/unanalyzed，不含云端）。
+
+    用于手动触发播报时判断本机是否有该日数据。
+    :return: (dict, int) - {jira_no: {...}}, dedup_count
+    """
+    jira_exec = {}
+    dedup_count = 0
+
+    def _process(rows: list) -> dict:
+        has_success = any((r.get("执行结果") or "").strip() == "成功" for r in rows)
+        if not has_success:
+            return {}
+        result = {}
+        for r in rows:
+            jira_no = (r.get("jira号") or r.get("Jira号") or "").strip()
+            if not jira_no:
+                continue
+            if (r.get("执行结果") or "").strip() != "成功":
+                continue
+            result[jira_no] = {"执行时间": (r.get("执行时间") or "").strip()}
+        return result
+
+    # 路径1：docs/日期/batch_*.csv
+    doc_dir = get_path("doc_dir")
+    day_dir = os.path.join(doc_dir, date_str)
+    if os.path.isdir(day_dir):
+        for fname in sorted(os.listdir(day_dir)):
+            if not fname.lower().startswith("batch_") or not fname.lower().endswith(".csv"):
+                continue
+            rows = _read_csv_rows(os.path.join(day_dir, fname))
+            jira_exec.update(_process(rows))
+
+    # 路径2：data/unanalyzed/prod_batch_{日期}_*.csv
+    unanalyzed_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "unanalyzed")
+    if os.path.isdir(unanalyzed_dir):
+        prefix = f"prod_batch_{date_str}_"
+        for fname in sorted(os.listdir(unanalyzed_dir)):
+            if not fname.startswith(prefix) or not fname.endswith(".csv"):
+                continue
+            rows = _read_csv_rows(os.path.join(unanalyzed_dir, fname))
+            jira_exec.update(_process(rows))
+
+    return jira_exec, dedup_count
 
 
 def _read_today_batch_records(date_str: str) -> tuple:

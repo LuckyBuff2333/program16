@@ -204,10 +204,6 @@ _GMLOGGER_REVIEW_KEYWORDS = {"无gmlogger", "无gmlogger文件", "无gmlogger日
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")
 
-_easyocr_reader = None
-
-_easyocr_lock = __import__('threading').Lock()  # 防止并发初始化
-
 _video_time_cache_lock = threading.Lock()
 
 _OCR_UNAVAILABLE = object()  # OCR 不可用哨兵值
@@ -242,7 +238,6 @@ def _get_ocr_cfg() -> dict:
     _ocr_cfg_cache.setdefault("target_width", 2560)
     _ocr_cfg_cache.setdefault("max_mag", 2.5)
     _ocr_cfg_cache.setdefault("oom_cooldown_sec", 300)
-    _ocr_cfg_cache.setdefault("easyocr_languages", ["en", "ch_sim"])
     _ocr_cfg_cache.setdefault("engine", "v5")
     _ocr_cfg_cache.setdefault("time_only_dict", True)
     return _ocr_cfg_cache
@@ -2342,13 +2337,21 @@ def _bot_daily_broadcast(chat_id: str, date_str: str, is_scheduled: bool) -> boo
             if not ok:
                 _auto_disable_daily_broadcast(chat_id)
                 return False
-        report = _generate_daily_report(date_str)
+        report = _generate_daily_report(date_str, local_only=not is_scheduled)
+        # 手动触发时，如果本机没有数据，回退到全量统计
+        if not is_scheduled and report.get("total", 0) == 0:
+            logger.info("手动播报：本机无数据，回退全量统计(%s)", date_str)
+            report = _generate_daily_report(date_str, local_only=False)
         # 先上传云端，拿到文档 URL 后再发消息
         cloud_url = _upload_daily_report_to_cloud(report, date_str)
         if cloud_url:
             logger.info("昨日结论已上传: %s", cloud_url)
-        # 同步到数据沉淀统计表
-        _sync_daily_stats_to_bitable(report, date_str)
+        # 统计表同步始终用全量数据（非本机统计）
+        if not is_scheduled:
+            full_report = _generate_daily_report(date_str, local_only=False)
+            _sync_daily_stats_to_bitable(full_report, date_str)
+        else:
+            _sync_daily_stats_to_bitable(report, date_str)
         msg = _format_daily_report_msg(report, date_str, cloud_url=cloud_url)
         ok = feishu_client.send_bot_message(chat_id, msg)
         if not ok:
@@ -4587,8 +4590,8 @@ def _resolve_ocr_model_path(path: str, proj_root: str) -> str:
 def _apply_ocr_runtime_config(ycfg: dict, use_cuda: bool, use_gpu: bool = True) -> dict:
     """把 config.yaml 的 ocr 段覆盖到 RapidOCR 的 yaml。
 
-    GPU 可用时使用 model_dir 指向的 server 模型 + DirectML；
-    无独显时自动切到 cpu_* 指向的 mobile 模型，仍使用本地路径。
+    GPU 可用时用 model_dir + CUDA/DirectML；
+    无独显时用 cpu_model_dir + CPU（当前统一指向 server 模型）。
     """
     cfg = _get_ocr_cfg()
     proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -4675,9 +4678,14 @@ def _get_rapid_ocr():
         try:
             from rapidocr_onnxruntime import RapidOCR
             # 优先 PP-OCRv5（参数已调优）；配置 ocr.engine=v4 或环境变量 OCR_ENGINE=v4 时回退 v4
-            _v5_cfg = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                "models", "ppocrv5", "rapidocr_v5.yaml")
+            _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            # yaml 路径：优先配置项 → server yaml → mobile yaml
+            _cfg_yaml = _get_ocr_cfg().get("yaml_path", "")
+            if _cfg_yaml and not os.path.isabs(_cfg_yaml):
+                _cfg_yaml = os.path.join(_proj_root, _cfg_yaml)
+            _v5_cfg = _cfg_yaml or os.path.join(_proj_root, "models", "ppocrv5_server", "rapidocr_v5_server.yaml")
+            if not os.path.exists(_v5_cfg):
+                _v5_cfg = os.path.join(_proj_root, "models", "ppocrv5", "rapidocr_v5.yaml")
             _ocr_engine_ver = _get_ocr_cfg().get("engine", "v5")
             if os.path.exists(_v5_cfg) and _ocr_engine_ver != "v4" and os.environ.get("OCR_ENGINE", "").lower() != "v4":
                 try:
@@ -4694,7 +4702,6 @@ def _get_rapid_ocr():
                     _gpu = _cuda or _dml
                     # 读取 yaml 并将相对路径转为绝对路径（RapidOCR 默认从包目录解析相对路径）
                     import yaml as _yaml
-                    _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                     with open(_v5_cfg) as _f:
                         _ycfg = _yaml.safe_load(_f)
                     _apply_ocr_runtime_config(_ycfg, use_cuda=_cuda, use_gpu=_gpu)
@@ -4732,13 +4739,16 @@ def _get_rapid_ocr_cpu():
             return _rapid_ocr_cpu_engine
         try:
             from rapidocr_onnxruntime import RapidOCR
-            _v5_cfg = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                "models", "ppocrv5", "rapidocr_v5.yaml")
+            _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            _cfg_yaml = _get_ocr_cfg().get("yaml_path", "")
+            if _cfg_yaml and not os.path.isabs(_cfg_yaml):
+                _cfg_yaml = os.path.join(_proj_root, _cfg_yaml)
+            _v5_cfg = _cfg_yaml or os.path.join(_proj_root, "models", "ppocrv5_server", "rapidocr_v5_server.yaml")
+            if not os.path.exists(_v5_cfg):
+                _v5_cfg = os.path.join(_proj_root, "models", "ppocrv5", "rapidocr_v5.yaml")
             if os.path.exists(_v5_cfg):
                 try:
                     import yaml as _yaml
-                    _proj_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                     with open(_v5_cfg) as _f:
                         _ycfg = _yaml.safe_load(_f)
                     _apply_ocr_runtime_config(_ycfg, use_cuda=False, use_gpu=False)
@@ -4760,17 +4770,17 @@ def _get_rapid_ocr_cpu():
 
 
 def _rapid_ocr_readtext(image, _already_enhanced: bool = False):
-    """调用 RapidOCR 识别图像，返回与 EasyOCR 兼容的 [bbox, text, conf] 格式
+    """调用 RapidOCR 识别图像，返回 [bbox, text, conf] 格式
 
-    图像预处理（从 EasyOCR 迁移）：
-    - 放大 1.5x（等效 EasyOCR mag_ratio=1.5），提升小字号/低对比度时钟识别能力
+    图像预处理：
+    - 放大 1.5x（mag_ratio=1.5），提升小字号/低对比度时钟识别能力
     - 已二值化/锐化的图像不再放大（_already_enhanced=True），避免伪影放大降低识别率
     - 降低 box_thresh 至 0.3（默认 0.5 太高，低质量视频帧检测不到文本）
     - text_score 至 0.15（与应用层过滤阈值对齐，避免引擎内部丢弃可用文本）
 
     GPU OOM 防护：
     - 超大图像自动缩放（限制像素面积 ≤ 200 万），防止 GPU 显存溢出
-    - OOM 异常时自动回退 CPU-only 引擎，避免级联降级到 EasyOCR
+    - OOM 异常时自动回退 CPU-only 引擎，避免服务中断
     - OOM 后 5 分钟冷却期，期间直接使用 CPU 引擎
     """
     global _ocr_oom_cooldown_until
@@ -4894,45 +4904,6 @@ def _run_ocr(engine, image, _already_enhanced: bool, tag: str = ""):
     return items
 
 
-def _get_ocr_reader():
-    """获取 easyocr Reader 实例（懒加载+缓存，线程安全，内网不可用时优雅降级）"""
-    global _easyocr_reader
-    if _easyocr_reader is not None and _easyocr_reader is not _OCR_UNAVAILABLE:
-        return _easyocr_reader
-    if _easyocr_reader is _OCR_UNAVAILABLE:
-        return None
-    with _easyocr_lock:
-        # 双重检查：另一个线程可能已完成初始化
-        if _easyocr_reader is not None:
-            return None if _easyocr_reader is _OCR_UNAVAILABLE else _easyocr_reader
-        try:
-            import warnings
-            warnings.filterwarnings('ignore', message='.*pin_memory.*', module='torch')
-            warnings.filterwarnings('ignore', message='.*quantize_per_tensor.*', module='torch')
-            import easyocr
-            # 从配置读取 EasyOCR 模型目录（本地独有，每台机器各自配置）
-            _cfg_model_dir = str(load_config().get('params', {}).get('easyocr_model_dir', '') or '').strip()
-            _model_dir = os.path.expanduser(_cfg_model_dir) if _cfg_model_dir else None
-            if _model_dir and not os.path.isdir(_model_dir):
-                _model_dir = None
-            try:
-                import torch as _torch
-                _use_gpu = bool(_torch.cuda.is_available())
-            except Exception:
-                _use_gpu = False
-            _easyocr_langs = _get_ocr_cfg().get("easyocr_languages", ["en", "ch_sim"])
-            _easyocr_reader = easyocr.Reader(
-                _easyocr_langs, gpu=_use_gpu, verbose=False,
-                model_storage_directory=_model_dir)
-            logger.info("easyocr Reader 初始化完成（langs=%s，gpu=%s，model_dir=%s）",
-                        _easyocr_langs, _use_gpu, _model_dir or "~/.EasyOCR")
-        except Exception as e:
-            logger.warning("easyocr 回退不可用（模型下载超时/网络不可用；RapidOCR 仍可用）: %s", e)
-            _easyocr_reader = _OCR_UNAVAILABLE
-            return None
-    return _easyocr_reader
-
-
 # 视频 OCR 统计（ROI 命中 / 整帧 / 静帧跳过 / 投票命中），用于后续调参
 _VIDEO_OCR_STATS = {"videos": 0, "roi_frames": 0, "full_frames": 0, "skipped_frames": 0, "vote_hits": 0}
 # 各 ROI 区域命中时间统计（用于调参：哪些区域产出时间最多、哪些可删除）
@@ -4990,25 +4961,6 @@ def _vote_from_texts(texts, ref_pool, gm_ref_dt, tol):
     return cand, n
 
 
-# ── GLM-OCR 配置缓存（60 秒 TTL，避免每帧重复读配置）──
-_glm_priority_cache = {"val": False, "ts": 0}
-_glm_priority_warned = [False]  # 首帧警告标记，仅警告一次
-
-
-def _check_glm_priority() -> bool:
-    """检查 ocr.glm_priority 配置（60s 缓存）"""
-    import time as _t
-    now = _t.time()
-    if now - _glm_priority_cache["ts"] > 60:
-        try:
-            from src.config import load_config as _lc
-            _glm_priority_cache["val"] = _lc().get("ocr", {}).get("glm_priority", False)
-        except Exception:
-            _glm_priority_cache["val"] = False
-        _glm_priority_cache["ts"] = now
-    return _glm_priority_cache["val"]
-
-
 def _strip_video_progress_times(text: str, lower: bool = False) -> str:
     """过滤视频播放器进度条/总时长，避免被当成触发时间。"""
     if not text:
@@ -5052,7 +5004,7 @@ def _strip_navigation_times(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _ocr_frame_regions(frame, status_only: bool = False, allow_glm: bool = True) -> str:
+def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     """对状态栏/任务栏等小区域做高倍 OCR（RapidOCR + 2.5x 放大 + 自适应二值化）
 
     录屏时间通常出现在：手机顶部状态栏、车载 HMI 中央顶部、Windows 右下角任务栏、
@@ -5109,22 +5061,10 @@ def _ocr_frame_regions(frame, status_only: bool = False, allow_glm: bool = True)
             sharp = cv2.addWeighted(
                 gray, 1.6, cv2.GaussianBlur(gray, (0, 0), 3), -0.6, 0)
             enhanced = cv2.cvtColor(sharp, cv2.COLOR_GRAY2BGR)
-            roi_results = _ocr_readtext(None, enhanced, _already_enhanced=True)
+            roi_results = _ocr_readtext(enhanced, _already_enhanced=True)
             txt = " ".join(r[1] for r in roi_results if len(r) > 1)
-            # 先修复 1433→14:33 这类漏冒号，避免为此调用 GLM
+            # 修复 1433→14:33 这类漏冒号
             txt = _fix_ocr_missing_colon(txt)
-            # 仅当 RapidOCR 连数字都没读到时才尝试 GLM，且只对高置信时钟区域
-            if (allow_glm and not _valid_time_tokens(txt) and not _re_roi.search(r"\d{2}", txt)
-                    and _check_glm_priority()
-                    and name in ("right_clock", "right_upper", "top_bar")):
-                try:
-                    from src.services.glm_ocr import ocr_text as _glm_ocr
-                    _glm_txt = _glm_ocr(raw_crop, max_new_tokens=64)
-                    if _glm_txt and _is_ocr_time_related_text(_glm_txt):
-                        txt = _glm_txt
-                        logger.info("GLM-OCR 兜底命中 ROI[%s]", name)
-                except Exception:
-                    pass
             # 排除视频播放器进度条/总时长，以及导航到达/预计时间
             txt = _normalize_time_spacing(txt)
             txt = _strip_video_progress_times(txt, lower=(y1 >= int(h * 0.55)))
@@ -5181,14 +5121,9 @@ def _is_ocr_time_related_text(text: str) -> bool:
     return False
 
 
-def _ocr_readtext(reader, image, _already_enhanced: bool = False):
-    """统一 OCR 调用，RapidOCR 优先 + EasyOCR 回退。
+def _ocr_readtext(image, _already_enhanced: bool = False):
+    """RapidOCR 统一入口（仅使用 PP-OCRv5 Server 模型）。
 
-    实测对比（20条视频帧基准测试）：
-    - RapidOCR: 正确疬35%, 平均置信度0.867
-    - EasyOCR:  正确疬30%, 平均置信度0.234
-
-    流程：RapidOCR → 失败/不可用时回退 EasyOCR
     返回 readtext 结果列表（每项 [bbox, text, conf]）。
 
     _already_enhanced=True 时跳过图像放大（用于已放大/增强过的 ROI 图像）。
@@ -5197,7 +5132,6 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
     1. 置信度过低的时间类文本（数字/冒号/斜杠）会被过滤掉
     2. 水印相机区域内的时间类文本会被过滤掉（保留设备屏幕时间）
     """
-    # 优先使用 RapidOCR（中文场景识别能力更强，置信度更高）
     # 全局并发限流：仅包裹推理调用，前处理/后处理（过滤）不占用信号量
     with _get_ocr_semaphore():
         results = _rapid_ocr_readtext(image, _already_enhanced=_already_enhanced)
@@ -5218,30 +5152,6 @@ def _ocr_readtext(reader, image, _already_enhanced: bool = False):
             if len(_r) > 1 and _t_chk.search(str(_r[1])):
                 _rapid_has_time = True
                 break
-    # RapidOCR 已识别到时间文本时跳过 EasyOCR 回退（节省 ~5s/帧，我们只需要时间）
-    _skip_easyocr = _rapid_has_time and not _already_enhanced
-    # RapidOCR 完全无结果时跳过 EasyOCR（统计显示此类帧 EasyOCR 回退几乎也无效，节省 ~3-5s/帧）
-    _empty_skip = not results and not _already_enhanced
-    # RapidOCR 质量差时回退 EasyOCR（延迟初始化，避免不必要的模型下载）
-    if not _empty_skip and (not results or (_avg_conf < 0.3 and not _skip_easyocr)):
-        if reader is None:
-            reader = _get_ocr_reader()
-        if reader is not None:
-            logger.info("RapidOCR %s（avg_conf=%.2f），回退 EasyOCR",
-                       "未识别到文本" if not results else f"质量偏低", _avg_conf)
-            try:
-                # 全局并发限流：EasyOCR 回退推理同样受限
-                with _get_ocr_semaphore():
-                    easy_results = reader.readtext(image, canvas_size=2560, mag_ratio=1.5,
-                                                  text_threshold=0.25, low_text=0.3)
-            except Exception as e:
-                logger.warning("EasyOCR 参数化调用失败，回退默认: %s", e)
-                with _get_ocr_semaphore():
-                    easy_results = reader.readtext(image)
-            easy_avg = sum((r[2] for r in easy_results if len(r) > 2), 0) / max(len(easy_results), 1) if easy_results else 0
-            if easy_avg > _avg_conf:
-                logger.info("EasyOCR 回退成功（avg_conf=%.2f → %.2f）", _avg_conf, easy_avg)
-                results = easy_results
     import re as _re
     _time_like = _re.compile(r'^[\d:\-/\.\s]+$')
     # 1. 过滤低置信度的时间类文本（整体质量差时提高过滤阈值）
@@ -6639,7 +6549,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                     all_text = ""
                     # ── RapidOCR ROI：固定区域放大识别（状态栏/任务栏等）──
                     try:
-                        _roi_text = _ocr_frame_regions(frame, status_only=True, allow_glm=False) or ""
+                        _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
                         _roi_text = _strip_progress_bar(_roi_text)
                         _roi_has_time = bool(_roi_text) and bool(
                             _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
@@ -7426,7 +7336,7 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
                 if img is None:
                     logger.warning("%s图片 OCR: cv2.imread 失败 %s", f"{bugid} " if bugid else "", fname)
                     continue
-                results = _ocr_readtext(None, img)
+                results = _ocr_readtext(img)
                 if not results:
                     continue
                 # 收集完整文本用于时间正则匹配
@@ -8034,6 +7944,9 @@ def _troubleshoot_diagnose_impl(bugid, err_msg, problem_time, done_time, force=F
         # 统一注入 needs_analysis 标识（供前端拆分两张表）
         data = result.get("data") if isinstance(result, dict) else None
         if isinstance(data, dict) and "category" in data:
+            # 统一注入 err_msg 供前端展示
+            if err_msg:
+                data["err_msg"] = err_msg[:300]
             # 人工审核已明确“无时间信息”时，分类以人工审核为准
             if "无时间信息" in str(human_review or ""):
                 data["category"] = "无时间信息"

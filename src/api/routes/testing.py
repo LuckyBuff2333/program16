@@ -7215,17 +7215,32 @@ async def data_cleanup_preview(request: Request):
                 {"field_name": "触发来源", "operator": "is", "value": [src]}
             ]})
 
-        _sem = __import__("asyncio").Semaphore(10)
+        _sem = __import__("asyncio").Semaphore(3)  # 降低并发，避免触发飞书限流
+        import asyncio as _aio
 
-        async def _q(fo):
+        async def _q(fo, idx):
             async with _sem:
-                return await _loop.run_in_executor(
-                    None, lambda f=fo: feishu_client.search_bitable_records(
-                        app_token, table_id, filter_obj=f, page_size=500,
-                        timeout=15, max_records=500))
+                # 错峰：每批请求之间加小延迟，避免瞬时 QPS 过高
+                if idx > 0:
+                    await _aio.sleep(0.15 * (idx % 3))
+                for attempt in range(3):
+                    try:
+                        return await _loop.run_in_executor(
+                            None, lambda f=fo: feishu_client.search_bitable_records(
+                                app_token, table_id, filter_obj=f, page_size=500,
+                                timeout=15, max_records=500))
+                    except Exception as e:
+                        msg = str(e)
+                        if 'TooManyRequest' in msg or '429' in msg:
+                            wait = 1.5 * (attempt + 1)
+                            logger.warning("data_cleanup: 限流重试 (%d/3)，等待 %.1fs", attempt + 1, wait)
+                            await _aio.sleep(wait)
+                            continue
+                        raise
+                return []  # 重试耗尽返回空
 
         results = await __import__("asyncio").gather(
-            *[_q(fo) for fo in day_fos], return_exceptions=True)
+            *[_q(fo, i) for i, fo in enumerate(day_fos)], return_exceptions=True)
         records = []
         for r in results:
             if isinstance(r, Exception):
@@ -7297,5 +7312,166 @@ async def data_cleanup_delete(request: Request):
         return _ok({"deleted": deleted}, f"已删除 {deleted} 条")
     except Exception as e:
         logger.warning("数据沉淀删除失败: %s", e)
+        return _ok({"deleted": 0}, f"删除失败: {str(e)[:120]}")
+
+
+@router.post("/api/test/data_multi_errors_query")
+async def data_multi_errors_query(request: Request):
+    """查询同 Jira 多次报错记录，按 Jira+来源+错误分类归类，返回全部明细供前端展示。"""
+    from datetime import datetime as _dt
+    body = await request.json()
+    start_s = str(body.get("start") or "").strip()
+    end_s = str(body.get("end") or "").strip()
+    source = str(body.get("source") or "").strip()
+    cfg = load_config().get("feishu_bitable", {})
+    app_token, table_id = cfg.get("app_token", ""), cfg.get("table_id", "")
+    if not app_token or not table_id:
+        return _ok({"groups": [], "total": 0}, "未配置数据沉淀表")
+
+    def _txt(v):
+        if isinstance(v, list):
+            return " ".join(str((i.get("text") or i.get("link") or "")) for i in v if isinstance(i, dict))
+        if isinstance(v, dict):
+            return str(v.get("text") or v.get("link") or "")
+        return str(v or "")
+
+    def _parse(v):
+        s = _txt(v).strip()[:19]
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return _dt.strptime(s, fmt)
+            except ValueError:
+                pass
+        return None
+
+    start = _parse(start_s)
+    end = _parse(end_s)
+    if not start or not end or start > end:
+        return _ok({"groups": [], "total": 0}, "时间范围不合法")
+
+    _loop = __import__("asyncio").get_running_loop()
+    import asyncio as _aio
+    try:
+        day = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_day = end.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_fos = []
+        while day <= end_day:
+            ds = day.strftime("%Y-%m-%d")
+            day_fos.append({"conjunction": "and", "conditions": [
+                {"field_name": "分析开始时间", "operator": "contains", "value": [ds]}
+            ]})
+            day += timedelta(days=1)
+        _sem = _aio.Semaphore(3)
+
+        async def _q(fo, idx):
+            async with _sem:
+                if idx > 0:
+                    await _aio.sleep(0.15 * (idx % 3))
+                for attempt in range(3):
+                    try:
+                        return await _loop.run_in_executor(
+                            None, lambda f=fo: feishu_client.search_bitable_records(
+                                app_token, table_id, filter_obj=f, page_size=500,
+                                timeout=15, max_records=500))
+                    except Exception as e:
+                        msg = str(e)
+                        if 'TooManyRequest' in msg or '429' in msg:
+                            await _aio.sleep(1.5 * (attempt + 1))
+                            continue
+                        raise
+                return []
+
+        results = await _aio.gather(*[_q(fo, i) for i, fo in enumerate(day_fos)], return_exceptions=True)
+        records = []
+        for r in results:
+            if isinstance(r, Exception):
+                logger.warning("multi_errors: 查询失败: %s", r)
+                continue
+            records.extend(r)
+        logger.info("multi_errors: 查询完成，%d 次共 %d 条", len(day_fos), len(records))
+    except Exception as e:
+        return _ok({"groups": [], "total": 0}, f"查询失败: {str(e)[:120]}")
+
+    # 筛选失败记录
+    fail_recs = []
+    for r in records:
+        f = r.get("fields") or {}
+        if _txt(f.get("分析结果")).strip() != "失败":
+            continue
+        src = _txt(f.get("触发来源")).strip()
+        if source and src != source:
+            continue
+        j = _txt(f.get("jira号")).strip()
+        ct = _parse(f.get("分析完成时间") or f.get("分析开始时间"))
+        if not j or not ct or ct < start or ct > end:
+            continue
+        fail_recs.append((r, f, j, src, ct))
+
+    # 按 Jira+来源 分组，只保留多次报错（>=2 条）
+    by_jira = {}
+    for r, f, j, src, ct in fail_recs:
+        by_jira.setdefault((j, src), []).append((r, f, ct))
+    multi = {k: v for k, v in by_jira.items() if len(v) >= 2}
+
+    groups = []
+    for (j, src), items in sorted(multi.items(), key=lambda x: -len(x[1])):
+        items.sort(key=lambda x: x[2], reverse=True)
+        err_cls = _txt(items[0][1].get("错误分类")) or _txt(items[0][1].get("错误信息"))
+        recs = []
+        for r, f, ct in items:
+            recs.append({
+                "record_id": r.get("record_id", ""),
+                "分析完成时间": _txt(f.get("分析完成时间") or f.get("分析开始时间")),
+                "人工审核结果": _txt(f.get("人工审核结果")),
+                "错误分类": _txt(f.get("错误分类")) or _txt(f.get("错误信息")),
+            })
+        groups.append({
+            "jira": j, "source": src, "error_cls": err_cls,
+            "count": len(recs), "records": recs,
+        })
+    return _ok({"groups": groups, "total": len(groups)},
+               f"找到 {len(groups)} 组共 {sum(g['count'] for g in groups)} 条多次报错记录")
+
+
+@router.post("/api/test/data_multi_errors_copy_review")
+async def data_multi_errors_copy_review(request: Request):
+    """将最新的人工审核结果写入指定记录。"""
+    body = await request.json()
+    record_id = str(body.get("record_id") or "").strip()
+    review = str(body.get("review") or "").strip()
+    if not record_id or not review:
+        return _ok({"updated": 0}, "缺少 record_id 或 review")
+    cfg = load_config().get("feishu_bitable", {})
+    app_token, table_id = cfg.get("app_token", ""), cfg.get("table_id", "")
+    if not app_token or not table_id:
+        return _ok({"updated": 0}, "未配置数据沉淀表")
+    try:
+        resp = await __import__("asyncio").get_running_loop().run_in_executor(
+            None, lambda: feishu_client.update_bitable_records(
+                app_token, table_id,
+                [{"record_id": record_id, "fields": {"人工审核结果": review}}]))
+        updated = 1 if (resp or {}).get("code") == 0 else 0
+        return _ok({"updated": updated}, "已复制审核结果到最新记录" if updated else "更新失败")
+    except Exception as e:
+        return _ok({"updated": 0}, f"更新失败: {str(e)[:120]}")
+
+
+@router.post("/api/test/data_multi_errors_delete_old")
+async def data_multi_errors_delete_old(request: Request):
+    """删除同 Jira 旧报错记录，仅保留最新一条。"""
+    body = await request.json()
+    ids = [str(x) for x in (body.get("record_ids") or []) if str(x)]
+    if not ids:
+        return _ok({"deleted": 0}, "未选择记录")
+    cfg = load_config().get("feishu_bitable", {})
+    app_token, table_id = cfg.get("app_token", ""), cfg.get("table_id", "")
+    if not app_token or not table_id:
+        return _ok({"deleted": 0}, "未配置数据沉淀表")
+    try:
+        resp = await __import__("asyncio").get_running_loop().run_in_executor(
+            None, lambda: feishu_client.batch_delete_records(app_token, table_id, ids))
+        deleted = len(ids) if (resp or {}).get("code") == 0 else 0
+        return _ok({"deleted": deleted}, f"已删除 {deleted} 条旧报错记录")
+    except Exception as e:
         return _ok({"deleted": 0}, f"删除失败: {str(e)[:120]}")
 
