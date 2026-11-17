@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from fastapi import APIRouter, Request, Query
@@ -997,6 +998,8 @@ def dashboard_task_overview(
     """任务总览：5 维度统计（执行总数/成功/分析中/待办/待重试）"""
     from src.api.routes.shared import bitable_text as _bt, ok as _ok
     date_str = date or datetime.now().strftime("%Y-%m-%d")
+    _t_total = time.time()
+    _timing = {}
     # ── 缓存检查 ──
     if not force:
         with _task_overview_lock:
@@ -1004,19 +1007,24 @@ def dashboard_task_overview(
             if cached and time.time() - cached["ts"] < _TASK_OVERVIEW_TTL:
                 return _ok(cached["data"])
     # ── 1. 收集今日所有去重 Jira 号：内存缓存 → 云端 JSON → 原始文档 ──
+    _t1 = time.time()
     cloud_batches = None
+    _timing["cloud_source"] = "memory_cache"
     with _dashboard_cache_lock:
         cached = _dashboard_cloud_cache.get(date_str)
         if cached and time.time() - cached["ts"] < _cache_ttl(date_str):
             cloud_batches = cached["batches"]
     if cloud_batches is None:
+        _timing["cloud_source"] = "json_cache"
         cloud_batches = _load_cloud_json_cache(date_str)
         if cloud_batches is None:
+            _timing["cloud_source"] = "fetch_docs"
             cloud_batches = _fetch_cloud_batches_for_date(date_str)
             if cloud_batches:
                 _save_cloud_json_cache(date_str, cloud_batches)
         with _dashboard_cache_lock:
             _dashboard_cloud_cache[date_str] = {"ts": time.time(), "batches": cloud_batches}
+    _timing["cloud_batches_sec"] = round(time.time() - _t1, 2)
     jira_exec = {}  # {jira_id: {"exec_ok": bool, "exec_time": str, "trigger_time": str}}
     for cb in cloud_batches:
         for row in (cb.get("rows") or []):
@@ -1031,6 +1039,7 @@ def dashboard_task_overview(
             }
     all_ids = sorted(jira_exec.keys())
     # ── 2. 查多维表格建立分析结果映射（含完成时间/耗时/错误/人工审核） ──
+    _t2 = time.time()
     bt_map = {}  # {jira_id: [{result, done_time, duration, error_info, human_review}, ...]}
     if all_ids:
         try:
@@ -1040,6 +1049,7 @@ def dashboard_task_overview(
             table_id = cfg.get("table_id", "")
             bugid_field = cfg.get("bugid_field", "jira号")
             records = _get_main_table_records()
+            _timing["main_table_records"] = len(records)
             id_set = set(all_ids)
             for rec in records:
                 fields = rec.get("fields", {})
@@ -1054,6 +1064,7 @@ def dashboard_task_overview(
                     })
         except Exception as e:
             logger.warning("任务总览-多维表格查询失败: %s", e)
+    _timing["main_table_sec"] = round(time.time() - _t2, 2)
     # ── 3. 分类统计（时间匹配：只取本次执行后的分析记录） ──
     total_rows, success_rows, analyzing_rows, investigate_rows, retry_rows = [], [], [], [], []
     for jid in all_ids:
@@ -1083,6 +1094,7 @@ def dashboard_task_overview(
         else:
             total_rows.append({**base, "status": "分析完成" if recs else "分析中"})
             investigate_rows.append({**base, "done_time": latest["done_time"] if latest else "", "error_info": latest["error_info"] if latest else ""})
+    _timing["classify_sec"] = round(time.time() - _t2 - _timing.get("main_table_sec", 0), 2)
     result = {
         "total": len(all_ids),
         "all_rows": total_rows,
@@ -1090,7 +1102,9 @@ def dashboard_task_overview(
         "analyzing": {"count": len(analyzing_rows), "rows": analyzing_rows},
         "investigate": {"count": len(investigate_rows), "rows": investigate_rows},
         "retry": {"count": len(retry_rows), "rows": retry_rows},
+        "_timing": _timing,
     }
+    _timing["total_sec"] = round(time.time() - _t_total, 2)
     with _task_overview_lock:
         _task_overview_cache[date_str] = {"ts": time.time(), "data": result}
     logger.info("任务总览: %s, 总数=%d 成功=%d 分析中=%d 待办=%d 待重试=%d",
@@ -1123,9 +1137,10 @@ def _fetch_cloud_batches_for_date(date_str: str) -> list:
     if not cloud_docs:
         return []
 
-    # 逐个串行拉取，避免并发触发限流
-    result = []
-    for i, doc in enumerate(cloud_docs):
+    # 2~3 路并行拉取，兼顾速度与限流安全
+    _FETCH_WORKERS = 3
+    result = [None] * len(cloud_docs)
+    def _fetch_one(idx, doc):
         token = doc.get("token", "")
         name = doc.get("name", "") or token
         try:
@@ -1134,10 +1149,13 @@ def _fetch_cloud_batches_for_date(date_str: str) -> list:
         except Exception as e:
             logger.warning("云端批次读取失败 %s/%s: %s", date_str, name, e)
             rows = []
-        result.append({"name": name, "token": token, "rows": rows})
-        # 文档之间加小间隔，降低限流风险
-        if i < len(cloud_docs) - 1:
-            time.sleep(0.2)
+        return idx, {"name": name, "token": token, "rows": rows}
+    with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
+        futures = {pool.submit(_fetch_one, i, doc): i for i, doc in enumerate(cloud_docs)}
+        for fut in as_completed(futures):
+            idx, item = fut.result()
+            result[idx] = item
+    result = [r for r in result if r is not None]
     # 按名称（含时间）倒序：最新在前
     result.sort(key=lambda b: b["name"], reverse=True)
     return result

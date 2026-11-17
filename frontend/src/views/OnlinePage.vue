@@ -17,6 +17,17 @@
           <el-date-picker v-model="toCustomDate" type="date" value-format="YYYY-MM-DD" placeholder="选择日期" size="small" style="width:150px" @change="onCustomDateChange" />
         </div>
       </div>
+      <div v-if="toLoading" class="to-loading-hint">
+        <div class="to-loading-spinner"></div>
+        <span class="to-loading-text">正在加载 · {{ toElapsed }}s</span>
+        <span class="to-loading-phase">{{ toPhaseText }}</span>
+      </div>
+      <div v-if="!toLoading && toTiming" class="to-timing">
+        <el-tag size="small" type="info">耗时 {{ toTiming.total_sec }}s</el-tag>
+        <el-tag size="small">数据源: {{ toTiming.cloud_source === 'memory_cache' ? '内存缓存' : toTiming.cloud_source === 'json_cache' ? 'JSON缓存' : '实时拉取' }}</el-tag>
+        <el-tag v-if="toTiming.cloud_batches_sec" size="small">批次: {{ toTiming.cloud_batches_sec }}s</el-tag>
+        <el-tag v-if="toTiming.main_table_sec" size="small">多维表格: {{ toTiming.main_table_sec }}s</el-tag>
+      </div>
       <div v-if="toLoaded || toLoading" class="to-grid">
         <div class="to-card to-click" :class="{ 'is-active': activeCat === 'total' }" style="--accent:#409eff;--bg:linear-gradient(135deg,#e8f4fd,#f0f7ff)" @click="selectCategory('total')">
           <div class="to-icon">📦</div>
@@ -327,6 +338,9 @@ export default {
       toLoaded: false,
       toMode: 'today' as 'today' | 'yesterday' | 'custom',
       toCustomDate: '',
+      toElapsed: 0,
+      toTimer: null as ReturnType<typeof setInterval> | null,
+      toTiming: null as any,
       activeCat: '' as string,
       config: {} as Record<string, any>,
       apiSections: [
@@ -363,6 +377,12 @@ export default {
     // 任务总览改为手动刷新，不自动加载
   },
   computed: {
+    toPhaseText() {
+      if (!this.toLoading) return '';
+      if (this.toElapsed < 3) return '正在获取批次数据…';
+      if (this.toElapsed < 8) return '正在查询多维表格…';
+      return '正在分类统计…';
+    },
     activeRows() {
       if (!this.activeCat) return [];
       if (this.activeCat === 'total') return this.taskOv.all_rows || [];
@@ -563,6 +583,10 @@ export default {
     },
     async loadTaskOverview(force = false) {
       this.toLoading = true;
+      this.toElapsed = 0;
+      this.toTiming = null;
+      if (this.toTimer) clearInterval(this.toTimer);
+      this.toTimer = setInterval(() => { this.toElapsed++; }, 1000);
       try {
         let url = '/api/dashboard/task_overview';
         const params: string[] = [];
@@ -578,8 +602,12 @@ export default {
         if (params.length) url += '?' + params.join('&');
         const r = await api(url);
         this.taskOv = r.data as any;
+        this.toTiming = r.data._timing || null;
         this.toLoaded = true;
-      } catch (e: any) { ElMessage.error('任务总览加载失败: ' + (e?.message || e)); } finally { this.toLoading = false; }
+      } catch (e: any) { ElMessage.error('任务总览加载失败: ' + (e?.message || e)); } finally {
+        if (this.toTimer) { clearInterval(this.toTimer); this.toTimer = null; }
+        this.toLoading = false;
+      }
     },
     refreshTaskOverview() { this.loadTaskOverview(true); },
     switchToMode(mode: 'today' | 'yesterday') {
@@ -695,6 +723,18 @@ export default {
 /* ── 任务总览 ── */
 .to-head { display: flex; align-items: center; margin-bottom: 16px; }
 .to-date-picker { margin-left: auto; }
+.to-loading-hint {
+  display: flex; align-items: center; gap: 10px; padding: 14px 0; margin-bottom: 12px;
+  font-size: 13px; color: #409eff;
+}
+.to-loading-spinner {
+  width: 16px; height: 16px; border: 2px solid #d9ecff; border-top-color: #409eff;
+  border-radius: 50%; animation: to-spin .8s linear infinite;
+}
+@keyframes to-spin { to { transform: rotate(360deg); } }
+.to-loading-text { font-weight: 600; font-variant-numeric: tabular-nums; }
+.to-loading-phase { color: #909399; }
+.to-timing { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
 .to-title { font-size: 16px; font-weight: 700; color: #1f3b73; }
 .to-date-toggle .el-button { min-width: 52px; font-weight: 600; }
 .to-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 20px; }
