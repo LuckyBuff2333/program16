@@ -13,11 +13,14 @@
         <el-button :loading="toLoading" @click="refreshTaskOverview" round size="small" style="margin-left:10px">
           <span v-if="!toLoading" style="margin-right:2px">↻</span> 刷新
         </el-button>
+        <div class="to-date-picker">
+          <el-date-picker v-model="toCustomDate" type="date" value-format="YYYY-MM-DD" placeholder="选择日期" size="small" style="width:150px" @change="onCustomDateChange" />
+        </div>
       </div>
       <div v-if="toLoaded || toLoading" class="to-grid">
         <div class="to-card to-click" :class="{ 'is-active': activeCat === 'total' }" style="--accent:#409eff;--bg:linear-gradient(135deg,#e8f4fd,#f0f7ff)" @click="selectCategory('total')">
           <div class="to-icon">📦</div>
-          <div class="to-body"><div class="to-value">{{ taskOv.total }}</div><div class="to-label">{{ toMode === 'today' ? '今日执行总数' : '昨日执行总数' }}</div></div>
+          <div class="to-body"><div class="to-value">{{ taskOv.total }}</div><div class="to-label">{{ toMode === 'today' ? '今日执行总数' : toMode === 'yesterday' ? '昨日执行总数' : (toCustomDate + ' 执行总数') }}</div></div>
           <div class="to-foot">去重 Jira 号</div>
         </div>
         <div class="to-card to-click" :class="{ 'is-active': activeCat === 'success' }" style="--accent:#16a34a;--bg:linear-gradient(135deg,#f0fdf4,#ecfdf5)" @click="selectCategory('success')">
@@ -322,7 +325,8 @@ export default {
       taskOv: { total: 0, all_rows: [] as any[], success: { count: 0, rows: [] as any[] }, analyzing: { count: 0, rows: [] as any[] }, investigate: { count: 0, rows: [] as any[] }, retry: { count: 0, rows: [] as any[] } } as Record<string, any>,
       toLoading: false,
       toLoaded: false,
-      toMode: 'today' as 'today' | 'yesterday',
+      toMode: 'today' as 'today' | 'yesterday' | 'custom',
+      toCustomDate: '',
       activeCat: '' as string,
       config: {} as Record<string, any>,
       apiSections: [
@@ -365,7 +369,8 @@ export default {
       return (this.taskOv[this.activeCat] && this.taskOv[this.activeCat].rows) || [];
     },
     activeCatTitle() {
-      const map = { total: this.toMode === 'today' ? '今日执行总数' : '昨日执行总数', success: '成功数量', analyzing: '分析中', investigate: '待办', retry: '待重试' } as Record<string, string>;
+      const dateLabel = this.toMode === 'today' ? '今日' : this.toMode === 'yesterday' ? '昨日' : (this.toCustomDate || '');
+      const map = { total: dateLabel + '执行总数', success: '成功数量', analyzing: '分析中', investigate: '待办', retry: '待重试' } as Record<string, string>;
       return map[this.activeCat] || '';
     },
     tableMaxHeight() {
@@ -562,7 +567,9 @@ export default {
         let url = '/api/dashboard/task_overview';
         const params: string[] = [];
         if (force) params.push('force=true');
-        if (this.toMode === 'yesterday') {
+        if (this.toMode === 'custom' && this.toCustomDate) {
+          params.push(`date=${this.toCustomDate}`);
+        } else if (this.toMode === 'yesterday') {
           const d = new Date(); d.setDate(d.getDate() - 1);
           const p2 = (n: number) => String(n).padStart(2, '0');
           const yDate = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
@@ -577,8 +584,16 @@ export default {
     refreshTaskOverview() { this.loadTaskOverview(true); },
     switchToMode(mode: 'today' | 'yesterday') {
       this.toMode = mode;
+      this.toCustomDate = '';
       this.activeCat = '';
       this.loadTaskOverview();
+    },
+    onCustomDateChange(val: string) {
+      if (val) {
+        this.toMode = 'custom';
+        this.activeCat = '';
+        this.loadTaskOverview(true);
+      }
     },
     selectCategory(cat: string) {
       this.activeCat = this.activeCat === cat ? '' : cat;
@@ -679,6 +694,7 @@ export default {
 .cfg-toolbar-hint b { color: #d97706; }
 /* ── 任务总览 ── */
 .to-head { display: flex; align-items: center; margin-bottom: 16px; }
+.to-date-picker { margin-left: auto; }
 .to-title { font-size: 16px; font-weight: 700; color: #1f3b73; }
 .to-date-toggle .el-button { min-width: 52px; font-weight: 600; }
 .to-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 20px; }
