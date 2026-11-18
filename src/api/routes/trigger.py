@@ -20,6 +20,72 @@ logger = setup_logger("web.trigger")
 router = APIRouter()
 
 
+def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
+                         img_to: int, bugid: str, stop_event=None) -> tuple:
+    """JQL/手动提取与链接提取共用的触发时间提取链路。
+
+    优先级：Closed 评论 → 视频 OCR → 文本 → 图片 OCR → 附件名；
+    命中后统一对齐 gmlogger。返回 (time, source)。
+    """
+    from src.clients import jira_client as _jc
+    from src.services.server_legacy import (
+        _diag_extract_time_from_video_simple, _diag_extract_time_from_images,
+        _align_time_to_gmlogger, _VIDEO_SUFFIXES,
+    )
+
+    def _stopped():
+        return bool(stop_event is not None and stop_event.is_set())
+
+    tt, source = "", ""
+    # Closed：评论区最新结论/普通时间优先，并对齐 gmlogger
+    try:
+        if (_jc.extract_status(issue) or "").lower() == "closed":
+            tt = _jc.extract_latest_comment_time(issue)
+            if tt:
+                tt = _align_time_to_gmlogger(issue, tt, attachments)
+                return tt, "评论"
+            tt = ""
+    except Exception:
+        tt = ""
+    if _stopped():
+        return "", "stopped"
+    has_video = any((a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES)
+                    for a in (attachments or []))
+    # 1. 视频 OCR（非 Closed 最高优先级）
+    if has_video:
+        tt = _diag_extract_time_from_video_simple(issue, stop_event=stop_event)
+        if tt:
+            source = "视频拼接"
+    if _stopped():
+        return "", "stopped"
+    # 2. 评论/描述/标题文本
+    if not tt:
+        tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
+        if tt:
+            source = "文本"
+    if _stopped():
+        return "", "stopped"
+    # 3. 图片 OCR
+    if not tt and img_headers:
+        img_tt, _ = _diag_extract_time_from_images(
+            issue, img_headers, img_to, bugid, stop_event=stop_event)
+        if img_tt:
+            tt, source = img_tt, "图片拼接"
+    # 4. 附件名兜底
+    if not tt:
+        try:
+            att_tt = _jc.extract_attachment_time(issue)
+        except Exception:
+            att_tt = ""
+        if att_tt:
+            tt, source = att_tt, "附件名兜底"
+    if tt:
+        if not isinstance(tt, str):
+            tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
+        tt = _align_time_to_gmlogger(issue, tt, attachments)
+    return tt, source
+
+
 def _extract_failure_reason(attachments: list) -> str:
     """区分“无有效附件”和“有附件但没提取到时间”。"""
     names = [(a.get("filename", "") or "").lower() for a in (attachments or [])]
@@ -584,47 +650,11 @@ async def batch_extract_time(request: Request):
                         _remember_ref_time(bugid, _g0.strftime("%Y-%m-%d %H:%M:%S") if hasattr(_g0, "strftime") else str(_g0)[:19])
                 except Exception:
                     pass
-                has_video = any((a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES) for a in attachments)
-                tt, source = "", ""
-                # Closed：评论区最新结论/普通时间优先
-                if (_jc.extract_status(issue) or "").lower() == "closed":
-                    tt = _jc.extract_latest_comment_time(issue)
-                    if tt:
-                        tt = _align_time_to_gmlogger(issue, tt, attachments)
-                        return bugid, tt, "评论", None
-                # 1. 视频 OCR（非 Closed 最高优先级）
-                if has_video:
-                    tt = _diag_extract_time_from_video_simple(issue, stop_event=_stop_event)
-                    if tt:
-                        source = "视频拼接"
-                    if _stop_event.is_set():
-                        return bugid, "", "stopped", "已停止"
-                # 2. 评论/描述/标题文本提取
-                if not tt:
-                    tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
-                    if tt:
-                        source = "文本"
-                    if _stop_event.is_set():
-                        return bugid, "", "stopped", "已停止"
-                # 3. 图片 OCR（最终兜底）
-                if not tt and _img_headers:
-                    img_tt, _ = _diag_extract_time_from_images(issue, _img_headers, img_to, bugid, stop_event=_stop_event)
-                    if img_tt:
-                        tt = img_tt
-                        source = "图片拼接"
-                # 4. 附件文件名（最后兜底，必须带标签）
-                if not tt:
-                    try:
-                        att_tt = _jc.extract_attachment_time(issue)
-                    except Exception:
-                        att_tt = ""
-                    if att_tt:
-                        tt = att_tt
-                        source = "附件名兜底"
+                tt, source = _extract_time_common(
+                    issue, attachments, _img_headers, img_to, bugid, _stop_event)
+                if source == "stopped":
+                    return bugid, "", "stopped", "已停止"
                 if tt:
-                    if not isinstance(tt, str):
-                        tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
-                    tt = _align_time_to_gmlogger(issue, tt, attachments)
                     return bugid, tt, source, None
                 return bugid, "", "failed", _extract_failure_reason(attachments)
             except Exception as e:
@@ -1309,27 +1339,8 @@ async def link_compare(request: Request):
                 fields = issue.get("fields") or {}
                 desc = fields.get("summary", "") or (fields.get("description") or "")[:200]
                 attachments = fields.get("attachment") or []
-                has_video = any((a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES) for a in attachments)
-                tt, source = "", ""
-                if has_video:
-                    tt = _diag_extract_time_from_video_simple(issue)
-                    if tt:
-                        source = "视频拼接"
-                if not tt:
-                    tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
-                    if tt:
-                        source = "文本"
-                if not tt and img_headers:
-                    img_tt, _ = _diag_extract_time_from_images(issue, img_headers, img_to, bugid)
-                    if img_tt:
-                        tt, source = img_tt, "图片拼接"
-                if not tt:
-                    try:
-                        att_tt = _jc.extract_attachment_time(issue)
-                    except Exception:
-                        att_tt = ""
-                    if att_tt:
-                        tt, source = att_tt, "附件名兜底"
+                tt, source = _extract_time_common(
+                    issue, attachments, img_headers, img_to, bugid)
                 created = None
                 try:
                     c = fields.get("created")
