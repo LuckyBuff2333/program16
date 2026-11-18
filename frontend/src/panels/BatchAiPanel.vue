@@ -232,11 +232,12 @@
         <el-table v-if="aiDirect.timeRows.length" :data="aiDirect.timeRows" size="small" stripe border max-height="200" style="margin-top:10px">
           <el-table-column type="index" label="#" width="45"></el-table-column>
           <el-table-column prop="jira号" label="Jira号" width="130"></el-table-column>
-          <el-table-column prop="触发时间" label="问题发生时间" width="180">
-            <template #default="{row}"><span :style="row['触发时间']?'':'color:#909399'">{{ row['触发时间'] || '未提取到' }}</span></template>
-          </el-table-column>
-          <el-table-column v-if="aiDirect.filterProblemTime" prop="问题发生时间" label="问题发生时间" width="180">
-            <template #default="{row}"><span :style="row['问题发生时间']?'color:#67c23a':'color:#c0c4cc'">{{ row['问题发生时间'] || '—' }}</span></template>
+          <el-table-column label="问题发生时间" width="180">
+            <template #default="{row}">
+              <span :style="(row['问题发生时间'] || row['触发时间']) ? 'color:#67c23a' : 'color:#909399'">
+                {{ row['问题发生时间'] || row['触发时间'] || '未提取到' }}
+              </span>
+            </template>
           </el-table-column>
           <el-table-column prop="来源" label="来源" width="100">
             <template #default="{row}">
