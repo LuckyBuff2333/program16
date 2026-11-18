@@ -6664,7 +6664,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                                     best_12h_cand = (ts, ext_dt)
                             if not first_full:
                                 first_full = ts
-                    # 仅时间+日期补充：日期只能来自日志包（gmlogger），禁止用视频上传时间
+                    # 仅时间+日期补充：优先日志包日期；没有日志包时用视频文件名/上传日期拼接
                     m = _OCR_TIME_ONLY_RE.search(all_text)
                     closest_date = None
                     if not closest_date and closest_gm and closest_gm[0]["filename_time"]:
@@ -6673,6 +6673,22 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                                         closest_gm[0]["filename_time"].day)
                     if not closest_date and gm_dates:
                         closest_date = gm_dates[0]
+                    if not closest_date:
+                        _vfn_date = _parse_video_filename_datetime(video_name)
+                        if _vfn_date:
+                            _vfn_parsed = _parse_datetime_string(_vfn_date)
+                            if _vfn_parsed:
+                                closest_date = (_vfn_parsed[1].year, _vfn_parsed[1].month, _vfn_parsed[1].day)
+                                logger.info("视频兜底提取(%s)：无日志包日期，用视频文件名日期拼接 %s",
+                                            video_label, _vfn_date)
+                        if not closest_date:
+                            _up = _ts_parse_datetime(str(video_att.get("created") or "")[:19])
+                            if not _up:
+                                _up = _ts_parse_datetime(str((issue.get("fields") or {}).get("created") or "")[:19])
+                            if _up:
+                                closest_date = (_up.year, _up.month, _up.day)
+                                logger.info("视频兜底提取(%s)：无日志包日期，用视频/工单上传日期拼接 %s",
+                                            video_label, _up.strftime("%Y-%m-%d"))
                     if m and _valid_ocr_time(_normalize_ocr_time(m.group(1))):
                         time_str = _normalize_ocr_time(m.group(1))
                         # 多级验证：检查视频自身文件名是否含完整日期时间且时间匹配
@@ -6742,9 +6758,14 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                                         best_12h_cand = (ts, ext_dt)
                                 if ts and not first_partial:
                                     first_partial = ts
-                    # ── 前一帧识别到时间即停：ROI 命中或解析成功都直接跳出 ──
-                    if first_full or first_partial or _roi_has_time:
-                        logger.info("视频兗底提取(%s)：第%d秒已提取到有效时间，跳过后续帧", video_label, sec + 1)
+                        elif time_str and not first_partial:
+                            # 完全没有日期参考：保留仅时分候选，标记低置信，不能直接丢弃
+                            first_partial = time_str
+                            logger.info("视频兜底提取(%s)：仅识别到时分 %s，无日期参考，保留低置信候选",
+                                        video_label, time_str)
+                    # ── 前一帧识别到时间即停：只有真正生成候选才跳出 ──
+                    if first_full or first_partial:
+                        logger.info("视频兑底提取(%s)：第%d秒已提取到有效时间，跳过后续帧", video_label, sec + 1)
                         break
             # 循环结束仍未命中：用已 OCR 文本做多帧投票（同一时间 ≥2 次且通过校验才采用）
             if not first_full and not first_partial and _collected_texts:
