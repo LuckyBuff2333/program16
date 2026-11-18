@@ -363,7 +363,7 @@ def _generate_daily_report_from_table(date_str: str, local_only: bool = False) -
             logger.warning("每日播报：数据沉淀查询失败: %s", e)
 
     if not rows:
-        return {"total": 0, "regression": 0, "success": 0, "fail": 0,
+        return {"total": 0, "regression": 0, "new_count": 0, "success": 0, "fail": 0,
                 "pending": 0, "failures": {}, "failure_jiras": {},
                 "too_long": 0, "avg_total_duration": "-", "avg_analysis_duration": "-",
                 "report_dates": report_dates, "rows": [], "dedup": 0,
@@ -414,6 +414,8 @@ def _generate_daily_report_from_table(date_str: str, local_only: bool = False) -
     fail_count = fail_actual + pending_count
     # 回归数：昨天的 Jira 号在昨天之前的主表格中有过执行记录的数量
     regression_count = sum(1 for r in rows if r.get("jira号", "") in historical_jiras)
+    # 新执行数 = 昨日执行总数 - 回归数
+    new_count = max(total - regression_count, 0)
 
     counted = total or 1
     avg_total_duration = _format_dur(sum(durations) / counted) if durations else "-"
@@ -434,7 +436,7 @@ def _generate_daily_report_from_table(date_str: str, local_only: bool = False) -
         }
 
     return {
-        "total": total, "regression": regression_count,
+        "total": total, "regression": regression_count, "new_count": new_count,
         "success": success_count, "fail": fail_count,
         "pending": pending_count, "failures": fail_cats, "failure_jiras": fail_jiras,
         "too_long": too_long_count,
@@ -481,7 +483,7 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
     else:
         jira_exec, dedup_count = _read_multi_day_batch_records(report_dates)
     if not jira_exec:
-        return {"total": 0, "regression": 0, "success": 0, "fail": 0,
+        return {"total": 0, "regression": 0, "new_count": 0, "success": 0, "fail": 0,
                 "pending": 0, "failures": {},
                 "too_long": 0, "avg_total_duration": "-", "avg_analysis_duration": "-",
                 "report_dates": report_dates, "rows": [], "dedup": 0,
@@ -804,6 +806,9 @@ def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -
         online_info = _meta_str(report.get("online_meta", {}), report.get("online_dup", 0))
         msg += f"🌐 线上：{online_count} {online_info}\n"
     regression = report.get("regression", 0)
+    new_count = report.get("new_count", max(report.get("total", 0) - regression, 0))
+    if new_count:
+        msg += f"🆕 新执行：{new_count}\n"
     if regression:
         msg += f"🔁 回归：{regression}\n"
     msg += f"✅ 成功：{success}\n"
@@ -848,6 +853,8 @@ def _generate_daily_report_md(report: dict, date_str: str) -> str:
         f"- 昨日新增Bug：{report.get('yesterday_new', 0)}",
         f"- 昨日已完成：{report.get('yesterday_done', 0)}",
         f"- 执行总数：{total}",
+        f"- 新执行数：{report.get('new_count', max(total - report.get('regression', 0), 0))}",
+        f"- 回归数：{report.get('regression', 0)}",
         f"- 成功：{success}",
         f"- 失败：{fail}",
         f"- 成功率：{rate}",
@@ -914,6 +921,7 @@ def _generate_daily_report_html(report: dict, date_str: str) -> str:
     fail = report.get("fail", 0)
     pending = report.get("pending", 0)
     regression = report.get("regression", 0)
+    new_count = report.get("new_count", max(total - regression, 0))
     dedup = report.get("dedup", 0)
     too_long = report.get("too_long", 0)
     rate = f"{success / total * 100:.1f}" if total > 0 else "0"
@@ -1027,7 +1035,8 @@ h1{{font-size:26px;font-weight:700;background:linear-gradient(135deg,#6366f1,#a7
 .grid-2{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}
 .grid-4{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}
 .grid-5{{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}}
-@media(max-width:900px){{.grid-2,.grid-4,.grid-5{{grid-template-columns:1fr}}}}
+.grid-6{{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}}
+@media(max-width:900px){{.grid-2,.grid-4,.grid-5,.grid-6{{grid-template-columns:1fr}}}}
 .card{{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px}}
 .card-label{{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}}
 .card-value{{font-size:28px;font-weight:700;margin:4px 0}}
@@ -1058,8 +1067,9 @@ tr:hover{{background:rgba(99,102,241,.06)}}
 <h1>📊 每日结论 · {date_label}</h1>
 <p class="subtitle">数据来源：多维表格线上数据沉淀 · 生成时间：{now_str} · {online_info}</p>
 <!-- KPI 概览 -->
-<div class="grid-5">
+<div class="grid-6">
   <div class="card"><div class="card-label">执行总数</div><div class="card-value cyan">{total}</div><div class="card-sub">线上</div></div>
+  <div class="card"><div class="card-label">🆕 新执行</div><div class="card-value green">{new_count}</div><div class="card-sub">执行总数 - 回归数</div></div>
   <div class="card"><div class="card-label">🔁 回归</div><div class="card-value orange">{regression}</div><div class="card-sub">历史已执行过的 Jira</div></div>
   <div class="card"><div class="card-label">成功率</div><div class="card-value {"green" if float(rate or 0) >= 85 else "orange"}">{rate}%</div><div class="card-sub">成功 {success} / 失败 {fail}</div></div>
   <div class="card"><div class="card-label">去重</div><div class="card-value purple">{dedup}</div><div class="card-sub">待分析 {pending}</div></div>
