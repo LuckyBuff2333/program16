@@ -877,7 +877,7 @@ def _generate_daily_report_html(report: dict, date_str: str) -> str:
     fail_tags_html = ""
     for cat, cnt in sorted(failures.items(), key=lambda x: -x[1]):
         fail_tags_html += f'<span class="src-pill" style="background:rgba(239,68,68,.12);color:var(--red)">{cat}：{cnt}</span>\n'
-    # 耗时分布数据
+    # 耗时分布数据（服务端直接生成静态 SVG，避免依赖浏览器 JS）
     durations_sec = []
     dur_count = 0
     for row in report.get("rows", []):
@@ -885,7 +885,19 @@ def _generate_daily_report_html(report: dict, date_str: str) -> str:
         if d > 0:
             durations_sec.append(round(d))
             dur_count += 1
-    durations_json = _json.dumps(durations_sec)
+    _bins = [0, 120, 300, 600, 900, 1200]
+    _bin_labels = ["<2min", "2-5min", "5-10min", "10-15min", "15-20min", "20min+"]
+    _bin_colors = ["#22c55e", "#22c55e", "#3b82f6", "#3b82f6", "#f59e0b", "#ef4444"]
+    _bin_counts = [0] * len(_bin_labels)
+    for d in durations_sec:
+        for i in range(len(_bins)):
+            if i == len(_bins) - 1:
+                if d >= _bins[i]:
+                    _bin_counts[i] += 1
+                break
+            if _bins[i] <= d < _bins[i + 1]:
+                _bin_counts[i] += 1
+                break
     # 耗时公式
     avg_total_sec = sum(durations_sec) / dur_count if dur_count else 0
     total_dur_sum = sum(durations_sec)
@@ -900,12 +912,35 @@ def _generate_daily_report_html(report: dict, date_str: str) -> str:
     formula_total = f"Σ总耗时({total_dur_sum:.0f}s) ÷ {dur_count}条 = {avg_total_sec:.0f}s" if dur_count else "-"
     formula_analysis = f"Σ分析耗时({sum(analysis_dur_list):.0f}s) ÷ {len(analysis_dur_list)}条 = {avg_analysis_sec:.0f}s" if analysis_dur_list else "-"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    # 内联 ECharts 库，避免 CDN 加载失败
-    _echarts_js = ""
-    _echarts_path = os.path.join(PROJECT_ROOT, "frontend", "node_modules", "echarts", "dist", "echarts.min.js")
-    if os.path.isfile(_echarts_path):
-        with open(_echarts_path, "r", encoding="utf-8") as _ef:
-            _echarts_js = _ef.read()
+    # 服务端生成静态 SVG 柱状图：飞书 HTML 预览不执行 JS，静态图才能正常显示
+    _svg_w, _svg_h = 1100, 340
+    _left, _right, _top, _bottom = 55, 20, 25, 50
+    _plot_w = _svg_w - _left - _right
+    _plot_h = _svg_h - _top - _bottom
+    _max_count = max(_bin_counts) if _bin_counts else 0
+    _scale_max = max(_max_count, 1)
+    _slot = _plot_w / len(_bin_labels)
+    _bar_w = min(100, _slot * 0.62)
+    _svg = [f'<svg viewBox="0 0 {_svg_w} {_svg_h}" width="100%" height="320" role="img" aria-label="分析耗时分布柱状图" xmlns="http://www.w3.org/2000/svg">']
+    # 横向网格与 Y 轴刻度
+    for _t in range(6):
+        _val = round(_scale_max * _t / 5)
+        _y = _top + _plot_h * (1 - _t / 5)
+        _svg.append(f'<line x1="{_left}" y1="{_y:.1f}" x2="{_svg_w - _right}" y2="{_y:.1f}" stroke="#2a2d3e" stroke-width="1"/>')
+        _svg.append(f'<text x="{_left - 10}" y="{_y + 4:.1f}" text-anchor="end" font-size="11" fill="#8892a8">{_val}</text>')
+    _svg.append(f'<text x="16" y="{_top + _plot_h / 2:.1f}" transform="rotate(-90 16 {_top + _plot_h / 2:.1f})" text-anchor="middle" font-size="11" fill="#8892a8">Bug数</text>')
+    # 柱子和标签
+    for _i, (_label, _count, _color) in enumerate(zip(_bin_labels, _bin_counts, _bin_colors)):
+        _cx = _left + _slot * (_i + 0.5)
+        _x = _cx - _bar_w / 2
+        _h = (_count / _scale_max) * _plot_h
+        _y = _top + _plot_h - _h
+        _svg.append(f'<rect x="{_x:.1f}" y="{_y:.1f}" width="{_bar_w:.1f}" height="{_h:.1f}" rx="3" fill="{_color}"/>')
+        _svg.append(f'<text x="{_cx:.1f}" y="{_y - 6:.1f}" text-anchor="middle" font-size="11" fill="#8892a8">{_count}</text>')
+        _svg.append(f'<text x="{_cx:.1f}" y="{_svg_h - 16}" text-anchor="middle" font-size="12" fill="#8892a8">{_label}</text>')
+    _svg.append(f'<line x1="{_left}" y1="{_top + _plot_h}" x2="{_svg_w - _right}" y2="{_top + _plot_h}" stroke="#2a2d3e" stroke-width="1"/>')
+    _svg.append('</svg>')
+    svg_chart = "".join(_svg)
     # ── HTML 模板 ──
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -913,7 +948,6 @@ def _generate_daily_report_html(report: dict, date_str: str) -> str:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{title}</title>
-__ECHARTS_SCRIPT__
 <style>
 :root{{--bg:#0f1117;--card:#1a1d2e;--border:#2a2d3e;--text:#e2e8f0;--muted:#8892a8;--accent:#6366f1;--green:#22c55e;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;--cyan:#06b6d4;--purple:#a78bfa}}
 *{{margin:0;padding:0;box-sizing:border-box}}
@@ -966,7 +1000,8 @@ tr:hover{{background:rgba(99,102,241,.06)}}
 <div class="section">
   <div class="section-title">分析耗时分布</div>
   <div class="chart-box">
-    <div id="chart_hist" style="height:320px"></div>
+    <div class="chart-title">分析耗时分布</div>
+    {svg_chart}
   </div>
 </div>
 <!-- 失败分析 -->
@@ -1007,25 +1042,8 @@ tr:hover{{background:rgba(99,102,241,.06)}}
   </ol>
 </div>
 </div>
-<script>
-const durations={durations_json};
-const bins=[0,120,300,600,900,1200,1500],binLabels=['<2min','2-5min','5-10min','10-15min','15-20min','20min+'];
-const binCounts=new Array(binLabels.length).fill(0);
-durations.forEach(function(d){{for(var i=0;i<bins.length;i++){{if(i===bins.length-1){{if(d>=bins[i])binCounts[i]++;}}else if(d>=bins[i]&&d<bins[i+1]){{binCounts[i]++;break;}}}}}});
-const binColors=['#22c55e','#22c55e','#3b82f6','#3b82f6','#f59e0b','#ef4444'];
-const chartHist=echarts.init(document.getElementById('chart_hist'));
-chartHist.setOption({{tooltip:{{trigger:'axis'}},grid:{{left:40,right:15,bottom:30,top:20}},xAxis:{{type:'category',data:binLabels,axisLabel:{{color:'#8892a8'}},axisLine:{{lineStyle:{{color:'#2a2d3e'}}}}}},yAxis:{{type:'value',name:'Bug数',nameTextStyle:{{color:'#8892a8'}},axisLabel:{{color:'#8892a8'}},splitLine:{{lineStyle:{{color:'#1e2030'}}}}}},series:[{{type:'bar',data:binCounts.map(function(v,i){{return{{value:v,itemStyle:{{color:binColors[i]}}}};}}),barWidth:'65%',label:{{show:true,position:'top',color:'#8892a8',fontSize:11}}}}]}});
-window.addEventListener('resize',function(){{chartHist.resize()}});
-</script>
 </body>
 </html>"""
-    # 替换 ECharts 内联脚本（避免 CDN 加载失败）
-    if _echarts_js:
-        html = html.replace("__ECHARTS_SCRIPT__", f"<script>{_echarts_js}</script>")
-    else:
-        # 回退到 CDN
-        html = html.replace("__ECHARTS_SCRIPT__",
-                            '<script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.5.1/echarts.min.js"></script>')
     # 保存到本地
     reports_dir = os.path.join(PROJECT_ROOT, "reports")
     os.makedirs(reports_dir, exist_ok=True)
