@@ -699,6 +699,52 @@ def _is_log_related(text: str) -> bool:
     return False
 
 
+def is_suffixless_logcat(filename: str) -> bool:
+    """判断附件是否是无后缀的 logcat 文本文件（附件名通常就叫 logcat）"""
+    base = str(filename or "").replace("\\", "/").split("/")[-1].strip().lower()
+    return base == "logcat"
+
+
+def extract_logcat_time(text: str, trigger_time: str) -> tuple:
+    """在无后缀 logcat 文本中按触发时间的 HH:MM 查找。
+
+    返回 (时间字符串, 是否带日期)：
+    - 命中且命中位置前面紧挨着日期：返回补全日期的时间；
+    - 命中但前面没有日期：返回 HH:MM，第二项 False；
+    - 未命中：返回 ("", False)。
+    """
+    raw = str(text or "")
+    m = re.search(r'(\d{1,2}):(\d{2})', str(trigger_time or ""))
+    if not m or not raw:
+        return "", False
+    target = f"{int(m.group(1)):02d}:{m.group(2)}"
+    hit_re = re.compile(rf'(?<!\d){re.escape(target)}(?!\d)')
+    _date_re = re.compile(
+        r'(?:(?P<y>\d{4})[-/.])?(?P<mo>\d{1,2})[-/.](?P<d>\d{1,2})\s*$')
+    fallback_year = ""
+    mt = re.search(r'(\d{4})[-/.]\d{1,2}[-/.]\d{1,2}', str(trigger_time or ""))
+    if mt:
+        fallback_year = mt.group(1)
+    first_time = ""
+    for hit in hit_re.finditer(raw):
+        pos = hit.start()
+        prefix = raw[max(0, pos - 200):pos]
+        _dms = list(_date_re.finditer(prefix))
+        dm = _dms[-1] if _dms else None
+        if dm:
+            try:
+                year = int(dm.group("y") or fallback_year or datetime.now().year)
+                month, day = int(dm.group("mo")), int(dm.group("d"))
+                dt = datetime(year, month, day, int(m.group(1)), int(m.group(2)))
+                if _is_valid_date(dt.year, dt.month, dt.day):
+                    return dt.strftime("%Y-%m-%d %H:%M:%S"), True
+            except ValueError:
+                pass
+        if not first_time:
+            first_time = f"{target}:00"
+    return first_time, False
+
+
 def _pick_best_time(text: str, times: list) -> tuple:
     """从多个时间中选择最佳的一个：优先选择出现次数最多的时间，或相近时间簇中的代表值
 

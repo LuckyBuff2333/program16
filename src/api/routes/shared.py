@@ -287,6 +287,7 @@ _PROD_AI_URL_DEFAULT = "https://dpportal.apps.saic-gm.com/api/logAnalysis/parseF
 
 _EXCLUDE_REASONS = {
     "无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "日志文件已损坏",
+    "日志待补充",
     "问题重复", "问题重复，无需排查", "问题未复现", "触发时间无日志", "无日志附件",
     "该jira无日志附件，属于正常处理机制", "该Jira无日志附件，属于正常处理机制",
     "该jira无日志附件", "该Jira无日志附件",
@@ -298,6 +299,7 @@ _EXCLUDE_REASONS = {
 
 _GMLOGGER_REVIEW_KEYWORDS = {
     "无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "无日志附件",
+    "日志待补充",
     "该jira无日志附件", "该Jira无日志附件",
     "该jira无日志附件，属于正常处理机制", "该Jira无日志附件，属于正常处理机制",
 }

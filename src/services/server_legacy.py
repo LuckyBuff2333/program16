@@ -153,7 +153,7 @@ _bot_sessions: dict = {}
 
 _timestudy_ctx: dict = {}
 
-_EXCLUDE_REASONS = {"无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "日志文件已损坏", "问题重复", "问题重复，无需排查", "问题未复现", "触发时间无日志", "无日志附件", "该jira无日志附件，属于正常处理机制", "该Jira无日志附件，属于正常处理机制", "该jira无日志附件", "该Jira无日志附件", "日志里无对应触发时间相关文件，但是标题里明确说了触发时间", "解压问题，待排查", "解压问题", "压缩包损坏", "日志行数过多，手动分析", "待重试"}
+_EXCLUDE_REASONS = {"无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "日志文件已损坏", "日志待补充", "问题重复", "问题重复，无需排查", "问题未复现", "触发时间无日志", "无日志附件", "该jira无日志附件，属于正常处理机制", "该Jira无日志附件，属于正常处理机制", "该jira无日志附件", "该Jira无日志附件", "日志里无对应触发时间相关文件，但是标题里明确说了触发时间", "解压问题，待排查", "解压问题", "压缩包损坏", "日志行数过多，手动分析", "待重试"}
 
 _TIMESTUDY_DIR = os.path.join(PROJECT_ROOT, "data", "timestudy")
 _TIMESTUDY_REPORT_DIR = os.path.join(PROJECT_ROOT, "reports", "timestudy")
@@ -199,6 +199,7 @@ _last_cache_load_partial = False
 _TRIGGER_TIME_TABLE_LIMIT = 500
 
 _GMLOGGER_REVIEW_KEYWORDS = {"无gmlogger", "无gmlogger文件", "无gmlogger日志文件", "无日志附件",
+                              "日志待补充",
                               "该jira无日志附件", "该Jira无日志附件", "该jira无日志附件，属于正常处理机制",
                               "该Jira无日志附件，属于正常处理机制"}
 
@@ -1763,7 +1764,7 @@ def _bot_run_troubleshoot(chat_id: str, after_time: str):
                  f"失败记录: {total} 条（其中缓存命中: {cached_count} 条）",
                  ""]
         # 按用户要求的 4 类展示，其余合并到“其他”
-        main_cats = ["触发时间问题", "无gmlogger", "服务关闭", "分析任务执行超时，跳过排查", "并发过多", "IT侧服务停止"]
+        main_cats = ["触发时间问题", "无gmlogger", "日志待补充", "服务关闭", "分析任务执行超时，跳过排查", "并发过多", "IT侧服务停止"]
         for cat in main_cats:
             if cat in categories:
                 lines.append(f"{cat}: {categories[cat]}/{total}")
@@ -3634,6 +3635,34 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
             logger.info("无gmlogger文件名，但压缩包 %s 内含 main/.log/.txt 文件，判定有日志 (%s)", fn, bugid)
             return True
     return False
+
+
+def _diag_read_logcat_text(att: dict, headers: dict, timeout: int = 60) -> str:
+    """下载无后缀 logcat 附件并按文本读取（限制大小，避免大文件拖慢诊断）"""
+    import httpx
+    url = (att.get("content") or att.get("downloadUrl") or att.get("url") or "").strip()
+    if not url:
+        return ""
+    try:
+        with httpx.stream("GET", url, headers=headers, timeout=timeout,
+                          follow_redirects=True, verify=False) as resp:
+            resp.raise_for_status()
+            chunks, total = [], 0
+            for chunk in resp.iter_bytes():
+                total += len(chunk)
+                if total > 20 * 1024 * 1024:
+                    break
+                chunks.append(chunk)
+        raw = b"".join(chunks)
+        for enc in ("utf-8", "gb18030", "utf-16", "latin-1"):
+            try:
+                return raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return raw.decode("utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("读取 logcat 附件失败: %s", e)
+        return ""
 
 
 def _diag_check_split_volumes(attachments: list) -> tuple:
@@ -8497,8 +8526,36 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
         return _ok(result, f"{bugid} 诊断完成：{category}")
     if _has_split and _split_ok:
         logger.info("诊断 %s: %s，继续深度分析", bugid, _split_detail)
+    # —— 无后缀 logcat：仅在没有其他可用日志时作为最低优先级兜底 ——
+    _has_gm = _has_gmlogger_logs(attachments, bugid)
+    _logcat_atts = [a for a in attachments
+                    if jira_client.is_suffixless_logcat(a.get("filename", ""))]
+    if _logcat_atts and not _has_gm:
+        _logcat_text = _diag_read_logcat_text(_logcat_atts[0], headers, att_timeout)
+        _matched, _has_date = jira_client.extract_logcat_time(_logcat_text, problem_time)
+        if _matched and _has_date:
+            _detail_text = f"无 gmlogger，直接使用 logcat；命中触发时分并补全日期：{_matched}"
+        elif _matched:
+            _detail_text = f"无 gmlogger，直接使用 logcat；仅命中触发时分 {_matched}，日志中无紧邻日期，按无时间日志处理"
+        elif _logcat_text:
+            _detail_text = f"无 gmlogger，直接使用 logcat；未命中触发时分 {problem_time}，日志待补充"
+        else:
+            _detail_text = "无 gmlogger，直接使用 logcat；附件读取失败，日志待补充"
+        category = "日志待补充"
+        detail = _build_simple_detail("", "", _matched if _has_date else "", _detail_text)
+        report = _generate_troubleshoot_report(
+            bugid, category, err_msg, detail, problem_time,
+            "success" if _matched and _has_date else "", _matched if _has_date else "")
+        result = {"bugid": bugid, "category": category, "problem_time": problem_time,
+                  "archive_files": [], "detail": detail, "main_entries": [],
+                  "verify_status": "success" if _matched and _has_date else "",
+                  "suggested_time": _matched if _has_date else "",
+                  "report": report, "done_time": done_time}
+        _save_diagnose_cache(bugid, result)
+        logger.info("诊断 %s: %s", bugid, _detail_text)
+        return _ok(result, f"{bugid} 诊断完成：{category}")
     # —— 识别 gmlogger 附件（智能检测：文件名含 gmlogger 或压缩包内含 main.log）——
-    if not _has_gmlogger_logs(attachments, bugid):
+    if not _has_gm:
         _names = [str(a.get("filename", "") or "") for a in attachments]
         _archive_like = any(n.lower().endswith((".zip", ".rar", ".7z", ".log", ".txt", ".gz")) for n in _names)
         if not attachments:

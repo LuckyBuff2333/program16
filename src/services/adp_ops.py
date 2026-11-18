@@ -397,23 +397,33 @@ _VALID_ATTACH_RE = re.compile(
     re.IGNORECASE)
 
 
+def _is_suffixless_logcat_name(name: str) -> bool:
+    base = str(name or "").replace("\\", "/").split("/")[-1].strip().lower()
+    return base == "logcat"
+
+
 def _is_valid_attachment(att: dict) -> bool:
-    """判断附件是否为有效的日志/分析文件（压缩包或 txt）"""
+    """判断附件是否为有效的日志/分析文件（压缩包、txt 或无后缀 logcat）"""
     name = att.get("filename", "")
     url = att.get("downloadUrl", "")
     if not url:
         return False
-    return bool(_VALID_ATTACH_RE.search(name))
+    return bool(_VALID_ATTACH_RE.search(name)) or _is_suffixless_logcat_name(name)
 
 
 def build_adp_message(jira_key: str, description: str, trigger_time: str, attachments: list) -> str:
-    """拼接 ADP 入参消息，传递所有有效附件链接"""
+    """拼接 ADP 入参消息，传递所有有效附件链接
+
+    无后缀 logcat 优先级最低：只要还有其他有效日志附件，就不传 logcat；
+    只有在没有其他有效附件时才使用 logcat 链接。
+    """
     msg = f"JIRA号{jira_key}，描述: {description}，触发时间: {trigger_time}\n"
     msg += "日志附件下载链接：\n"
+    valid = [att for att in attachments if _is_valid_attachment(att)]
+    preferred = [att for att in valid if not _is_suffixless_logcat_name(att.get("filename", ""))]
+    chosen = preferred or [att for att in valid if _is_suffixless_logcat_name(att.get("filename", ""))]
     count = 0
-    for att in attachments:
-        if not _is_valid_attachment(att):
-            continue
+    for att in chosen:
         name = att.get("filename", "")
         size_mb = att.get("size", 0) / 1024 / 1024
         url = att.get("downloadUrl", "")

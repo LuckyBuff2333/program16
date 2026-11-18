@@ -1985,6 +1985,11 @@ def _generate_troubleshoot_report(bugid: str, category: str, err_msg: str, detai
         human_reason = "并发过多"
         retry_result = ""
         final_category = "并发过多"
+    elif category == "日志待补充":
+        ai_reason = msg or "仅有无后缀 logcat，未形成可用的完整时间日志"
+        human_reason = "日志待补充"
+        retry_result = ""
+        final_category = "日志待补充"
     elif category == "无gmlogger" or category == "无gmlogger文件":
         ai_reason = msg or "处理后未找到有效的日志文件（可能所有文件都不时间范围内，或文件格式不支持）"
         human_reason = "无gmlogger文件"
