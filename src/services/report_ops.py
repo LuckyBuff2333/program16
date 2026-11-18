@@ -834,6 +834,75 @@ def _format_daily_report_msg(report: dict, date_str: str, cloud_url: str = "") -
     return msg
 
 
+def _generate_daily_report_md(report: dict, date_str: str) -> str:
+    """生成每日结论 Markdown（用于固定飞书文档，按日期原地更新）"""
+    report_dates = report.get("report_dates", [date_str])
+    date_label = f"{report_dates[0]} ~ {report_dates[-1]}" if len(report_dates) > 1 else date_str
+    total = report.get("total", 0)
+    success = report.get("success", 0)
+    fail = report.get("fail", 0)
+    rate = f"{success / total * 100:.1f}%" if total else "0%"
+    lines = [
+        f"# 每日结论 · {date_label}",
+        "",
+        f"- 昨日新增Bug：{report.get('yesterday_new', 0)}",
+        f"- 昨日已完成：{report.get('yesterday_done', 0)}",
+        f"- 执行总数：{total}",
+        f"- 成功：{success}",
+        f"- 失败：{fail}",
+        f"- 成功率：{rate}",
+        f"- 平均总耗时：{report.get('avg_total_duration', '-')}",
+        f"- 平均分析耗时：{report.get('avg_analysis_duration', '-')}",
+        "",
+    ]
+    failures = report.get("failures", {}) or {}
+    failure_jiras = report.get("failure_jiras", {}) or {}
+    if failures:
+        lines.append("## 失败分析")
+        lines.append("")
+        for cat, cnt in sorted(failures.items(), key=lambda x: -x[1]):
+            lines.append(f"- {cat}：{cnt} 条")
+        lines.append("")
+        for cat, jiras in sorted(failure_jiras.items(), key=lambda x: -len(x[1])):
+            if not jiras:
+                continue
+            lines.append(f"### {cat}（{len(jiras)}条）")
+            lines.append("")
+            for j in jiras:
+                lines.append(f"- {j.get('jira号', '')}：{(j.get('错误信息', '') or '-')[:120]}")
+            lines.append("")
+    else:
+        lines.append("## 失败分析")
+        lines.append("")
+        lines.append("无")
+        lines.append("")
+
+    # 分析耗时分布
+    bins = [0, 120, 300, 600, 900, 1200]
+    labels = ["<2min", "2-5min", "5-10min", "10-15min", "15-20min", "20min+"]
+    counts = [0] * len(labels)
+    for row in report.get("rows", []):
+        sec = _parse_dur_sec(row.get("分析耗时", ""))
+        if sec <= 0:
+            continue
+        for i in range(len(bins)):
+            if i == len(bins) - 1:
+                if sec >= bins[i]:
+                    counts[i] += 1
+                break
+            if bins[i] <= sec < bins[i + 1]:
+                counts[i] += 1
+                break
+    lines.append("## 分析耗时分布")
+    lines.append("")
+    max_count = max(counts) if counts else 1
+    for label, count in zip(labels, counts):
+        bar = "█" * max(1, round(count / max_count * 20)) if count else ""
+        lines.append(f"- {label}：{bar} {count}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _generate_daily_report_html(report: dict, date_str: str) -> str:
     """生成每日结论 HTML 报告文件（仅线上数据），返回本地文件路径"""
     import json as _json
@@ -1059,44 +1128,35 @@ tr:hover{{background:rgba(99,102,241,.06)}}
 
 
 def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
-    """生成 HTML 每日结论报告并上传到云端文件夹，每次删除同日期旧文档"""
+    """按日期创建/原地更新固定的飞书文档，链接稳定，不删除重建"""
     from src.clients import feishu_client
-    html_url = ""
+    report_dates = report.get("report_dates", [date_str])
+    if len(report_dates) > 1:
+        doc_title = f"每日结论_{report_dates[0]}~{report_dates[-1]}"
+    else:
+        doc_title = f"每日结论_{date_str}"
     try:
-        # 清理云端同日期旧文档
-        report_dates = report.get("report_dates", [date_str])
-        try:
-            existing = feishu_client.list_folder_files(_DAILY_BROADCAST_FOLDER)
-            for f in existing:
-                fname = f.get("name", "")
-                ftoken = f.get("token", "")
-                if not ftoken or not fname.endswith(".html"):
-                    continue
-                # 单日报告：精确匹配文件名
-                if len(report_dates) == 1 and fname == f"每日结论_{date_str}.html":
-                    feishu_client.delete_drive_file(ftoken, file_type="file")
-                    logger.info("已删除旧日报: %s", fname)
-                # 多日报告：匹配包含起始或结束日期的文件
-                elif len(report_dates) > 1 and (report_dates[0] in fname or report_dates[-1] in fname):
-                    feishu_client.delete_drive_file(ftoken, file_type="file")
-                    logger.info("已删除旧日报: %s", fname)
-        except Exception as e:
-            logger.warning("清理旧日报失败: %s", e)
-        # 生成并上传新文档
-        html_path = _generate_daily_report_html(report, date_str)
-        if html_path and os.path.isfile(html_path):
-            html_result = feishu_client.upload_file_to_drive(
-                html_path, folder_token=_DAILY_BROADCAST_FOLDER, content_type="text/html")
-            html_url = html_result.get("url", "")
-            if html_url:
-                logger.info("每日结论 HTML 已上传: %s", html_url)
-            try:
-                os.remove(html_path)
-            except Exception:
-                pass
+        existing = feishu_client.list_folder_files(_DAILY_BROADCAST_FOLDER)
+        target = next((f for f in existing if str(f.get("name") or "") == doc_title
+                       and f.get("token")), None)
+        md = _generate_daily_report_md(report, date_str)
+        if target:
+            token = target["token"]
+            if feishu_client.update_docx_content(token, md):
+                url = target.get("url") or f"https://saic-gm.feishu.cn/docx/{token}"
+                logger.info("每日结论文档已原地更新: %s", url)
+                return url
+            logger.warning("每日结论文档原地更新失败: %s", doc_title)
+            return ""
+        result = feishu_client.create_docx_document(
+            doc_title, md, folder_token=_DAILY_BROADCAST_FOLDER)
+        url = result.get("url", "")
+        if url:
+            logger.info("每日结论文档已创建: %s", url)
+        return url
     except Exception as e:
-        logger.warning("每日结论 HTML 上传失败: %s", e)
-    return html_url
+        logger.warning("每日结论文档创建/更新失败: %s", e)
+        return ""
 
 
 def _sync_daily_stats_to_bitable(report: dict, date_str: str):
