@@ -181,7 +181,7 @@
           <el-table-column label="结果" width="80">
             <template #default="{row}"><el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag></template>
           </el-table-column>
-          <el-table-column prop="触发时间" label="问题发生时间" width="160" show-overflow-tooltip></el-table-column>
+          <el-table-column prop="问题发生时间" label="问题发生时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="执行时间" label="执行时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="开始时间" label="开始时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="备注" label="备注" show-overflow-tooltip></el-table-column>
@@ -234,8 +234,8 @@
           <el-table-column prop="jira号" label="Jira号" width="130"></el-table-column>
           <el-table-column label="问题发生时间" width="180">
             <template #default="{row}">
-              <span :style="(row['问题发生时间'] || row['触发时间']) ? 'color:#67c23a' : 'color:#909399'">
-                {{ row['问题发生时间'] || row['触发时间'] || '未提取到' }}
+              <span :style="row['问题发生时间'] ? 'color:#67c23a' : 'color:#909399'">
+                {{ row['问题发生时间'] || '未提取到' }}
               </span>
             </template>
           </el-table-column>
@@ -258,7 +258,7 @@
             <template #default="{row}"><el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag></template>
           </el-table-column>
           <el-table-column prop="备注" label="接口返回验证" min-width="220" show-overflow-tooltip></el-table-column>
-          <el-table-column prop="触发时间" label="问题发生时间" width="160" show-overflow-tooltip></el-table-column>
+          <el-table-column prop="问题发生时间" label="问题发生时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="执行时间" label="执行时间" width="160" show-overflow-tooltip></el-table-column>
         </el-table>
         <el-alert v-if="aiDirect.runDoneMsg" type="success" :closable="false" :title="aiDirect.runDoneMsg" style="margin-top:10px"></el-alert>
@@ -362,7 +362,7 @@
           <el-table-column label="结果" width="80">
             <template #default="{row}"><el-tag :type="row['执行结果']==='成功'?'success':'danger'" size="small">{{ row['执行结果'] }}</el-tag></template>
           </el-table-column>
-          <el-table-column prop="触发时间" label="问题发生时间" width="160" show-overflow-tooltip></el-table-column>
+          <el-table-column prop="问题发生时间" label="问题发生时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="执行时间" label="执行时间" width="160" show-overflow-tooltip></el-table-column>
           <el-table-column prop="备注" label="备注" show-overflow-tooltip></el-table-column>
         </el-table>
@@ -513,7 +513,7 @@ export default {
               const evt = JSON.parse(line.slice(6));
               if (evt.type === 'progress') {
                 this.batchAi.runDone = evt.index;
-                this.batchAi.runResults.push({ 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '报告长度': evt.report_len || 0, '备注': evt.msg || '', '触发时间': evt.exec_time || '', '执行时间': evt.analysis_time || '', '开始时间': evt.start_time || '' });
+                this.batchAi.runResults.push({ 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '报告长度': evt.report_len || 0, '备注': evt.msg || '', '问题发生时间': evt.exec_time || '', '执行时间': evt.analysis_time || '', '开始时间': evt.start_time || '' });
               } else if (evt.type === 'done') {
                 let doneMsg = `全部完成: ${evt.success}/${evt.total} 成功`;
                 if (evt.skipped) doneMsg += `，已跳过 ${evt.skipped} 条`;
@@ -552,7 +552,7 @@ export default {
               const evt = JSON.parse(line.slice(6));
               if (evt.type === 'progress') {
                 this.batchAi.runDone = evt.index;
-                this.batchAi.runResults.push({ 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '触发时间': evt.exec_time || '', '执行时间': evt.analysis_time || '', '开始时间': evt.start_time || '', '备注': evt.msg || '' });
+                this.batchAi.runResults.push({ 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '问题发生时间': evt.exec_time || '', '执行时间': evt.analysis_time || '', '开始时间': evt.start_time || '', '备注': evt.msg || '' });
               } else if (evt.type === 'done') { this.batchAi.runDoneMsg = evt.message || '线上执行完成'; }
               else if (evt.type === 'stopped') { this.batchAi.stopRequested = true; this.batchAi.runDoneMsg = evt.message || '已停止：当前提取已保存，后续队列取消'; }
               else if (evt.type === 'error') { throw new Error(evt.message || '线上执行失败'); }
@@ -899,7 +899,7 @@ export default {
         const evt = await this._extractTimesSSE(this.aiDirect.parsed);
         const times = evt.trigger_times || {}; const sources = evt.sources || {};
         this.aiDirect.triggerTimes = times;
-        this.aiDirect.timeRows = this.aiDirect.parsed.map(k => ({ 'jira号': k, '触发时间': times[k] || '', '来源': sources[k] || '' }));
+        this.aiDirect.timeRows = this.aiDirect.parsed.map(k => ({ 'jira号': k, '问题发生时间': times[k] || '', '来源': sources[k] || '' }));
         ElMessage.success(`提取完成: ${Object.keys(times).length}/${this.aiDirect.parsed.length} 有问题发生时间`);
       } catch (e) { ElMessage.error('提取问题发生时间失败: ' + (e.message || '')); } finally { this.running.aiDirectExtract = false; }
     },
@@ -927,7 +927,7 @@ export default {
               const evt = JSON.parse(line.slice(6));
               if (evt.type === 'progress') {
                 this.aiDirect.runDone = evt.index;
-                this.aiDirect.runResults.push({ 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '备注': evt.msg || '', '触发时间': evt.exec_time || '', '执行时间': evt.analysis_time || '' });
+                this.aiDirect.runResults.push({ 'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : '失败', '备注': evt.msg || '', '问题发生时间': evt.exec_time || '', '执行时间': evt.analysis_time || '' });
               } else if (evt.type === 'done') {
                 let doneMsg = `执行完成: ${evt.success}/${evt.total} 成功`;
                 if (evt.csv_path) doneMsg += `，已写入 ${evt.csv_path}`;
@@ -963,7 +963,7 @@ export default {
         if (!ptKeys.length) return ElMessage.warning('没有查询到问题发生时间，无法执行');
         this.aiDirect.triggerTimes = { ...this.aiDirect.problemTimes };
         this.aiDirect.parsed = ptKeys;
-        this.aiDirect.timeRows = ptKeys.map(k => ({ 'jira号': k, '触发时间': this.aiDirect.problemTimes[k], '来源': '问题发生时间', '问题发生时间': this.aiDirect.problemTimes[k] }));
+        this.aiDirect.timeRows = ptKeys.map(k => ({ 'jira号': k, '问题发生时间': this.aiDirect.problemTimes[k], '来源': '问题发生时间' }));
       } else {
         try { await this.runAiDirectExtract(); } catch (e) { return ElMessage.error('获取问题发生时间失败: ' + (e.message || '')); }
       }
@@ -987,7 +987,7 @@ export default {
               const evt = JSON.parse(line.slice(6));
               if (evt.type === 'progress') {
                 this.aiDirect.runDone = evt.index;
-                this.aiDirect.runResults.push({ 'jira号': evt.bugid || evt['Jira号'] || '', '执行结果': evt.status === 'success' ? '成功' : '失败', '备注': evt.msg || '', '触发时间': evt.exec_time || '', '执行时间': evt.analysis_time || '' });
+                this.aiDirect.runResults.push({ 'jira号': evt.bugid || evt['Jira号'] || '', '执行结果': evt.status === 'success' ? '成功' : '失败', '备注': evt.msg || '', '问题发生时间': evt.exec_time || '', '执行时间': evt.analysis_time || '' });
               } else if (evt.type === 'done') {
                 this.aiDirect.runDoneMsg = evt.message || `完成: ${this.aiDirect.runDone}/${this.aiDirect.runTotal}`;
                 if (evt.interrupted) this.aiDirect.runDoneMsg += '（已中断）';
@@ -1063,7 +1063,7 @@ export default {
               } else if (evt.type === 'progress') {
                 this.formExec.results.push({
                   'jira号': evt.bugid, '执行结果': evt.status === 'success' ? '成功' : (evt.status === 'fail' ? '失败' : evt.status),
-                  '触发时间': '', '执行时间': '', '备注': evt.msg || '',
+                  '问题发生时间': '', '执行时间': '', '备注': evt.msg || '',
                 });
               } else if (evt.type === 'no_time') {
                 this.formExec.noTimeJiras = evt.jiras || [];
