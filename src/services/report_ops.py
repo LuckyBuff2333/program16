@@ -1138,15 +1138,17 @@ tr:hover{{background:rgba(99,102,241,.06)}}
 
 
 def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
-    """生成静态 SVG 的 HTML 日报并上传到云端文件夹，返回 HTML 链接。
+    """生成静态 SVG 的 HTML 日报并上传到云端文件夹，返回当天最新 HTML 链接。
 
-    同日期重跑会删除旧 HTML 再上传新文件，因此链接会变化。
+    先上传新文件，成功后再删除同日旧 HTML，保证当天始终有一个可用 HTML；
+    同日期重跑链接会变化。
     """
     from src.clients import feishu_client
     report_dates = report.get("report_dates", [date_str])
     html_url = ""
     try:
-        # 清理云端同日期旧 HTML
+        # 只记录同日旧文件，先不删除；上传成功后再清理
+        old_tokens = []
         existing = feishu_client.list_folder_files(_DAILY_BROADCAST_FOLDER)
         for f in existing:
             fname = str(f.get("name") or "")
@@ -1154,11 +1156,9 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
             if not ftoken or not fname.endswith(".html"):
                 continue
             if len(report_dates) == 1 and fname.startswith(f"每日结论_{date_str}") and fname.endswith(".html"):
-                feishu_client.delete_drive_file(ftoken, file_type="file")
-                logger.info("已删除旧日报: %s", fname)
+                old_tokens.append((ftoken, fname))
             elif len(report_dates) > 1 and (report_dates[0] in fname or report_dates[-1] in fname):
-                feishu_client.delete_drive_file(ftoken, file_type="file")
-                logger.info("已删除旧日报: %s", fname)
+                old_tokens.append((ftoken, fname))
         html_path = _generate_daily_report_html(report, date_str)
         if html_path and os.path.isfile(html_path):
             result = feishu_client.upload_file_to_drive(
@@ -1166,6 +1166,13 @@ def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
             html_url = result.get("url", "")
             if html_url:
                 logger.info("每日结论 HTML 已上传: %s", html_url)
+                # 新文件成功后，清理同日旧文件
+                for ftoken, fname in old_tokens:
+                    try:
+                        feishu_client.delete_drive_file(ftoken, file_type="file")
+                        logger.info("已删除旧日报: %s", fname)
+                    except Exception as e:
+                        logger.warning("删除旧日报失败: %s: %s", fname, e)
             try:
                 os.remove(html_path)
             except Exception:
