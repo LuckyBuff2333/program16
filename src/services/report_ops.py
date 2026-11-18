@@ -1138,35 +1138,41 @@ tr:hover{{background:rgba(99,102,241,.06)}}
 
 
 def _upload_daily_report_to_cloud(report: dict, date_str: str) -> str:
-    """按日期创建/原地更新固定的飞书文档，链接稳定，不删除重建"""
+    """生成静态 SVG 的 HTML 日报并上传到云端文件夹，返回 HTML 链接。
+
+    同日期重跑会删除旧 HTML 再上传新文件，因此链接会变化。
+    """
     from src.clients import feishu_client
     report_dates = report.get("report_dates", [date_str])
-    if len(report_dates) > 1:
-        doc_title = f"每日结论_{report_dates[0]}~{report_dates[-1]}"
-    else:
-        doc_title = f"每日结论_{date_str}"
+    html_url = ""
     try:
+        # 清理云端同日期旧 HTML
         existing = feishu_client.list_folder_files(_DAILY_BROADCAST_FOLDER)
-        target = next((f for f in existing if str(f.get("name") or "") == doc_title
-                       and f.get("token")), None)
-        md = _generate_daily_report_md(report, date_str)
-        if target:
-            token = target["token"]
-            if feishu_client.update_docx_content(token, md):
-                url = target.get("url") or f"https://saic-gm.feishu.cn/docx/{token}"
-                logger.info("每日结论文档已原地更新: %s", url)
-                return url
-            logger.warning("每日结论文档原地更新失败: %s", doc_title)
-            return ""
-        result = feishu_client.create_docx_document(
-            doc_title, md, folder_token=_DAILY_BROADCAST_FOLDER)
-        url = result.get("url", "")
-        if url:
-            logger.info("每日结论文档已创建: %s", url)
-        return url
+        for f in existing:
+            fname = str(f.get("name") or "")
+            ftoken = str(f.get("token") or "")
+            if not ftoken or not fname.endswith(".html"):
+                continue
+            if len(report_dates) == 1 and fname.startswith(f"每日结论_{date_str}") and fname.endswith(".html"):
+                feishu_client.delete_drive_file(ftoken, file_type="file")
+                logger.info("已删除旧日报: %s", fname)
+            elif len(report_dates) > 1 and (report_dates[0] in fname or report_dates[-1] in fname):
+                feishu_client.delete_drive_file(ftoken, file_type="file")
+                logger.info("已删除旧日报: %s", fname)
+        html_path = _generate_daily_report_html(report, date_str)
+        if html_path and os.path.isfile(html_path):
+            result = feishu_client.upload_file_to_drive(
+                html_path, folder_token=_DAILY_BROADCAST_FOLDER, content_type="text/html")
+            html_url = result.get("url", "")
+            if html_url:
+                logger.info("每日结论 HTML 已上传: %s", html_url)
+            try:
+                os.remove(html_path)
+            except Exception:
+                pass
     except Exception as e:
-        logger.warning("每日结论文档创建/更新失败: %s", e)
-        return ""
+        logger.warning("每日结论 HTML 上传失败: %s", e)
+    return html_url
 
 
 def _sync_daily_stats_to_bitable(report: dict, date_str: str):
