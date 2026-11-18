@@ -6673,21 +6673,25 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                                         closest_gm[0]["filename_time"].day)
                     if not closest_date and gm_dates:
                         closest_date = gm_dates[0]
+                    if not closest_date and _inner_times:
+                        # 压缩包内 main 文件名时间优先于视频/上传时间
+                        _inner_dt = sorted(dt for _, dt in _inner_times)[0]
+                        closest_date = (_inner_dt.year, _inner_dt.month, _inner_dt.day)
+                        logger.info("视频兜底提取(%s)：无外层日志包日期，用压缩包 main 日期拼接 %s",
+                                    video_label, _inner_dt.strftime("%Y-%m-%d"))
                     if not closest_date:
                         _vfn_date = _parse_video_filename_datetime(video_name)
                         if _vfn_date:
                             _vfn_parsed = _parse_datetime_string(_vfn_date)
                             if _vfn_parsed:
                                 closest_date = (_vfn_parsed[1].year, _vfn_parsed[1].month, _vfn_parsed[1].day)
-                                logger.info("视频兜底提取(%s)：无日志包日期，用视频文件名日期拼接 %s",
+                                logger.info("视频兜底提取(%s)：无日志包/main 日期，用视频文件名日期拼接 %s",
                                             video_label, _vfn_date)
                         if not closest_date:
                             _up = _ts_parse_datetime(str(video_att.get("created") or "")[:19])
-                            if not _up:
-                                _up = _ts_parse_datetime(str((issue.get("fields") or {}).get("created") or "")[:19])
                             if _up:
                                 closest_date = (_up.year, _up.month, _up.day)
-                                logger.info("视频兜底提取(%s)：无日志包日期，用视频/工单上传日期拼接 %s",
+                                logger.info("视频兜底提取(%s)：无日志包/main 日期，用视频上传日期拼接 %s",
                                             video_label, _up.strftime("%Y-%m-%d"))
                     if m and _valid_ocr_time(_normalize_ocr_time(m.group(1))):
                         time_str = _normalize_ocr_time(m.group(1))
