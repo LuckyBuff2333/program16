@@ -213,7 +213,7 @@ _rapid_ocr_engine = None
 _rapid_ocr_is_gpu = False  # 主引擎是否使用 GPU 加速
 
 _rapid_ocr_lock = threading.Lock()  # 防止 RapidOCR 并发初始化
-_ocr_infer_lock = threading.RLock()  # RapidOCR/DirectML 推理串行锁
+_ocr_infer_lock = threading.Semaphore(2)  # 纯CPU允许2路并行推理；GPU/DML场景由调用方控制
 _rapid_ocr_cpu_engine = None  # OOM 回退用 CPU-only 引擎
 _ocr_oom_cooldown_until = 0.0  # OOM 冷却截止时间戳
 _ocr_max_pixels = 4_000_000  # GPU 推理最大像素面积（默认值，实际从配置读取）

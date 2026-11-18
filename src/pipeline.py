@@ -174,17 +174,15 @@ def supplement_row(row: dict) -> dict:
         except Exception as e:
             logger.warning("bugid=%s 触发时间提取异常（不阻断流程）: %s", bugid, e)
 
-    # 分析前时间自检（P0-2）：与日志包参考时间偏差过大则不发起分析
+    # 分析前时间自检（P0-2）：参考时间只做提示，不因差值大阻断分析
     _skip_analysis = False
     _check = _time_check_before_analysis(issue, trigger_time, bugid)
     if _check:
-        if _check.get("status") == "不可用":
-            logger.warning("bugid=%s 触发时间与日志包相差 %s 秒（>%s），跳过 AI 分析",
-                           bugid, _check.get("diff_sec"), _check.get("diff_sec"))
-            result["时间自检"] = f"不可用(差{_check.get('diff_sec')}s)"
-            result["AI分析结果(飞书链接)"] = (
-                f"失败: 触发时间与日志包不匹配（差 {_check.get('diff_sec')} 秒）")
-            _skip_analysis = True
+        if _check.get("status") in ("不可用", "参考不一致"):
+            # 参考时间可能来自补抓/旧包，差值大只做提示，不阻断分析
+            logger.warning("bugid=%s 触发时间与日志包参考相差 %s 秒，保留候选时间继续分析",
+                           bugid, _check.get("diff_sec"))
+            result["时间自检"] = f"参考不一致(差{_check.get('diff_sec')}s)"
         elif _check.get("status") == "待确认":
             result["时间自检"] = f"待确认(差{_check.get('diff_sec')}s)"
             logger.warning("bugid=%s 触发时间与日志包相差 %s 秒，分析结果需人工确认",
@@ -821,21 +819,9 @@ def compare_bug_analysis(bugid: str, trigger_time: str = None, uploaded_rows: li
         except Exception as _e:
             logger.debug("bugid=%s 对比前时间自检失败: %s", bugid, _e)
             _chk = {}
-        if _chk.get("status") == "不可用":
-            reason = f"触发时间与日志包不匹配（差 {_chk.get('diff_sec')} 秒），已跳过分析"
-            logger.warning("bugid=%s %s", bugid, reason)
-            return {
-                "bugid": bugid, "doc_path": "", "doc_steps": [],
-                "ai_conclusion": "", "bug_root_cause": "",
-                "root_cause_score": 0.0, "root_cause_ok": False,
-                "layer1_score": 0.0, "layer1_ok": False,
-                "layer2_score": 0.0, "layer2_ok": False,
-                "comment_compare_ok": False, "all_ok": False,
-                "comments": [], "comment_steps": [], "valid_comments": [],
-                "threshold": load_config()["similarity"].get("threshold", 0.7),
-                "compare_mode": semantic_module.compare_mode(),
-                "error": reason, "时间自检": f"不可用(差{_chk.get('diff_sec')}s)",
-            }
+        if _chk.get("status") in ("不可用", "参考不一致"):
+            logger.warning("bugid=%s 触发时间与日志包参考相差 %s 秒，保留候选时间继续对比",
+                           bugid, _chk.get("diff_sec"))
 
     # 1. AI 分析并生成文档
     response = ai_log_client.analyze_logs(bugid, trigger_time)

@@ -20,17 +20,17 @@ def test_self_check_levels():
     early_warn = t.self_check_trigger_time("2026-10-23 15:38:00", "2026-10-23 16:08:00")
     assert early_warn["status"] == "待确认"
 
-    # 早于抓包 2 小时 → 不可用（可能日期/时钟错）
+    # 早于抓包 2 小时 → 参考不一致（抓包可能是补抓/旧包，只提示，不判不可用）
     far_early = t.self_check_trigger_time("2026-10-23 14:08:00", "2026-10-23 16:08:00")
-    assert far_early["status"] == "不可用"
+    assert far_early["status"] == "参考不一致"
 
     # 晚于抓包 2 分钟 → 待确认（轻微时钟抖动，需人工看一眼）
     after = t.self_check_trigger_time("2026-10-23 16:10:00", "2026-10-23 16:08:00")
     assert after["status"] == "待确认" and after["window_hit"] == "否"
 
-    # 晚于抓包 10 分钟 → 不可用（抓包后不可能再触发）
+    # 晚于抓包 10 分钟 → 参考不一致（抓包可能是旧包，保留候选时间）
     after_far = t.self_check_trigger_time("2026-10-23 16:18:00", "2026-10-23 16:08:00")
-    assert after_far["status"] == "不可用"
+    assert after_far["status"] == "参考不一致"
 
     none_ref = t.self_check_trigger_time("2026-10-23 16:08:00", "")
     assert none_ref["status"] == "无参考" and none_ref["diff_sec"] is None
@@ -150,4 +150,4 @@ def test_pre_analysis_check(monkeypatch):
     assert ok["status"] == "正常" and ok["diff_sec"] == 10
 
     bad = pipeline._time_check_before_analysis(issue, "2026-10-23 20:00:00")
-    assert bad["status"] == "不可用"
+    assert bad["status"] == "参考不一致"

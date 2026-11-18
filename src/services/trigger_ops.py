@@ -729,11 +729,11 @@ def self_check_trigger_time(trigger_time, ref_time="", warn_sec: int = None,
     关键语义：参考时间是 gmlogger 的抓包时间，事件一定发生在抓包**之前**，
     所以“提取时间早于抓包”是正常现象（实测 139 条里中位早 156 秒），
     不能按对称偏差判错，否则会把大量正确结果标成待确认/不可用。
-    - 晚于抓包 > reject_sec(300s)：不可用（逻辑上不可能）
+    - 晚于抓包 > reject_sec(300s)：参考不一致（抓包可能是补抓/旧包，仅提示）
     - 晚于抓包 warn_sec~reject_sec：待确认（时钟抖动）
     - 早于抓包 ≤ early_ok_sec(15min)：正常
     - 早于抓包 15~60min：待确认
-    - 早于抓包 > 60min：不可用（可能是日期/时钟错）
+    - 早于抓包 > 60min：参考不一致（可能是日期/时钟错，但不直接判不可用）
     """
     warn_sec = _TIME_WARN_SEC if warn_sec is None else int(warn_sec)
     reject_sec = _TIME_REJECT_SEC if reject_sec is None else int(reject_sec)
@@ -753,7 +753,8 @@ def self_check_trigger_time(trigger_time, ref_time="", warn_sec: int = None,
     diff = abs(delta)
     window_hit = "是" if diff <= min(window_sec, warn_sec) else "否"
     if delta > reject_sec:
-        status = "不可用"
+        # 参考时间可能来自补抓包/旧包，差值大不等于提取时间错误；只标记参考不一致，不判不可用
+        status = "参考不一致"
     elif delta > warn_sec:
         status = "待确认"
     elif -delta <= early_ok:
@@ -761,7 +762,7 @@ def self_check_trigger_time(trigger_time, ref_time="", warn_sec: int = None,
     elif -delta <= early_warn:
         status = "待确认"
     else:
-        status = "不可用"
+        status = "参考不一致"
     return {"diff_sec": diff, "window_hit": window_hit, "status": status}
 
 

@@ -53,6 +53,11 @@ def _load():
         _log(logging.INFO, "GLM-OCR 模型加载中... path=%s", model_path())
         import torch
         from transformers import AutoProcessor, GlmOcrForConditionalGeneration
+        # 纯CPU下限制单路线程数，避免2路并发时把16核全部线程互相抢占
+        try:
+            torch.set_num_threads(max(1, int(os.environ.get("GLM_OCR_NUM_THREADS", "4"))))
+        except Exception:
+            pass
         _PROCESSOR = AutoProcessor.from_pretrained(model_path(), trust_remote_code=True)
         _MODEL = GlmOcrForConditionalGeneration.from_pretrained(
             model_path(), torch_dtype=torch.float32,
