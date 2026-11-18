@@ -1939,7 +1939,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             else:
                 _concluded = bool(_no_report and _looks_concluded(full_text))
             _continue_prompt = "继续"
-            if _concluded:
+            _has_report_path = bool(_generated_report_path(full_text or "")
+                                    or re.search(r"(report_(?:full|degraded|sanitized)[^\s<>`]*\.html)", full_text or ""))
+            if _concluded or (_trunc_mid and _has_report_path):
                 if _report_requested >= 3:
                     results["完成状态"] = "分析失败"
                     results["分析失败归因"] = "智能体收口无报告"
