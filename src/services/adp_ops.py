@@ -1506,6 +1506,32 @@ def download_adp_report(jira_key: str, report_url: str, html_file: str) -> dict:
         return {"file_token": "", "local_path": local_path, "error_code": "UPLOAD_FAIL"}
 
 
+def upload_adp_raw_json(jira_key: str, out_dir: str) -> str:
+    """上传本次执行的原始 raw_data.json 到云端报告文件夹，返回文件 URL。
+
+    与 HTML 报告分开发布；HTML 仍作为多维表格附件，JSON 作为独立文件链接。
+    """
+    from src.clients import feishu_client
+    raw_path = os.path.join(out_dir or "", f"{jira_key}_raw_data.json")
+    if not out_dir or not os.path.isfile(raw_path):
+        logger.warning("ADP 原始JSON不存在，跳过上传: %s", raw_path)
+        return ""
+    folder = str(_get_adp_cfg().get("report_folder") or "")
+    if not folder:
+        logger.warning("ADP report_folder 未配置，跳过原始JSON上传: %s", jira_key)
+        return ""
+    try:
+        result = feishu_client.upload_file_to_drive(
+            raw_path, folder_token=folder, content_type="application/json")
+        url = result.get("url", "")
+        if url:
+            logger.info("ADP 原始JSON已上传: %s -> %s", jira_key, url)
+        return url
+    except Exception as e:
+        logger.warning("ADP 原始JSON上传失败 %s: %s", jira_key, e)
+        return ""
+
+
 # ===== Step 5: 写入飞书多维表格（独立 ADP 表格）=====
 
 def _parse_total_minutes(value) -> float:
@@ -1601,6 +1627,8 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             ensure_adp_field(app_token, table_id, "conversationid", 1)
         if fields_dict.get("recordid"):
             ensure_adp_field(app_token, table_id, "recordid", 1)
+        if fields_dict.get("原始JSON"):
+            ensure_adp_field(app_token, table_id, "原始JSON", 1)
         # 查找已有记录：优先按 jira号 + 本次 traceid 精确匹配
         records = feishu_client.list_bitable_records(app_token, table_id)
         record_id = None
@@ -1641,7 +1669,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause", "root cause",
                     "置信度", "分析失败归因", "traceid", "sessionid", "conversationid", "recordid",
-                    "start_time", "end_time", "traceid排查"]
+                    "start_time", "end_time", "traceid排查", "原始JSON"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         if prev_root:
             write_fields.pop("root cause", None)
@@ -1981,9 +2009,14 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             )
             need_resend = (
                 err_code in RATE_LIMIT_CODES
+                or err_code in TPM_LIMIT_CODES
                 or (not full_text and signal_info.get("request_ack")
                     and not signal_info.get("stream_exc"))
             )
+            # TPM 墙必须优先退避重发，不能被“继续”分支提前截走
+            if err_code in TPM_LIMIT_CODES:
+                need_continue = False
+                need_resend = True
             need_new_session = err_code in SESSION_CONFLICT_CODES
             if signal_info.get("has_cards") or signal_info.get("questionnaire"):
                 if _questionnaire_replied:
@@ -2264,6 +2297,11 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                                     attachment_count=len(attachments), results=results,
                                     elapsed_sec=out.get("elapsed_sec", 0),
                                     trace_id=out.get("trace_id", ""))
+        # 原始 JSON 与 HTML 分开发布：JSON 上传到云端报告文件夹，HTML 仍为附件
+        _raw_json_url = upload_adp_raw_json(jira_key, report_dir)
+        if _raw_json_url:
+            results["原始JSON"] = _raw_json_url
+            out["raw_json_url"] = _raw_json_url
         # 完整文本只落盘、不随响应回传：前端只拿预览 + 报告路径（避免几十 MB 的 SSE/JSON 响应）
         out["report_path"] = os.path.join(report_dir, f"{jira_key}_full_analysis.md") if report_dir else ""
         # 发布完整分析为飞书文档：服务关闭后仍可访问

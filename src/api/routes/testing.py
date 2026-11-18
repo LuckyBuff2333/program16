@@ -6765,7 +6765,7 @@ async def test_adp_lookup(request: Request):
                 return
             try:
                 from src.services.adp_ops import ensure_adp_field as _ensure_field
-                for _fn in ("sessionid", "conversationid", "recordid"):
+                for _fn in ("sessionid", "conversationid", "recordid", "原始JSON"):
                     if any((r.get("results") or {}).get(_fn) for r in _items):
                         _ensure_field(app_token, table_id, _fn, 1)
             except Exception as _e:
