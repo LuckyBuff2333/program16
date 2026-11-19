@@ -1628,6 +1628,16 @@ def _is_specific_module(module: str) -> bool:
     return True
 
 
+def _has_specific_module_info(module: str, root_cause: str) -> bool:
+    """断点模块和根因归属都必须有具体模块信息，任一为空都不算。"""
+    return _is_specific_module(module) and _is_specific_module(root_cause)
+
+
+def _report_is_degraded(text: str) -> bool:
+    """报告正文出现“降级”即视为降级交付。"""
+    return "降级" in str(text or "")
+
+
 def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
     """写入 ADP 独立多维表格，返回 {ok, record_id, message}"""
     from src.clients import feishu_client
@@ -1693,8 +1703,9 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             write_fields.pop("root cause", None)
         if write_fields.get("agent分析的问题模块"):
             write_fields["agent分析的问题模块"] = _strip_module_pid(write_fields["agent分析的问题模块"])
-        if str(write_fields.get("完成状态", "")) == "降级完成" and not _is_specific_module(
-                write_fields.get("agent分析的问题模块", "")):
+        if str(write_fields.get("完成状态", "")) == "降级完成" and not _has_specific_module_info(
+                write_fields.get("agent分析的问题模块", ""),
+                write_fields.get("agent分析的root cause", "")):
             write_fields["完成状态"] = "降级完成-但没模块信息"
             write_fields.pop("agent分析的问题模块", None)
         if write_fields.get("分析失败归因"):
@@ -1702,9 +1713,10 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         if str(write_fields.get("完成状态", "")) in ("分析失败", "无法分析"):
             write_fields.pop("置信度", None)
         # root cause 只来自查附件链接接口；已有值时不覆盖
-        # 一致性校验：完成必须有 HTML 报告和断点模块/现象承载模块，否则按降级/失败落状态
-        if str(write_fields.get("完成状态", "")) == "完成":
+        # 一致性校验：完成/降级完成必须有 HTML、断点模块和根因归属
+        if str(write_fields.get("完成状态", "")) in ("完成", "降级完成"):
             _module = str(write_fields.get("agent分析的问题模块", "") or "").strip()
+            _agent_root = str(write_fields.get("agent分析的root cause", "") or "").strip()
             _has_report = bool(fields_dict.get("_report_file_token"))
             _report_val = write_fields.get("报告链接（分析报告、可观测报告）")
             if isinstance(_report_val, list):
@@ -1713,9 +1725,11 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             if not _has_report:
                 write_fields["完成状态"] = "分析失败"
                 write_fields.setdefault("分析失败归因", "未拿到 HTML 报告")
-            elif not _is_specific_module(_module):
+            elif not _has_specific_module_info(_module, _agent_root):
                 write_fields["完成状态"] = "降级完成-但没模块信息"
                 write_fields.pop("agent分析的问题模块", None)
+            elif str(write_fields.get("完成状态", "")) == "完成" and fields_dict.get("_report_degraded"):
+                write_fields["完成状态"] = "降级完成"
         # 状态优先级：完成 > 降级完成 > 降级完成-但没模块信息 > 失败
         _status_rank = {"完成": 3, "降级完成": 2, "降级完成-但没模块信息": 1}
         _prev_rank = _status_rank.get(prev_status, 0)
@@ -2254,10 +2268,21 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             html_module = _extract_module_from_html(local_path)
             if html_module:
                 results["agent分析的问题模块"] = html_module
-            # 拿到 HTML 但断点模块/现象承载模块为空或无效 → 降级完成-但没模块信息
-            if file_token and not _is_specific_module(html_module):
+            _degraded = _report_is_degraded(full_text)
+            if not _degraded and local_path:
+                try:
+                    with open(local_path, "r", encoding="utf-8", errors="ignore") as _df:
+                        _degraded = _report_is_degraded(_df.read())
+                except Exception:
+                    pass
+            results["_report_degraded"] = _degraded
+            # 拿到 HTML 但断点模块或根因归属任一为空 → 降级完成-但没模块信息
+            if file_token and not _has_specific_module_info(
+                    html_module, results.get("agent分析的root cause", "")):
                 results["完成状态"] = "降级完成-但没模块信息"
                 results.pop("agent分析的问题模块", None)
+            elif file_token and _degraded:
+                results["完成状态"] = "降级完成"
             _progress("download_report", "done" if file_token else "fail")
         elif is_sandbox:
             # 沙箱 URL 不可下载：没有实际拿到 HTML 报告 → 分析失败
