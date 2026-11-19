@@ -6266,16 +6266,8 @@ async def test_adp_single(request: Request):
             except _queue.Empty:
                 break
         result = _result_ref[0] or {"ok": False, "error": "线程异常"}
-        # ADP 执行批次记录（本地CSV + 云端多维表格）
-        try:
-            from src.services.adp_ops import save_adp_batch_log as _save_batch_log
-            _save_batch_log([{"jira_key": bugid, "ok": result.get("ok", False),
-                              "error": result.get("error", ""),
-                              "fail_type": _adp_fail_type(result),
-                              "traceid": (result.get("results") or {}).get("traceid", ""),
-                              "traceid排查": (result.get("results") or {}).get("traceid排查", "")}])
-        except Exception:
-            logger.warning("ADP 单条执行批次记录保存失败", exc_info=True)
+        # 单条执行不单独生成批次；批次日志只由 /api/test/adp_batch 等
+        # 批次编排入口统一写入，避免每重试一条就产生一个“只有 1 条”的批次。
         # 推送附件数 + 飞书状态等补充信息
         yield f"data: {_json.dumps({'type': 'step', 'step': 'attachments', 'status': 'done' if result.get('attachment_count', 0) > 0 else 'fail', 'count': result.get('attachment_count', 0)}, ensure_ascii=False)}\n\n"
         if not result.get('attachment_count'):
