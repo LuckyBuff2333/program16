@@ -1340,15 +1340,16 @@ def classify_adp_failure(error: str = "", full_text: str = "", attachment_count:
 
 
 def normalize_adp_status(status: str) -> str:
-    """统一 ADP 完成状态，只保留：完成/降级完成/分析失败/无法分析/超时未完成。"""
+    """统一 ADP 完成状态，只保留：完成/降级完成/分析失败/无法分析。"""
     s = str(status or "").strip()
     aliases = {
         "降级完成-但没模块信息": "降级完成",
         "无法复现": "无法分析",
         "分析完成": "完成",
+        "超时未完成": "分析失败",
     }
     s = aliases.get(s, s)
-    if s in ("完成", "降级完成", "分析失败", "无法分析", "超时未完成"):
+    if s in ("完成", "降级完成", "分析失败", "无法分析"):
         return s
     if "完成" in s:
         return "降级完成"

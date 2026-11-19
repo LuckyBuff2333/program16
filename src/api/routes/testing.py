@@ -6771,7 +6771,7 @@ async def test_adp_lookup(request: Request):
                 results_dict = r.get("results") or {}
                 from src.services.adp_ops import normalize_adp_status as _normalize_status
                 status = _normalize_status(results_dict.get("完成状态", ""))
-                if not r.get("ok") and status not in ("无法分析", "分析失败", "超时未完成"):
+                if not r.get("ok") and status not in ("无法分析", "分析失败"):
                     continue
                 write_fields = {k: v for k, v in results_dict.items()
                                 if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
@@ -6931,7 +6931,7 @@ async def test_adp_lookup(request: Request):
                     ok = result.get("ok", False) and has_html and feishu_ok
                     _timed_out = bool(_item_start_times.get(bugid, {}).get("timed_out"))
                     if _timed_out and not has_html:
-                        results_dict["完成状态"] = "超时未完成"
+                        results_dict["完成状态"] = "分析失败"
                         results_dict["分析失败归因"] = "单条任务超时（90分钟）"
 
                     item = {
@@ -6983,7 +6983,7 @@ async def test_adp_lookup(request: Request):
                     has_html = bool(r.get("has_html"))
                     results_dict = (r.get("result") or {}).get("results") or {}
                     if not has_html:
-                        results_dict["完成状态"] = "超时未完成"
+                        results_dict["完成状态"] = "分析失败"
                         results_dict["分析失败归因"] = "单条任务超时（90分钟）"
                     item = {
                         "jira_key": bugid, "ok": has_html, "has_html": has_html,
@@ -7006,7 +7006,7 @@ async def test_adp_lookup(request: Request):
                 item = {
                     "jira_key": bugid, "ok": False, "has_html": False,
                     "skipped": False, "timed_out": True,
-                    "results": {"完成状态": "超时未完成", "分析失败归因": "单条任务超时（90分钟）"},
+                    "results": {"完成状态": "分析失败", "分析失败归因": "单条任务超时（90分钟）"},
                     "error": "", "bt_found": bugid in bt_map,
                     "desc_source": "bitable" if bugid in bt_map else "none",
                     "time_source": "bitable" if bugid in bt_map else "none",
@@ -7091,9 +7091,9 @@ async def test_adp_lookup(request: Request):
         total_success = sum(1 for r in batch_results if r["has_html"])
         total_timeout = sum(1 for r in batch_results if r.get("timed_out") and not r["has_html"])
         total_skip = sum(1 for r in batch_results if r.get("skipped"))
-        # 超时未完成单独计数，不计入“失败”
+        # 超时也按分析失败计数
         total_fail = sum(1 for r in batch_results
-                         if not r["has_html"] and not r.get("skipped") and not r.get("timed_out"))
+                         if not r["has_html"] and not r.get("skipped"))
 
         # ADP 执行批次记录（本地CSV）
         try:
