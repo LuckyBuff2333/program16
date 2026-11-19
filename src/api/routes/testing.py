@@ -6771,7 +6771,7 @@ async def test_adp_lookup(request: Request):
                 results_dict = r.get("results") or {}
                 from src.services.adp_ops import (
                     normalize_adp_status as _normalize_status,
-                    _has_specific_module_info as _has_module_info,
+                    _has_module_and_confidence as _has_module_info,
                 )
                 status = _normalize_status(results_dict.get("完成状态", ""))
                 if not r.get("ok") and status not in ("无法分析", "分析失败"):
@@ -6784,15 +6784,15 @@ async def test_adp_lookup(request: Request):
                 if write_fields.get("agent分析的问题模块"):
                     from src.services.adp_ops import _strip_module_pid as _strip_pid
                     write_fields["agent分析的问题模块"] = _strip_pid(write_fields["agent分析的问题模块"])
-                # 批量写回前直接判定：断点模块和根因归属都必须有值
+                # 批量写回前直接判定：断点模块和置信度都必须有值
                 if status in ("完成", "降级完成"):
                     _module = str(write_fields.get("agent分析的问题模块", "") or "").strip()
-                    _agent_root = str(write_fields.get("agent分析的root cause", "") or "").strip()
+                    _confidence = str(write_fields.get("置信度", "") or "").strip()
                     _has_html = bool(results_dict.get("_report_file_token"))
                     if not _has_html:
                         status = "分析失败"
                         write_fields["分析失败归因"] = "未拿到 HTML 报告"
-                    elif not _has_module_info(_module, _agent_root):
+                    elif not _has_module_info(_module, _confidence):
                         status = "降级完成-但没模块信息"
                         write_fields.pop("agent分析的问题模块", None)
                     elif status == "完成" and results_dict.get("_report_degraded"):

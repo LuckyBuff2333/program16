@@ -1628,9 +1628,9 @@ def _is_specific_module(module: str) -> bool:
     return True
 
 
-def _has_specific_module_info(module: str, root_cause: str) -> bool:
-    """断点模块和根因归属都必须有具体模块信息，任一为空都不算。"""
-    return _is_specific_module(module) and _is_specific_module(root_cause)
+def _has_module_and_confidence(module: str, confidence: str) -> bool:
+    """断点模块（现象承载模块）和置信度都必须有值，任一为空都不算。"""
+    return _is_specific_module(module) and bool(str(confidence or "").strip())
 
 
 def _report_is_degraded(text: str) -> bool:
@@ -1703,9 +1703,9 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             write_fields.pop("root cause", None)
         if write_fields.get("agent分析的问题模块"):
             write_fields["agent分析的问题模块"] = _strip_module_pid(write_fields["agent分析的问题模块"])
-        if str(write_fields.get("完成状态", "")) == "降级完成" and not _has_specific_module_info(
+        if str(write_fields.get("完成状态", "")) == "降级完成" and not _has_module_and_confidence(
                 write_fields.get("agent分析的问题模块", ""),
-                write_fields.get("agent分析的root cause", "")):
+                write_fields.get("置信度", "")):
             write_fields["完成状态"] = "降级完成-但没模块信息"
             write_fields.pop("agent分析的问题模块", None)
         if write_fields.get("分析失败归因"):
@@ -1713,10 +1713,10 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         if str(write_fields.get("完成状态", "")) in ("分析失败", "无法分析"):
             write_fields.pop("置信度", None)
         # root cause 只来自查附件链接接口；已有值时不覆盖
-        # 一致性校验：完成/降级完成必须有 HTML、断点模块和根因归属
+        # 一致性校验：完成/降级完成必须有 HTML、断点模块和置信度
         if str(write_fields.get("完成状态", "")) in ("完成", "降级完成"):
             _module = str(write_fields.get("agent分析的问题模块", "") or "").strip()
-            _agent_root = str(write_fields.get("agent分析的root cause", "") or "").strip()
+            _confidence = str(write_fields.get("置信度", "") or "").strip()
             _has_report = bool(fields_dict.get("_report_file_token"))
             _report_val = write_fields.get("报告链接（分析报告、可观测报告）")
             if isinstance(_report_val, list):
@@ -1725,7 +1725,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             if not _has_report:
                 write_fields["完成状态"] = "分析失败"
                 write_fields.setdefault("分析失败归因", "未拿到 HTML 报告")
-            elif not _has_specific_module_info(_module, _agent_root):
+            elif not _has_module_and_confidence(_module, _confidence):
                 write_fields["完成状态"] = "降级完成-但没模块信息"
                 write_fields.pop("agent分析的问题模块", None)
             elif str(write_fields.get("完成状态", "")) == "完成" and fields_dict.get("_report_degraded"):
@@ -2276,9 +2276,9 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 except Exception:
                     pass
             results["_report_degraded"] = _degraded
-            # 拿到 HTML 但断点模块或根因归属任一为空 → 降级完成-但没模块信息
-            if file_token and not _has_specific_module_info(
-                    html_module, results.get("agent分析的root cause", "")):
+            # 拿到 HTML 但断点模块或置信度任一为空 → 降级完成-但没模块信息
+            if file_token and not _has_module_and_confidence(
+                    html_module, results.get("置信度", "")):
                 results["完成状态"] = "降级完成-但没模块信息"
                 results.pop("agent分析的问题模块", None)
             elif file_token and _degraded:
