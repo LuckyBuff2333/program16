@@ -6789,7 +6789,7 @@ async def test_adp_lookup(request: Request):
                 _cur_dur = write_fields.get("耗时(分)")
                 _prev_fields = rec.get("fields") or {}
                 _prev_status = str(_prev_fields.get("完成状态", "") or "")
-                _status_rank = {"完成": 2, "降级完成": 1}
+                _status_rank = {"完成": 3, "降级完成": 2, "降级完成-但没模块信息": 1}
                 if _status_rank.get(_prev_status, 0) > _status_rank.get(status, 0):
                     continue
                 if _cur_dur not in (None, ""):
