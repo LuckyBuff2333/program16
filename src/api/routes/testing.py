@@ -6769,11 +6769,14 @@ async def test_adp_lookup(request: Request):
                 if not rec:
                     continue
                 results_dict = r.get("results") or {}
-                status = results_dict.get("完成状态", "")
+                from src.services.adp_ops import normalize_adp_status as _normalize_status
+                status = _normalize_status(results_dict.get("完成状态", ""))
                 if not r.get("ok") and status not in ("无法分析", "分析失败", "超时未完成"):
                     continue
                 write_fields = {k: v for k, v in results_dict.items()
                                 if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
+                if status:
+                    write_fields["完成状态"] = status
                 write_fields.pop("原因", None)
                 if write_fields.get("agent分析的问题模块"):
                     from src.services.adp_ops import _strip_module_pid as _strip_pid
@@ -6786,7 +6789,8 @@ async def test_adp_lookup(request: Request):
                 _cur_dur = write_fields.get("耗时(分)")
                 _prev_fields = rec.get("fields") or {}
                 _prev_status = str(_prev_fields.get("完成状态", "") or "")
-                if _prev_status == "完成" and str(write_fields.get("完成状态", "")) != "完成":
+                _status_rank = {"完成": 2, "降级完成": 1}
+                if _status_rank.get(_prev_status, 0) > _status_rank.get(status, 0):
                     continue
                 if _cur_dur not in (None, ""):
                     try:

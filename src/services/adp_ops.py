@@ -1339,6 +1339,24 @@ def classify_adp_failure(error: str = "", full_text: str = "", attachment_count:
     return "分析完成但未产出HTML报告"
 
 
+def normalize_adp_status(status: str) -> str:
+    """统一 ADP 完成状态，只保留：完成/降级完成/分析失败/无法分析/超时未完成。"""
+    s = str(status or "").strip()
+    aliases = {
+        "降级完成-但没模块信息": "降级完成",
+        "无法复现": "无法分析",
+        "分析完成": "完成",
+    }
+    s = aliases.get(s, s)
+    if s in ("完成", "降级完成", "分析失败", "无法分析", "超时未完成"):
+        return s
+    if "完成" in s:
+        return "降级完成"
+    if "失败" in s:
+        return "分析失败"
+    return "无法分析"
+
+
 def extract_adp_results(full_text: str, closeout_data: dict, start_ts: int, end_ts: int, file_urls: list = None) -> dict:
     """从 ADP 返回内容中提取需要写入飞书的 6 个字段"""
     result = {"完成状态": "完成"}
@@ -1669,13 +1687,14 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
                     "置信度", "分析失败归因", "traceid", "sessionid", "conversationid", "recordid",
                     "start_time", "end_time", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
+        if write_fields.get("完成状态"):
+            write_fields["完成状态"] = normalize_adp_status(write_fields.get("完成状态", ""))
         if prev_root:
             write_fields.pop("root cause", None)
         if write_fields.get("agent分析的问题模块"):
             write_fields["agent分析的问题模块"] = _strip_module_pid(write_fields["agent分析的问题模块"])
         if str(write_fields.get("完成状态", "")) == "降级完成" and not _is_specific_module(
                 write_fields.get("agent分析的问题模块", "")):
-            write_fields["完成状态"] = "降级完成-但没模块信息"
             write_fields.pop("agent分析的问题模块", None)
         if write_fields.get("分析失败归因"):
             write_fields["分析失败归因"] = short_failure_category(write_fields["分析失败归因"])
@@ -1694,7 +1713,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
                 write_fields["完成状态"] = "分析失败"
                 write_fields.setdefault("分析失败归因", "未拿到 HTML 报告")
             elif not _is_specific_module(_module):
-                write_fields["完成状态"] = "降级完成-但没模块信息"
+                write_fields["完成状态"] = "降级完成"
                 write_fields.pop("agent分析的问题模块", None)
         # 状态优先级：完成 > 降级完成 > 失败。
         # 注意：降级完成算成功；降级完成-但没模块信息算失败，允许被覆盖。
@@ -2237,7 +2256,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
                 results["agent分析的问题模块"] = html_module
             # 拿到 HTML 但报告里没有具体断点模块/现象承载模块 → 降级完成
             if file_token and not _is_specific_module(html_module):
-                results["完成状态"] = "降级完成-但没模块信息"
+                results["完成状态"] = "降级完成"
                 results.pop("agent分析的问题模块", None)
             _progress("download_report", "done" if file_token else "fail")
         elif is_sandbox:
