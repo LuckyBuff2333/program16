@@ -1627,8 +1627,6 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             ensure_adp_field(app_token, table_id, "conversationid", 1)
         if fields_dict.get("recordid"):
             ensure_adp_field(app_token, table_id, "recordid", 1)
-        if fields_dict.get("原始JSON"):
-            ensure_adp_field(app_token, table_id, "原始JSON", 1)
         # 查找已有记录：优先按 jira号 + 本次 traceid 精确匹配
         records = feishu_client.list_bitable_records(app_token, table_id)
         record_id = None
@@ -1669,7 +1667,7 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause", "root cause",
                     "置信度", "分析失败归因", "traceid", "sessionid", "conversationid", "recordid",
-                    "start_time", "end_time", "traceid排查", "原始JSON"]
+                    "start_time", "end_time", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
         if prev_root:
             write_fields.pop("root cause", None)
@@ -2300,7 +2298,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         # 原始 JSON 与 HTML 分开发布：JSON 上传到云端报告文件夹，HTML 仍为附件
         _raw_json_url = upload_adp_raw_json(jira_key, report_dir)
         if _raw_json_url:
-            results["原始JSON"] = _raw_json_url
+            # 原始JSON只上传到云端文件夹，不写入多维表格字段
             out["raw_json_url"] = _raw_json_url
         # 完整文本只落盘、不随响应回传：前端只拿预览 + 报告路径（避免几十 MB 的 SSE/JSON 响应）
         out["report_path"] = os.path.join(report_dir, f"{jira_key}_full_analysis.md") if report_dir else ""
