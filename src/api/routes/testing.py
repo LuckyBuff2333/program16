@@ -6769,7 +6769,10 @@ async def test_adp_lookup(request: Request):
                 if not rec:
                     continue
                 results_dict = r.get("results") or {}
-                from src.services.adp_ops import normalize_adp_status as _normalize_status
+                from src.services.adp_ops import (
+                    normalize_adp_status as _normalize_status,
+                    _has_specific_module_info as _has_module_info,
+                )
                 status = _normalize_status(results_dict.get("完成状态", ""))
                 if not r.get("ok") and status not in ("无法分析", "分析失败"):
                     continue
@@ -6781,11 +6784,24 @@ async def test_adp_lookup(request: Request):
                 if write_fields.get("agent分析的问题模块"):
                     from src.services.adp_ops import _strip_module_pid as _strip_pid
                     write_fields["agent分析的问题模块"] = _strip_pid(write_fields["agent分析的问题模块"])
+                # 批量写回前直接判定：完成/降级完成都要求断点模块和根因归属都有值
+                if status in ("完成", "降级完成"):
+                    _module = str(write_fields.get("agent分析的问题模块", "") or "").strip()
+                    _agent_root = str(write_fields.get("agent分析的root cause", "") or "").strip()
+                    _has_html = bool(results_dict.get("_report_file_token"))
+                    if not _has_html:
+                        status = "分析失败"
+                        write_fields["分析失败归因"] = "未拿到 HTML 报告"
+                    elif not _has_module_info(_module, _agent_root):
+                        status = "降级完成-但没模块信息"
+                        write_fields.pop("agent分析的问题模块", None)
+                if status:
+                    write_fields["完成状态"] = status
+                if status in ("分析失败", "无法分析"):
+                    write_fields.pop("置信度", None)
                 if write_fields.get("分析失败归因"):
                     from src.services.adp_ops import short_failure_category as _short_reason
                     write_fields["分析失败归因"] = _short_reason(write_fields["分析失败归因"])
-                if str(write_fields.get("完成状态", "")) in ("分析失败", "无法分析"):
-                    write_fields.pop("置信度", None)
                 _cur_dur = write_fields.get("耗时(分)")
                 _prev_fields = rec.get("fields") or {}
                 _prev_status = str(_prev_fields.get("完成状态", "") or "")
