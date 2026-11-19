@@ -7025,8 +7025,9 @@ async def test_adp_lookup(request: Request):
 
         # 空返回项：全部跑完后统一重试一次（最多 6 个并行）
         _empty_retry = [r for r in batch_results
-                        if ((r.get("results") or {}).get("分析失败归因") == "ADP 无返回"
-                            or "ADP 无返回" in (r.get("error") or ""))]
+                        if (((r.get("results") or {}).get("分析失败归因") == "ADP 无返回"
+                            or "ADP 无返回" in (r.get("error") or ""))
+                            and (r.get("results") or {}).get("完成状态") != "无法分析")]
         if _empty_retry:
             import concurrent.futures as _cf
             _retry_workers = 6
