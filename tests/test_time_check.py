@@ -151,3 +151,10 @@ def test_pre_analysis_check(monkeypatch):
 
     bad = pipeline._time_check_before_analysis(issue, "2026-10-23 20:00:00")
     assert bad["status"] == "参考不一致"
+
+def test_navigation_eta_is_not_a_clock():
+    from src.services.server_legacy import _valid_time_tokens
+
+    # 导航 ETA 不能当时钟；日期时间粘连时仍应提取真实时钟
+    assert _valid_time_tokens("14:52到达 2025-09-0314:35:41") == [(14, 35)]
+    assert _valid_time_tokens("预计14:52 14:35") == [(14, 35)]

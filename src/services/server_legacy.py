@@ -5012,10 +5012,22 @@ def _normalize_time_spacing(text: str) -> str:
 
 
 def _valid_time_tokens(text: str) -> list:
-    """白名单正则：只接受 00:00~23:59，返回合法时分。"""
+    """白名单正则：只接受 00:00~23:59，返回合法时分。
+
+    导航 ETA 的“14:52到达”不是状态栏时钟，必须排除。
+    """
     t = _normalize_time_spacing(text)
+    # OCR 可能把日期和时间粘成 2025-09-0314:35:41，补空格后再识别
+    t = re.sub(r"(\d{4}[-/]\d{1,2}[-/]\d{1,2})(?=\d{1,2}[:：]\d{2})", r"\1 ", t)
     out = []
     for m in re.finditer(r"(?<!\d)([01]?\d|2[0-3])[:：]([0-5]\d)(?!\d)", t):
+        # 时分后面紧跟“到达/抵达/分钟/公里”等，视为导航时间，不可用
+        suffix = t[m.end():m.end() + 8]
+        prefix = t[max(0, m.start() - 8):m.start()]
+        if re.match(r"^\s*(?:到达|抵达|到|分钟|公里|千米|km|米)", suffix, re.IGNORECASE):
+            continue
+        if re.search(r"(?:预计|约|大约|剩余|还有)\s*$", prefix, re.IGNORECASE):
+            continue
         out.append((int(m.group(1)), int(m.group(2))))
     return out
 
@@ -5024,9 +5036,10 @@ def _strip_navigation_times(text: str) -> str:
     """剔除导航到达时间、预计时间、时间区间，避免被当成状态栏时钟。"""
     if not text:
         return text
-    # 12:56到达 / 预计12:56 / 约 12:56 / 12:56 分钟
+    # 12:56到达 / 14:52 抵达 / 预计12:56 / 约 12:56 / 12:56 分钟
     text = re.sub(
-        r"(?:预计|约|大约)?\s*\b\d{1,2}[:：]\d{2}\s*(?:到达|分钟|公里|km|小时|路况)",
+        r"(?:预计|约|大约)?\s*(?<!\d)\d{1,2}[:：]\d{2}\s*"
+        r"(?:到达|抵达|到|分钟|公里|千米|km|米|小时|路况)",
         " ", text, flags=re.IGNORECASE)
     # 14:40-14:40 / 14:40~15:10 / 14:40至15:10
     text = re.sub(r"\b\d{1,2}[:：]\d{2}\s*[-~至]\s*\d{1,2}[:：]\d{2}\b", " ", text)
