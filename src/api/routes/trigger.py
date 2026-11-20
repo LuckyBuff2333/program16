@@ -106,6 +106,63 @@ def _to_minute(ts: str) -> str:
     return f"{m.group(1)} {m.group(2)}:00" if m else s
 
 
+def _query_latest_error_mappings(bugids: list) -> dict:
+    """查询数据沉淀表中每个 bugid 最新失败记录的错误分类映射"""
+    from src.config import load_config
+    from src.clients import feishu_client
+    from src.services.troubleshoot_service import _diag_pre_classify
+    from src.api.routes.shared import bitable_text as _bitable_text
+    # 显示专用映射：_ERROR_TYPE_MAP 中为空的条目（走深度分析）在此给出展示分类
+    _DISPLAY_MAP = {
+        "NO_LOG_ATTACHMENT": "无gmlogger",
+        "EXTRACTION_NO_LOG": "无gmlogger",
+        "ATTACHMENT_INCOMPLETE": "日志不全",
+    }
+    cfg = load_config().get("feishu_bitable", {})
+    app_token = cfg.get("app_token", "")
+    table_id = cfg.get("table_id", "")
+    if not app_token or not table_id:
+        return {}
+    result = {}
+    chunk_size = 20
+    for i in range(0, len(bugids), chunk_size):
+        chunk = bugids[i:i + chunk_size]
+        conditions = [f'CurrentValue.[jira号] = "{b}"' for b in chunk]
+        expr = conditions[0] if len(conditions) == 1 else "OR(" + ",".join(conditions) + ")"
+        try:
+            records = feishu_client.list_bitable_records(
+                app_token, table_id, filter_expr=expr)
+            # 按 bugid 分组，只取分析结果为失败的
+            bt_map = {}
+            for rec in records:
+                fields = rec.get("fields", {})
+                jira_no = _bitable_text(fields.get("jira号", ""))
+                if not jira_no or jira_no not in bugids:
+                    continue
+                analysis_result = _bitable_text(fields.get("分析结果", ""))
+                if analysis_result != "失败":
+                    continue
+                done_time = _bitable_text(fields.get("分析开始时间", ""))
+                bt_map.setdefault(jira_no, []).append((done_time, fields))
+            # 取最新一条失败记录
+            for jira_no, entries in bt_map.items():
+                entries.sort(key=lambda x: x[0], reverse=True)
+                latest_fields = entries[0][1]
+                error_type = _bitable_text(latest_fields.get("错误类型", "")).strip()
+                error_class = _bitable_text(latest_fields.get("错误分类", "")).strip()
+                err_msg = _bitable_text(latest_fields.get("错误信息", "")).strip()
+                category = _diag_pre_classify(err_msg, error_class, error_type)
+                # 显示映射兜底：ErrorType 在 _ERROR_TYPE_MAP 中为空的条目用显示专用映射
+                if not category:
+                    et_upper = error_type.upper()
+                    if et_upper in _DISPLAY_MAP:
+                        category = _DISPLAY_MAP[et_upper]
+                result[jira_no] = category or error_type or error_class
+        except Exception as e:
+            logger.warning("查询数据沉淀错误映射失败(chunk %d): %s", i // chunk_size + 1, e)
+    return result
+
+
 @router.post("/api/trigger_time/batch_read", response_model=ApiResponse)
 async def batch_read_trigger_times(req: BugidListRequest):
     """批量读取指定 jira 号的当前触发时间，少量用 filter 搜索，批量用全量缓存"""
@@ -129,6 +186,8 @@ async def batch_read_trigger_times(req: BugidListRequest):
         local_times = await loop.run_in_executor(None, _load_trigger_times_from_cloud)
     result, extracted_count, batch_to_cloud = [], 0, {}
     batch_refs = {}
+    # 查询数据沉淀中每个 bugid 的最新失败记录错误映射
+    error_map = await loop.run_in_executor(None, _query_latest_error_mappings, bugids)
     for bugid in bugids:
         current_time = local_times.get(bugid, "")
         if not current_time and not cache_only:
@@ -152,7 +211,7 @@ async def batch_read_trigger_times(req: BugidListRequest):
                     extracted_count += 1
             except Exception as e:
                 logger.warning("批量读取触发时间-提取失败 %s: %s", bugid, e)
-        result.append({"bugid": bugid, "current_time": current_time})
+        result.append({"bugid": bugid, "current_time": current_time, "error_mapping": error_map.get(bugid, "")})
     if batch_to_cloud:
         await loop.run_in_executor(
             None, _batch_save_trigger_times_to_cloud,
@@ -198,42 +257,83 @@ def update_trigger_time(req: UpdateTriggerTimeRequest):
 
 @router.post("/api/trigger_time/batch_update", response_model=ApiResponse)
 def batch_update_trigger_time(req: BatchUpdateRequest):
-    """批量应用修正时间"""
-    from src.services.trigger_ops import _batch_save_trigger_times_to_cloud
+    """批量应用修正时间，支持空时间删除云端记录（仅限时间批量提取面板）"""
+    from src.services.trigger_ops import (
+        _batch_save_trigger_times_to_cloud, _get_trigger_time_table_cfg,
+        _trigger_time_bugid_cache, _search_trigger_time_batch,
+    )
     from src.services.report_ops import _load_diagnose_cache, _save_diagnose_cache
+    from src.clients import feishu_client
     from src.api.routes.shared import ok as _ok, fail as _fail
     items = req.items
     if not items:
         return _fail("待应用列表为空")
     valid_items = {}
+    delete_bugids = []
     for item in items:
         bugid = item.bugid.strip()
         new_time = _to_minute(item.new_time)
-        if not bugid or not new_time:
+        if not bugid:
             continue
-        valid_items[bugid] = new_time
-    if not valid_items:
+        if new_time:
+            valid_items[bugid] = new_time
+        else:
+            delete_bugids.append(bugid)
+    if not valid_items and not delete_bugids:
         return _fail("待应用列表为空")
-    cloud_ok = _batch_save_trigger_times_to_cloud(
-        valid_items, {k: "人工修改" for k in valid_items})
-    if not cloud_ok:
-        return _fail("云端写入失败")
-    cache_updated = 0
-    for bugid, new_time in valid_items.items():
-        cached = _load_diagnose_cache(bugid)
-        if cached:
-            cached["verify_status"] = "corrected"
-            cached["suggested_time"] = new_time
-            _save_diagnose_cache(bugid, cached)
-            cache_updated += 1
-    success = len(valid_items)
-    msg = f"批量应用完成：成功 {success} 条"
-    return _ok({"success": success, "failed": 0}, msg)
+    # 更新有时间的项目
+    success = 0
+    if valid_items:
+        cloud_ok = _batch_save_trigger_times_to_cloud(
+            valid_items, {k: "人工修改" for k in valid_items})
+        if not cloud_ok:
+            return _fail("云端写入失败")
+        for bugid, new_time in valid_items.items():
+            cached = _load_diagnose_cache(bugid)
+            if cached:
+                cached["verify_status"] = "corrected"
+                cached["suggested_time"] = new_time
+                _save_diagnose_cache(bugid, cached)
+        success = len(valid_items)
+    # 删除空时间的项目
+    deleted = 0
+    if delete_bugids:
+        try:
+            app_token, _ = _get_trigger_time_table_cfg()
+            # 确保缓存已加载
+            uncached = [b for b in delete_bugids if b not in _trigger_time_bugid_cache]
+            if uncached:
+                _search_trigger_time_batch(uncached)
+            delete_by_table = {}  # {tid: [record_id]}
+            for bugid in delete_bugids:
+                cached = _trigger_time_bugid_cache.get(bugid)
+                if cached and isinstance(cached, tuple) and len(cached) >= 3:
+                    tid, rec_id, _ = cached
+                    delete_by_table.setdefault(tid, []).append(rec_id)
+                    _trigger_time_bugid_cache.pop(bugid, None)
+            for tid, rec_ids in delete_by_table.items():
+                for i in range(0, len(rec_ids), 500):
+                    feishu_client.batch_delete_records(app_token, tid, rec_ids[i:i + 500])
+                deleted += len(rec_ids)
+            # 清空诊断缓存中的建议时间
+            for bugid in delete_bugids:
+                cached = _load_diagnose_cache(bugid)
+                if cached:
+                    cached.pop("suggested_time", None)
+                    _save_diagnose_cache(bugid, cached)
+            logger.info("时间批量删除完成: %d 条", deleted)
+        except Exception as e:
+            logger.warning("时间删除失败: %s", e)
+    parts = []
+    if success: parts.append(f"更新 {success} 条")
+    if deleted: parts.append(f"删除 {deleted} 条")
+    msg = f"批量应用完成：{'，'.join(parts)}"
+    return _ok({"success": success, "deleted": deleted}, msg)
 
 
 @router.post("/api/trigger_time/writeback_vcs_bug", response_model=ApiResponse)
 async def writeback_vcs_bug(req: BatchUpdateRequest):
-    """将问题发生时间写回 VCS BUG 多维表格（按 jira号 匹配记录并更新）"""
+    """将问题发生时间写回 VCS BUG 多维表格（按 jira号 匹配记录并更新，支持空时间清空）"""
     from src.clients import feishu_client as _fc
     from src.api.routes.shared import ok as _ok, fail as _fail, bitable_text as _bitable_text
     items = req.items
@@ -243,7 +343,7 @@ async def writeback_vcs_bug(req: BatchUpdateRequest):
     for item in items:
         bugid = item.bugid.strip()
         new_time = item.new_time.strip()
-        if bugid and new_time:
+        if bugid:
             valid_items[bugid] = new_time
     if not valid_items:
         return _fail("无有效的写回数据")
@@ -281,7 +381,8 @@ async def writeback_vcs_bug(req: BatchUpdateRequest):
             updated += len(batch)
         except Exception as e:
             logger.warning("VCS BUG 写回失败(batch %d): %s", i // 50 + 1, e)
-    logger.info("VCS BUG 问题发生时间写回完成: %d/%d", updated, len(valid_items))
+    cleared = sum(1 for t in record_map.values() if not t)
+    logger.info("VCS BUG 问题发生时间写回完成: %d/%d（清空 %d 条）", updated, len(valid_items), cleared)
     return _ok({"updated": updated, "total": len(valid_items)},
                f"写回 VCS BUG 完成：{updated}/{len(valid_items)} 条")
 

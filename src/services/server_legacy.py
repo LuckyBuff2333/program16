@@ -387,7 +387,7 @@ _ARCHIVE_NAME_RE = re.compile(r"\.(zip|7z|rar|tar|gz|bz2|xz)(\.\d{2,3})?$", re.I
 
 _SPLIT_ARCHIVE_RE = re.compile(r"\.\d{2,3}$")
 
-_ARCHIVE_PROBE_MAX_BYTES = 300 * 1024 * 1024
+_ARCHIVE_PROBE_MAX_BYTES = 500 * 1024 * 1024
 
 # 视频文件后缀
 _VIDEO_SUFFIXES = (".mp4", ".avi", ".mov", ".mkv")
