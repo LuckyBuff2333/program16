@@ -33,7 +33,8 @@
           </div>
         </el-card>
 
-        <el-card v-if="rows.length || errors.length" shadow="never" style="margin-top:14px">
+        <el-card v-if="rows.length || errors.length" v-loading="cacheLoading"
+          element-loading-text="正在检查云端缓存..." shadow="never" style="margin-top:14px">
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
             <span class="section-title" style="margin:0">查询结果</span>
             <div class="stat-bar" style="display:flex;gap:6px;align-items:center">
@@ -196,6 +197,7 @@ export default {
       customDateBugLoading: false,
       filterAiPreliminary: true,
       filterCloudCache: false,
+      cacheLoading: false,
       rows: [] as any[],
       errors: [] as any[],
       mode: 'keys',
@@ -445,6 +447,7 @@ export default {
     },
     async enrichWithCloudCache() {
       if (!this.rows.length) return;
+      this.cacheLoading = true;
       try {
         const keys = this.rows.map((r: any) => r.key);
         const result = await api('/api/trigger_time/batch_read', {
@@ -457,6 +460,8 @@ export default {
         this.rows = this.rows.map((r: any) => ({ ...r, has_cloud_cache: !!timeMap[r.key] }));
       } catch (e) {
         // 缓存检查失败不阻塞主流程
+      } finally {
+        this.cacheLoading = false;
       }
     },
     copyAllKeys() {
