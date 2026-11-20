@@ -355,7 +355,7 @@ const JQL_PRESETS = {
   yesterday: 'created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC',
   week: 'created >= startOfWeek() AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
   lastWeek: 'created >= startOfWeek(-1) AND created < startOfWeek() AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
-  no_label: 'labels not in (trigger_time) AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
+  no_label: 'labels not in (trigger_time) AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
 };
 
 export default {

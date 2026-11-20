@@ -13,7 +13,7 @@
       </el-tag>
       <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
         <el-button size="small" type="primary" plain
-          @click="prodBatch.jqlInput = 'issuetype = bug AND status != closed AND created >= &quot;2026/09/01&quot;'">
+          @click="prodBatch.jqlInput = 'issuetype = bug AND created >= &quot;2026/09/01&quot;'">
           9.1新增非close
         </el-button>
         <el-input v-model="prodBatch.jqlInput" size="small" placeholder="JQL查询" style="width:400px" @keyup.enter="prodJqlSearchFill"></el-input>
@@ -114,7 +114,7 @@ export default {
         skipExisting: true, filterPcOnly: false, filterOnlineOnly: false, maxCount: 0, msg: '', error: false, stage: '',
         results: [], doneMsg: '', cloudUrl: '',
         analysisConcurrency: 6, downloadConcurrency: 2, model: 'deepseek-v-pro', triggerSource: '线上',
-        jqlInput: 'issuetype = bug AND status != closed AND created >= "2026/09/01"',
+        jqlInput: 'issuetype = bug AND created >= "2026/09/01"',
         jqlSearching: false, jqlSearchMsg: '',
         continuous: false, interval: 6, rounds: 10, currentRound: 0, continuousRunning: false,
       },

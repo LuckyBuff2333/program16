@@ -1539,7 +1539,7 @@ def _get_jql_presets() -> dict:
         "JQL6": ("8.25后远控", 'issuetype = bug AND text ~ "远控" AND created >= "2026/08/25" AND status = closed'),
         "JQL7": ("8.25后coreservice", 'issuetype = bug AND text ~ "coreservice" AND created >= "2026/08/25" AND status = closed'),
         "JQL8": ("8.25后RES1.0/1.1", 'issuetype = bug AND created >= "2026/08/25" AND status = closed AND (text ~ "RES1.1" OR text ~ "RES1.0")'),
-        "JQL9": ("9.1新增非close", 'issuetype = bug AND status != closed AND created >= "2026/09/01"'),
+        "JQL9": ("9.1新增非close", 'issuetype = bug AND created >= "2026/09/01"'),
     }
     cfg_jqls = load_config().get("feishu_bot", {}).get("jqls", {}) or {}
     for k, v in cfg_jqls.items():
@@ -3252,12 +3252,12 @@ def _get_unanalyzed_jql_presets() -> dict:
     _PROJECT = 'project = VCS_Info4.0_High_Platform_PATAC_Jira'
     return {
         "JQL1": ("以往已关闭Bug", f'issuetype = bug AND created >= "2026/08/25" AND status = closed AND {_PROJECT}'),
-        "JQL2": ("昨日新增Bug", f'issuetype = bug AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND status != "closed" AND {_PROJECT}'),
-        "JQL3": ("昨日coreservice", f'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU" AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND status != "closed" AND {_PROJECT}'),
-        "JQL4": ("昨日远控", f'issuetype = bug AND text ~ "远控" AND text ~ "VCU" AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND status != "closed" AND {_PROJECT}'),
-        "JQL5": ("昨日导航", f'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU" AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND status != "closed" AND {_PROJECT}'),
-        "JQL6": ("本周新增Bug", f'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND {_PROJECT}'),
-        "JQL7": ("前天新增Bug", f'issuetype = bug AND created >= startOfDay("-2d") AND created <= endOfDay("-2d") AND status != "closed" AND {_PROJECT}'),
+        "JQL2": ("昨日新增Bug", f'issuetype = bug AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND {_PROJECT}'),
+        "JQL3": ("昨日coreservice", f'issuetype = bug AND text ~ "coreservice" AND text ~ "VCU" AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND {_PROJECT}'),
+        "JQL4": ("昨日远控", f'issuetype = bug AND text ~ "远控" AND text ~ "VCU" AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND {_PROJECT}'),
+        "JQL5": ("昨日导航", f'issuetype = bug AND text ~ "SGM_Navigation750" AND text ~ "VCU" AND created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND {_PROJECT}'),
+        "JQL6": ("本周新增Bug", f'created >= startOfWeek() AND issuetype = "bug" AND {_PROJECT}'),
+        "JQL7": ("前天新增Bug", f'issuetype = bug AND created >= startOfDay("-2d") AND created <= endOfDay("-2d") AND {_PROJECT}'),
     }
 
 
