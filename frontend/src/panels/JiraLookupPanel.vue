@@ -33,8 +33,7 @@
           </div>
         </el-card>
 
-        <el-card v-if="rows.length || errors.length" v-loading="cacheLoading"
-          element-loading-text="正在检查云端缓存..." shadow="never" style="margin-top:14px">
+        <el-card v-if="rows.length || errors.length" shadow="never" style="margin-top:14px">
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
             <span class="section-title" style="margin:0">查询结果</span>
             <div class="stat-bar" style="display:flex;gap:6px;align-items:center">
@@ -42,6 +41,7 @@
               <el-tag type="warning" size="small">待执行 <b>{{ pendingCount }}</b></el-tag>
               <el-tag type="success" size="small">已分析 <b>{{ analyzedCount }}</b></el-tag>
               <el-tag type="info" size="small">有缓存 <b>{{ cloudCacheCount }}</b></el-tag>
+              <span v-if="cacheLoading" class="cache-spinner" title="正在检查云端缓存"></span>
               <el-tag v-if="errors.length" type="danger" size="small">失败 {{ errors.length }}</el-tag>
             </div>
             <el-tag type="info" size="small">{{ mode === 'jql' ? 'JQL 模式' : 'Key 模式' }}</el-tag>
@@ -557,3 +557,18 @@ export default {
   },
 };
 </script>
+
+<style scoped>
+.cache-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #dcdfe6;
+  border-top-color: #409eff;
+  border-radius: 50%;
+  animation: cache-spin 0.8s linear infinite;
+}
+@keyframes cache-spin {
+  to { transform: rotate(360deg); }
+}
+</style>
