@@ -9,8 +9,8 @@ import cv2
 PROJ_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJ_ROOT)
 
-MAX_SAMPLES = 20
-CACHE_DIR = os.path.join(PROJ_ROOT, "_verify_tmp", "rapid_test_cache")
+MAX_SAMPLES = 90
+CACHE_DIR = os.path.join(PROJ_ROOT, "_verify_tmp", "rapid_test_cache_90")
 TIME_RE = re.compile(r'(\d{1,2}[.:]\d{2}(?:[.:]\d{2})?)')
 
 ROI_REGIONS = [
