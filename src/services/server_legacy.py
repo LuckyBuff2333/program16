@@ -5205,7 +5205,10 @@ def _normalize_time_spacing(text: str) -> str:
     """合并 OCR 拆开的 12 :52 / 12： 52，便于正则校验。"""
     if not text:
         return text
-    return re.sub(r"(\d)\s*[:：]\s*(\d{2})", r"\1:\2", text)
+    text = re.sub(r"(\d)\s*[:：]\s*(\d{2})", r"\1:\2", text)
+    # 车机状态栏常见 14:3422℃：时间和温度粘在一起，补空格避免 14:34 被当成数字串
+    text = re.sub(r"(\d{1,2}:\d{2})(\d{2}\s*[℃°])", r"\1 \2", text)
+    return text
 
 
 def _valid_time_tokens(text: str) -> list:
@@ -5216,6 +5219,7 @@ def _valid_time_tokens(text: str) -> list:
     t = _normalize_time_spacing(text)
     # OCR 可能把日期和时间粘成 2025-09-0314:35:41，补空格后再识别
     t = re.sub(r"(\d{4}[-/]\d{1,2}[-/]\d{1,2})(?=\d{1,2}[:：]\d{2})", r"\1 ", t)
+    t = _strip_navigation_times(t)
     out = []
     for m in re.finditer(r"(?<!\d)([01]?\d|2[0-3])[:：]([0-5]\d)(?!\d)", t):
         # 时分后面紧跟“到达/抵达/分钟/公里”等，视为导航时间，不可用
@@ -5240,6 +5244,8 @@ def _strip_navigation_times(text: str) -> str:
         " ", text, flags=re.IGNORECASE)
     # 14:40-14:40 / 14:40~15:10 / 14:40至15:10
     text = re.sub(r"\b\d{1,2}[:：]\d{2}\s*[-~至]\s*\d{1,2}[:：]\d{2}\b", " ", text)
+    # 音乐标题里的 5:20AM(我在5:20睡觉...) 不是状态栏时钟
+    text = re.sub(r"\d{1,2}[:：]\d{2}\s*(?:AM|PM)\s*[（(][^）)]*[）)]?", " ", text, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", text).strip()
 
 

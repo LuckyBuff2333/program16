@@ -158,3 +158,11 @@ def test_navigation_eta_is_not_a_clock():
     # 导航 ETA 不能当时钟；日期时间粘连时仍应提取真实时钟
     assert _valid_time_tokens("14:52到达 2025-09-0314:35:41") == [(14, 35)]
     assert _valid_time_tokens("预计14:52 14:35") == [(14, 35)]
+
+def test_status_bar_temperature_glue_and_music_title():
+    from src.services.server_legacy import _valid_time_tokens
+
+    # 14:3422℃：时间和温度粘连，仍应提取 14:34
+    assert _valid_time_tokens("4月23日14:3422℃") == [(14, 34)]
+    # 5:20AM(...) 是音乐标题，不是状态栏时钟
+    assert _valid_time_tokens("5:20AM(我在5:20睡觉13:14清醒)") == []
