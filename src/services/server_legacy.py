@@ -2496,8 +2496,8 @@ def _daily_scheduler_loop():
                     target_min = _hhmm_to_minutes(report_time)
                     if target_min < 0 or now_min < target_min:
                         continue
-                    if chat_cfg.get("last_run_date") == cur_date:
-                        continue  # 今天已播过
+                    # 本地 last_run_date 只作参考：云端 claim 才可靠判断是否真的播报成功。
+                    # 如果继续用本地日期直接跳过，别的机器抢到 claim 后中途重启会永远没人补播。
                     # 播报前一工作日的数据
                     prev_workday = _get_prev_chinese_workday(now)
                     # 跨机器共享状态：别的机器已成功播报过这个报告日期就跳过，避免重复播报
@@ -2510,16 +2510,23 @@ def _daily_scheduler_loop():
                             _exist_machine = state_info.get("machine", "unknown")
                         except Exception:
                             _exist_status, _exist_machine = "unknown", "unknown"
-                        chat_cfg["last_run_date"] = cur_date  # 本地记账，避免每 30 秒反复查云端
-                        try:
-                            _save_daily_broadcast_config(cfg)
-                        except Exception:
-                            pass
-                        logger.info("跳过昨日播报(%s): chat=%s 已由其他机器播报(status=%s, machine=%s)",
-                                    prev_workday, chat_id[:12], _exist_status, _exist_machine)
+                        if _exist_status == "success":
+                            chat_cfg["last_run_date"] = cur_date  # 云端确认成功后才本地记账
+                            try:
+                                _save_daily_broadcast_config(cfg)
+                            except Exception:
+                                pass
+                            logger.info("跳过昨日播报(%s): chat=%s 已成功播报(machine=%s)",
+                                        prev_workday, chat_id[:12], _exist_machine)
+                        else:
+                            # claiming 未成功/失败待接管：不写本地已播报，等 claim 过期后接管
+                            logger.info("暂不播报昨日(%s): chat=%s 云端状态=%s(machine=%s)，等待接管",
+                                        prev_workday, chat_id[:12], _exist_status, _exist_machine)
                         continue
                     if claim_state == "unavailable":
-                        # 云端不可用：回退本地文件锁，仍能防同机多进程重复播报
+                        # 云端不可用：本地今天已成功播报过才跳过，否则回退本地文件锁
+                        if chat_cfg.get("last_run_date") == cur_date:
+                            continue
                         if not _try_acquire_broadcast_lock(chat_id, cur_date, cur_time):
                             continue
                     logger.info("触发昨日播报(%s): chat=%s, 当前=%s, 播报日期=%s, 设定=%s, 状态=%s",
