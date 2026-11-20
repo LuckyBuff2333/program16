@@ -6307,9 +6307,8 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
             logger.warning("视频兜底提取：视频文件不存在 %s", video_label)
             continue
         try:
-            # 步骤1：一次性截帧：0~8 秒每秒 1 帧 + 10/15 秒兜底帧
-            # 依据 2026-10-27 实测：时钟最晚在第 5 秒出现，且单帧 OCR 不稳定（相邻帧时有时无）
-            video_positions = [0, 1, 2, 3, 5, 8]
+            # 步骤1：默认只取第 0/1/2 秒整图；前 3 帧无时间即判定无时间，不做 ROI 兜底
+            video_positions = [0, 1, 2]
             frames = _extract_video_frames_gpu(video_path, positions=video_positions) or []
             if not frames:
                 logger.warning("视频兜底提取：无法提取视频帧 %s，尝试下一个", video_label)
@@ -6340,21 +6339,21 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                     _roi_has_time = False
                     results = []
                     all_text = ""
-                    # ── ROI OCR：GLM-OCR ──
+                    # ── 整图 OCR：RapidOCR v6（默认策略，不做 ROI）──
                     try:
-                        _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
-                        _roi_text = _strip_progress_bar(_roi_text)
-                        _roi_has_time = bool(_roi_text) and bool(
-                            _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
-                        if _roi_has_time:
-                            all_text = _roi_text
-                            results = [(_roi_text, 1.0)]
-                            _has_time = True
-                            _VIDEO_OCR_STATS["roi_frames"] += 1
-                            logger.info("视频兗底提取(%s)：第%d秒 ROI OCR 命中时间: %s",
-                                        video_label, sec + 1, all_text[:80])
+                        from src.services.rapid_ocr_v6 import read_text as _read_text, available as _ocr_avail
+                        if _ocr_avail():
+                            results = _read_text(frame)
+                            all_text = " ".join(r[1] for r in results if len(r) > 1)
+                            _has_time = bool(_valid_time_tokens(all_text))
+                            _VIDEO_OCR_STATS["full_frames"] += 1
+                            if _has_time:
+                                logger.info("视频兜底提取(%s)：第%d秒整图 OCR 命中时间: %s",
+                                            video_label, sec + 1, all_text[:80])
+                        else:
+                            logger.warning("视频兜底提取(%s)：RapidOCR v6 不可用", video_label)
                     except Exception as e:
-                        logger.warning("视频兗底提取(%s)：第%d秒 ROI OCR 异常: %s",
+                        logger.warning("视频兜底提取(%s)：第%d秒整图 OCR 异常: %s",
                                        video_label, sec + 1, e)
                     _collected_texts.append((sec, all_text))
                     # 诊断日志：打印 OCR 实际读到的原文
@@ -6804,11 +6803,11 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                 else:
                     if first_full or first_partial:
                         break
-                    other_frames = _extract_video_frames_gpu(video_path, positions=[1, 2, 3, 4, 5]) or []
+                    other_frames = _extract_video_frames_gpu(video_path, positions=[1, 2]) or []
                     if not other_frames:
                         break
                     frames = other_frames
-                    logger.info("视频帧提取：封面未识别到时间，继续截取前6帧")
+                    logger.info("视频帧提取：封面未识别到时间，继续截取第1/2秒")
                 
                 time_str = ""  # 初始化，防止 OCR 未匹配时 UnboundLocalError
                 _prev_sig = None
@@ -6824,24 +6823,23 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     _roi_has_time = False
                     results = []
                     all_text = ""
-                    # ── ROI OCR：GLM-OCR ──
+                    # ── 整图 OCR：RapidOCR v6 ──
                     try:
-                        _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
-                        _roi_text = _strip_progress_bar(_roi_text)
-                        _roi_has_time = bool(_roi_text) and bool(
-                            _OCR_TIME_FULL_RE.search(_roi_text) or _OCR_TIME_ONLY_RE.search(_roi_text))
-                        if _roi_has_time:
-                            all_text = _roi_text
-                            results = [(_roi_text, 1.0)]
-                            _has_time = True
-                            _VIDEO_OCR_STATS["roi_frames"] += 1
-                            logger.info("视频帧提取(%s)：第%d秒 ROI OCR 命中时间: %s",
-                                        video_label, sec + 1, all_text[:80])
+                        from src.services.rapid_ocr_v6 import read_text as _read_text, available as _ocr_avail
+                        if _ocr_avail():
+                            results = _read_text(frame)
+                            all_text = " ".join(r[1] for r in results if len(r) > 1)
+                            _has_time = bool(_valid_time_tokens(all_text))
+                            _VIDEO_OCR_STATS["full_frames"] += 1
+                            if _has_time:
+                                logger.info("视频帧提取(%s)：第%d秒整图 OCR 命中时间: %s",
+                                            video_label, sec + 1, all_text[:80])
+                        else:
+                            logger.warning("视频帧提取(%s)：RapidOCR v6 不可用", video_label)
                     except Exception as e:
-                        logger.warning("视频帧提取(%s)：第%d秒 ROI OCR 异常: %s",
+                        logger.warning("视频帧提取(%s)：第%d秒整图 OCR 异常: %s",
                                        video_label, sec + 1, e)
-                    logger.info("视频帧提取(%s)：第%d秒 OCR%s: %s", video_label, sec + 1,
-                                " (ROI)" if _roi_has_time else "",
+                    logger.info("视频帧提取(%s)：第%d秒 OCR: %s", video_label, sec + 1,
                                 all_text[:200] if all_text else "(空)")
                     # OCR 质量门槛：整体置信度极低且无完整日期时跳过时间提取
                     _avg_conf = sum((r[2] for r in results if len(r) > 2), 0) / max(len(results), 1) if results else 0
