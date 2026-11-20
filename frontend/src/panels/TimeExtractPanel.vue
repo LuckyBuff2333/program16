@@ -429,10 +429,11 @@ export default {
       });
     },
     vcsPendingRows() {
+      // 对比云端时间(new_time)与 VCS BUG 时间(vcs_time)，不同则待写回
       return this.timeEdit.rows.filter((r: any) => {
         const nt = r.new_time || '';
-        const ct = r.current_time || '';
-        return nt !== ct;
+        const vt = r.vcs_time || '';
+        return nt !== vt;
       });
     },
     timeEditWithTimeCount() {
