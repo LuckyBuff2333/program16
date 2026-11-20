@@ -3620,17 +3620,92 @@ def _jira_att_auth() -> tuple:
     return headers, timeout
 
 
+def _zip_range_list_entries(url: str, headers: dict, file_size: int = 0, timeout: int = 30) -> list:
+    """通过 HTTP Range 请求读取 ZIP 中央目录，返回所有文件名列表
+
+    只下载文件尾部的中央目录（通常几十KB），无需下载整个压缩包。
+    不支持 Range 或非 ZIP 格式时返回空列表。
+    """
+    import struct
+    import httpx
+    try:
+        # 第一步：下载尾部 128KB 获取 EOCD
+        tail_size = 128 * 1024
+        range_headers = {**headers, "Range": f"bytes=-{tail_size}"}
+        resp = httpx.get(url, headers=range_headers, timeout=timeout,
+                         verify=False, follow_redirects=True)
+        if resp.status_code != 206:
+            return []
+        data = resp.content
+        # 从 Content-Range 获取文件总大小
+        cr = resp.headers.get("Content-Range", "")
+        if not file_size and "/" in cr:
+            try:
+                file_size = int(cr.split("/")[-1])
+            except ValueError:
+                return []
+        if not file_size:
+            return []
+        # 查找 EOCD 签名 (0x06054b50)
+        eocd_pos = data.rfind(b'\x50\x4b\x05\x06')
+        if eocd_pos < 0:
+            return []
+        num_entries = struct.unpack_from('<H', data, eocd_pos + 10)[0]
+        cd_size = struct.unpack_from('<I', data, eocd_pos + 12)[0]
+        cd_offset = struct.unpack_from('<I', data, eocd_pos + 16)[0]
+        # 中央目录在当前下载范围内的相对位置
+        download_start = file_size - len(data)
+        cd_pos = cd_offset - download_start
+        if cd_pos < 0:
+            # 中央目录在下载范围外，精确下载
+            range_headers2 = {**headers, "Range": f"bytes={cd_offset}-{file_size - 1}"}
+            resp2 = httpx.get(url, headers=range_headers2, timeout=timeout,
+                              verify=False, follow_redirects=True)
+            if resp2.status_code != 206:
+                return []
+            data = resp2.content
+            cd_pos = 0
+        # 解析中央目录条目
+        entries = []
+        pos = cd_pos
+        for _ in range(num_entries):
+            if pos + 46 > len(data):
+                break
+            if struct.unpack_from('<I', data, pos)[0] != 0x02014b50:
+                break
+            comp_size = struct.unpack_from('<I', data, pos + 20)[0]
+            uncomp_size = struct.unpack_from('<I', data, pos + 24)[0]
+            name_len = struct.unpack_from('<H', data, pos + 28)[0]
+            extra_len = struct.unpack_from('<H', data, pos + 30)[0]
+            comment_len = struct.unpack_from('<H', data, pos + 32)[0]
+            if pos + 46 + name_len > len(data):
+                break
+            fname = data[pos + 46:pos + 46 + name_len].decode('utf-8', errors='replace')
+            entries.append({
+                'filename': fname,
+                'compressed_size': comp_size,
+                'uncompressed_size': uncomp_size,
+            })
+            pos += 46 + name_len + extra_len + comment_len
+        return entries
+    except Exception:
+        return []
+
+
+def _is_zip_attachment(filename: str) -> bool:
+    """判断文件名是否为 ZIP 格式（含分卷的 .zip 部分）"""
+    return bool(filename and filename.lower().endswith('.zip'))
+
+
 def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
     """判断 Jira 是否含可用日志（gmlogger）。智能回退：
     
     1) 附件文件名含 gmlogger/gmlog/main.log/.log/.txt → 直接判定有（快，不下载）；
-    2) 否则仅对≤ 500MB 的单卷压缩包下载探测包内是否有 main/.log/.txt 文件；
-       分卷压缩包(.001/.002 等)或超大包一律跳过（避免 GB 级下载拖慢）。
+    2) ZIP 格式用 Range 请求读取中央目录（只下载尾部几十KB），不限大小和分卷；
+    3) 其他格式仅对≤ 300MB 的单卷压缩包下载探测包内是否有 main/.log/.txt 文件。
     """
     names = [(a.get("filename", "") or "").lower() for a in attachments]
     # 有直接的 gmlogger/gmlog 文件、main.log 或任意 .log/.txt 文件就算有，不需要解压
-    # 只认 gmlogger/gmlog、明确的 .log/.txt，或后续压缩包探测；
-    # 无扩展名的 logcat/bllog/dltlog 等不再当作可用日志，避免误判为可分析。
     if any("gmlogger" in n or "gmlog" in n
            or "main.log" in n or n.endswith(".log") or n.endswith(".txt") for n in names):
         return True
@@ -3639,19 +3714,31 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
         fn = (att.get("filename", "") or "").lower()
         if not _ARCHIVE_NAME_RE.search(fn):
             continue
-        # 跳过：分卷压缩包（如 xxx.7z.001），多卷无法只读目录且体积极大
-        if _SPLIT_ARCHIVE_RE.search(fn):
-            continue
-        # 跳过：超过探测上限的包，避免整包下载
-        if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
-            continue
-        res = _diag_list_archive_entries(att.get("content", ""), headers, timeout, bugid, filename=att.get("filename", ""))
-        if res.get("ok") and any(
-            "main" in os.path.basename(e).lower() or e.lower().endswith(".log") or e.lower().endswith(".txt")
-            for e in res.get("entries", [])
-        ):
-            logger.info("无gmlogger文件名，但压缩包 %s 内含 main/.log/.txt 文件，判定有日志 (%s)", fn, bugid)
-            return True
+        if _is_zip_attachment(att.get("filename", "")):
+            # ZIP 格式: Range 请求中央目录（只下尾部几十KB），不限分卷和大小
+            range_entries = _zip_range_list_entries(
+                att.get("content", ""), headers, file_size=att.get("size", 0), timeout=30)
+            if range_entries and any(
+                "main" in os.path.basename(e['filename']).lower()
+                or e['filename'].lower().endswith(".log")
+                or e['filename'].lower().endswith(".txt")
+                for e in range_entries if not e['filename'].endswith('/')
+            ):
+                logger.info("ZIP Range 探测到 main/.log/.txt 文件，判定有日志: %s (%s)", fn, bugid)
+                return True
+        else:
+            # 非 ZIP 格式: 跳过分卷和超大包
+            if _SPLIT_ARCHIVE_RE.search(fn):
+                continue
+            if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
+                continue
+            res = _diag_list_archive_entries(att.get("content", ""), headers, timeout, bugid, filename=att.get("filename", ""))
+            if res.get("ok") and any(
+                "main" in os.path.basename(e).lower() or e.lower().endswith(".log") or e.lower().endswith(".txt")
+                for e in res.get("entries", [])
+            ):
+                logger.info("无gmlogger文件名，但压缩包 %s 内含 main/.log/.txt 文件，判定有日志 (%s)", fn, bugid)
+                return True
     return False
 
 
@@ -3744,6 +3831,7 @@ def _diag_check_split_volumes(attachments: list) -> tuple:
 def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid: str = "", filename: str = "", stop_event=None) -> dict:
     """下载压缩包附件并列出解压后的文件名（支持 zip/tar 系，其余标记不支持）
 
+    ZIP 格式优先用 Range 请求读取中央目录（只下载尾部几十KB），失败再全量下载。
     :param filename: 原始附件文件名，用于分卷 zip 等格式的正确识别
     """
     import tarfile
@@ -3752,6 +3840,17 @@ def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid:
     import httpx as _httpx
     import re as _re
     _label = f"{bugid} " if bugid else ""
+
+    # ZIP 格式优先用 Range 请求获取条目列表（只下载中央目录，通常几十KB）
+    if _is_zip_attachment(filename):
+        range_entries = _zip_range_list_entries(
+            att_url, headers, file_size=0, timeout=min(timeout, 30))
+        if range_entries:
+            names = [e['filename'] for e in range_entries if not e['filename'].endswith('/')]
+            logger.info("%sZIP Range 列出条目: %d 个（无需全量下载）", _label, len(names))
+            return {"ok": True, "entries": names, "reason": "", "size": 0}
+        logger.info("%sZIP Range 失败，回退全量下载", _label)
+
     logger.info("%s开始下载附件: %s", _label, att_url[:120])
     entries = []
     total_size = 0
@@ -4482,6 +4581,30 @@ def _diag_download_archives(attachments: list, headers: dict, timeout: int, prob
     return archive_results, matched_any
 
 
+def _check_archives_corrupted(gm_probe_result: dict, attachments: list) -> bool:
+    """检查是否所有压缩包都探测失败（压缩包损坏）
+
+    只有当所有压缩包都无法探测/解压时才算损坏。
+    部分损坏但仍能探测/解压到 main.log 相关内容不算损坏。
+    """
+    if gm_probe_result.get("status") != "failed":
+        return False
+    reason = gm_probe_result.get("reason", "")
+    # 排除无压缩包的情况
+    if "无 gmlogger" in reason or "无有效" in reason:
+        return False
+    # 排除超时情况（可重试）
+    if "超时" in reason:
+        return False
+    # 确认附件中确实有压缩包
+    import re as _re
+    has_archive = any(
+        _re.search(r"\.(zip|7z|rar|tar|gz)$", (a.get("filename", "") or "").lower())
+        for a in attachments
+    )
+    return has_archive
+
+
 def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bugid: str = "", include_non_gmlogger: bool = False) -> dict:
     """下载 gmlogger 压缩包（支持 .001/.002 分卷合并），查找包内 main 相关 log 文件并提取时间
 
@@ -4510,14 +4633,20 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
         groups.setdefault(base, []).append((part, att))
     if not groups:
         return {"status": "failed", "reason": "无 gmlogger 压缩包附件", "main_entries": [], "main_times": []}
-    # 超大包上限：避免数百分兆下载阻塞诊断太久，超限跳过内包探测走兆底链路
+    # 超大包上限：ZIP 可用 Range 无需全量下载，仅对非 ZIP 组检查体积
+    has_zip_group = any(
+        any(_is_zip_attachment(att.get("filename", "")) for _p, att in ps)
+        for ps in groups.values()
+    )
     total_size = sum(a.get("size", 0) for ps in groups.values() for _p, a in ps)
-    if total_size > _ARCHIVE_PROBE_MAX_BYTES:
+    if not has_zip_group and total_size > _ARCHIVE_PROBE_MAX_BYTES:
         _limit_mb = _ARCHIVE_PROBE_MAX_BYTES // 1024 // 1024
-        logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > %dMB）", total_size // 1024 // 1024, _limit_mb)
-        return {"status": "failed", "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>{_limit_mb}MB），已跳过内包探测",
+        logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > %dMB，无 ZIP 可用 Range）",
+                    total_size // 1024 // 1024, _limit_mb)
+        return {"status": "failed",
+                "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>{_limit_mb}MB），已跳过内包探测",
                 "main_entries": [], "main_times": [], "all_times": []}
-    logger.info("gmlogger 内包探测：开始下载（%dMB）", total_size // 1024 // 1024)
+    logger.info("gmlogger 内包探测：开始（%dMB）", total_size // 1024 // 1024)
     _DL_DEADLINE = 300  # 总下载时间上限 5 分钟，超时则跳过
     _dl_start = _time.time()
     last_reason = "无有效 gmlogger 压缩包"
@@ -4526,6 +4655,49 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
             if bugid:
                 _check_diag_cancel(bugid)
             parts.sort(key=lambda x: x[0])
+
+            # ZIP 格式（含分卷）: Range 读取中央目录获取文件名 + 解析时间，无需下载整个压缩包
+            zip_part = None
+            for _p, att in parts:
+                if _is_zip_attachment(att.get("filename", "")):
+                    zip_part = (_p, att)
+                    break
+            if zip_part:
+                _zp, _zatt = zip_part
+                _zurl = _zatt.get("content", "")
+                _zsize = _zatt.get("size", 0)
+                if _zurl:
+                    range_entries = _zip_range_list_entries(
+                        _zurl, headers, file_size=_zsize, timeout=min(timeout, 30))
+                    if range_entries:
+                        all_names = [e['filename'] for e in range_entries
+                                     if not e['filename'].endswith('/')]
+                        # 筛选 3 层内文件名含 main.log 的条目
+                        main_entries = []
+                        for e in range_entries:
+                            name = e['filename']
+                            if name.endswith('/'):
+                                continue
+                            parts_d = name.replace('\\', '/').split('/')
+                            depth = len(parts_d) - 1
+                            bname = parts_d[-1]
+                            if depth <= 3 and 'main.log' in bname.lower():
+                                main_entries.append(bname)
+                        # 从文件名解析时间
+                        main_times = []
+                        for bname in main_entries[:10]:
+                            parsed = _diag_parse_main_time(bname)
+                            if parsed:
+                                main_times.append(parsed)
+                        # 全部条目时间扫描
+                        all_times = _diag_scan_entry_times(all_names)
+                        logger.info("gmlogger ZIP Range 探测: base=%s, 条目=%d, main=%d, 时间=%d",
+                                    base, len(all_names), len(main_entries), len(main_times))
+                        return {"status": "ok", "reason": "",
+                                "main_entries": main_entries,
+                                "main_times": main_times, "all_times": all_times}
+                    logger.info("%sZIP Range 失败，回退全量下载: %s", _label, base)
+
             if base.lower().endswith(".rar"):
                 # rar 分卷：7z 需原始文件名同目录自动续卷，从首卷打开，仅提取 main 文件
                 rar_dir = os.path.join(tmp, os.path.basename(base) + "_rar")
@@ -6351,6 +6523,9 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
         else:
             logger.info("视频兜底提取(%s)：递归压缩包探测失败(%s)，继续外层探测",
                         bugid, _gm_probe.get("reason", "")[:80])
+            # 压缩包损坏检测：所有压缩包都探测失败时标记
+            if _check_archives_corrupted(_gm_probe, attachments):
+                logger.warning("视频兜底提取(%s)：所有压缩包探测失败，压缩包损坏", bugid)
     except Exception as _e:
         logger.warning("视频兜底提取(%s)：递归压缩包探测异常: %s", bugid, _e)
     if not _skip_archive_probe:
@@ -9003,6 +9178,10 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
         all_times = gm_probe.get("all_times", [])
         main_entries = gm_probe.get("main_entries", [])
         hit = [t for t in (main_times + all_times) if err_dt and abs((t[1] - err_dt).total_seconds()) <= 300]
+    # 压缩包损坏检测：所有压缩包都探测失败时标记
+    _archives_corrupted = _check_archives_corrupted(gm_probe, probe_attachments)
+    if _archives_corrupted:
+        logger.info("诊断 %s: 所有压缩包探测失败，标记为压缩包损坏", bugid)
     if hit:
         category = "解压问题"
         detail = _build_simple_detail(comment_time, video_time, img_time_str, f"解压问题（包内时间戳命中但日志为空）")
@@ -9160,6 +9339,9 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             suggested_time = ""
             final_msg = "视频/图片/评论区均无时间信息"
         detail = _build_simple_detail(comment_time, video_time, img_time_str, final_msg)
+    # 压缩包损坏备注：所有压缩包探测失败时追加
+    if _archives_corrupted:
+        detail = (detail + "；压缩包损坏").strip()
     # 兜底标签：最终建议时间直接取自 gmlogger/压缩包文件名时，标记出来便于后续排查
     fallback_tag = ""
     if suggested_time and gm_times:

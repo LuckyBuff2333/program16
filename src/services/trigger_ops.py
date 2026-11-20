@@ -321,10 +321,16 @@ def _load_cloud_trigger_cache() -> tuple:
         partial = False  # 部分子表加载失败标记
 
         def _read_one(tid):
-            try:
-                return tid, feishu_client.list_bitable_records(app_token, tid), None
-            except Exception as e:
-                return tid, None, e
+            import time as _time
+            for _attempt in range(3):
+                try:
+                    return tid, feishu_client.list_bitable_records(app_token, tid), None
+                except Exception as e:
+                    if 'TooManyRequest' in str(e) or '1254290' in str(e):
+                        _time.sleep(1.5 * (_attempt + 1))
+                        continue
+                    return tid, None, e
+            return tid, None, e
 
         # 多张触发时间表并行读取（最多 6 路），避免串行 16 表拖慢启动
         from concurrent.futures import ThreadPoolExecutor
@@ -524,12 +530,19 @@ def _search_trigger_time_batch(bugids: list) -> tuple:
     import concurrent.futures as _cf
 
     def _query_one(tid, filter_expr):
-        try:
-            records = feishu_client.list_bitable_records(
-                app_token, tid, filter_expr=filter_expr)
-            return tid, records, None
-        except Exception as e:
-            return tid, [], e
+        import time as _time
+        for _attempt in range(3):
+            try:
+                records = feishu_client.list_bitable_records(
+                    app_token, tid, filter_expr=filter_expr)
+                return tid, records, None
+            except Exception as e:
+                # 429 限流：等待后重试
+                if 'TooManyRequest' in str(e) or '1254290' in str(e):
+                    _time.sleep(1.5 * (_attempt + 1))
+                    continue
+                return tid, [], e
+        return tid, [], e
 
     for round_idx in range(max_rounds):
         if not remaining:
@@ -566,6 +579,10 @@ def _search_trigger_time_batch(bugids: list) -> tuple:
         logger.info("触发时间搜索第 %d/%d 轮: %d 条中 %d 命中",
                     round_idx + 1, max_rounds, len(chunk), len(chunk) - len(remaining_set))
         total_rounds = round_idx + 1
+        # 轮次间小延迟，避免连续查询触发限流
+        if remaining:
+            import time as _time
+            _time.sleep(0.5)
     found = len(bugids) - len(remaining)
     logger.info("触发时间批量搜索: %d/%d 命中（%d 轮），%d 条已记录",
                 len(result), len(bugids), total_rounds, len(all_found_keys))
