@@ -211,6 +211,7 @@ _OCR_UNAVAILABLE = object()  # OCR 不可用哨兵值
 
 _rapid_ocr_engine = None
 _rapid_ocr_is_gpu = False  # 主引擎是否使用 GPU 加速
+_nvidia_gpu_cache = None   # None=未检测, True=英伟达独显, False=AMD/无独显
 
 _rapid_ocr_lock = threading.Lock()  # 防止 RapidOCR 并发初始化
 _ocr_infer_lock = threading.Semaphore(2)  # 纯CPU允许2路并行推理；GPU/DML场景由调用方控制
@@ -220,6 +221,23 @@ _ocr_max_pixels = 4_000_000  # GPU 推理最大像素面积（默认值，实际
 _ocr_cfg_cache = {}  # OCR 配置缓存
 _LAST_VIDEO_MAIN_TIME = {}  # bugid -> 压缩包 main 兆底时间（避免被外层附件名覆盖）
 _LAST_VIDEO_MAIN_TIME_MAX = 10000  # 防止无界增长，超出时清空（仅用于单批次内的纠偏）
+
+
+def _has_nvidia_gpu() -> bool:
+    """检测是否有英伟达独显（GLM-OCR 依赖 CUDA，仅 NVIDIA 支持）。结果缓存。"""
+    global _nvidia_gpu_cache
+    if _nvidia_gpu_cache is not None:
+        return _nvidia_gpu_cache
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            _nvidia_gpu_cache = False
+            return False
+        name = torch.cuda.get_device_name(0).lower()
+        _nvidia_gpu_cache = "nvidia" in name or "geforce" in name or "quadro" in name or "rtx" in name or "gtx" in name
+    except Exception:
+        _nvidia_gpu_cache = False
+    return _nvidia_gpu_cache
 
 
 def _get_ocr_cfg() -> dict:
@@ -5034,11 +5052,15 @@ def _strip_navigation_times(text: str) -> str:
 
 
 def _ocr_frame_regions(frame, status_only: bool = False) -> str:
-    """对状态栏/任务栏等小区域做高倍 OCR（RapidOCR + 2.5x 放大 + 自适应二值化）
+    """对状态栏/任务栏等小区域做 OCR。
+
+    GPU 分流策略：
+    - NVIDIA 独显 → GLM-OCR + ROI（无放大，命中率 90%、~0.85s）
+    - AMD GPU / 无独显 → RapidOCR + ROI（放大 + CLAHE）
+    - GLM-OCR 未安装或异常时自动回退 RapidOCR
 
     录屏时间通常出现在：手机顶部状态栏、车载 HMI 中央顶部、Windows 右下角任务栏、
     导航应用底部中央导航栏（时间字体较大）。
-    裁剪这些区域放大 2.5x 再识别，区域小、速度快、抗内容干扰。
 
     返回合并文本，同时更新 _ROI_REGION_STATS 各区域命中计数。
     """
@@ -5047,20 +5069,7 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     parts = []
     try:
         h, w = frame.shape[:2]
-        # 自动关联：有独显时 server 模型 + 3x；纯 CPU 时 mobile 模型 + 2x
-        try:
-            _get_rapid_ocr()
-        except Exception:
-            pass
-        _cfg_ocr = _get_ocr_cfg()
-        _roi_scale = float(_cfg_ocr.get("gpu_roi_scale", 3.0) if _rapid_ocr_is_gpu
-                           else _cfg_ocr.get("cpu_roi_scale", 2.0))
-        # 带标签的区域：车载 HMI 时钟常出现在顶部状态栏、中央大时钟、右下任务栏、底部中央导航栏
-        # 基于数据沉淀「线上成功且带视频」记录的 2023 个时间文本块统计：
-        # 顶部、左上、右上、中央偏右、右下、左下覆盖了绝大多数时间位置。
-        # 按 2023 个时间块统计的命中率从高到低排序，命中即停：
-        # right_upper 69.2% > top_bar 30.0% > center_right 22.8%
-        # > right_lower 14.0% > left_upper 11.6% > left_lower 10.7%
+        # ── ROI 区域定义（按命中率从高到低）──
         regions = [
             ("right_clock",  int(w * 0.55), int(h * 0.10), int(w * 0.95), int(h * 0.55)),
             ("right_upper",  int(w * 0.44), 0, w, int(h * 0.46)),
@@ -5074,12 +5083,48 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
             regions = list(regions)
         import re as _re_roi
         _t_chk = _re_roi.compile(r'\d[.:;,\-]\d{2}')
+
+        # ── 优先：GLM-OCR + ROI（仅 NVIDIA 独显，无放大原尺寸裁剪）──
+        try:
+            from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
+            if _has_nvidia_gpu() and _glm_avail():
+                for region in regions:
+                    name, x1, y1, x2, y2 = region
+                    if x2 - x1 < 40 or y2 - y1 < 12:
+                        continue
+                    crop = frame[y1:y2, x1:x2]
+                    txt = _glm_ocr(crop, max_new_tokens=32) or ""
+                    txt = _fix_ocr_missing_colon(txt)
+                    txt = _normalize_time_spacing(txt)
+                    txt = _strip_video_progress_times(txt, lower=(y1 >= int(h * 0.55)))
+                    txt = _strip_navigation_times(txt)
+                    if txt.strip():
+                        parts.append(txt)
+                        logger.info("GLM-OCR ROI[%s] 识别到: %s", name, txt[:80])
+                        if name in _ROI_REGION_STATS and _t_chk.search(txt):
+                            _ROI_REGION_STATS[name] += 1
+                        if _valid_time_tokens(txt) and name in ("right_clock", "right_upper", "top_bar"):
+                            logger.info("GLM-OCR ROI[%s] 命中时间，跳过剩余区域", name)
+                            break
+                if parts:
+                    return _strip_progress_bar(" ".join(parts))
+        except ImportError:
+            pass  # GLM-OCR 未安装，回退 RapidOCR
+
+        # ── 回退：RapidOCR ROI（放大 + CLAHE）──
+        try:
+            _get_rapid_ocr()
+        except Exception:
+            pass
+        _cfg_ocr = _get_ocr_cfg()
+        _roi_scale = float(_cfg_ocr.get("gpu_roi_scale", 3.0) if _rapid_ocr_is_gpu
+                           else _cfg_ocr.get("cpu_roi_scale", 2.0))
+        parts = []
         for region in regions:
             name, x1, y1, x2, y2 = region
             if x2 - x1 < 40 or y2 - y1 < 12:
                 continue
             raw_crop = frame[y1:y2, x1:x2]
-            # ── 先用 RapidOCR：正常时钟 0.2s 内完成；GLM 只在必要时兜底 ──
             crop_h, crop_w = raw_crop.shape[:2]
             enlarged = cv2.resize(raw_crop, (int(crop_w * _roi_scale), int(crop_h * _roi_scale)),
                                   interpolation=cv2.INTER_CUBIC)
@@ -5110,7 +5155,7 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
             else:
                 logger.info("RapidOCR ROI[%s] 未识别到文本", name)
     except Exception as _roi_err:
-        logger.warning("RapidOCR _ocr_frame_regions 外层异常: %s", _roi_err, exc_info=True)
+        logger.warning("_ocr_frame_regions 外层异常: %s", _roi_err, exc_info=True)
         return ""
     return _strip_progress_bar(" ".join(parts))
 
@@ -6576,7 +6621,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                     _roi_has_time = False
                     results = []
                     all_text = ""
-                    # ── RapidOCR ROI：固定区域放大识别（状态栏/任务栏等）──
+                    # ── ROI OCR：优先 GLM-OCR，回退 RapidOCR ──
                     try:
                         _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
                         _roi_text = _strip_progress_bar(_roi_text)
@@ -6587,10 +6632,10 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                             results = [(_roi_text, 1.0)]
                             _has_time = True
                             _VIDEO_OCR_STATS["roi_frames"] += 1
-                            logger.info("视频兗底提取(%s)：第%d秒 ROI RapidOCR 命中时间: %s",
+                            logger.info("视频兗底提取(%s)：第%d秒 ROI OCR 命中时间: %s",
                                         video_label, sec + 1, all_text[:80])
                     except Exception as e:
-                        logger.warning("视频兗底提取(%s)：第%d秒 ROI RapidOCR 异常: %s",
+                        logger.warning("视频兗底提取(%s)：第%d秒 ROI OCR 异常: %s",
                                        video_label, sec + 1, e)
                     _collected_texts.append((sec, all_text))
                     # 诊断日志：打印 OCR 实际读到的原文
@@ -7060,7 +7105,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     _roi_has_time = False
                     results = []
                     all_text = ""
-                    # ── RapidOCR ROI：固定区域放大识别（状态栏/任务栏等）──
+                    # ── ROI OCR：优先 GLM-OCR，回退 RapidOCR ──
                     try:
                         _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
                         _roi_text = _strip_progress_bar(_roi_text)
@@ -7071,10 +7116,10 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                             results = [(_roi_text, 1.0)]
                             _has_time = True
                             _VIDEO_OCR_STATS["roi_frames"] += 1
-                            logger.info("视频帧提取(%s)：第%d秒 ROI RapidOCR 命中时间: %s",
+                            logger.info("视频帧提取(%s)：第%d秒 ROI OCR 命中时间: %s",
                                         video_label, sec + 1, all_text[:80])
                     except Exception as e:
-                        logger.warning("视频帧提取(%s)：第%d秒 ROI RapidOCR 异常: %s",
+                        logger.warning("视频帧提取(%s)：第%d秒 ROI OCR 异常: %s",
                                        video_label, sec + 1, e)
                     logger.info("视频帧提取(%s)：第%d秒 OCR%s: %s", video_label, sec + 1,
                                 " (ROI)" if _roi_has_time else "",

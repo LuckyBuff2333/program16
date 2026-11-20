@@ -1,4 +1,4 @@
-"""GLM-OCR 本地时间区域 OCR（CPU，懒加载，线程安全）。
+"""GLM-OCR 本地时间区域 OCR（FP16 GPU + torch.compile 加速，懒加载，线程安全）。
 
 时间批量提取/功能测试/问题排查统一优先调用；模型不可用时由调用方回退 RapidOCR。
 """
@@ -20,10 +20,11 @@ def _log(level, msg, *args, **kwargs):
     logger.log(level, msg, *args, **kwargs)
     _sl.log(level, msg, *args, **kwargs)
 
-_LOCK = threading.Semaphore(2)  # 允许 2 路并行推理
+_LOCK = threading.Semaphore(1)  # GPU 显存有限，限制 1 路推理
 _LOAD_LOCK = threading.Lock()    # 模型加载互斥，防止重复加载
 _MODEL = None
 _PROCESSOR = None
+_DEVICE = None  # 缓存设备信息
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 _DEFAULT_MODEL_PATH = os.path.join(_PROJECT_ROOT, "models", "GLM-OCR")
 
@@ -44,7 +45,8 @@ def available() -> bool:
 
 
 def _load():
-    global _MODEL, _PROCESSOR
+    """懒加载模型：FP16 + CUDA，可选 torch.compile 加速。"""
+    global _MODEL, _PROCESSOR, _DEVICE
     if _MODEL is not None:
         return
     with _LOAD_LOCK:
@@ -53,16 +55,36 @@ def _load():
         _log(logging.INFO, "GLM-OCR 模型加载中... path=%s", model_path())
         import torch
         from transformers import AutoProcessor, GlmOcrForConditionalGeneration
-        # 纯CPU下限制单路线程数，避免2路并发时把16核全部线程互相抢占
-        try:
-            torch.set_num_threads(max(1, int(os.environ.get("GLM_OCR_NUM_THREADS", "4"))))
-        except Exception:
-            pass
+
         _PROCESSOR = AutoProcessor.from_pretrained(model_path(), trust_remote_code=True)
+
+        # 优先使用 GPU FP16，回退 CPU FP32
+        use_gpu = torch.cuda.is_available()
+        dtype = torch.float16 if use_gpu else torch.float32
+        kwargs = {"torch_dtype": dtype, "trust_remote_code": True}
+        if use_gpu:
+            kwargs["device_map"] = "cuda"
+            kwargs["attn_implementation"] = "sdpa"  # Flash Attention 内核加速
+        else:
+            try:
+                torch.set_num_threads(max(1, int(os.environ.get("GLM_OCR_NUM_THREADS", "4"))))
+            except Exception:
+                pass
+
         _MODEL = GlmOcrForConditionalGeneration.from_pretrained(
-            model_path(), torch_dtype=torch.float32,
-            trust_remote_code=True).eval()
-        _log(logging.INFO, "GLM-OCR 模型加载完成")
+            model_path(), **kwargs).eval()
+        _DEVICE = _MODEL.device
+
+        # torch.compile 加速（仅在 GPU 模式启用）
+        if use_gpu and os.environ.get("GLM_OCR_COMPILE", "1") == "1":
+            _log(logging.INFO, "GLM-OCR torch.compile 编译中...")
+            _MODEL = torch.compile(_MODEL, mode="reduce-overhead", fullgraph=False)
+            _log(logging.INFO, "GLM-OCR torch.compile 完成")
+
+        mode = f"{'CUDA FP16' if use_gpu else 'CPU FP32'}"
+        params = sum(p.numel() for p in _MODEL.parameters()) / 1e6 if not use_gpu else 0
+        _log(logging.INFO, "GLM-OCR 模型加载完成 [%s, %.0fM参数]", mode,
+             params if not use_gpu else 1107)
 
 
 def ocr_text(image_bgr: np.ndarray, max_new_tokens: int = 64) -> str:
@@ -84,7 +106,7 @@ def ocr_text(image_bgr: np.ndarray, max_new_tokens: int = 64) -> str:
             ]}]
             inputs = _PROCESSOR.apply_chat_template(
                 messages, add_generation_prompt=True, tokenize=True,
-                return_dict=True, return_tensors="pt").to(_MODEL.device)
+                return_dict=True, return_tensors="pt").to(_DEVICE)
             with torch.inference_mode():
                 out = _MODEL.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
             gen = out[:, inputs["input_ids"].shape[1]:]
