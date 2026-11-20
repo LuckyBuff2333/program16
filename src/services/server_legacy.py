@@ -4904,31 +4904,32 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
         import re as _re_roi
         _t_chk = _re_roi.compile(r'\d[.:;,\-]\d{2}')
 
-        # ── GLM-OCR + ROI（原尺寸裁剪，90 条实测命中率 80%、~1.05s）──
-        from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
-        if _glm_avail():
+        # ── RapidOCR v6 + ROI（原尺寸裁剪；DirectML 优先）──
+        from src.services.rapid_ocr_v6 import read_text as _read_text, available as _ocr_avail
+        if _ocr_avail():
             for region in regions:
                 name, x1, y1, x2, y2 = region
                 if x2 - x1 < 40 or y2 - y1 < 12:
                     continue
                 crop = frame[y1:y2, x1:x2]
-                txt = _glm_ocr(crop, max_new_tokens=32) or ""
+                _res = _read_text(crop)
+                txt = " ".join(r[1] for r in _res if len(r) > 1)
                 txt = _fix_ocr_missing_colon(txt)
                 txt = _normalize_time_spacing(txt)
                 txt = _strip_video_progress_times(txt, lower=(y1 >= int(h * 0.55)))
                 txt = _strip_navigation_times(txt)
                 if txt.strip():
                     parts.append(txt)
-                    logger.info("GLM-OCR ROI[%s] 识别到: %s", name, txt[:80])
+                    logger.info("RapidOCR v6 ROI[%s] 识别到: %s", name, txt[:80])
                     if name in _ROI_REGION_STATS and _t_chk.search(txt):
                         _ROI_REGION_STATS[name] += 1
                     if _valid_time_tokens(txt) and name in ("right_clock", "right_upper", "top_bar"):
-                        logger.info("GLM-OCR ROI[%s] 命中时间，跳过剩余区域", name)
+                        logger.info("RapidOCR v6 ROI[%s] 命中时间，跳过剩余区域", name)
                         break
             if parts:
                 return _strip_progress_bar(" ".join(parts))
         else:
-            logger.warning("GLM-OCR 不可用，跳过 ROI OCR")
+            logger.warning("RapidOCR v6 不可用，跳过 ROI OCR")
     except Exception as _roi_err:
         logger.warning("_ocr_frame_regions 外层异常: %s", _roi_err, exc_info=True)
         return ""
@@ -7148,24 +7149,23 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
                                  bugid=bugid, max_bytes=_MAX_MEDIA_BYTES,
                                  filename=fname or "image.bin", use_cache=False,
                                  stop_event=stop_event)
-                # OCR 识别：GLM-OCR 全图
+                # OCR 识别：RapidOCR v6 全图
                 img = _cv_imread_unicode(img_path)
                 if img is None:
                     logger.warning("%s图片 OCR: cv2.imread 失败 %s", f"{bugid} " if bugid else "", fname)
                     continue
                 results = []
                 try:
-                    from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
-                    if _glm_avail():
-                        _glm_text = _glm_ocr(img, max_new_tokens=128) or ""
-                        if _glm_text.strip():
-                            # 无 bbox，构造兼容格式供后续正则匹配
-                            results = [[[], _glm_text.strip(), 1.0]]
-                            logger.info("%s图片 GLM-OCR: %s", f"{bugid} " if bugid else "", _glm_text[:120])
+                    from src.services.rapid_ocr_v6 import read_text as _read_text, available as _ocr_avail
+                    if _ocr_avail():
+                        results = _read_text(img)
+                        if results:
+                            logger.info("%s图片 RapidOCR v6: %s", f"{bugid} " if bugid else "",
+                                        " ".join(r[1] for r in results)[:120])
                     else:
-                        logger.warning("%s图片 OCR: GLM-OCR 不可用，跳过 %s", f"{bugid} " if bugid else "", fname)
-                except Exception as _glm_err:
-                    logger.warning("%s图片 GLM-OCR 异常: %s", f"{bugid} " if bugid else "", _glm_err)
+                        logger.warning("%s图片 OCR: RapidOCR v6 不可用，跳过 %s", f"{bugid} " if bugid else "", fname)
+                except Exception as _ocr_err:
+                    logger.warning("%s图片 RapidOCR v6 异常: %s", f"{bugid} " if bugid else "", _ocr_err)
                 if not results:
                     continue
                 # 收集完整文本用于时间正则匹配
