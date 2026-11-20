@@ -303,22 +303,16 @@ def _sync_local_to_cloud(cloud_times: dict, cloud_keys: set):
 
 
 def _load_cloud_trigger_cache() -> tuple:
-    """一次加载云端触发时间缓存，返回 (times_dict, keys_set)
+    """每次直接从云端加载触发时间，返回 (times_dict, keys_set)
 
-    合并加载有触发时间的记录和已标记空的记录，避免两次 API 调用。
+    不使用内存 TTL 缓存，确保每次都能拿到云端最新数据。
     云端不可用时降级读本地 CSV。
     当任一子表加载失败时，设置 _last_cache_load_partial 标记，
-    不缓存结果，并禁止上层写入空值。
+    并禁止上层写入空值。
 
     :return: ({jira号: 触发时间}, {已记录的jira号})
     """
-    import time
     global _last_cache_load_partial
-    _ck = "cloud_trigger_cache"
-    cached = _bitable_bulk_cache.get(_ck)
-    if cached and time.time() - cached[0] < _BITABLE_CACHE_TTL:
-        logger.info("云端触发时间缓存命中（TTL内）: %d 条有触发时间", len(cached[1][0]))
-        return cached[1]
     from src.clients import feishu_client
     try:
         app_token, table_ids = _get_trigger_time_table_cfg()
@@ -349,17 +343,16 @@ def _load_cloud_trigger_cache() -> tuple:
                     tt = _read_trigger_time(fields)
                     if tt:
                         times[jira_no] = tt
-                    if not _trigger_time_bugid_cache or jira_no not in _trigger_time_bugid_cache:
-                        _trigger_time_bugid_cache[jira_no] = (tid, rec.get("record_id", ""), tt)
+                    # 始终更新索引缓存，确保写入时定位到最新记录
+                    _trigger_time_bugid_cache[jira_no] = (tid, rec.get("record_id", ""), tt)
         logger.info("云端触发时间缓存加载完成: %d 条有触发时间, %d 条已记录%s",
                     len(times), len(keys), " (部分加载)" if partial else "")
-        # 部分加载时不缓存结果，避免上层误判“云端没有”而触发空值覆盖
+        # 部分加载时禁止上层写入空值，避免误判“云端没有”而覆盖
         if partial:
             _last_cache_load_partial = True
-            logger.warning("云端触发时间缓存为部分加载，已跳过缓存写入，禁止本轮空值写入")
+            logger.warning("云端触发时间为部分加载，禁止本轮空值写入")
         else:
             _last_cache_load_partial = False
-            _bitable_bulk_cache[_ck] = (time.time(), (times, keys))
             # 同步本地 CSV 中云端缺失的数据到云端
             _sync_local_to_cloud(times, keys)
         return times, keys
@@ -370,16 +363,10 @@ def _load_cloud_trigger_cache() -> tuple:
 
 
 def _load_trigger_times_from_cloud() -> dict:
-    """从云端多维表格加载所有触发时间（支持多表），云端不可用时降级读本地 CSV
+    """每次从云端多维表格加载所有触发时间（支持多表），云端不可用时降级读本地 CSV
 
     :return: {jira号: 触发时间}
     """
-    import time
-    _ck = "trigger_times_cloud"
-    cached = _bitable_bulk_cache.get(_ck)
-    if cached and time.time() - cached[0] < _BITABLE_CACHE_TTL:
-        logger.info("云端触发时间加载缓存命中（TTL内）: %d 条", len(cached[1]))
-        return cached[1]
     from src.clients import feishu_client
     try:
         app_token, table_ids = _get_trigger_time_table_cfg()
@@ -404,7 +391,6 @@ def _load_trigger_times_from_cloud() -> dict:
                     if jira_no and tt:
                         result[jira_no] = tt
         logger.info("云端触发时间加载完成: %d 条", len(result))
-        _bitable_bulk_cache[_ck] = (time.time(), result)
         return result
     except Exception as e:
         logger.warning("云端触发时间加载失败，降级读本地 CSV: %s", e)

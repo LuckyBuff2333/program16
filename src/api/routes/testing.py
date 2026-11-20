@@ -1439,7 +1439,7 @@ async def test_batch_ai_sample(request: Request):
     import os, re, json
     from src.services.trigger_ops import (
         _load_cloud_trigger_cache, _save_trigger_time_to_csv,
-        _batch_save_trigger_times_to_cloud,
+        _batch_save_trigger_times_to_cloud, _search_trigger_time_batch,
     )
     from src.services.report_ops import _load_all_doc_jira_keys
     from src.services.server_legacy import _diag_extract_time_from_video_simple, _has_gmlogger_logs, _diag_extract_time_from_images
@@ -1474,8 +1474,11 @@ async def test_batch_ai_sample(request: Request):
     available = [k for k in keys if k not in tested]
     if not available:
         return _fail(f"所有候选 bug 均已执行过（已执行 {len(tested)} 条）")
-    # 从云端加载触发时间 + 空标记（支持多表，合并加载避免两次全量拉取）
-    local_times, cloud_keys = _load_cloud_trigger_cache()
+    # 从云端加载触发时间 + 空标记：少量走 filter 分块搜索，大量走全量加载
+    if len(available) < 100:
+        local_times, cloud_keys = _search_trigger_time_batch(available)
+    else:
+        local_times, cloud_keys = _load_cloud_trigger_cache()
     # 始终信任云端缓存，无缓存的才重新提取
     trigger_times = {}
     for k in available:
