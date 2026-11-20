@@ -1439,7 +1439,7 @@ async def test_batch_ai_sample(request: Request):
     import os, re, json
     from src.services.trigger_ops import (
         _load_cloud_trigger_cache, _save_trigger_time_to_csv,
-        _batch_save_trigger_times_to_cloud,
+        _batch_save_trigger_times_to_cloud, _search_trigger_time_batch,
     )
     from src.services.report_ops import _load_all_doc_jira_keys
     from src.services.server_legacy import _diag_extract_time_from_video_simple, _has_gmlogger_logs, _diag_extract_time_from_images
@@ -1474,8 +1474,11 @@ async def test_batch_ai_sample(request: Request):
     available = [k for k in keys if k not in tested]
     if not available:
         return _fail(f"所有候选 bug 均已执行过（已执行 {len(tested)} 条）")
-    # 从云端加载触发时间 + 空标记（支持多表，合并加载避免两次全量拉取）
-    local_times, cloud_keys = _load_cloud_trigger_cache()
+    # 从云端加载触发时间 + 空标记：少量走 filter 分块搜索，大量走全量加载
+    if len(available) < 100:
+        local_times, cloud_keys = _search_trigger_time_batch(available)
+    else:
+        local_times, cloud_keys = _load_cloud_trigger_cache()
     # 始终信任云端缓存，无缓存的才重新提取
     trigger_times = {}
     for k in available:
@@ -6757,7 +6760,7 @@ async def test_adp_lookup(request: Request):
                 return
             try:
                 from src.services.adp_ops import ensure_adp_field as _ensure_field
-                for _fn in ("sessionid", "conversationid", "recordid", "原始JSON"):
+                for _fn in ("sessionid", "conversationid", "recordid"):
                     if any((r.get("results") or {}).get(_fn) for r in _items):
                         _ensure_field(app_token, table_id, _fn, 1)
             except Exception as _e:
@@ -6769,24 +6772,46 @@ async def test_adp_lookup(request: Request):
                 if not rec:
                     continue
                 results_dict = r.get("results") or {}
-                status = results_dict.get("完成状态", "")
-                if not r.get("ok") and status not in ("无法分析", "分析失败", "超时未完成"):
+                from src.services.adp_ops import (
+                    normalize_adp_status as _normalize_status,
+                    _has_module_and_confidence as _has_module_info,
+                )
+                status = _normalize_status(results_dict.get("完成状态", ""))
+                if not r.get("ok") and status not in ("无法分析", "分析失败"):
                     continue
                 write_fields = {k: v for k, v in results_dict.items()
                                 if not k.startswith("_") and k != "一致性判定(agent vs 真实情况)"}
+                if status:
+                    write_fields["完成状态"] = status
                 write_fields.pop("原因", None)
                 if write_fields.get("agent分析的问题模块"):
                     from src.services.adp_ops import _strip_module_pid as _strip_pid
                     write_fields["agent分析的问题模块"] = _strip_pid(write_fields["agent分析的问题模块"])
+                # 批量写回前直接判定：断点模块和置信度都必须有值
+                if status in ("完成", "降级完成"):
+                    _module = str(write_fields.get("agent分析的问题模块", "") or "").strip()
+                    _confidence = str(write_fields.get("置信度", "") or "").strip()
+                    _has_html = bool(results_dict.get("_report_file_token"))
+                    if not _has_html:
+                        status = "分析失败"
+                        write_fields["分析失败归因"] = "未拿到 HTML 报告"
+                    elif not _has_module_info(_module, _confidence):
+                        status = "降级完成-但没模块信息"
+                        write_fields.pop("agent分析的问题模块", None)
+                    elif status == "完成" and results_dict.get("_report_degraded"):
+                        status = "降级完成"
+                if status:
+                    write_fields["完成状态"] = status
+                if status in ("分析失败", "无法分析"):
+                    write_fields.pop("置信度", None)
                 if write_fields.get("分析失败归因"):
                     from src.services.adp_ops import short_failure_category as _short_reason
                     write_fields["分析失败归因"] = _short_reason(write_fields["分析失败归因"])
-                if str(write_fields.get("完成状态", "")) in ("分析失败", "无法分析"):
-                    write_fields.pop("置信度", None)
                 _cur_dur = write_fields.get("耗时(分)")
                 _prev_fields = rec.get("fields") or {}
                 _prev_status = str(_prev_fields.get("完成状态", "") or "")
-                if _prev_status == "完成" and str(write_fields.get("完成状态", "")) != "完成":
+                _status_rank = {"完成": 3, "降级完成": 2, "降级完成-但没模块信息": 1}
+                if _status_rank.get(_prev_status, 0) > _status_rank.get(status, 0):
                     continue
                 if _cur_dur not in (None, ""):
                     try:
@@ -6927,7 +6952,7 @@ async def test_adp_lookup(request: Request):
                     ok = result.get("ok", False) and has_html and feishu_ok
                     _timed_out = bool(_item_start_times.get(bugid, {}).get("timed_out"))
                     if _timed_out and not has_html:
-                        results_dict["完成状态"] = "超时未完成"
+                        results_dict["完成状态"] = "分析失败"
                         results_dict["分析失败归因"] = "单条任务超时（90分钟）"
 
                     item = {
@@ -6979,7 +7004,7 @@ async def test_adp_lookup(request: Request):
                     has_html = bool(r.get("has_html"))
                     results_dict = (r.get("result") or {}).get("results") or {}
                     if not has_html:
-                        results_dict["完成状态"] = "超时未完成"
+                        results_dict["完成状态"] = "分析失败"
                         results_dict["分析失败归因"] = "单条任务超时（90分钟）"
                     item = {
                         "jira_key": bugid, "ok": has_html, "has_html": has_html,
@@ -7002,7 +7027,7 @@ async def test_adp_lookup(request: Request):
                 item = {
                     "jira_key": bugid, "ok": False, "has_html": False,
                     "skipped": False, "timed_out": True,
-                    "results": {"完成状态": "超时未完成", "分析失败归因": "单条任务超时（90分钟）"},
+                    "results": {"完成状态": "分析失败", "分析失败归因": "单条任务超时（90分钟）"},
                     "error": "", "bt_found": bugid in bt_map,
                     "desc_source": "bitable" if bugid in bt_map else "none",
                     "time_source": "bitable" if bugid in bt_map else "none",
@@ -7021,8 +7046,9 @@ async def test_adp_lookup(request: Request):
 
         # 空返回项：全部跑完后统一重试一次（最多 6 个并行）
         _empty_retry = [r for r in batch_results
-                        if ((r.get("results") or {}).get("分析失败归因") == "ADP 无返回"
-                            or "ADP 无返回" in (r.get("error") or ""))]
+                        if (((r.get("results") or {}).get("分析失败归因") == "ADP 无返回"
+                            or "ADP 无返回" in (r.get("error") or ""))
+                            and (r.get("results") or {}).get("完成状态") != "无法分析")]
         if _empty_retry:
             import concurrent.futures as _cf
             _retry_workers = 6
@@ -7087,9 +7113,9 @@ async def test_adp_lookup(request: Request):
         total_success = sum(1 for r in batch_results if r["has_html"])
         total_timeout = sum(1 for r in batch_results if r.get("timed_out") and not r["has_html"])
         total_skip = sum(1 for r in batch_results if r.get("skipped"))
-        # 超时未完成单独计数，不计入“失败”
+        # 超时也按分析失败计数
         total_fail = sum(1 for r in batch_results
-                         if not r["has_html"] and not r.get("skipped") and not r.get("timed_out"))
+                         if not r["has_html"] and not r.get("skipped"))
 
         # ADP 执行批次记录（本地CSV）
         try:

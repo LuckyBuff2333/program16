@@ -1339,6 +1339,24 @@ def classify_adp_failure(error: str = "", full_text: str = "", attachment_count:
     return "分析完成但未产出HTML报告"
 
 
+def normalize_adp_status(status: str) -> str:
+    """统一 ADP 完成状态，只保留：完成/降级完成/降级完成-但没模块信息/分析失败/无法分析。"""
+    s = str(status or "").strip()
+    aliases = {
+        "无法复现": "无法分析",
+        "分析完成": "完成",
+        "超时未完成": "分析失败",
+    }
+    s = aliases.get(s, s)
+    if s in ("完成", "降级完成", "降级完成-但没模块信息", "分析失败", "无法分析"):
+        return s
+    if "完成" in s:
+        return "降级完成"
+    if "失败" in s:
+        return "分析失败"
+    return "无法分析"
+
+
 def extract_adp_results(full_text: str, closeout_data: dict, start_ts: int, end_ts: int, file_urls: list = None) -> dict:
     """从 ADP 返回内容中提取需要写入飞书的 6 个字段"""
     result = {"完成状态": "完成"}
@@ -1610,6 +1628,16 @@ def _is_specific_module(module: str) -> bool:
     return True
 
 
+def _has_module_and_confidence(module: str, confidence: str) -> bool:
+    """断点模块（现象承载模块）和置信度都必须有值，任一为空都不算。"""
+    return _is_specific_module(module) and bool(str(confidence or "").strip())
+
+
+def _report_is_degraded(text: str) -> bool:
+    """报告正文出现“降级”即视为降级交付。"""
+    return "降级" in str(text or "")
+
+
 def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
     """写入 ADP 独立多维表格，返回 {ok, record_id, message}"""
     from src.clients import feishu_client
@@ -1627,8 +1655,6 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             ensure_adp_field(app_token, table_id, "conversationid", 1)
         if fields_dict.get("recordid"):
             ensure_adp_field(app_token, table_id, "recordid", 1)
-        if fields_dict.get("原始JSON"):
-            ensure_adp_field(app_token, table_id, "原始JSON", 1)
         # 查找已有记录：优先按 jira号 + 本次 traceid 精确匹配
         records = feishu_client.list_bitable_records(app_token, table_id)
         record_id = None
@@ -1669,14 +1695,17 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         allowed = ["完成状态", "报告链接（分析报告、可观测报告）", "耗时(分)",
                     "agent分析的问题模块", "agent分析的root cause", "root cause",
                     "置信度", "分析失败归因", "traceid", "sessionid", "conversationid", "recordid",
-                    "start_time", "end_time", "traceid排查", "原始JSON"]
+                    "start_time", "end_time", "traceid排查"]
         write_fields = {k: v for k, v in fields_dict.items() if k in allowed}
+        if write_fields.get("完成状态"):
+            write_fields["完成状态"] = normalize_adp_status(write_fields.get("完成状态", ""))
         if prev_root:
             write_fields.pop("root cause", None)
         if write_fields.get("agent分析的问题模块"):
             write_fields["agent分析的问题模块"] = _strip_module_pid(write_fields["agent分析的问题模块"])
-        if str(write_fields.get("完成状态", "")) == "降级完成" and not _is_specific_module(
-                write_fields.get("agent分析的问题模块", "")):
+        if str(write_fields.get("完成状态", "")) == "降级完成" and not _has_module_and_confidence(
+                write_fields.get("agent分析的问题模块", ""),
+                write_fields.get("置信度", "")):
             write_fields["完成状态"] = "降级完成-但没模块信息"
             write_fields.pop("agent分析的问题模块", None)
         if write_fields.get("分析失败归因"):
@@ -1684,9 +1713,10 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
         if str(write_fields.get("完成状态", "")) in ("分析失败", "无法分析"):
             write_fields.pop("置信度", None)
         # root cause 只来自查附件链接接口；已有值时不覆盖
-        # 一致性校验：完成必须有模块和 HTML 报告，否则按降级/失败落状态
-        if str(write_fields.get("完成状态", "")) == "完成":
+        # 一致性校验：完成/降级完成必须有 HTML、断点模块和置信度
+        if str(write_fields.get("完成状态", "")) in ("完成", "降级完成"):
             _module = str(write_fields.get("agent分析的问题模块", "") or "").strip()
+            _confidence = str(write_fields.get("置信度", "") or "").strip()
             _has_report = bool(fields_dict.get("_report_file_token"))
             _report_val = write_fields.get("报告链接（分析报告、可观测报告）")
             if isinstance(_report_val, list):
@@ -1695,12 +1725,13 @@ def write_adp_to_feishu(jira_key: str, fields_dict: dict) -> dict:
             if not _has_report:
                 write_fields["完成状态"] = "分析失败"
                 write_fields.setdefault("分析失败归因", "未拿到 HTML 报告")
-            elif not _is_specific_module(_module):
+            elif not _has_module_and_confidence(_module, _confidence):
                 write_fields["完成状态"] = "降级完成-但没模块信息"
                 write_fields.pop("agent分析的问题模块", None)
-        # 状态优先级：完成 > 降级完成 > 失败。
-        # 注意：降级完成算成功；降级完成-但没模块信息算失败，允许被覆盖。
-        _status_rank = {"完成": 2, "降级完成": 1}
+            elif str(write_fields.get("完成状态", "")) == "完成" and fields_dict.get("_report_degraded"):
+                write_fields["完成状态"] = "降级完成"
+        # 状态优先级：完成 > 降级完成 > 降级完成-但没模块信息 > 失败
+        _status_rank = {"完成": 3, "降级完成": 2, "降级完成-但没模块信息": 1}
         _prev_rank = _status_rank.get(prev_status, 0)
         _cur_rank = _status_rank.get(str(write_fields.get("完成状态", "")), 0)
         if _prev_rank > _cur_rank:
@@ -2237,10 +2268,21 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
             html_module = _extract_module_from_html(local_path)
             if html_module:
                 results["agent分析的问题模块"] = html_module
-            # 拿到 HTML 但报告里没有具体断点模块/现象承载模块 → 降级完成
-            if file_token and not _is_specific_module(html_module):
+            _degraded = _report_is_degraded(full_text)
+            if not _degraded and local_path:
+                try:
+                    with open(local_path, "r", encoding="utf-8", errors="ignore") as _df:
+                        _degraded = _report_is_degraded(_df.read())
+                except Exception:
+                    pass
+            results["_report_degraded"] = _degraded
+            # 拿到 HTML 但断点模块或置信度任一为空 → 降级完成-但没模块信息
+            if file_token and not _has_module_and_confidence(
+                    html_module, results.get("置信度", "")):
                 results["完成状态"] = "降级完成-但没模块信息"
                 results.pop("agent分析的问题模块", None)
+            elif file_token and _degraded:
+                results["完成状态"] = "降级完成"
             _progress("download_report", "done" if file_token else "fail")
         elif is_sandbox:
             # 沙箱 URL 不可下载：没有实际拿到 HTML 报告 → 分析失败
@@ -2300,7 +2342,7 @@ def run_adp_single(jira_key: str, description: str, trigger_time: str, progress_
         # 原始 JSON 与 HTML 分开发布：JSON 上传到云端报告文件夹，HTML 仍为附件
         _raw_json_url = upload_adp_raw_json(jira_key, report_dir)
         if _raw_json_url:
-            results["原始JSON"] = _raw_json_url
+            # 原始JSON只上传到云端文件夹，不写入多维表格字段
             out["raw_json_url"] = _raw_json_url
         # 完整文本只落盘、不随响应回传：前端只拿预览 + 报告路径（避免几十 MB 的 SSE/JSON 响应）
         out["report_path"] = os.path.join(report_dir, f"{jira_key}_full_analysis.md") if report_dir else ""

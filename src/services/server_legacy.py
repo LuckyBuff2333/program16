@@ -211,6 +211,7 @@ _OCR_UNAVAILABLE = object()  # OCR 不可用哨兵值
 
 _rapid_ocr_engine = None
 _rapid_ocr_is_gpu = False  # 主引擎是否使用 GPU 加速
+_nvidia_gpu_cache = None   # None=未检测, True=英伟达独显, False=AMD/无独显
 
 _rapid_ocr_lock = threading.Lock()  # 防止 RapidOCR 并发初始化
 _ocr_infer_lock = threading.Semaphore(2)  # 纯CPU允许2路并行推理；GPU/DML场景由调用方控制
@@ -220,6 +221,23 @@ _ocr_max_pixels = 4_000_000  # GPU 推理最大像素面积（默认值，实际
 _ocr_cfg_cache = {}  # OCR 配置缓存
 _LAST_VIDEO_MAIN_TIME = {}  # bugid -> 压缩包 main 兆底时间（避免被外层附件名覆盖）
 _LAST_VIDEO_MAIN_TIME_MAX = 10000  # 防止无界增长，超出时清空（仅用于单批次内的纠偏）
+
+
+def _has_nvidia_gpu() -> bool:
+    """检测是否有英伟达独显（GLM-OCR 依赖 CUDA，仅 NVIDIA 支持）。结果缓存。"""
+    global _nvidia_gpu_cache
+    if _nvidia_gpu_cache is not None:
+        return _nvidia_gpu_cache
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            _nvidia_gpu_cache = False
+            return False
+        name = torch.cuda.get_device_name(0).lower()
+        _nvidia_gpu_cache = "nvidia" in name or "geforce" in name or "quadro" in name or "rtx" in name or "gtx" in name
+    except Exception:
+        _nvidia_gpu_cache = False
+    return _nvidia_gpu_cache
 
 
 def _get_ocr_cfg() -> dict:
@@ -369,7 +387,7 @@ _ARCHIVE_NAME_RE = re.compile(r"\.(zip|7z|rar|tar|gz|bz2|xz)(\.\d{2,3})?$", re.I
 
 _SPLIT_ARCHIVE_RE = re.compile(r"\.\d{2,3}$")
 
-_ARCHIVE_PROBE_MAX_BYTES = 300 * 1024 * 1024
+_ARCHIVE_PROBE_MAX_BYTES = 500 * 1024 * 1024
 
 # 视频文件后缀
 _VIDEO_SUFFIXES = (".mp4", ".avi", ".mov", ".mkv")
@@ -2478,8 +2496,8 @@ def _daily_scheduler_loop():
                     target_min = _hhmm_to_minutes(report_time)
                     if target_min < 0 or now_min < target_min:
                         continue
-                    if chat_cfg.get("last_run_date") == cur_date:
-                        continue  # 今天已播过
+                    # 本地 last_run_date 只作参考：云端 claim 才可靠判断是否真的播报成功。
+                    # 如果继续用本地日期直接跳过，别的机器抢到 claim 后中途重启会永远没人补播。
                     # 播报前一工作日的数据
                     prev_workday = _get_prev_chinese_workday(now)
                     # 跨机器共享状态：别的机器已成功播报过这个报告日期就跳过，避免重复播报
@@ -2492,16 +2510,23 @@ def _daily_scheduler_loop():
                             _exist_machine = state_info.get("machine", "unknown")
                         except Exception:
                             _exist_status, _exist_machine = "unknown", "unknown"
-                        chat_cfg["last_run_date"] = cur_date  # 本地记账，避免每 30 秒反复查云端
-                        try:
-                            _save_daily_broadcast_config(cfg)
-                        except Exception:
-                            pass
-                        logger.info("跳过昨日播报(%s): chat=%s 已由其他机器播报(status=%s, machine=%s)",
-                                    prev_workday, chat_id[:12], _exist_status, _exist_machine)
+                        if _exist_status == "success":
+                            chat_cfg["last_run_date"] = cur_date  # 云端确认成功后才本地记账
+                            try:
+                                _save_daily_broadcast_config(cfg)
+                            except Exception:
+                                pass
+                            logger.info("跳过昨日播报(%s): chat=%s 已成功播报(machine=%s)",
+                                        prev_workday, chat_id[:12], _exist_machine)
+                        else:
+                            # claiming 未成功/失败待接管：不写本地已播报，等 claim 过期后接管
+                            logger.info("暂不播报昨日(%s): chat=%s 云端状态=%s(machine=%s)，等待接管",
+                                        prev_workday, chat_id[:12], _exist_status, _exist_machine)
                         continue
                     if claim_state == "unavailable":
-                        # 云端不可用：回退本地文件锁，仍能防同机多进程重复播报
+                        # 云端不可用：本地今天已成功播报过才跳过，否则回退本地文件锁
+                        if chat_cfg.get("last_run_date") == cur_date:
+                            continue
                         if not _try_acquire_broadcast_lock(chat_id, cur_date, cur_time):
                             continue
                     logger.info("触发昨日播报(%s): chat=%s, 当前=%s, 播报日期=%s, 设定=%s, 状态=%s",
@@ -3602,17 +3627,92 @@ def _jira_att_auth() -> tuple:
     return headers, timeout
 
 
+def _zip_range_list_entries(url: str, headers: dict, file_size: int = 0, timeout: int = 30) -> list:
+    """通过 HTTP Range 请求读取 ZIP 中央目录，返回所有文件名列表
+
+    只下载文件尾部的中央目录（通常几十KB），无需下载整个压缩包。
+    不支持 Range 或非 ZIP 格式时返回空列表。
+    """
+    import struct
+    import httpx
+    try:
+        # 第一步：下载尾部 128KB 获取 EOCD
+        tail_size = 128 * 1024
+        range_headers = {**headers, "Range": f"bytes=-{tail_size}"}
+        resp = httpx.get(url, headers=range_headers, timeout=timeout,
+                         verify=False, follow_redirects=True)
+        if resp.status_code != 206:
+            return []
+        data = resp.content
+        # 从 Content-Range 获取文件总大小
+        cr = resp.headers.get("Content-Range", "")
+        if not file_size and "/" in cr:
+            try:
+                file_size = int(cr.split("/")[-1])
+            except ValueError:
+                return []
+        if not file_size:
+            return []
+        # 查找 EOCD 签名 (0x06054b50)
+        eocd_pos = data.rfind(b'\x50\x4b\x05\x06')
+        if eocd_pos < 0:
+            return []
+        num_entries = struct.unpack_from('<H', data, eocd_pos + 10)[0]
+        cd_size = struct.unpack_from('<I', data, eocd_pos + 12)[0]
+        cd_offset = struct.unpack_from('<I', data, eocd_pos + 16)[0]
+        # 中央目录在当前下载范围内的相对位置
+        download_start = file_size - len(data)
+        cd_pos = cd_offset - download_start
+        if cd_pos < 0:
+            # 中央目录在下载范围外，精确下载
+            range_headers2 = {**headers, "Range": f"bytes={cd_offset}-{file_size - 1}"}
+            resp2 = httpx.get(url, headers=range_headers2, timeout=timeout,
+                              verify=False, follow_redirects=True)
+            if resp2.status_code != 206:
+                return []
+            data = resp2.content
+            cd_pos = 0
+        # 解析中央目录条目
+        entries = []
+        pos = cd_pos
+        for _ in range(num_entries):
+            if pos + 46 > len(data):
+                break
+            if struct.unpack_from('<I', data, pos)[0] != 0x02014b50:
+                break
+            comp_size = struct.unpack_from('<I', data, pos + 20)[0]
+            uncomp_size = struct.unpack_from('<I', data, pos + 24)[0]
+            name_len = struct.unpack_from('<H', data, pos + 28)[0]
+            extra_len = struct.unpack_from('<H', data, pos + 30)[0]
+            comment_len = struct.unpack_from('<H', data, pos + 32)[0]
+            if pos + 46 + name_len > len(data):
+                break
+            fname = data[pos + 46:pos + 46 + name_len].decode('utf-8', errors='replace')
+            entries.append({
+                'filename': fname,
+                'compressed_size': comp_size,
+                'uncompressed_size': uncomp_size,
+            })
+            pos += 46 + name_len + extra_len + comment_len
+        return entries
+    except Exception:
+        return []
+
+
+def _is_zip_attachment(filename: str) -> bool:
+    """判断文件名是否为 ZIP 格式（含分卷的 .zip 部分）"""
+    return bool(filename and filename.lower().endswith('.zip'))
+
+
 def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
     """判断 Jira 是否含可用日志（gmlogger）。智能回退：
     
     1) 附件文件名含 gmlogger/gmlog/main.log/.log/.txt → 直接判定有（快，不下载）；
-    2) 否则仅对≤ 500MB 的单卷压缩包下载探测包内是否有 main/.log/.txt 文件；
-       分卷压缩包(.001/.002 等)或超大包一律跳过（避免 GB 级下载拖慢）。
+    2) ZIP 格式用 Range 请求读取中央目录（只下载尾部几十KB），不限大小和分卷；
+    3) 其他格式仅对≤ 300MB 的单卷压缩包下载探测包内是否有 main/.log/.txt 文件。
     """
     names = [(a.get("filename", "") or "").lower() for a in attachments]
     # 有直接的 gmlogger/gmlog 文件、main.log 或任意 .log/.txt 文件就算有，不需要解压
-    # 只认 gmlogger/gmlog、明确的 .log/.txt，或后续压缩包探测；
-    # 无扩展名的 logcat/bllog/dltlog 等不再当作可用日志，避免误判为可分析。
     if any("gmlogger" in n or "gmlog" in n
            or "main.log" in n or n.endswith(".log") or n.endswith(".txt") for n in names):
         return True
@@ -3621,19 +3721,31 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
         fn = (att.get("filename", "") or "").lower()
         if not _ARCHIVE_NAME_RE.search(fn):
             continue
-        # 跳过：分卷压缩包（如 xxx.7z.001），多卷无法只读目录且体积极大
-        if _SPLIT_ARCHIVE_RE.search(fn):
-            continue
-        # 跳过：超过探测上限的包，避免整包下载
-        if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
-            continue
-        res = _diag_list_archive_entries(att.get("content", ""), headers, timeout, bugid, filename=att.get("filename", ""))
-        if res.get("ok") and any(
-            "main" in os.path.basename(e).lower() or e.lower().endswith(".log") or e.lower().endswith(".txt")
-            for e in res.get("entries", [])
-        ):
-            logger.info("无gmlogger文件名，但压缩包 %s 内含 main/.log/.txt 文件，判定有日志 (%s)", fn, bugid)
-            return True
+        if _is_zip_attachment(att.get("filename", "")):
+            # ZIP 格式: Range 请求中央目录（只下尾部几十KB），不限分卷和大小
+            range_entries = _zip_range_list_entries(
+                att.get("content", ""), headers, file_size=att.get("size", 0), timeout=30)
+            if range_entries and any(
+                "main" in os.path.basename(e['filename']).lower()
+                or e['filename'].lower().endswith(".log")
+                or e['filename'].lower().endswith(".txt")
+                for e in range_entries if not e['filename'].endswith('/')
+            ):
+                logger.info("ZIP Range 探测到 main/.log/.txt 文件，判定有日志: %s (%s)", fn, bugid)
+                return True
+        else:
+            # 非 ZIP 格式: 跳过分卷和超大包
+            if _SPLIT_ARCHIVE_RE.search(fn):
+                continue
+            if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
+                continue
+            res = _diag_list_archive_entries(att.get("content", ""), headers, timeout, bugid, filename=att.get("filename", ""))
+            if res.get("ok") and any(
+                "main" in os.path.basename(e).lower() or e.lower().endswith(".log") or e.lower().endswith(".txt")
+                for e in res.get("entries", [])
+            ):
+                logger.info("无gmlogger文件名，但压缩包 %s 内含 main/.log/.txt 文件，判定有日志 (%s)", fn, bugid)
+                return True
     return False
 
 
@@ -3726,6 +3838,7 @@ def _diag_check_split_volumes(attachments: list) -> tuple:
 def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid: str = "", filename: str = "", stop_event=None) -> dict:
     """下载压缩包附件并列出解压后的文件名（支持 zip/tar 系，其余标记不支持）
 
+    ZIP 格式优先用 Range 请求读取中央目录（只下载尾部几十KB），失败再全量下载。
     :param filename: 原始附件文件名，用于分卷 zip 等格式的正确识别
     """
     import tarfile
@@ -3734,6 +3847,17 @@ def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid:
     import httpx as _httpx
     import re as _re
     _label = f"{bugid} " if bugid else ""
+
+    # ZIP 格式优先用 Range 请求获取条目列表（只下载中央目录，通常几十KB）
+    if _is_zip_attachment(filename):
+        range_entries = _zip_range_list_entries(
+            att_url, headers, file_size=0, timeout=min(timeout, 30))
+        if range_entries:
+            names = [e['filename'] for e in range_entries if not e['filename'].endswith('/')]
+            logger.info("%sZIP Range 列出条目: %d 个（无需全量下载）", _label, len(names))
+            return {"ok": True, "entries": names, "reason": "", "size": 0}
+        logger.info("%sZIP Range 失败，回退全量下载", _label)
+
     logger.info("%s开始下载附件: %s", _label, att_url[:120])
     entries = []
     total_size = 0
@@ -4464,6 +4588,30 @@ def _diag_download_archives(attachments: list, headers: dict, timeout: int, prob
     return archive_results, matched_any
 
 
+def _check_archives_corrupted(gm_probe_result: dict, attachments: list) -> bool:
+    """检查是否所有压缩包都探测失败（压缩包损坏）
+
+    只有当所有压缩包都无法探测/解压时才算损坏。
+    部分损坏但仍能探测/解压到 main.log 相关内容不算损坏。
+    """
+    if gm_probe_result.get("status") != "failed":
+        return False
+    reason = gm_probe_result.get("reason", "")
+    # 排除无压缩包的情况
+    if "无 gmlogger" in reason or "无有效" in reason:
+        return False
+    # 排除超时情况（可重试）
+    if "超时" in reason:
+        return False
+    # 确认附件中确实有压缩包
+    import re as _re
+    has_archive = any(
+        _re.search(r"\.(zip|7z|rar|tar|gz)$", (a.get("filename", "") or "").lower())
+        for a in attachments
+    )
+    return has_archive
+
+
 def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bugid: str = "", include_non_gmlogger: bool = False) -> dict:
     """下载 gmlogger 压缩包（支持 .001/.002 分卷合并），查找包内 main 相关 log 文件并提取时间
 
@@ -4492,14 +4640,20 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
         groups.setdefault(base, []).append((part, att))
     if not groups:
         return {"status": "failed", "reason": "无 gmlogger 压缩包附件", "main_entries": [], "main_times": []}
-    # 超大包上限：避免数百分兆下载阻塞诊断太久，超限跳过内包探测走兆底链路
+    # 超大包上限：ZIP 可用 Range 无需全量下载，仅对非 ZIP 组检查体积
+    has_zip_group = any(
+        any(_is_zip_attachment(att.get("filename", "")) for _p, att in ps)
+        for ps in groups.values()
+    )
     total_size = sum(a.get("size", 0) for ps in groups.values() for _p, a in ps)
-    if total_size > _ARCHIVE_PROBE_MAX_BYTES:
+    if not has_zip_group and total_size > _ARCHIVE_PROBE_MAX_BYTES:
         _limit_mb = _ARCHIVE_PROBE_MAX_BYTES // 1024 // 1024
-        logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > %dMB）", total_size // 1024 // 1024, _limit_mb)
-        return {"status": "failed", "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>{_limit_mb}MB），已跳过内包探测",
+        logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > %dMB，无 ZIP 可用 Range）",
+                    total_size // 1024 // 1024, _limit_mb)
+        return {"status": "failed",
+                "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>{_limit_mb}MB），已跳过内包探测",
                 "main_entries": [], "main_times": [], "all_times": []}
-    logger.info("gmlogger 内包探测：开始下载（%dMB）", total_size // 1024 // 1024)
+    logger.info("gmlogger 内包探测：开始（%dMB）", total_size // 1024 // 1024)
     _DL_DEADLINE = 300  # 总下载时间上限 5 分钟，超时则跳过
     _dl_start = _time.time()
     last_reason = "无有效 gmlogger 压缩包"
@@ -4508,6 +4662,49 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
             if bugid:
                 _check_diag_cancel(bugid)
             parts.sort(key=lambda x: x[0])
+
+            # ZIP 格式（含分卷）: Range 读取中央目录获取文件名 + 解析时间，无需下载整个压缩包
+            zip_part = None
+            for _p, att in parts:
+                if _is_zip_attachment(att.get("filename", "")):
+                    zip_part = (_p, att)
+                    break
+            if zip_part:
+                _zp, _zatt = zip_part
+                _zurl = _zatt.get("content", "")
+                _zsize = _zatt.get("size", 0)
+                if _zurl:
+                    range_entries = _zip_range_list_entries(
+                        _zurl, headers, file_size=_zsize, timeout=min(timeout, 30))
+                    if range_entries:
+                        all_names = [e['filename'] for e in range_entries
+                                     if not e['filename'].endswith('/')]
+                        # 筛选 3 层内文件名含 main.log 的条目
+                        main_entries = []
+                        for e in range_entries:
+                            name = e['filename']
+                            if name.endswith('/'):
+                                continue
+                            parts_d = name.replace('\\', '/').split('/')
+                            depth = len(parts_d) - 1
+                            bname = parts_d[-1]
+                            if depth <= 3 and 'main.log' in bname.lower():
+                                main_entries.append(bname)
+                        # 从文件名解析时间
+                        main_times = []
+                        for bname in main_entries[:10]:
+                            parsed = _diag_parse_main_time(bname)
+                            if parsed:
+                                main_times.append(parsed)
+                        # 全部条目时间扫描
+                        all_times = _diag_scan_entry_times(all_names)
+                        logger.info("gmlogger ZIP Range 探测: base=%s, 条目=%d, main=%d, 时间=%d",
+                                    base, len(all_names), len(main_entries), len(main_times))
+                        return {"status": "ok", "reason": "",
+                                "main_entries": main_entries,
+                                "main_times": main_times, "all_times": all_times}
+                    logger.info("%sZIP Range 失败，回退全量下载: %s", _label, base)
+
             if base.lower().endswith(".rar"):
                 # rar 分卷：7z 需原始文件名同目录自动续卷，从首卷打开，仅提取 main 文件
                 rar_dir = os.path.join(tmp, os.path.basename(base) + "_rar")
@@ -5047,33 +5244,17 @@ def _strip_navigation_times(text: str) -> str:
 
 
 def _ocr_frame_regions(frame, status_only: bool = False) -> str:
-    """对状态栏/任务栏等小区域做高倍 OCR（RapidOCR + 2.5x 放大 + 自适应二值化）
+    """对状态栏/任务栏等小区域做 OCR（仅 GLM-OCR，无降级）。
 
     录屏时间通常出现在：手机顶部状态栏、车载 HMI 中央顶部、Windows 右下角任务栏、
     导航应用底部中央导航栏（时间字体较大）。
-    裁剪这些区域放大 2.5x 再识别，区域小、速度快、抗内容干扰。
 
     返回合并文本，同时更新 _ROI_REGION_STATS 各区域命中计数。
     """
-    import cv2
-    import numpy as np
     parts = []
     try:
         h, w = frame.shape[:2]
-        # 自动关联：有独显时 server 模型 + 3x；纯 CPU 时 mobile 模型 + 2x
-        try:
-            _get_rapid_ocr()
-        except Exception:
-            pass
-        _cfg_ocr = _get_ocr_cfg()
-        _roi_scale = float(_cfg_ocr.get("gpu_roi_scale", 3.0) if _rapid_ocr_is_gpu
-                           else _cfg_ocr.get("cpu_roi_scale", 2.0))
-        # 带标签的区域：车载 HMI 时钟常出现在顶部状态栏、中央大时钟、右下任务栏、底部中央导航栏
-        # 基于数据沉淀「线上成功且带视频」记录的 2023 个时间文本块统计：
-        # 顶部、左上、右上、中央偏右、右下、左下覆盖了绝大多数时间位置。
-        # 按 2023 个时间块统计的命中率从高到低排序，命中即停：
-        # right_upper 69.2% > top_bar 30.0% > center_right 22.8%
-        # > right_lower 14.0% > left_upper 11.6% > left_lower 10.7%
+        # ── ROI 区域定义（按命中率从高到低）──
         regions = [
             ("right_clock",  int(w * 0.55), int(h * 0.10), int(w * 0.95), int(h * 0.55)),
             ("right_upper",  int(w * 0.44), 0, w, int(h * 0.46)),
@@ -5087,43 +5268,34 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
             regions = list(regions)
         import re as _re_roi
         _t_chk = _re_roi.compile(r'\d[.:;,\-]\d{2}')
-        for region in regions:
-            name, x1, y1, x2, y2 = region
-            if x2 - x1 < 40 or y2 - y1 < 12:
-                continue
-            raw_crop = frame[y1:y2, x1:x2]
-            # ── 先用 RapidOCR：正常时钟 0.2s 内完成；GLM 只在必要时兜底 ──
-            crop_h, crop_w = raw_crop.shape[:2]
-            enlarged = cv2.resize(raw_crop, (int(crop_w * _roi_scale), int(crop_h * _roi_scale)),
-                                  interpolation=cv2.INTER_CUBIC)
-            gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
-            # CLAHE + 去噪 + unsharp：比硬二值化更适合车机小字号时钟
-            gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-            gray = cv2.GaussianBlur(gray, (3, 3), 0)
-            sharp = cv2.addWeighted(
-                gray, 1.6, cv2.GaussianBlur(gray, (0, 0), 3), -0.6, 0)
-            enhanced = cv2.cvtColor(sharp, cv2.COLOR_GRAY2BGR)
-            roi_results = _ocr_readtext(enhanced, _already_enhanced=True)
-            txt = " ".join(r[1] for r in roi_results if len(r) > 1)
-            # 修复 1433→14:33 这类漏冒号
-            txt = _fix_ocr_missing_colon(txt)
-            # 排除视频播放器进度条/总时长，以及导航到达/预计时间
-            txt = _normalize_time_spacing(txt)
-            txt = _strip_video_progress_times(txt, lower=(y1 >= int(h * 0.55)))
-            txt = _strip_navigation_times(txt)
-            if txt.strip():
-                parts.append(txt)
-                logger.info("RapidOCR ROI[%s] 识别到: %s", name, txt[:80])
-                if name in _ROI_REGION_STATS and _t_chk.search(txt):
-                    _ROI_REGION_STATS[name] += 1
-                # ── 只有状态栏高置信区域才早停；中央/底部可能是导航/内容时间 ──
-                if _valid_time_tokens(txt) and name in ("right_clock", "right_upper", "top_bar"):
-                    logger.info("RapidOCR ROI[%s] 命中状态栏时间，跳过剩余区域", name)
-                    break
-            else:
-                logger.info("RapidOCR ROI[%s] 未识别到文本", name)
+
+        # ── GLM-OCR + ROI（原尺寸裁剪，90 条实测命中率 80%、~1.05s）──
+        from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
+        if _glm_avail():
+            for region in regions:
+                name, x1, y1, x2, y2 = region
+                if x2 - x1 < 40 or y2 - y1 < 12:
+                    continue
+                crop = frame[y1:y2, x1:x2]
+                txt = _glm_ocr(crop, max_new_tokens=32) or ""
+                txt = _fix_ocr_missing_colon(txt)
+                txt = _normalize_time_spacing(txt)
+                txt = _strip_video_progress_times(txt, lower=(y1 >= int(h * 0.55)))
+                txt = _strip_navigation_times(txt)
+                if txt.strip():
+                    parts.append(txt)
+                    logger.info("GLM-OCR ROI[%s] 识别到: %s", name, txt[:80])
+                    if name in _ROI_REGION_STATS and _t_chk.search(txt):
+                        _ROI_REGION_STATS[name] += 1
+                    if _valid_time_tokens(txt) and name in ("right_clock", "right_upper", "top_bar"):
+                        logger.info("GLM-OCR ROI[%s] 命中时间，跳过剩余区域", name)
+                        break
+            if parts:
+                return _strip_progress_bar(" ".join(parts))
+        else:
+            logger.warning("GLM-OCR 不可用，跳过 ROI OCR")
     except Exception as _roi_err:
-        logger.warning("RapidOCR _ocr_frame_regions 外层异常: %s", _roi_err, exc_info=True)
+        logger.warning("_ocr_frame_regions 外层异常: %s", _roi_err, exc_info=True)
         return ""
     return _strip_progress_bar(" ".join(parts))
 
@@ -6371,6 +6543,9 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
         else:
             logger.info("视频兜底提取(%s)：递归压缩包探测失败(%s)，继续外层探测",
                         bugid, _gm_probe.get("reason", "")[:80])
+            # 压缩包损坏检测：所有压缩包都探测失败时标记
+            if _check_archives_corrupted(_gm_probe, attachments):
+                logger.warning("视频兜底提取(%s)：所有压缩包探测失败，压缩包损坏", bugid)
     except Exception as _e:
         logger.warning("视频兜底提取(%s)：递归压缩包探测异常: %s", bugid, _e)
     if not _skip_archive_probe:
@@ -6589,7 +6764,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                     _roi_has_time = False
                     results = []
                     all_text = ""
-                    # ── RapidOCR ROI：固定区域放大识别（状态栏/任务栏等）──
+                    # ── ROI OCR：GLM-OCR ──
                     try:
                         _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
                         _roi_text = _strip_progress_bar(_roi_text)
@@ -6600,10 +6775,10 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                             results = [(_roi_text, 1.0)]
                             _has_time = True
                             _VIDEO_OCR_STATS["roi_frames"] += 1
-                            logger.info("视频兗底提取(%s)：第%d秒 ROI RapidOCR 命中时间: %s",
+                            logger.info("视频兗底提取(%s)：第%d秒 ROI OCR 命中时间: %s",
                                         video_label, sec + 1, all_text[:80])
                     except Exception as e:
-                        logger.warning("视频兗底提取(%s)：第%d秒 ROI RapidOCR 异常: %s",
+                        logger.warning("视频兗底提取(%s)：第%d秒 ROI OCR 异常: %s",
                                        video_label, sec + 1, e)
                     _collected_texts.append((sec, all_text))
                     # 诊断日志：打印 OCR 实际读到的原文
@@ -7073,7 +7248,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     _roi_has_time = False
                     results = []
                     all_text = ""
-                    # ── RapidOCR ROI：固定区域放大识别（状态栏/任务栏等）──
+                    # ── ROI OCR：GLM-OCR ──
                     try:
                         _roi_text = _ocr_frame_regions(frame, status_only=True) or ""
                         _roi_text = _strip_progress_bar(_roi_text)
@@ -7084,10 +7259,10 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                             results = [(_roi_text, 1.0)]
                             _has_time = True
                             _VIDEO_OCR_STATS["roi_frames"] += 1
-                            logger.info("视频帧提取(%s)：第%d秒 ROI RapidOCR 命中时间: %s",
+                            logger.info("视频帧提取(%s)：第%d秒 ROI OCR 命中时间: %s",
                                         video_label, sec + 1, all_text[:80])
                     except Exception as e:
-                        logger.warning("视频帧提取(%s)：第%d秒 ROI RapidOCR 异常: %s",
+                        logger.warning("视频帧提取(%s)：第%d秒 ROI OCR 异常: %s",
                                        video_label, sec + 1, e)
                     logger.info("视频帧提取(%s)：第%d秒 OCR%s: %s", video_label, sec + 1,
                                 " (ROI)" if _roi_has_time else "",
@@ -7398,12 +7573,24 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
                                  bugid=bugid, max_bytes=_MAX_MEDIA_BYTES,
                                  filename=fname or "image.bin", use_cache=False,
                                  stop_event=stop_event)
-                # OCR 识别：RapidOCR
+                # OCR 识别：GLM-OCR 全图
                 img = _cv_imread_unicode(img_path)
                 if img is None:
                     logger.warning("%s图片 OCR: cv2.imread 失败 %s", f"{bugid} " if bugid else "", fname)
                     continue
-                results = _ocr_readtext(img)
+                results = []
+                try:
+                    from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
+                    if _glm_avail():
+                        _glm_text = _glm_ocr(img, max_new_tokens=128) or ""
+                        if _glm_text.strip():
+                            # 无 bbox，构造兼容格式供后续正则匹配
+                            results = [[[], _glm_text.strip(), 1.0]]
+                            logger.info("%s图片 GLM-OCR: %s", f"{bugid} " if bugid else "", _glm_text[:120])
+                    else:
+                        logger.warning("%s图片 OCR: GLM-OCR 不可用，跳过 %s", f"{bugid} " if bugid else "", fname)
+                except Exception as _glm_err:
+                    logger.warning("%s图片 GLM-OCR 异常: %s", f"{bugid} " if bugid else "", _glm_err)
                 if not results:
                     continue
                 # 收集完整文本用于时间正则匹配
@@ -7454,24 +7641,9 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
                 if not times_found:
                     continue
                 logger.info("%s图片 OCR %s 提取到 %d 个时间", f"{bugid} " if bugid else "", fname, len(times_found))
-                # 标记检测：分析每个时间戳的 bbox 位置和颜色特征
+                # 标记检测：GLM-OCR 无 bbox，跳过颜色/位置标记分析
                 for ts, parsed_dt in times_found:
-                    is_marked = False
-                    # 在 OCR 结果中查找该时间戳对应的 bbox
-                    for bbox, text, conf in results:
-                        if ts in text or ts.replace(":", ".") in text or ts.replace(":", ",") in text:
-                            # 检测标记特征：
-                            # 1. bbox 面积较大（字号大）
-                            # 2. 周围像素颜色异常（红/绿）
-                            try:
-                                is_marked = _check_time_marked(img_path, bbox, results, img_array=img)
-                            except Exception:
-                                pass
-                            break
-                    all_times.append((ts, parsed_dt, is_marked, fname))
-                    if is_marked and not marked_time:
-                        marked_time = (ts, parsed_dt)
-                        logger.info("%s图片 OCR 标记检测命中: %s (%s)", f"{bugid} " if bugid else "", ts, fname)
+                    all_times.append((ts, parsed_dt, False, fname))
             except Exception as e:
                 logger.warning("%s图片 OCR 处理 %s 异常: %s", f"{bugid} " if bugid else "", fname, e)
                 continue
@@ -9026,6 +9198,10 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
         all_times = gm_probe.get("all_times", [])
         main_entries = gm_probe.get("main_entries", [])
         hit = [t for t in (main_times + all_times) if err_dt and abs((t[1] - err_dt).total_seconds()) <= 300]
+    # 压缩包损坏检测：所有压缩包都探测失败时标记
+    _archives_corrupted = _check_archives_corrupted(gm_probe, probe_attachments)
+    if _archives_corrupted:
+        logger.info("诊断 %s: 所有压缩包探测失败，标记为压缩包损坏", bugid)
     if hit:
         category = "解压问题"
         detail = _build_simple_detail(comment_time, video_time, img_time_str, f"解压问题（包内时间戳命中但日志为空）")
@@ -9183,6 +9359,9 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             suggested_time = ""
             final_msg = "视频/图片/评论区均无时间信息"
         detail = _build_simple_detail(comment_time, video_time, img_time_str, final_msg)
+    # 压缩包损坏备注：所有压缩包探测失败时追加
+    if _archives_corrupted:
+        detail = (detail + "；压缩包损坏").strip()
     # 兜底标签：最终建议时间直接取自 gmlogger/压缩包文件名时，标记出来便于后续排查
     fallback_tag = ""
     if suggested_time and gm_times:

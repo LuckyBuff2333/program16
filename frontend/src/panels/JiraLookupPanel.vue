@@ -318,7 +318,7 @@ export default {
     },
     async queryTodayNewBugs() {
       if (!this.checkLookupCooldown('today')) return;
-      const jql = 'created >= startOfDay() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
+      const jql = 'created >= startOfDay() AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
       this.query = jql;
       this.todayBugLoading = true;
       this.loading = true; this.queried = true; this.rows = []; this.errors = [];
@@ -340,7 +340,7 @@ export default {
     },
     async queryYesterdayNewBugs() {
       if (!this.checkLookupCooldown('yesterday')) return;
-      const jql = 'created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
+      const jql = 'created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
       this.query = jql;
       this.yesterdayBugLoading = true;
       this.loading = true; this.queried = true; this.rows = []; this.errors = [];
@@ -371,7 +371,7 @@ export default {
     },
     async queryWeekNewBugs() {
       if (!this.checkLookupCooldown('week')) return;
-      const jql = `created >= "${this.weekStartDate()}" AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira`;
+      const jql = `created >= "${this.weekStartDate()}" AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira`;
       this.query = jql;
       this.weekBugLoading = true;
       this.loading = true; this.queried = true; this.rows = []; this.errors = [];
@@ -393,7 +393,7 @@ export default {
     },
     async queryLastWeekNewBugs() {
       if (!this.checkLookupCooldown('lastWeek')) return;
-      const jql = 'created >= startOfWeek(-1) AND created < startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
+      const jql = 'created >= startOfWeek(-1) AND created < startOfWeek() AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira';
       this.query = jql;
       this.lastWeekBugLoading = true;
       this.loading = true; this.queried = true; this.rows = []; this.errors = [];
@@ -423,7 +423,7 @@ export default {
       dt.setDate(dt.getDate() + 1);
       const p2 = (n: number) => String(n).padStart(2, '0');
       const nextStr = `${dt.getFullYear()}/${p2(dt.getMonth() + 1)}/${p2(dt.getDate())}`;
-      const jql = `created >= "${dateStr}" AND created < "${nextStr}" AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira`;
+      const jql = `created >= "${dateStr}" AND created < "${nextStr}" AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira`;
       this.query = jql;
       this.customDateBugLoading = true;
       this.loading = true; this.queried = true; this.rows = []; this.errors = [];

@@ -318,6 +318,12 @@
                   @click="row.new_time = row.current_time">恢复</el-button>
               </template>
             </el-table-column>
+            <el-table-column label="最新错误映射" width="140">
+              <template #default="{ row }">
+                <el-tag v-if="row.error_mapping" type="danger" size="small">{{ row.error_mapping }}</el-tag>
+                <span v-else style="color:#c0c4cc;font-size:12px">-</span>
+              </template>
+            </el-table-column>
           </el-table>
           <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <el-button type="success" :loading="timeEdit.saving" :disabled="!changedTimeRows.length" @click="saveCloudTimes">
@@ -345,10 +351,10 @@ import { CopyDocument } from '@element-plus/icons-vue';
 import { api, formatMinute } from '../composables/utils';
 
 const JQL_PRESETS = {
-  today: 'created >= startOfDay() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
-  yesterday: 'created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC',
-  week: 'created >= startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
-  lastWeek: 'created >= startOfWeek(-1) AND created < startOfWeek() AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
+  today: 'created >= startOfDay() AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
+  yesterday: 'created >= startOfDay("-1d") AND created <= endOfDay("-1d") AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira ORDER BY cf[10603] ASC',
+  week: 'created >= startOfWeek() AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
+  lastWeek: 'created >= startOfWeek(-1) AND created < startOfWeek() AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
   no_label: 'labels not in (trigger_time) AND issuetype = "bug" AND status != "closed" AND project = VCS_Info4.0_High_Platform_PATAC_Jira',
 };
 
@@ -416,10 +422,19 @@ export default {
       return this.linkExtract.rows.filter(r => r.match === '不一致' && r.extracted_time && !keepJudges.includes(r.judge)).length;
     },
     changedTimeRows() {
-      return this.timeEdit.rows.filter((r: any) => r.new_time && r.new_time !== r.current_time);
+      return this.timeEdit.rows.filter((r: any) => {
+        const nt = r.new_time || '';
+        const ct = r.current_time || '';
+        return nt !== ct;
+      });
     },
     vcsPendingRows() {
-      return this.timeEdit.rows.filter((r: any) => r.new_time);
+      // 对比云端时间(new_time)与 VCS BUG 时间(vcs_time)，不同则待写回
+      return this.timeEdit.rows.filter((r: any) => {
+        const nt = r.new_time || '';
+        const vt = r.vcs_time || '';
+        return nt !== vt;
+      });
     },
     timeEditWithTimeCount() {
       return this.timeEdit.rows.filter((r: any) => r.current_time || r.new_time).length;
@@ -777,6 +792,7 @@ export default {
         const rows = (res.data && res.data.rows) || [];
         this.timeEdit.rows = rows.map((r: any) => ({
           bugid: r.bugid, current_time: r.current_time || '', new_time: r.current_time || '', vcs_time: r.current_time || '',
+          error_mapping: r.error_mapping || '',
         }));
         const hit = (res.data && res.data.hit) || 0;
         this.timeEdit.statusMsg = res.message || `读取 ${rows.length} 个，${hit} 个有云端时间`;
@@ -788,11 +804,16 @@ export default {
       }
     },
     async saveCloudTimes() {
-      const items = this.changedTimeRows.map((r: any) => ({ bugid: r.bugid, new_time: formatMinute(r.new_time) }));
+      const items = this.changedTimeRows.map((r: any) => ({
+        bugid: r.bugid, new_time: r.new_time ? formatMinute(r.new_time) : '',
+      }));
       if (!items.length) return ElMessage.info('没有需要保存的修改');
+      const delCount = items.filter(i => !i.new_time).length;
+      const updCount = items.length - delCount;
+      const desc = delCount ? `更新 ${updCount} 条，删除 ${delCount} 条` : `更新 ${items.length} 条`;
       try {
         await ElMessageBox.confirm(
-          `将把 ${items.length} 条问题发生时间写回云端（并同步诊断缓存），确认保存？`,
+          `将把 ${items.length} 条问题发生时间写回云端（${desc}），确认保存？`,
           '确认保存', { confirmButtonText: '保存', cancelButtonText: '取消', type: 'warning' });
       } catch { return; }
       this.timeEdit.saving = true;
@@ -813,11 +834,15 @@ export default {
       }
     },
     async writebackVcsBug() {
-      const items = this.vcsPendingRows.map((r: any) => ({ bugid: r.bugid, new_time: formatMinute(r.new_time) }));
+      const items = this.vcsPendingRows.map((r: any) => ({
+        bugid: r.bugid, new_time: r.new_time ? formatMinute(r.new_time) : '',
+      }));
       if (!items.length) return ElMessage.info('没有需要写回的数据');
+      const clearCount = items.filter(i => !i.new_time).length;
+      const desc = clearCount ? `更新 ${items.length - clearCount} 条，清空 ${clearCount} 条` : `更新 ${items.length} 条`;
       try {
         await ElMessageBox.confirm(
-          `将把 ${items.length} 条问题发生时间写回 VCS BUG 多维表格，确认写回？`,
+          `将把 ${items.length} 条问题发生时间写回 VCS BUG 多维表格（${desc}），确认写回？`,
           '确认写回', { confirmButtonText: '写回', cancelButtonText: '取消', type: 'warning' });
       } catch { return; }
       this.timeEdit.writebackVcsLoading = true;
