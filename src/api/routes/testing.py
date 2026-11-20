@@ -768,11 +768,9 @@ async def vcs_problem_time_query(request: Request):
 def stop_batch_ai_extract_times():
     """触发批量提取停止信号（优雅停止：当前条目完成后停止后续）"""
     import os, re, json
-    from src.api.routes.shared import batch_extract_stop_event as _batch_extract_stop_event, _force_exit_after_delay
+    from src.api.routes.shared import batch_extract_stop_event as _batch_extract_stop_event
     _batch_extract_stop_event.set()
     logger.info("收到批量提取停止信号，当前条目完成后将停止后续处理")
-    import threading as _th
-    _th.Thread(target=_force_exit_after_delay, daemon=True, name="stop-force-exit").start()
     return _ok(None, "停止信号已发送，当前条目完成后停止")
 
 
@@ -3094,11 +3092,9 @@ async def test_prod_csv_bitable(request: Request):
 @router.post("/api/test/prod_batch_run/stop", response_model=ApiResponse)
 def stop_prod_batch_run():
     """功能测试「批量执行」停止：当前正在提取的 Jira 完成并写云端后，取消后续提取/执行队列"""
-    from src.api.routes.shared import prod_batch_stop_event as _stop, _force_exit_after_delay
+    from src.api.routes.shared import prod_batch_stop_event as _stop
     _stop.set()
     logger.info("收到功能测试批量执行停止信号：当前提取完成后停止，后续队列取消")
-    import threading as _th
-    _th.Thread(target=_force_exit_after_delay, daemon=True, name="stop-force-exit").start()
     return _ok(None, "已请求停止：当前正在提取的 Jira 保存后停止，后续队列取消")
 
 
@@ -5940,11 +5936,9 @@ async def form_upload(file: UploadFile = File(None)):
 @router.post("/api/test/form_exec/stop", response_model=ApiResponse)
 def stop_form_exec():
     """表单执行停止：当前正在提取的 Jira 完成并写云端后，取消后续提取/执行队列"""
-    from src.api.routes.shared import form_exec_stop_event as _stop, _force_exit_after_delay
+    from src.api.routes.shared import form_exec_stop_event as _stop
     _stop.set()
     logger.info("收到表单执行停止信号：当前提取完成后停止，后续队列取消")
-    import threading as _th
-    _th.Thread(target=_force_exit_after_delay, daemon=True, name="stop-force-exit").start()
     return _ok(None, "已请求停止：当前正在提取的 Jira 保存后停止，后续队列取消")
 
 

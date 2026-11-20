@@ -177,8 +177,8 @@ _DAILY_BROADCAST_CONFIG_PATH = os.path.join(PROJECT_ROOT, "data", "daily_broadca
 _DAILY_BROADCAST_FOLDER = "I8Bwf17aAl9LR1dazOic7Q70nic"  # 云端每日结论文件夹
 
 _daily_scheduler_thread = None
-
 _daily_scheduler_stop = None
+_broadcast_done_cache = set()  # {(chat_id, report_date)}：本进程已确认成功的播报，避免每30秒重复查云端
 
 _cloud_batch_cache = {}  # {date_str: {"ts": float, "data": {jira_no: exec_info}}}
 
@@ -220,6 +220,8 @@ _VIDEO_OCR_STATS = {
 _ocr_cfg_cache = {}  # OCR 配置缓存
 _LAST_VIDEO_MAIN_TIME = {}  # bugid -> 压缩包 main 兆底时间（避免被外层附件名覆盖）
 _LAST_VIDEO_MAIN_TIME_MAX = 10000  # 防止无界增长，超出时清空（仅用于单批次内的纠偏）
+_LAST_VIDEO_FAILURE = {}  # bugid -> 视频/压缩包失败原因，供前端备注展示
+_LAST_VIDEO_FAILURE_MAX = 10000
 
 
 def _get_ocr_cfg() -> dict:
@@ -2458,6 +2460,8 @@ def _daily_scheduler_loop():
                     # 如果继续用本地日期直接跳过，别的机器抢到 claim 后中途重启会永远没人补播。
                     # 播报前一工作日的数据
                     prev_workday = _get_prev_chinese_workday(now)
+                    if (chat_id, prev_workday) in _broadcast_done_cache:
+                        continue
                     # 跨机器共享状态：别的机器已成功播报过这个报告日期就跳过，避免重复播报
                     claim_state, claim_rec = broadcast_state.claim(chat_id, prev_workday, cur_time)
                     if claim_state == "exists":
@@ -2469,6 +2473,7 @@ def _daily_scheduler_loop():
                         except Exception:
                             _exist_status, _exist_machine = "unknown", "unknown"
                         if _exist_status == "success":
+                            _broadcast_done_cache.add((chat_id, prev_workday))
                             chat_cfg["last_run_date"] = cur_date  # 云端确认成功后才本地记账
                             try:
                                 _save_daily_broadcast_config(cfg)
@@ -2492,7 +2497,8 @@ def _daily_scheduler_loop():
                                 chat_id[:12], cur_date, prev_workday, report_time, claim_state)
                     chat_cfg["last_run_date"] = cur_date  # 先记账，避免失败后每 30 秒重试造成刷屏
                     try:
-                        _bot_daily_broadcast(chat_id, prev_workday, True)
+                        if _bot_daily_broadcast(chat_id, prev_workday, True):
+                            _broadcast_done_cache.add((chat_id, prev_workday))
                     except Exception as e:
                         logger.error("定时播报执行失败: %s", e)
                     try:
@@ -6025,6 +6031,11 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
     return _guard_extracted_time(issue, ts, force_video=True)
 
 
+def _get_video_failure_reason(bugid: str) -> str:
+    """返回最近一次视频/压缩包提取失败原因，供结果备注展示。"""
+    return _LAST_VIDEO_FAILURE.get(str(bugid or ""), "")
+
+
 def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> str:
     """视频帧 OCR 提取触发时间，多视频按优先级逐个尝试，命中即停。
 
@@ -6059,6 +6070,8 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
         return ""
     # 获取 bugid 用于缓存键
     bugid = issue.get("key") or (issue.get("fields") or {}).get("summary", "")[:20]
+    # 每次重新提取先清空上一次的失败原因
+    _LAST_VIDEO_FAILURE.pop(bugid, None)
     # 初始化自学习上下文
     _timestudy_init_ctx(bugid)
     _timestudy_update_ctx(bugid, video_count=len(videos))
@@ -6121,7 +6134,14 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                         bugid, _gm_probe.get("reason", "")[:80])
             # 压缩包损坏检测：所有压缩包都探测失败时标记
             if _check_archives_corrupted(_gm_probe, attachments):
-                logger.warning("视频兜底提取(%s)：所有压缩包探测失败，压缩包损坏", bugid)
+                _reason = str(_gm_probe.get("reason") or "压缩包损坏")
+                if _reason and _reason != "压缩包损坏":
+                    _reason = f"压缩包损坏（{_reason}）"
+                _LAST_VIDEO_FAILURE[bugid] = _reason
+                if len(_LAST_VIDEO_FAILURE) >= _LAST_VIDEO_FAILURE_MAX:
+                    _LAST_VIDEO_FAILURE.clear()
+                    _LAST_VIDEO_FAILURE[bugid] = _reason
+                logger.warning("视频兜底提取(%s)：所有压缩包探测失败，%s", bugid, _reason)
     except Exception as _e:
         logger.warning("视频兜底提取(%s)：递归压缩包探测异常: %s", bugid, _e)
     if not _skip_archive_probe:

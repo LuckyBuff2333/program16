@@ -37,13 +37,6 @@ interrupted = False
 SERVER_BOOT_ID = uuid.uuid4().hex
 
 
-def _force_exit_after_delay():
-    """停止按钮点击后 30 秒仍未退出则强制终止进程（兜底，防止后台线程阻塞关闭）"""
-    import time as _time
-    _time.sleep(30)
-    os._exit(1)
-
-
 def handle_sigint(signum, frame):
     """SIGINT 处理：Ctrl+C 直接退出服务，取消所有任务"""
     global interrupted
@@ -53,21 +46,9 @@ def handle_sigint(signum, frame):
     for bugid in list(diag_cancel):
         diag_cancel[bugid] = True
     logger.warning("收到 Ctrl+C，立即退出服务")
-    # reload 模式下 worker 是子进程，os._exit(1) 只杀 worker，
-    # reloader 父进程会自动重启新 worker，必须连带杀掉父进程
-    if os.environ.get("APP_RELOAD_MODE") and sys.platform == "win32":
-        try:
-            import subprocess
-            ppid = os.getppid()
-            if ppid > 0 and ppid != os.getpid():
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(ppid)],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    timeout=5)
-                logger.info("已杀掉 reloader 父进程 PID=%d", ppid)
-        except Exception:
-            pass
+    # 只退出当前 worker，不杀 reloader 父进程：
+    # 开发模式源码变更触发 reload 时，uvicorn 会给 worker 发 SIGINT；
+    # 若这里 taskkill 父进程，会把整个服务一起关掉。
     os._exit(1)
 
 # 批量提取触发时间停止标志

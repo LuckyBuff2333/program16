@@ -329,8 +329,8 @@
             <el-button type="success" :loading="timeEdit.saving" :disabled="!changedTimeRows.length" @click="saveCloudTimes">
               保存修改（{{ changedTimeRows.length }} 条）
             </el-button>
-            <el-button type="warning" :loading="timeEdit.writebackVcsLoading" :disabled="!vcsPendingRows.length" @click="writebackVcsBug">
-              写回VCS BUG（{{ vcsPendingRows.length }} 条）
+            <el-button type="warning" :loading="timeEdit.writebackVcsLoading" :disabled="!timeEditWithTimeCount" @click="writebackVcsBug">
+              写回VCS BUG（{{ timeEditWithTimeCount }} 条）
             </el-button>
             <el-button type="info" plain size="small" :icon="CopyDocument" :disabled="!timeEditWithTimeCount" @click="copyTimeEditKeys">
               复制有时间Key（{{ timeEditWithTimeCount }}）
@@ -834,12 +834,14 @@ export default {
       }
     },
     async writebackVcsBug() {
-      const items = this.vcsPendingRows.map((r: any) => ({
-        bugid: r.bugid, new_time: r.new_time ? formatMinute(r.new_time) : '',
-      }));
+      // 即使与当前值相同也允许写回；只写有时间的行，避免误清空 VCS 空记录
+      const items = this.timeEdit.rows
+        .filter((r: any) => r.new_time)
+        .map((r: any) => ({
+          bugid: r.bugid, new_time: formatMinute(r.new_time),
+        }));
       if (!items.length) return ElMessage.info('没有需要写回的数据');
-      const clearCount = items.filter(i => !i.new_time).length;
-      const desc = clearCount ? `更新 ${items.length - clearCount} 条，清空 ${clearCount} 条` : `更新 ${items.length} 条`;
+      const desc = `更新 ${items.length} 条`;
       try {
         await ElMessageBox.confirm(
           `将把 ${items.length} 条问题发生时间写回 VCS BUG 多维表格（${desc}），确认写回？`,

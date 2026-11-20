@@ -25,8 +25,10 @@
             <el-button size="small" type="info" :loading="lastWeekBugLoading" @click="queryLastWeekNewBugs">上周新增 Bug</el-button>
             <el-button size="small" type="primary" @click="fillSummaryQuery">描述查 Jira 号</el-button>
             <el-divider direction="vertical" style="margin:0 4px"></el-divider>
-            <el-date-picker v-model="customDate" type="date" value-format="YYYY-MM-DD" placeholder="选择日期" size="small" style="width:140px" />
-            <el-button size="small" type="success" :loading="customDateBugLoading" @click="queryCustomDateBugs">日期查询</el-button>
+            <el-date-picker v-model="customDateRange" type="daterange" value-format="YYYY-MM-DD"
+              range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期"
+              size="small" style="width:260px" />
+            <el-button size="small" type="success" :loading="customDateBugLoading" @click="queryCustomDateBugs">时间段查询</el-button>
             <el-divider direction="vertical" style="margin:0 4px"></el-divider>
             <el-checkbox v-model="filterAiPreliminary" size="small">过滤AI初步分析结果</el-checkbox>
             <el-checkbox v-model="filterCloudCache" size="small">云端已有缓存</el-checkbox>
@@ -193,7 +195,7 @@ export default {
       yesterdayBugLoading: false,
       weekBugLoading: false,
       lastWeekBugLoading: false,
-      customDate: '',
+      customDateRange: [] as string[],
       customDateBugLoading: false,
       filterAiPreliminary: true,
       filterCloudCache: false,
@@ -218,7 +220,8 @@ export default {
     displayedRows() {
       let r = this.rows;
       if (this.filterAiPreliminary) r = r.filter((x: any) => !x.has_ai_preliminary);
-      if (this.filterCloudCache) r = r.filter((x: any) => x.has_cloud_cache);
+      // 云端缓存只看“待执行”部分：已分析的不再进入缓存筛选
+      if (this.filterCloudCache) r = r.filter((x: any) => !x.has_ai_preliminary && x.has_cloud_cache);
       return r;
     },
     analyzedCount() {
@@ -228,7 +231,9 @@ export default {
       return this.rows.length - this.analyzedCount;
     },
     cloudCacheCount() {
-      return this.rows.filter((r: any) => r.has_cloud_cache).length;
+      // 勾选时只看当前待执行；取消勾选后恢复全部缓存数量
+      return this.rows.filter((r: any) =>
+        r.has_cloud_cache && (!this.filterCloudCache || !r.has_ai_preliminary)).length;
     },
     // 表格查询 computed
     tblDisplayedRows() {
@@ -416,16 +421,18 @@ export default {
       }
     },
     async queryCustomDateBugs() {
-      if (!this.customDate) { ElMessage.warning('请先选择日期'); return; }
+      if (!this.customDateRange || this.customDateRange.length !== 2) {
+        ElMessage.warning('请先选择开始和结束日期'); return;
+      }
       if (!this.checkLookupCooldown('customDate')) return;
-      // 将 YYYY-MM-DD 转为 Jira JQL 格式 YYYY/MM/DD，并计算次日
-      const parts = this.customDate.split('-');
-      const dateStr = `${parts[0]}/${parts[1]}/${parts[2]}`;
-      const dt = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+      const [start, end] = this.customDateRange;
+      const toSlash = (s: string) => s.replace(/-/g, '/');
+      // 结束日期取次日 00:00 作为开区间，保证结束当天全天包含
+      const dt = new Date(end);
       dt.setDate(dt.getDate() + 1);
       const p2 = (n: number) => String(n).padStart(2, '0');
-      const nextStr = `${dt.getFullYear()}/${p2(dt.getMonth() + 1)}/${p2(dt.getDate())}`;
-      const jql = `created >= "${dateStr}" AND created < "${nextStr}" AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira`;
+      const endExclusive = `${dt.getFullYear()}/${p2(dt.getMonth() + 1)}/${p2(dt.getDate())}`;
+      const jql = `created >= "${toSlash(start)}" AND created < "${endExclusive}" AND issuetype = "bug" AND project = VCS_Info4.0_High_Platform_PATAC_Jira`;
       this.query = jql;
       this.customDateBugLoading = true;
       this.loading = true; this.queried = true; this.rows = []; this.errors = [];
@@ -435,8 +442,9 @@ export default {
         this.rows = data.rows || [];
         this.errors = data.errors || [];
         this.mode = data.mode || 'jql';
-        if (!this.rows.length) ElMessage.info(`${this.customDate} 无新增 Bug`);
-        else ElMessage.success(`${this.customDate} 新增 ${this.rows.length} 个 Bug`);
+        const label = `${start} ~ ${end}`;
+        if (!this.rows.length) ElMessage.info(`${label} 无新增 Bug`);
+        else ElMessage.success(`${label} 新增 ${this.rows.length} 个 Bug`);
       } catch (e: any) {
         ElMessage.error('查询失败: ' + e.message);
       } finally {

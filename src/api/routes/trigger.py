@@ -86,8 +86,8 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
     return tt, source
 
 
-def _extract_failure_reason(attachments: list) -> str:
-    """区分“无有效附件”和“有附件但没提取到时间”。"""
+def _extract_failure_reason(attachments: list, bugid: str = "") -> str:
+    """区分“无有效附件”和“有附件但没提取到时间”，并带上压缩包失败原因。"""
     names = [(a.get("filename", "") or "").lower() for a in (attachments or [])]
     has_video = any(n.endswith((".mp4", ".mov", ".avi", ".mkv")) for n in names)
     has_image = any(n.endswith((".png", ".jpg", ".jpeg", ".bmp", ".webp")) for n in names)
@@ -95,7 +95,15 @@ def _extract_failure_reason(attachments: list) -> str:
                    n.endswith((".zip", ".rar", ".7z", ".tar.gz"))) for n in names)
     if not (has_video or has_image or has_log):
         return "无有效附件（无视频/图片/日志包）"
-    return "未提取到时间（视频/图片/文本均未命中）"
+    reason = "未提取到时间（视频/图片/文本均未命中）"
+    try:
+        from src.services.server_legacy import _get_video_failure_reason
+        detail = _get_video_failure_reason(bugid) if bugid else ""
+        if detail:
+            reason += f"；{detail}"
+    except Exception:
+        pass
+    return reason
 
 
 def _to_minute(ts: str) -> str:
@@ -505,11 +513,9 @@ async def cache_batch_scan(req: CacheBatchScanRequest):
 @router.post("/api/trigger_time/cache_batch_extract/stop", response_model=ApiResponse)
 def stop_cache_batch_extract():
     """触发云端缓存批量提取停止信号"""
-    from src.api.routes.shared import cache_batch_stop_event as _cache_batch_stop_event, ok, _force_exit_after_delay
+    from src.api.routes.shared import cache_batch_stop_event as _cache_batch_stop_event, ok
     _cache_batch_stop_event.set()
     logger.info("收到云端缓存批量提取停止信号")
-    import threading as _th
-    _th.Thread(target=_force_exit_after_delay, daemon=True, name="stop-force-exit").start()
     return ok(None, "停止信号已发送，当前条目完成后停止")
 
 
@@ -751,7 +757,7 @@ async def batch_extract_time(request: Request):
                     return bugid, "", "stopped", "已停止"
                 if tt:
                     return bugid, tt, source, None
-                return bugid, "", "failed", _extract_failure_reason(attachments)
+                return bugid, "", "failed", _extract_failure_reason(attachments, bugid)
             except Exception as e:
                 return bugid, "", "error", str(e)
 
@@ -906,11 +912,9 @@ async def batch_extract_time(request: Request):
 @router.post("/api/trigger/batch_extract_time/stop", response_model=ApiResponse)
 def stop_batch_extract_time():
     """停止批量提取触发时间"""
-    from src.api.routes.shared import batch_extract_stop_event as _stop_event, ok, _force_exit_after_delay
+    from src.api.routes.shared import batch_extract_stop_event as _stop_event, ok
     _stop_event.set()
     logger.info("收到批量提取触发时间停止信号")
-    import threading as _th
-    _th.Thread(target=_force_exit_after_delay, daemon=True, name="stop-force-exit").start()
     return ok(None, "停止信号已发送，当前提取完成后停止")
 
 
@@ -1191,7 +1195,7 @@ async def compare_extract_time(file: UploadFile = File(...), filter_statuses: st
                     if not isinstance(tt, str):
                         tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
                     return bugid, tt, source, desc, None, _ref, _created
-                return bugid, "", "failed", desc, _extract_failure_reason(attachments), _ref, _created
+                return bugid, "", "failed", desc, _extract_failure_reason(attachments, bugid), _ref, _created
             except Exception as e:
                 return bugid, "", "error", "", str(e), None, None
 
