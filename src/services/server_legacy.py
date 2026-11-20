@@ -5941,8 +5941,7 @@ def _extract_video_frames_gpu(video_path: str, positions: list = None, num_frame
         for sec in positions:
             try:
                 if sec == 0:
-                    # 第一帧：确保回到视频开头后读取
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    # 第 0 帧直接读封面首帧，不做 seek；部分编码 seek 后会落在模糊帧
                     ret, frame = cap.read()
                     if ret:
                         frames.append((sec, frame))
