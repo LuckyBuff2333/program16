@@ -313,7 +313,7 @@ export default {
         ElMessage.error('查询失败: ' + e.message);
       } finally {
         this.loading = false;
-        this.enrichWithCloudCache();
+        await this.enrichWithCloudCache();
       }
     },
     async queryTodayNewBugs() {
@@ -335,7 +335,7 @@ export default {
       } finally {
         this.loading = false;
         this.todayBugLoading = false;
-        this.enrichWithCloudCache();
+        await this.enrichWithCloudCache();
       }
     },
     async queryYesterdayNewBugs() {
@@ -357,7 +357,7 @@ export default {
       } finally {
         this.loading = false;
         this.yesterdayBugLoading = false;
-        this.enrichWithCloudCache();
+        await this.enrichWithCloudCache();
       }
     },
     weekStartDate() {
@@ -388,7 +388,7 @@ export default {
       } finally {
         this.loading = false;
         this.weekBugLoading = false;
-        this.enrichWithCloudCache();
+        await this.enrichWithCloudCache();
       }
     },
     async queryLastWeekNewBugs() {
@@ -410,7 +410,7 @@ export default {
       } finally {
         this.loading = false;
         this.lastWeekBugLoading = false;
-        this.enrichWithCloudCache();
+        await this.enrichWithCloudCache();
       }
     },
     async queryCustomDateBugs() {
@@ -440,7 +440,7 @@ export default {
       } finally {
         this.loading = false;
         this.customDateBugLoading = false;
-        this.enrichWithCloudCache();
+        await this.enrichWithCloudCache();
       }
     },
     async enrichWithCloudCache() {
