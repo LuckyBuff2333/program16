@@ -1,4 +1,4 @@
-﻿# 杩愯鐜锛歅ython >= 3.12
+# 杩愯鐜锛歅ython >= 3.12
 # 瀹夎锛歱ip install -r requirements.txt
 httpx>=0.27.0
 tenacity>=8.2.0
@@ -16,7 +16,7 @@ pytest>=7.4.0
 allure-pytest>=2.13.0
 opencv-python-headless>=4.8.0
 av>=14.0.0
-rapidocr_onnxruntime>=1.4.0
+torch>=2.0
 transformers>=5.14.0
 accelerate>=0.30.0
 openpyxl>=3.1.0

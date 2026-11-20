@@ -58,9 +58,10 @@ def _load():
 
         _PROCESSOR = AutoProcessor.from_pretrained(model_path(), trust_remote_code=True)
 
-        # 优先使用 GPU FP16，回退 CPU FP32
+        # 优先使用 GPU FP16，回退 CPU FP32；可用 GLM_OCR_FORCE_FP16=1 强制测试 CPU FP16
         use_gpu = torch.cuda.is_available()
-        dtype = torch.float16 if use_gpu else torch.float32
+        _force_fp16 = os.environ.get("GLM_OCR_FORCE_FP16", "0") == "1"
+        dtype = torch.float16 if (use_gpu or _force_fp16) else torch.float32
         kwargs = {"torch_dtype": dtype, "trust_remote_code": True}
         if use_gpu:
             kwargs["device_map"] = "cuda"
