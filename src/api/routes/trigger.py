@@ -259,8 +259,8 @@ def update_trigger_time(req: UpdateTriggerTimeRequest):
 def batch_update_trigger_time(req: BatchUpdateRequest):
     """批量应用修正时间，支持空时间删除云端记录（仅限时间批量提取面板）"""
     from src.services.trigger_ops import (
-        _batch_save_trigger_times_to_cloud, _get_trigger_time_table_cfg,
-        _trigger_time_bugid_cache, _search_trigger_time_batch,
+        _get_trigger_time_table_cfg, _trigger_time_bugid_cache,
+        _search_trigger_time_single, _TT_FIELD,
     )
     from src.services.report_ops import _load_diagnose_cache, _save_diagnose_cache
     from src.clients import feishu_client
@@ -268,62 +268,56 @@ def batch_update_trigger_time(req: BatchUpdateRequest):
     items = req.items
     if not items:
         return _fail("待应用列表为空")
-    valid_items = {}
-    delete_bugids = []
+    app_token, _ = _get_trigger_time_table_cfg()
+    success = 0
+    deleted = 0
     for item in items:
         bugid = item.bugid.strip()
         new_time = _to_minute(item.new_time)
         if not bugid:
             continue
-        if new_time:
-            valid_items[bugid] = new_time
+        # 查找已有记录（优先缓存，未命中则单条搜索）
+        cached = _trigger_time_bugid_cache.get(bugid)
+        if cached and isinstance(cached, tuple) and len(cached) >= 3:
+            tid, rec_id, _ = cached
         else:
-            delete_bugids.append(bugid)
-    if not valid_items and not delete_bugids:
-        return _fail("待应用列表为空")
-    # 更新有时间的项目
-    success = 0
-    if valid_items:
-        cloud_ok = _batch_save_trigger_times_to_cloud(
-            valid_items, {k: "人工修改" for k in valid_items})
-        if not cloud_ok:
-            return _fail("云端写入失败")
-        for bugid, new_time in valid_items.items():
-            cached = _load_diagnose_cache(bugid)
-            if cached:
-                cached["verify_status"] = "corrected"
-                cached["suggested_time"] = new_time
-                _save_diagnose_cache(bugid, cached)
-        success = len(valid_items)
-    # 删除空时间的项目
-    deleted = 0
-    if delete_bugids:
+            found = _search_trigger_time_single(bugid)
+            if found:
+                tid, rec_id = found["table_id"], found["record_id"]
+            else:
+                tid, rec_id = "", ""
         try:
-            app_token, _ = _get_trigger_time_table_cfg()
-            # 确保缓存已加载
-            uncached = [b for b in delete_bugids if b not in _trigger_time_bugid_cache]
-            if uncached:
-                _search_trigger_time_batch(uncached)
-            delete_by_table = {}  # {tid: [record_id]}
-            for bugid in delete_bugids:
-                cached = _trigger_time_bugid_cache.get(bugid)
-                if cached and isinstance(cached, tuple) and len(cached) >= 3:
-                    tid, rec_id, _ = cached
-                    delete_by_table.setdefault(tid, []).append(rec_id)
+            if new_time:
+                # 更新触发时间
+                if rec_id:
+                    feishu_client.update_bitable_records(app_token, tid, [
+                        {"record_id": rec_id, "fields": {_TT_FIELD: new_time}}
+                    ])
+                    _trigger_time_bugid_cache[bugid] = (tid, rec_id, new_time)
+                else:
+                    # 无现有记录，新建一条
+                    from src.services.trigger_ops import _build_trigger_write_fields
+                    fields = _build_trigger_write_fields(new_time, "人工修改", "")
+                    first_tid = _get_trigger_time_table_cfg()[1][0]
+                    feishu_client.create_bitable_records(app_token, first_tid, [{"fields": fields}])
+                success += 1
+                cached_diag = _load_diagnose_cache(bugid)
+                if cached_diag:
+                    cached_diag["verify_status"] = "corrected"
+                    cached_diag["suggested_time"] = new_time
+                    _save_diagnose_cache(bugid, cached_diag)
+            else:
+                # 删除云端记录
+                if rec_id:
+                    feishu_client.batch_delete_records(app_token, tid, [rec_id])
                     _trigger_time_bugid_cache.pop(bugid, None)
-            for tid, rec_ids in delete_by_table.items():
-                for i in range(0, len(rec_ids), 500):
-                    feishu_client.batch_delete_records(app_token, tid, rec_ids[i:i + 500])
-                deleted += len(rec_ids)
-            # 清空诊断缓存中的建议时间
-            for bugid in delete_bugids:
-                cached = _load_diagnose_cache(bugid)
-                if cached:
-                    cached.pop("suggested_time", None)
-                    _save_diagnose_cache(bugid, cached)
-            logger.info("时间批量删除完成: %d 条", deleted)
+                    deleted += 1
+                cached_diag = _load_diagnose_cache(bugid)
+                if cached_diag:
+                    cached_diag.pop("suggested_time", None)
+                    _save_diagnose_cache(bugid, cached_diag)
         except Exception as e:
-            logger.warning("时间删除失败: %s", e)
+            logger.warning("时间应用失败 %s: %s", bugid, e)
     parts = []
     if success: parts.append(f"更新 {success} 条")
     if deleted: parts.append(f"删除 {deleted} 条")
