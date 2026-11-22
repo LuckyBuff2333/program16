@@ -343,11 +343,11 @@ _VIDEO_CACHE_MAX_SIZE = 50000  # 最大缓存条目数
 
 _VIDEO_CACHE_MAX_AGE_DAYS = 90  # 缓存过期天数
 
-_ARCHIVE_NAME_RE = re.compile(r"\.(zip|7z|rar|tar|gz|bz2|xz)(\.\d{2,3})?$", re.I)
+_ARCHIVE_NAME_RE = re.compile(r"\.(zip|7z|rar|tar|tgz|gz|bz2|xz)(\.\d{2,3})?$", re.I)
 
 _SPLIT_ARCHIVE_RE = re.compile(r"\.\d{2,3}$")
 
-_ARCHIVE_PROBE_MAX_BYTES = 500 * 1024 * 1024
+_ARCHIVE_PROBE_MAX_BYTES = 20 * 1024 * 1024 * 1024  # gmlogger 大包也探测
 
 # 视频文件后缀
 _VIDEO_SUFFIXES = (".mp4", ".avi", ".mov", ".mkv")
@@ -3664,8 +3664,9 @@ def _zip_range_list_entries(url: str, headers: dict, file_size: int = 0, timeout
 
 
 def _is_zip_attachment(filename: str) -> bool:
-    """判断文件名是否为 ZIP 格式（含分卷的 .zip 部分）"""
-    return bool(filename and filename.lower().endswith('.zip'))
+    """判断文件名是否为 ZIP 格式（含分卷 .zip.001 / .zip.002）"""
+    fn = (filename or "").lower()
+    return fn.endswith(".zip") or bool(re.search(r"\.zip\.\d{2,3}$", fn))
 
 
 def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
@@ -3943,6 +3944,16 @@ def _diag_archive_names(path: str) -> tuple:
             return True, [m.name for m in tf.getmembers() if m.isfile()]
     except Exception:
         pass
+    # 单文件 gzip：内部只有一份内容，名称去掉 .gz
+    try:
+        if str(path).lower().endswith(".gz"):
+            import gzip
+            with gzip.open(path, "rb") as gf:
+                gf.read(1)
+            bname = os.path.basename(path)
+            return True, [bname[:-3] if bname.lower().endswith(".gz") else bname + ".out"]
+    except Exception as e:
+        return False, f"gz 打开失败: {e}"
     # rar 支持
     try:
         import rarfile
@@ -4273,6 +4284,44 @@ def _diag_scan_entry_times(names: list) -> list:
     return times
 
 
+def _diag_probe_tar_main_times(archive_path: str) -> dict:
+    """直接遍历 tar/tar.gz 成员读取 main 时间，不展开到磁盘。
+
+    返回值与 _diag_gmlogger_main_times 兼容。
+    """
+    import tarfile
+    try:
+        with tarfile.open(archive_path) as tf:
+            members = [m for m in tf.getmembers() if m.isfile()]
+            all_names = [m.name for m in members]
+            main_members = []
+            for m in members:
+                if "main.log" in os.path.basename(m.name).lower():
+                    main_members.append(m)
+            main_members.sort(key=lambda m: (not m.name.lower().endswith((".log", ".txt")), m.name))
+            main_entries = [os.path.basename(m.name) for m in main_members[:5]]
+            main_times = []
+            for m in main_members[:5]:
+                head = ""
+                try:
+                    f = tf.extractfile(m)
+                    if f is not None:
+                        head = f.read(65536).decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+                parsed = _diag_parse_main_time(os.path.basename(m.name), head)
+                if parsed:
+                    main_times.append(parsed)
+            return {
+                "status": "ok", "reason": "",
+                "main_entries": main_entries, "main_times": main_times,
+                "all_times": _diag_scan_entry_times(all_names),
+            }
+    except Exception as e:
+        return {"status": "failed", "reason": f"tar 读取失败: {e}",
+                "main_entries": [], "main_times": [], "all_times": []}
+
+
 def _diag_extract_to_dir(archive_path: str, extract_dir: str) -> tuple:
     """解压压缩包到指定目录，返回 (成功, 文件路径列表或失败原因)"""
     import zipfile
@@ -4298,8 +4347,24 @@ def _diag_extract_to_dir(archive_path: str, extract_dir: str) -> tuple:
         with tarfile.open(archive_path) as tf:
             tf.extractall(extract_dir)
             return True, [os.path.join(extract_dir, m.name) for m in tf.getmembers() if m.isfile()]
+    except Exception:
+        pass
+    # 单文件 gzip（非 tar.gz）：直接解出内容，文件名去掉 .gz
+    try:
+        if str(archive_path).lower().endswith(".gz"):
+            import gzip
+            base = os.path.basename(archive_path)
+            out_name = base[:-3] if base.lower().endswith(".gz") else base + ".out"
+            out_path = os.path.join(extract_dir, out_name or "main.log")
+            with gzip.open(archive_path, "rb") as src, open(out_path, "wb") as dst:
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+            return True, [out_path]
     except Exception as e:
-        return False, f"tar 解压失败: {e}"
+        return False, f"gz 解压失败: {e}"
     try:
         import rarfile
         if _setup_rarfile() and rarfile.is_rarfile(archive_path):
@@ -4596,7 +4661,7 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
         # 日志包：gmlogger/gmlog/log_/pataclogger 等，或直接是 .log/.txt
         if not include_non_gmlogger and not (any(h in _fn for h in _LOG_NAME_HINTS) or _fn.endswith((".log", ".txt"))):
             continue
-        m = _re.search(r"(?:\.part(\d+))?\.(zip|7z|rar|tar|gz)(\.(\d{2,3}))?$", fname, _re.I)
+        m = _re.search(r"(?:\.part(\d+))?\.(zip|7z|rar|tar|tgz|gz|bz2|xz)(\.(\d{2,3}))?$", fname, _re.I)
         if not m:
             continue
         part = int(m.group(1) or m.group(4) or 0)
@@ -4604,6 +4669,15 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
         groups.setdefault(base, []).append((part, att))
     if not groups:
         return {"status": "failed", "reason": "无 gmlogger 压缩包附件", "main_entries": [], "main_times": []}
+    # 只优先处理上传日期最新的日志包；同组多分卷取最新上传时间
+    def _group_upload(ps):
+        vals = [_ts_parse_datetime(str(a.get("created") or "")[:19]) for _p, a in ps]
+        vals = [v for v in vals if v]
+        return max(vals) if vals else datetime.min
+    groups = dict(sorted(groups.items(), key=lambda kv: _group_upload(kv[1]), reverse=True))
+    logger.info("gmlogger 包排序：%s", " > ".join(
+        f"{os.path.basename(k)}@{_group_upload(v).strftime('%m-%d %H:%M') if _group_upload(v) != datetime.min else '?'}"
+        for k, v in groups.items()))
     # 超大包上限：ZIP 可用 Range 无需全量下载，仅对非 ZIP 组检查体积
     has_zip_group = any(
         any(_is_zip_attachment(att.get("filename", "")) for _p, att in ps)
@@ -4649,10 +4723,8 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                             name = e['filename']
                             if name.endswith('/'):
                                 continue
-                            parts_d = name.replace('\\', '/').split('/')
-                            depth = len(parts_d) - 1
-                            bname = parts_d[-1]
-                            if depth <= 3 and 'main.log' in bname.lower():
+                            bname = os.path.basename(name.replace('\\', '/'))
+                            if 'main.log' in bname.lower():
                                 main_entries.append(bname)
                         # 从文件名解析时间
                         main_times = []
@@ -4667,7 +4739,7 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                         return {"status": "ok", "reason": "",
                                 "main_entries": main_entries,
                                 "main_times": main_times, "all_times": all_times}
-                    logger.info("%sZIP Range 失败，回退全量下载: %s", _label, base)
+                    logger.info("gmlogger ZIP Range 失败，回退全量下载: %s", base)
 
             if base.lower().endswith(".rar"):
                 # rar 分卷：7z 需原始文件名同目录自动续卷，从首卷打开，仅提取 main 文件
@@ -4677,10 +4749,9 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                     _vol_total = 0
                     for _p, att in parts:
                         dst = os.path.join(rar_dir, att.get("filename", "") or f"part{_p}.rar")
-                        remaining = _MAX_RAR_VOLUME_BYTES - _vol_total
+                        remaining = 20 * 1024 * 1024 * 1024 - _vol_total
                         if remaining <= 0:
-                            raise _AttachmentLimitError(
-                                f"rar 分卷总量超过 {_MAX_RAR_VOLUME_BYTES // 1024 // 1024 // 1024}GB 上限")
+                            raise _AttachmentLimitError("rar 分卷总量超过 20GB 安全上限")
                         _vol_total += _stream_download(
                             att.get("content", ""), headers, dst, timeout=timeout,
                             bugid=bugid, filename=os.path.basename(dst), max_bytes=remaining)
@@ -4710,9 +4781,9 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                             r.raise_for_status()
                             for chunk in r.iter_bytes(chunk_size=1024 * 1024):
                                 _merged_written += len(chunk)
-                                if _merged_written > _MAX_ATTACHMENT_BYTES:
+                                if _merged_written > 20 * 1024 * 1024 * 1024:
                                     raise _AttachmentLimitError(
-                                        f"gmlogger 压缩包超过 {_MAX_ATTACHMENT_BYTES // 1024 // 1024}MB 上限"
+                                        "gmlogger 压缩包超过 20GB 安全上限"
                                         f"（已下载 {_merged_written / 1024 / 1024:.1f}MB），已中止")
                                 _ATTACH_BUDGET.charge(len(chunk), bugid)
                                 out.write(chunk)
@@ -4725,6 +4796,16 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
             except Exception as e:
                 logger.warning("gmlogger 分卷下载失败 %s: %s", base, e)
                 return {"status": "failed", "reason": f"gmlogger 下载失败: {e}", "main_entries": [], "main_times": []}
+            # tar/tar.gz：直接遍历成员读 main 名称和头部，不展开到磁盘
+            if base.lower().endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz")):
+                tar_probe = _diag_probe_tar_main_times(merged)
+                if tar_probe.get("status") == "ok":
+                    logger.info("gmlogger 内包探测(tar 免解压): base=%s, main 文件 %d 个, 提取时间 %d 个",
+                                base, len(tar_probe.get("main_entries", [])),
+                                len(tar_probe.get("main_times", [])))
+                    return tar_probe
+                last_reason = tar_probe.get("reason") or last_reason
+                logger.warning("gmlogger tar 免解压探测失败 %s: %s", base, last_reason)
             # 解压到磁盘并递归查找 main 文件（支持嵌套压缩包+深层目录，最深 3 层）
             ext_dir = os.path.join(tmp, "ext_" + os.path.basename(base))
             os.makedirs(ext_dir, exist_ok=True)
@@ -5388,25 +5469,40 @@ def _issue_created_dt(issue: dict):
     return None
 
 
-def _rank_videos(videos: list, attachments: list, created_dt=None) -> list:
-    """按与参考时间的相关性对视频排序，返回排序后的列表（最相关的在前）。
+def _latest_gmlogger_upload_dt(attachments: list):
+    """最近上传的 gmlogger 压缩包上传时间（不是包名里的抓包时间）。"""
+    latest = None
+    for att in attachments or []:
+        fname = (att.get("filename") or "").lower()
+        if "gmlogger" not in fname:
+            continue
+        dt = _ts_parse_datetime(str(att.get("created") or "")[:19])
+        if dt and (latest is None or dt > latest):
+            latest = dt
+    return latest
 
-    排序策略（按优先级）：
-    0. 有 Jira 创建时间（多次复现）→ 视频文件名时间最接近创建时间的优先
-    1. 视频文件名含日期时间且gmlogger文件名有时间 → 按与 gmlogger 时间差升序
-    2. gmlogger文件名无时间 → 按与gmlogger上传时间差升序
-    3. 完全无 gmlogger 参考 → 按视频上传时间升序
+
+def _rank_videos(videos: list, attachments: list, created_dt=None) -> list:
+    """按“最新 gmlogger 上传日 + 同天上传时间最接近”对视频排序。
+
+    优先：上传日期与最新日志包相同，且上传时间差最小；
+    没有同天视频时，再回退到原来的文件名/创建时间规则。
     """
     if len(videos) <= 1:
         return list(videos)
     gm_times = _diag_gmlogger_times(attachments)
     gm_ref_dt = gm_times[0][1] if gm_times else None
-    gm_upload_dt = None
-    for att in attachments:
-        fname = att.get("filename", "") or ""
-        if fname and "gmlogger" in fname.lower():
-            gm_upload_dt = _ts_parse_datetime(att.get("created", ""))
-            break
+    gm_upload_dt = _latest_gmlogger_upload_dt(attachments)
+
+    def _upload(v):
+        return _ts_parse_datetime(str(v.get("created") or "")[:19])
+
+    same_day = [v for v in videos if gm_upload_dt and _upload(v)
+                and _upload(v).date() == gm_upload_dt.date()]
+    if same_day:
+        return sorted(same_day, key=lambda v: abs((_upload(v) - gm_upload_dt).total_seconds())) + \
+               [v for v in videos if v not in same_day]
+
     def _sort_key(v):
         fname = v.get("filename", "") or ""
         parsed = _diag_parse_entry_time(fname)
@@ -5414,12 +5510,11 @@ def _rank_videos(videos: list, attachments: list, created_dt=None) -> list:
             return (0, abs((parsed[1] - created_dt).total_seconds()), "")
         if parsed and gm_ref_dt:
             return (1, abs((parsed[1] - gm_ref_dt).total_seconds()), "")
-        v_upload_dt = _ts_parse_datetime(v.get("created", ""))
+        v_upload_dt = _upload(v)
         if v_upload_dt and gm_upload_dt:
             return (2, abs((v_upload_dt - gm_upload_dt).total_seconds()), v.get("created", ""))
         return (3, 0, v.get("created", ""))
-    ranked = sorted(videos, key=_sort_key)
-    return ranked
+    return sorted(videos, key=_sort_key)
 
 
 def _pick_best_video(videos: list, attachments: list) -> dict:
@@ -5944,8 +6039,13 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
     # Closed 的 Jira 分析已完成，评论区时间优先（其他状态日志可能未传完，继续以视频为准）
     _cdt2 = _closed_comment_dt(issue, created)
     if _cdt2 and abs((_cdt2 - dt).total_seconds()) >= 60:
-        logger.info("视频时间纠偏(Closed 评论区优先): %s -> %s", ts, _cdt2)
-        return _cdt2.strftime("%Y-%m-%d %H:%M:%S")
+        # 最新日志包/视频所在日期优先；评论区旧日期不能把最新一天覆盖回旧日期
+        _latest_upload = _latest_gmlogger_upload_dt(attachments)
+        if _latest_upload and dt.date() == _latest_upload.date() and _cdt2.date() != dt.date():
+            logger.info("视频时间纠偏(Closed 评论区日期较旧，保留 %s，忽略评论 %s)", ts, _cdt2)
+        else:
+            logger.info("视频时间纠偏(Closed 评论区优先): %s -> %s", ts, _cdt2)
+            return _cdt2.strftime("%Y-%m-%d %H:%M:%S")
 
     # 提取结果明显偏离抓包/无抓包时，用评论区/描述多源提取兜底
     if (not refs) or (ref_anchor and abs((dt - ref_anchor).total_seconds()) > 2700):
@@ -5953,7 +6053,11 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
             from src.clients import jira_client as _jc
             _alt = _jc.extract_trigger_time_from_issue(issue)
             _alt_dt = _ts_parse_datetime(_alt) if _alt else None
-            if _alt_dt and _alt_dt <= created and abs((_alt_dt - dt).total_seconds()) > 900:
+            _latest_upload = _latest_gmlogger_upload_dt(attachments)
+            _alt_old_day = bool(_latest_upload and dt.date() == _latest_upload.date()
+                                and _alt_dt and _alt_dt.date() != _latest_upload.date())
+            if _alt_dt and _alt_dt <= created and not _alt_old_day \
+                    and abs((_alt_dt - dt).total_seconds()) > 900:
                 logger.info("视频时间纠偏(评论区/多源兜底): %s -> %s", ts, _alt)
                 return _alt
         except Exception:
@@ -6021,13 +6125,13 @@ def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
     ts = _diag_extract_time_from_video_simple_impl(issue, stop_event=stop_event)
     _key = str(issue.get("key") or "")
     if ts and _LAST_VIDEO_MAIN_TIME.get(_key) == ts:
-        # 已由压缩包内 main 文件名确定，不能再被外层 gmlogger/附件名时间覆盖
-        logger.info("视频时间纠偏：保留压缩包 main 时间 %s（跳过外层附件名覆盖）", ts)
-    else:
-        try:
-            ts = _fix_video_time_against_created(issue, ts)
-        except Exception as e:
-            logger.warning("视频时间纠偏失败: %s", e)
+        # 压缩包内 main 时间是日志权威时间，不能被视频上传时间当成上界提前一天
+        logger.info("视频时间纠偏：保留压缩包 main 时间 %s（不做视频上传时间约束）", ts)
+        return _guard_extracted_time(issue, ts, force_video=False)
+    try:
+        ts = _fix_video_time_against_created(issue, ts)
+    except Exception as e:
+        logger.warning("视频时间纠偏失败: %s", e)
     return _guard_extracted_time(issue, ts, force_video=True)
 
 
@@ -6052,18 +6156,11 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
     fields = issue.get("fields") or {}
     attachments = fields.get("attachment") or []
     videos = [a for a in attachments if (a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES)]
-    # 多视频：优先选上传日期与日志包上传日期最接近的
+    # 多视频：按“最新日志包上传日 + 同天上传时间最接近”排序
     try:
-        _gm_dates = [_ts_parse_datetime(str(a.get("created") or "")[:19]) for a in attachments
-                     if "gmlogger" in (a.get("filename") or "").lower()]
-        _gm_dates = [d for d in _gm_dates if d]
-        if _gm_dates and len(videos) > 1:
-            def _vkey(a):
-                _vd = _ts_parse_datetime(str(a.get("created") or "")[:19])
-                return min((abs((_vd - g).total_seconds()) for g in _gm_dates), default=0) if _vd else 10 ** 12
-            videos.sort(key=_vkey)
-    except Exception:
-        pass
+        videos = _rank_videos(videos, attachments, _issue_created_dt(issue))
+    except Exception as e:
+        logger.warning("视频排序失败: %s", e)
     if not videos:
         _timestudy_update_ctx(issue.get("key", ""), error_type="no_video", error_detail="Jira无视频附件")
         _timestudy_trace(issue.get("key", ""), "video:0")
@@ -6080,10 +6177,18 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
     cache = _load_video_time_cache()
     cache_updated = False
     from src.clients.jira_client import _parse_datetime_string
-    # 1. 解析 gmlogger 压缩包文件名时间（不解压，外层日期）
-    gm_times = _diag_gmlogger_times(attachments)
+    # 1. 解析 gmlogger 压缩包文件名时间；只使用“上传日期最新”的日志包
+    _gm_atts = [a for a in attachments if "gmlogger" in (a.get("filename") or "").lower()]
+    _latest_gm_upload = _latest_gmlogger_upload_dt(attachments)
+    if _latest_gm_upload:
+        _gm_atts = [a for a in _gm_atts
+                    if (_ts_parse_datetime(str(a.get("created") or "")[:19]) or datetime.min).date()
+                    == _latest_gm_upload.date()]
+        logger.info("视频兜底提取(%s)：采用最新 gmlogger 上传日 %s，共 %d 个附件",
+                    bugid, _latest_gm_upload.strftime("%Y-%m-%d"), len(_gm_atts))
+    gm_times = _diag_gmlogger_times(_gm_atts or attachments)
     # 1b. 非 gmlogger 压缩包也解析文件名时间（如 nop_2026_10_26_1_18_31.zip.001）
-    _archive_times = _diag_archive_filename_times(attachments)
+    _archive_times = _diag_archive_filename_times(_gm_atts or attachments)
     # 2. 直接上传的 main.log 文件（已解压，内层日期）
     _inner_times = []
     for att in attachments:
@@ -6210,9 +6315,9 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
                           ref_times="|".join(str(dt) for _, dt in (gm_times + _inner_times)[:3]))
     _timestudy_trace(bugid, f"gm:{len(gm_times)}+inner:{len(_inner_times)}")
     # 构建 gmlogger 详细信息（用于智能匹配视频）
-    gm_info_list = _build_gmlogger_info(attachments)
+    gm_info_list = _build_gmlogger_info(_gm_atts or attachments)
     gm_ref_dt = None
-    for att in attachments:
+    for att in (_gm_atts or attachments):
         fname = att.get("filename", "") or ""
         if fname and "gmlogger" in fname.lower():
             gm_ref_dt = _ts_parse_datetime(att.get("created", ""))
@@ -6225,10 +6330,10 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
     # 按优先级排序视频
     ranked_videos = _rank_videos(videos, attachments, created_dt=_issue_created_dt(issue))
     single_video = len(ranked_videos) == 1
-    # 匹配容差：内层日期（main文件）可用时 5 分钟，仅外层文件名日期时 10 分钟
+    # 匹配容差：内层 main 文件名可用时 5 分钟，仅外层文件名日期时 15 分钟
     if not ref_pool:
         logger.info("视频兜底提取(%s)：gmlogger 和内层均无日期，仍尝试视频OCR（无参考日期校验）", bugid)
-    _match_tolerance = 900
+    _match_tolerance = 300 if _inner_times else 900
     logger.info("视频兜底提取(%s)：ref_pool %d 个（外层 %d + 内层 %d），匹配容差 %ds",
                 bugid, len(ref_pool), len(gm_times), len(_inner_times), _match_tolerance)
     best_partial = ""
@@ -7594,10 +7699,8 @@ def _apply_diag_time_bounds(suggested_time: str, video_time: str, attachments: l
                             now=None) -> tuple:
     """问题排查建议时间的硬约束，返回 (调整后时间, 说明)。
 
-    1. 最终建议时间必须早于当前时间；
-    2. 视频 OCR 时间拼出来的日期必须早于视频附件上传时间：
-       - 若晚于上传时间/当前时间，说明日期拼错，逐日提前（最多 7 天）；
-       - 提前后仍不满足，则丢弃该建议。
+    只校验“早于当前时间”。不再用视频上传时间反推日期，避免 main 日志
+    时间晚于视频上传时被错误提前一天。
     """
     s = str(suggested_time or "").strip()
     if not s:
@@ -7608,31 +7711,19 @@ def _apply_diag_time_bounds(suggested_time: str, video_time: str, attachments: l
     if dt.tzinfo is not None:
         dt = dt.astimezone().replace(tzinfo=None)
     now = now or datetime.now()
-    upload = None
-    # 只有“视频内容时间”拼出来的建议才用视频上传时间约束
-    if video_time and _hm_of_time_text(video_time) and _hm_of_time_text(s):
-        if _hm_of_time_text(video_time) == _hm_of_time_text(s):
-            upload = _video_upload_datetime(attachments)
-    # 日期拼接偏晚（晚于现在或晚于视频上传）：把日期逐日提前，最多提前 7 天
-    if dt >= now or (upload and dt >= upload):
-        reasons = []
-        if dt >= now:
-            reasons.append("晚于当前时间")
-        if upload and dt >= upload:
-            reasons.append(f"晚于视频上传时间 {upload.strftime('%Y-%m-%d %H:%M:%S')}")
-        reason = "、".join(reasons)
+    if dt >= now:
         for days in range(1, 8):
             cand = dt - timedelta(days=days)
-            if cand < now and (not upload or cand < upload):
+            if cand < now:
                 return cand.strftime("%Y-%m-%d %H:%M:%S"), (
-                    f"日期拼接{reason}，已提前 {days} 天为 "
+                    f"晚于当前时间，已提前 {days} 天为 "
                     f"{cand.strftime('%Y-%m-%d %H:%M:%S')}")
-        return "", f"日期拼接{reason}，提前 7 天仍不满足，已丢弃"
+        return "", "晚于当前时间，提前 7 天仍不满足，已丢弃"
     return s, ""
 
 
 def _guard_extracted_time(issue: dict, tt, attachments: list = None, force_video: bool = False):
-    """所有时间提取入口的统一约束：早于当前时间；视频来源的还要早于视频上传时间。"""
+    """所有时间提取入口的统一约束：只要求早于当前时间。"""
     if not tt:
         return tt
     try:

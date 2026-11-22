@@ -30,7 +30,8 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
     from src.clients import jira_client as _jc
     from src.services.server_legacy import (
         _diag_extract_time_from_video_simple, _diag_extract_time_from_images,
-        _align_time_to_gmlogger, _VIDEO_SUFFIXES,
+        _align_time_to_gmlogger, _VIDEO_SUFFIXES, _latest_gmlogger_upload_dt,
+        _ts_parse_datetime,
     )
 
     def _stopped():
@@ -42,8 +43,26 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
         if (_jc.extract_status(issue) or "").lower() == "closed":
             tt = _jc.extract_latest_comment_time(issue)
             if tt:
-                tt = _align_time_to_gmlogger(issue, tt, attachments)
-                return tt, "评论"
+                # 如果存在“最新日志包上传日 + 同天上传视频”，评论区旧日期不能覆盖它
+                _latest_upload = _latest_gmlogger_upload_dt(attachments)
+                _comment_dt = _ts_parse_datetime(str(tt))
+                _same_day_video = False
+                if _latest_upload:
+                    for _a in attachments:
+                        if not (_a.get("filename") or "").lower().endswith(_VIDEO_SUFFIXES):
+                            continue
+                        _vd = _ts_parse_datetime(str(_a.get("created") or "")[:19])
+                        if _vd and _vd.date() == _latest_upload.date():
+                            _same_day_video = True
+                            break
+                if (_latest_upload and _same_day_video and _comment_dt
+                        and _comment_dt.date() != _latest_upload.date()):
+                    logger.info("Closed 评论时间 %s 早于最新日志包日 %s，改用视频/日志包",
+                                tt, _latest_upload.date())
+                    tt = ""
+                if tt:
+                    tt = _align_time_to_gmlogger(issue, tt, attachments)
+                    return tt, "评论"
             tt = ""
     except Exception:
         tt = ""
