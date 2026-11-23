@@ -21,7 +21,8 @@ router = APIRouter()
 
 
 def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
-                         img_to: int, bugid: str, stop_event=None) -> tuple:
+                         img_to: int, bugid: str, stop_event=None,
+                         ignore_archive_limit: bool = False) -> tuple:
     """JQL/手动提取与链接提取共用的触发时间提取链路。
 
     优先级：Closed 评论 → 视频 OCR → 文本 → 图片 OCR → 附件名；
@@ -72,7 +73,8 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
                     for a in (attachments or []))
     # 1. 视频 OCR（非 Closed 最高优先级）
     if has_video:
-        tt = _diag_extract_time_from_video_simple(issue, stop_event=stop_event)
+        tt = _diag_extract_time_from_video_simple(
+            issue, stop_event=stop_event, ignore_archive_limit=ignore_archive_limit)
         if tt:
             source = "视频拼接"
     if _stopped():
@@ -644,6 +646,7 @@ async def batch_extract_time(request: Request):
     bugids = body.get("bugids") or []
     skip_cached = body.get("skip_cached", False)
     filter_ai_preliminary = body.get("filter_ai_preliminary", False)
+    ignore_archive_limit = bool(body.get("ignore_archive_limit", False))
     # ── 解析输入（JQL 放到 SSE 生成器里执行，先让前端收到 preparing）──
     if not jql and not bugids:
         return _fail("无待提取的 Jira 号（JQL 未匹配或 bugids 为空）")
@@ -771,7 +774,8 @@ async def batch_extract_time(request: Request):
                 except Exception:
                     pass
                 tt, source = _extract_time_common(
-                    issue, attachments, _img_headers, img_to, bugid, _stop_event)
+                    issue, attachments, _img_headers, img_to, bugid, _stop_event,
+                    ignore_archive_limit=ignore_archive_limit)
                 if source == "stopped":
                     return bugid, "", "stopped", "已停止"
                 if tt:

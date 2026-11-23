@@ -32,6 +32,7 @@
     <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <el-checkbox v-model="skipCached">跳过已有缓存</el-checkbox>
       <el-checkbox v-model="filterAiPreliminary">过滤AI初步分析结果</el-checkbox>
+      <el-checkbox v-model="ignoreArchiveLimit">忽略压缩包大小限制</el-checkbox>
       <el-button type="primary" :loading="running" :disabled="!jql && !manualBugids" @click="startExtract">开始提取</el-button>
       <el-button type="danger" :disabled="!running" @click="stopExtract">停止</el-button>
       <span v-if="statusMsg" style="font-size:13px;color:#606266">{{ statusMsg }}</span>
@@ -367,6 +368,7 @@ export default {
       manualBugids: '',
       skipCached: true,
       filterAiPreliminary: true,
+      ignoreArchiveLimit: false,
       running: false,
       abortCtrl: null as AbortController | null,
       lastExtractAt: 0,
@@ -484,6 +486,7 @@ export default {
       if (manual.length) body.bugids = manual;
       body.skip_cached = this.skipCached;
       body.filter_ai_preliminary = this.filterAiPreliminary;
+      body.ignore_archive_limit = this.ignoreArchiveLimit;
 
       this.lastExtractAt = _now;
       this.running = true;

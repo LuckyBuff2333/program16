@@ -86,12 +86,16 @@ class AttachmentBudget:
             self._window_start = now
             self._window_used = 0
 
-    def charge(self, size: int, bugid: str = ""):
+    def charge(self, size: int, bugid: str = "", ignore_limit: bool = False):
         size = max(0, int(size or 0))
         with self._lock:
             self._batch_used += size
             self._roll_window_locked()
             self._window_used += size
+            if ignore_limit:
+                if bugid:
+                    self._bug_used[bugid] = self._bug_used.get(bugid, 0) + size
+                return
             if self._window_used > MAX_BATCH_ATTACH_BYTES:
                 raise AttachmentLimitError(
                     f"近 {self.WINDOW_SECONDS // 3600} 小时附件下载总量超过 "
@@ -293,7 +297,8 @@ def _get_download_sem():
 def stream_download(url: str, headers: dict, dest_path: str, timeout=60,
                     bugid: str = "", max_bytes: int = MAX_ATTACHMENT_BYTES,
                     filename: str = "", use_cache: bool = True,
-                    stop_event=None, deadline_seconds: int = 0):
+                    stop_event=None, deadline_seconds: int = 0,
+                    ignore_limit: bool = False):
     """流式下载到目标路径：体积上限 + 磁盘水位 + 预算记账 + 附件缓存
 
     :param stop_event: 可选的取消事件，置位时中止下载（抛 TimeoutError("用户停止")）
@@ -312,7 +317,7 @@ def stream_download(url: str, headers: dict, dest_path: str, timeout=60,
             cached_size = os.path.getsize(dest_path)
         except OSError:
             cached_size = 0
-        BUDGET.charge(cached_size, bugid)
+        BUDGET.charge(cached_size, bugid, ignore_limit=ignore_limit)
         return cached_size
 
     os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
@@ -336,7 +341,7 @@ def stream_download(url: str, headers: dict, dest_path: str, timeout=60,
                                 f"附件超过 {max_bytes // 1024 // 1024}MB 上限"
                                 f"（已下载 {written / 1024 / 1024:.1f}MB），已中止")
                         # 边下边记账：让单 bug/单批次预算能及时生效
-                        BUDGET.charge(len(chunk), bugid)
+                        BUDGET.charge(len(chunk), bugid, ignore_limit=ignore_limit)
                         out.write(chunk)
         if use_cache:
             _cache_store(url, filename, dest_path)

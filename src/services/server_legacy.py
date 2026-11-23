@@ -3818,7 +3818,8 @@ def _diag_check_split_volumes(attachments: list) -> tuple:
     return True, True, f"分卷完整: {', '.join(complete_parts)}"
 
 
-def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid: str = "", filename: str = "", stop_event=None) -> dict:
+def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid: str = "", filename: str = "",
+                               stop_event=None, ignore_archive_limit: bool = False) -> dict:
     """下载压缩包附件并列出解压后的文件名（支持 zip/tar 系，其余标记不支持）
 
     ZIP 格式优先用 Range 请求读取中央目录（只下载尾部几十KB），失败再全量下载。
@@ -3852,8 +3853,9 @@ def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid:
             # 流式下载：体积上限 / 磁盘水位 / 单bug预算 / 附件缓存由 attachment_guard 统一负责
             total_size = _stream_download(
                 att_url, headers, src_path, timeout=timeout, bugid=bugid,
-                filename=safe_name, max_bytes=_MAX_ATTACHMENT_BYTES,
-                stop_event=stop_event)
+                filename=safe_name,
+                max_bytes=(1000 * 1024 * 1024 * 1024 if ignore_archive_limit else _MAX_ATTACHMENT_BYTES),
+                stop_event=stop_event, ignore_limit=ignore_archive_limit)
             logger.info("%s附件下载完成: size=%d bytes", _label, total_size)
             ok, names = _diag_archive_names(src_path)
             if not ok:
@@ -4659,7 +4661,8 @@ def _check_archives_corrupted(gm_probe_result: dict, attachments: list) -> bool:
     return has_archive
 
 
-def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bugid: str = "", include_non_gmlogger: bool = False) -> dict:
+def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bugid: str = "", include_non_gmlogger: bool = False,
+                              ignore_archive_limit: bool = False) -> dict:
     """下载 gmlogger 压缩包（支持 .001/.002 分卷合并），查找包内 main 相关 log 文件并提取时间
 
     外侧文件名时间可能不准，包内 main log 的时间才是日志记录的权威时间戳。
@@ -4702,7 +4705,7 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
         for ps in groups.values()
     )
     total_size = sum(a.get("size", 0) for ps in groups.values() for _p, a in ps)
-    if not has_zip_group and total_size > _ARCHIVE_PROBE_MAX_BYTES:
+    if not ignore_archive_limit and not has_zip_group and total_size > _ARCHIVE_PROBE_MAX_BYTES:
         _limit_mb = _ARCHIVE_PROBE_MAX_BYTES // 1024 // 1024
         logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > %dMB，无 ZIP 可用 Range）",
                     total_size // 1024 // 1024, _limit_mb)
@@ -4765,14 +4768,16 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                 os.makedirs(rar_dir, exist_ok=True)
                 try:
                     _vol_total = 0
+                    _rar_limit = 20 * 1024 * 1024 * 1024 if not ignore_archive_limit else 1000 * 1024 * 1024 * 1024
                     for _p, att in parts:
                         dst = os.path.join(rar_dir, att.get("filename", "") or f"part{_p}.rar")
-                        remaining = 20 * 1024 * 1024 * 1024 - _vol_total
+                        remaining = _rar_limit - _vol_total
                         if remaining <= 0:
-                            raise _AttachmentLimitError("rar 分卷总量超过 20GB 安全上限")
+                            raise _AttachmentLimitError("rar 分卷总量超过安全上限")
                         _vol_total += _stream_download(
                             att.get("content", ""), headers, dst, timeout=timeout,
-                            bugid=bugid, filename=os.path.basename(dst), max_bytes=remaining)
+                            bugid=bugid, filename=os.path.basename(dst), max_bytes=remaining,
+                            ignore_limit=ignore_archive_limit)
                         if _time.time() - _dl_start > _DL_DEADLINE:
                             raise TimeoutError(f"gmlogger 下载超时({_DL_DEADLINE}s)")
                 except TimeoutError as e:
@@ -4799,11 +4804,11 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                             r.raise_for_status()
                             for chunk in r.iter_bytes(chunk_size=1024 * 1024):
                                 _merged_written += len(chunk)
-                                if _merged_written > 20 * 1024 * 1024 * 1024:
+                                if not ignore_archive_limit and _merged_written > 20 * 1024 * 1024 * 1024:
                                     raise _AttachmentLimitError(
                                         "gmlogger 压缩包超过 20GB 安全上限"
                                         f"（已下载 {_merged_written / 1024 / 1024:.1f}MB），已中止")
-                                _ATTACH_BUDGET.charge(len(chunk), bugid)
+                                _ATTACH_BUDGET.charge(len(chunk), bugid, ignore_limit=ignore_archive_limit)
                                 out.write(chunk)
                                 if _time.time() - _dl_start > _DL_DEADLINE:
                                     raise TimeoutError(f"gmlogger 下载超时({_DL_DEADLINE}s)")
@@ -6168,9 +6173,11 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
     return ts
 
 
-def _diag_extract_time_from_video_simple(issue: dict, stop_event=None) -> str:
+def _diag_extract_time_from_video_simple(issue: dict, stop_event=None,
+                                         ignore_archive_limit: bool = False) -> str:
     """视频提取入口（带创建时间纠偏 + 统一时间约束）"""
-    ts = _diag_extract_time_from_video_simple_impl(issue, stop_event=stop_event)
+    ts = _diag_extract_time_from_video_simple_impl(
+        issue, stop_event=stop_event, ignore_archive_limit=ignore_archive_limit)
     _key = str(issue.get("key") or "")
     if ts and _LAST_VIDEO_MAIN_TIME.get(_key) == ts:
         # 压缩包内 main 时间是日志权威时间，不能被视频上传时间当成上界提前一天
@@ -6188,13 +6195,15 @@ def _get_video_failure_reason(bugid: str) -> str:
     return _LAST_VIDEO_FAILURE.get(str(bugid or ""), "")
 
 
-def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> str:
+def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
+                                              ignore_archive_limit: bool = False) -> str:
     """视频帧 OCR 提取触发时间，多视频按优先级逐个尝试，命中即停。
 
     支持本地缓存：每个视频提取结果保存到 data/video_time_cache.json，
     避免重复下载和 OCR。缓存命中时直接使用已提取时间进行匹配。
 
     :param stop_event: 可选的 threading.Event，设置后中断提取
+    :param ignore_archive_limit: 手动提取时可忽略压缩包大小上限
     """
     import tempfile
     import shutil
@@ -6267,7 +6276,8 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
     # 先做递归解压探测（支持单文件夹逐层向下，最多 3 层），找包内 main 文件时间
     try:
         _gm_probe = _diag_gmlogger_main_times(
-            attachments, headers, _timeout, bugid, include_non_gmlogger=True)
+            attachments, headers, _timeout, bugid, include_non_gmlogger=True,
+            ignore_archive_limit=ignore_archive_limit)
         if _gm_probe.get("status") == "ok":
             # all_times 包含包内所有 main 文件名时间；main_times 只取了前 5 个，
             # 可能漏掉真正接近目标的那一个，所以两者都并入。
@@ -6307,14 +6317,15 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None) -> s
             # 跳过分卷
             if _SPLIT_ARCHIVE_RE.search(fn_lower):
                 continue
-            # 跳过超大包
-            if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
+            # 跳过超大包（手动勾选“忽略压缩包大小限制”时不跳过）
+            if not ignore_archive_limit and att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
                 continue
             if stop_event and stop_event.is_set():
                 logger.info("视频兜底提取(%s)：收到停止信号，中断压缩包探测", bugid)
                 return ""
             res = _diag_list_archive_entries(att.get("content", ""), headers, _timeout, bugid,
-                                             filename=att.get("filename", ""), stop_event=stop_event)
+                                             filename=att.get("filename", ""), stop_event=stop_event,
+                                             ignore_archive_limit=ignore_archive_limit)
             if not res.get("ok"):
                 continue
             for entry in res.get("entries", []):
