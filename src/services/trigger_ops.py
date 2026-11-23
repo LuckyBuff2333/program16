@@ -8,6 +8,7 @@ import json
 import os
 import re
 import threading
+import time
 from datetime import datetime
 
 import pandas as pd
@@ -368,11 +369,15 @@ def _load_cloud_trigger_cache() -> tuple:
         return _load_trigger_times_from_local(), set()
 
 
-def _load_trigger_times_from_cloud() -> dict:
+def _load_trigger_times_from_cloud(force_refresh: bool = False) -> dict:
     """每次从云端多维表格加载所有触发时间（支持多表），云端不可用时降级读本地 CSV
 
     :return: {jira号: 触发时间}
     """
+    global _trigger_cloud_cache, _trigger_cloud_cache_ts
+    _now = time.time()
+    if not force_refresh and _trigger_cloud_cache is not None and _now - _trigger_cloud_cache_ts < _TRIGGER_CLOUD_CACHE_TTL:
+        return _trigger_cloud_cache
     from src.clients import feishu_client
     try:
         app_token, table_ids = _get_trigger_time_table_cfg()
@@ -396,6 +401,8 @@ def _load_trigger_times_from_cloud() -> dict:
                     tt = _read_trigger_time(fields)
                     if jira_no and tt:
                         result[jira_no] = tt
+        _trigger_cloud_cache = result
+        _trigger_cloud_cache_ts = time.time()
         logger.info("云端触发时间加载完成: %d 条", len(result))
         return result
     except Exception as e:
@@ -480,8 +487,17 @@ def _ensure_trigger_time_bugid_cache():
 
 # ── 按需搜索：少量查询时用 filter_expr 逐表搜索，避免全量加载 ──
 _FILTER_SEARCH_THRESHOLD = 100  # bugid 数量 < 此值时走 filter 分块搜索，超过走全量加载
+_TRIGGER_CLOUD_CACHE_TTL = 60  # 全量触发时间缓存 60 秒，避免重复加载 20+ 张表
+_trigger_cloud_cache = None
+_trigger_cloud_cache_ts = 0.0
 _table_counts_cache = {}  # {tid: count} 表记录数缓存
 _table_counts_ts = [0.0]  # 缓存时间戳
+
+
+def _invalidate_trigger_cloud_cache():
+    global _trigger_cloud_cache, _trigger_cloud_cache_ts
+    _trigger_cloud_cache = None
+    _trigger_cloud_cache_ts = 0.0
 
 
 def _search_trigger_time_single(bugid: str) -> dict:
@@ -885,6 +901,7 @@ def _save_trigger_time_to_cloud(bugid: str, trigger_time: str, source: str = "",
     :param precision: 时间精度（可选，"minute"/"second"），缺省时按登记值/秒位自动解析
     """
     _ensure_fields_once()
+    _invalidate_trigger_cloud_cache()
     if auto_ref:
         ref_time = _resolve_ref_time(bugid, ref_time)
     # H1/M11：精度解析 + 自检不可用时不写触发时间，改打待办标记
@@ -1009,6 +1026,7 @@ def _batch_save_trigger_times_to_cloud(items: dict, sources: dict = None, ref_ti
     ref_times = ref_times or {}
     precisions = precisions or {}
     _ensure_fields_once()
+    _invalidate_trigger_cloud_cache()
     from src.clients import feishu_client
     if not items:
         return True

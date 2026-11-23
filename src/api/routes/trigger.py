@@ -215,8 +215,12 @@ async def batch_read_trigger_times(req: BugidListRequest):
         local_times = await loop.run_in_executor(None, _load_trigger_times_from_cloud)
     result, extracted_count, batch_to_cloud = [], 0, {}
     batch_refs = {}
-    # 查询数据沉淀中每个 bugid 的最新失败记录错误映射
-    error_map = await loop.run_in_executor(None, _query_latest_error_mappings, bugids)
+    # 查询数据沉淀中每个 bugid 的最新失败记录错误映射；
+    # 大数量缓存查询（Jira 全量结果）不需要错误映射，避免额外扫描多张表。
+    if cache_only and len(bugids) > 500:
+        error_map = {}
+    else:
+        error_map = await loop.run_in_executor(None, _query_latest_error_mappings, bugids)
     for bugid in bugids:
         current_time = local_times.get(bugid, "")
         if not current_time and not cache_only:
