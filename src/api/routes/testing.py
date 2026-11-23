@@ -489,7 +489,7 @@ async def test_batch_ai_search(request: Request):
         return _fail("JQL 查询语句不能为空")
     try:
         from src.clients import jira_client
-        issues = await _run_blocking(jira_client.search_issues, jql, max_results=500)
+        issues = await _run_blocking(jira_client.search_issues, jql, max_results=2000)
         vcu_issues = [i for i in issues if "VCU" in (i.get("key") or "").upper()]
         rows = []
         for i in vcu_issues:
@@ -500,10 +500,10 @@ async def test_batch_ai_search(request: Request):
                 "status": ((fields.get("status") or {}).get("name") or ""),
                 "created": (fields.get("created") or "")[:10],
             })
-        capped = len(issues) >= 500
+        capped = len(issues) >= 2000
         msg = f"搜索到 {len(issues)} 条，其中 VCU {len(rows)} 条"
         if capped:
-            msg += "（已达 500 条上限，请缩小 JQL 范围）"
+            msg += "（已达 2000 条上限，请缩小 JQL 范围）"
         return _ok({"total": len(issues), "vcu_count": len(rows), "rows": rows, "capped": capped}, msg)
     except Exception as e:
         logger.error("批量搜索失败: %s", e)
@@ -560,8 +560,8 @@ async def test_jira_lookup(request: Request):
                     _fields += "," + _rc_field
                 issues = await _run_blocking(
                     jira_client.search_issues, raw,
-                    max_results=500, fields=_fields)
-                # 直接使用 JQL 返回字段，避免对每条 Jira 再发详情请求（5000 条会非常慢）
+                    max_results=2000, fields=_fields)
+                # 直接使用 JQL 返回字段，避免对每条 Jira 再发详情请求（2000 条以上会非常慢）
                 for issue in issues:
                     key = (issue.get("key") or "").strip()
                     if not key:

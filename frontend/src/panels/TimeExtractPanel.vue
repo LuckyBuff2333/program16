@@ -82,6 +82,7 @@
             <el-tag v-else-if="row.source === '人工修改'" type="info" size="small">人工修改</el-tag>
             <el-tag v-else-if="row.source === 'ai_analyzed'" type="info" size="small" style="color:#409eff">AI已分析</el-tag>
             <el-tag v-else-if="row.source === 'no_gmlogger'" type="info" size="small">无gmlogger</el-tag>
+            <el-tag v-else-if="row.source === 'no_log'" type="warning" size="small">无日志附件</el-tag>
             <el-tag v-else-if="row.source === 'failed'" type="danger" size="small">提取失败</el-tag>
             <el-tag v-else-if="row.source === 'error'" type="danger" size="small">异常</el-tag>
             <el-tag v-else type="info" size="small">{{ row.source || '等待中' }}</el-tag>

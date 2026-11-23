@@ -289,7 +289,7 @@ def batch_update_trigger_time(req: BatchUpdateRequest):
     """批量应用修正时间，支持空时间删除云端记录（仅限时间批量提取面板）"""
     from src.services.trigger_ops import (
         _get_trigger_time_table_cfg, _trigger_time_bugid_cache,
-        _search_trigger_time_single, _TT_FIELD,
+        _search_trigger_time_batch, _TT_FIELD,
     )
     from src.services.report_ops import _load_diagnose_cache, _save_diagnose_cache
     from src.clients import feishu_client
@@ -298,55 +298,87 @@ def batch_update_trigger_time(req: BatchUpdateRequest):
     if not items:
         return _fail("待应用列表为空")
     app_token, _ = _get_trigger_time_table_cfg()
+    # 仅对缓存未命中的 bugid 做针对性搜索（大多数情况全部命中，0 额外 API 调用；
+    # 覆盖「读取→保存」间隔内提取流水线新建了云端记录的场景）
+    all_bugids = [it.bugid.strip() for it in items if it.bugid.strip()]
+    missing = [b for b in all_bugids
+               if not (_trigger_time_bugid_cache.get(b) and
+                       isinstance(_trigger_time_bugid_cache[b], tuple))]
+    if missing:
+        _search_trigger_time_batch(missing)
     success = 0
     deleted = 0
+    _update_by_table: dict[str, list] = {}   # {table_id: [{record_id, fields}]}
+    _create_recs: list[dict] = []              # 新建记录列表
+    _diag_saves: list[tuple] = []              # [(bugid, diag_data)] 延迟保存
+    _delete_by_table: dict[str, list[str]] = {}  # {table_id: [record_id]}
     for item in items:
         bugid = item.bugid.strip()
         new_time = _to_minute(item.new_time)
         if not bugid:
             continue
-        # 查找已有记录（优先缓存，未命中则单条搜索）
+        # 查找已有记录（缓存已由 batch_read 填充，直接命中即可）
         cached = _trigger_time_bugid_cache.get(bugid)
         if cached and isinstance(cached, tuple) and len(cached) >= 3:
             tid, rec_id, _ = cached
         else:
-            found = _search_trigger_time_single(bugid)
-            if found:
-                tid, rec_id = found["table_id"], found["record_id"]
-            else:
-                tid, rec_id = "", ""
+            tid, rec_id = "", ""
         try:
             if new_time:
-                # 更新触发时间
+                # 更新问题发生时间（聚合后批量提交）
                 if rec_id:
-                    feishu_client.update_bitable_records(app_token, tid, [
-                        {"record_id": rec_id, "fields": {_TT_FIELD: new_time}}
-                    ])
+                    _update_by_table.setdefault(tid, []).append(
+                        {"record_id": rec_id, "fields": {_TT_FIELD: new_time}})
                     _trigger_time_bugid_cache[bugid] = (tid, rec_id, new_time)
                 else:
                     # 无现有记录，新建一条
                     from src.services.trigger_ops import _build_trigger_write_fields
                     fields = _build_trigger_write_fields(new_time, "人工修改", "")
-                    first_tid = _get_trigger_time_table_cfg()[1][0]
-                    feishu_client.create_bitable_records(app_token, first_tid, [{"fields": fields}])
+                    _create_recs.append({"bugid": bugid, "fields": fields})
                 success += 1
                 cached_diag = _load_diagnose_cache(bugid)
                 if cached_diag:
                     cached_diag["verify_status"] = "corrected"
                     cached_diag["suggested_time"] = new_time
-                    _save_diagnose_cache(bugid, cached_diag)
+                    _diag_saves.append((bugid, cached_diag))
             else:
-                # 删除云端记录
+                # 删除云端记录（聚合后批量删除）
                 if rec_id:
-                    feishu_client.batch_delete_records(app_token, tid, [rec_id])
+                    _delete_by_table.setdefault(tid, []).append(rec_id)
                     _trigger_time_bugid_cache.pop(bugid, None)
                     deleted += 1
                 cached_diag = _load_diagnose_cache(bugid)
                 if cached_diag:
                     cached_diag.pop("suggested_time", None)
-                    _save_diagnose_cache(bugid, cached_diag)
+                    _diag_saves.append((bugid, cached_diag))
         except Exception as e:
             logger.warning("时间应用失败 %s: %s", bugid, e)
+    # 批量更新问题发生时间（按表聚合，减少 API 调用次数）
+    for tid, recs in _update_by_table.items():
+        try:
+            feishu_client.update_bitable_records(app_token, tid, recs)
+            logger.info("批量更新问题发生时间: 表 %s，共 %d 条", tid[:8], len(recs))
+        except Exception as e:
+            logger.warning("批量更新问题发生时间失败(表 %s): %s", tid[:8], e)
+    # 批量新建记录
+    if _create_recs:
+        first_tid = _get_trigger_time_table_cfg()[1][0]
+        try:
+            feishu_client.create_bitable_records(
+                app_token, first_tid, [r["fields"] for r in _create_recs])
+            logger.info("批量新建问题发生时间: 共 %d 条", len(_create_recs))
+        except Exception as e:
+            logger.warning("批量新建问题发生时间失败: %s", e)
+    # 批量删除云端记录（按表聚合）
+    for tid, rec_ids in _delete_by_table.items():
+        try:
+            feishu_client.batch_delete_records(app_token, tid, rec_ids)
+            logger.info("批量删除问题发生时间: 表 %s，共 %d 条", tid[:8], len(rec_ids))
+        except Exception as e:
+            logger.warning("批量删除问题发生时间失败(表 %s): %s", tid[:8], e)
+    # 批量保存诊断缓存
+    for bugid, diag_data in _diag_saves:
+        _save_diagnose_cache(bugid, diag_data)
     parts = []
     if success: parts.append(f"更新 {success} 条")
     if deleted: parts.append(f"删除 {deleted} 条")
@@ -766,6 +798,16 @@ async def batch_extract_time(request: Request):
                     return bugid, "", "stopped", "已停止"
                 fields = issue.get("fields") or {}
                 attachments = fields.get("attachment") or []
+                # 预检：无任何可提取日志的附件则直接跳过，节省时间
+                _att_names = [(a.get("filename", "") or "").lower() for a in attachments]
+                _has_log_att = any(
+                    "gmlogger" in n or ".log" in n or n.endswith(".txt")
+                    or n.endswith((".zip", ".rar", ".7z", ".tar.gz", ".tgz",
+                                   ".zip.001", ".zip.002", ".zip.003"))
+                    for n in _att_names
+                )
+                if not _has_log_att:
+                    return bugid, "", "no_log", "无日志附件"
                 try:
                     _gmt = _gm_times_of(attachments) or []
                     if _gmt:
