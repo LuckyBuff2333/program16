@@ -4713,7 +4713,7 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                 "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>{_limit_mb}MB），已跳过内包探测",
                 "main_entries": [], "main_times": [], "all_times": []}
     logger.info("gmlogger 内包探测：开始（%dMB）", total_size // 1024 // 1024)
-    _DL_DEADLINE = 300  # 总下载时间上限 5 分钟，超时则跳过
+    _DL_DEADLINE = 360  # 总下载时间上限 6 分钟，超时则跳过
     _dl_start = _time.time()
     last_reason = "无有效 gmlogger 压缩包"
     with tempfile.TemporaryDirectory() as tmp:
