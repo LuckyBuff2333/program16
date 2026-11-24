@@ -32,19 +32,39 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
     from src.services.server_legacy import (
         _diag_extract_time_from_video_simple, _diag_extract_time_from_images,
         _align_time_to_gmlogger, _VIDEO_SUFFIXES, _latest_gmlogger_upload_dt,
-        _ts_parse_datetime,
+        _ts_parse_datetime, _diag_read_logcat_text, _jira_att_auth,
+        _is_verification_round,
     )
+    from src.clients.jira_client import extract_logcat_time
 
     def _stopped():
         return bool(stop_event is not None and stop_event.is_set())
 
     tt, source = "", ""
-    # Closed：评论区最新结论/普通时间优先，并对齐 gmlogger
+    # Closed：评论时间优先级最高，前提是日志文件内容命中该时分
     try:
         if (_jc.extract_status(issue) or "").lower() == "closed":
             tt = _jc.extract_latest_comment_time(issue)
             if tt:
-                from src.services.server_legacy import _is_verification_round
+                # 在直接上传的 .txt/.log 文件内容中验证评论时间的 HH:MM
+                _log_confirmed = False
+                _headers, _timeout = _jira_att_auth()
+                for _a in attachments:
+                    _fn = (_a.get("filename") or "").lower()
+                    if not (_fn.endswith(".txt") or _fn.endswith(".log")):
+                        continue
+                    _text = _diag_read_logcat_text(_a, _headers, min(_timeout, 60))
+                    if _text:
+                        _matched, _has_date = extract_logcat_time(_text, tt)
+                        if _matched:
+                            _log_confirmed = True
+                            logger.info("Closed 评论时间 %s 在日志 %s 中命中",
+                                        tt, _a.get("filename", ""))
+                            break
+                if not _log_confirmed:
+                    logger.info("Closed 评论时间 %s 未在日志文件内容中命中，降级到其他提取方式", tt)
+                    tt = ""
+            if tt:
                 # 如果存在“最新日志包上传日 + 同天上传视频”，评论区旧日期不能覆盖它
                 # 但验证轮次（评论含 PASS/关闭/通过/成功）时，评论时间是人工确认的，优先采用
                 _latest_upload = _latest_gmlogger_upload_dt(attachments)
