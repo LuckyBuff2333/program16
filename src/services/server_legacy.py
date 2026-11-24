@@ -5539,19 +5539,24 @@ _VERIFY_KEYWORDS = re.compile(r"pass|关闭|通过|成功", re.IGNORECASE)
 
 
 def _is_verification_round(issue: dict) -> bool:
-    """最新人工评论含 pass/关闭/通过/成功 → 本轮为验证轮次，最新视频为验证视频"""
+    """最新 5 条人工评论中任一条含 pass/关闭/通过/成功 → 验证轮次"""
     from src.clients.jira_client import _is_ai_analysis_comment, _extract_adf_text
     comments = ((issue.get("fields") or {}).get("comment") or {}).get("comments") or []
     if not comments:
         return False
     latest = sorted(comments, key=lambda c: c.get("created", ""), reverse=True)
+    human_count = 0
     for c in latest:
         body = c.get("body") or ""
         if isinstance(body, dict):
             body = _extract_adf_text(body)
         if not body.strip() or _is_ai_analysis_comment(body):
             continue  # 跳过 AI 分析评论和空评论
-        return bool(_VERIFY_KEYWORDS.search(body))
+        human_count += 1
+        if _VERIFY_KEYWORDS.search(body):
+            return True
+        if human_count >= 5:
+            break
     return False
 
 
@@ -5594,14 +5599,32 @@ def _rank_videos(videos: list, attachments: list, created_dt=None, issue=None) -
 
 
 def _apply_verification_filter(result: list, issue) -> list:
-    """验证轮次：将上传时间最新的视频移至末尾（仅多视频时生效）"""
+    """验证轮次：将最新上传日期的所有视频移至末尾（仅多视频时生效）"""
     if not issue or len(result) <= 1 or not _is_verification_round(issue):
         return result
-    by_upload = sorted(result, key=lambda v: str(v.get("created") or ""), reverse=True)
-    verify_video = by_upload[0]
-    result = [v for v in result if v is not verify_video] + [verify_video]
-    logger.info("视频排序: 检测到验证轮次，最新视频 %s 移至末尾",
-                verify_video.get("filename", ""))
+    # 按上传日期分组，找到最新日期
+    from datetime import date as _date
+    latest_date = None
+    for v in result:
+        dt = _ts_parse_datetime(str(v.get("created") or "")[:19])
+        if dt and (latest_date is None or dt.date() > latest_date):
+            latest_date = dt.date()
+    if not latest_date:
+        return result
+    # 最新日期的视频全部移至末尾，次新日期优先
+    latest_videos = []
+    other_videos = []
+    for v in result:
+        dt = _ts_parse_datetime(str(v.get("created") or "")[:19])
+        if dt and dt.date() == latest_date:
+            latest_videos.append(v)
+        else:
+            other_videos.append(v)
+    if not latest_videos or not other_videos:
+        return result  # 全部同天或无最新日期视频，不过滤
+    result = other_videos + latest_videos
+    logger.info("视频排序: 检测到验证轮次，最新日期 %s 的 %d 个视频移至末尾",
+                latest_date, len(latest_videos))
     return result
 
 
