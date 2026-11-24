@@ -6151,8 +6151,11 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
     _cdt2 = _closed_comment_dt(issue, created)
     if _cdt2 and abs((_cdt2 - dt).total_seconds()) >= 60:
         # 最新日志包/视频所在日期优先；评论区旧日期不能把最新一天覆盖回旧日期
+        # 但验证轮次（评论含 PASS/关闭/通过/成功）时，评论时间是人工确认的，优先采用
         _latest_upload = _latest_gmlogger_upload_dt(attachments)
-        if _latest_upload and dt.date() == _latest_upload.date() and _cdt2.date() != dt.date():
+        if (_latest_upload and dt.date() == _latest_upload.date()
+                and _cdt2.date() != dt.date()
+                and not _is_verification_round(issue)):
             logger.info("视频时间纠偏(Closed 评论区日期较旧，保留 %s，忽略评论 %s)", ts, _cdt2)
         else:
             logger.info("视频时间纠偏(Closed 评论区优先): %s -> %s", ts, _cdt2)
