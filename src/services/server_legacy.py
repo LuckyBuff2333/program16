@@ -5535,11 +5535,32 @@ def _latest_gmlogger_upload_dt(attachments: list):
     return latest
 
 
-def _rank_videos(videos: list, attachments: list, created_dt=None) -> list:
+_VERIFY_KEYWORDS = re.compile(r"pass|关闭|通过|成功", re.IGNORECASE)
+
+
+def _is_verification_round(issue: dict) -> bool:
+    """最新人工评论含 pass/关闭/通过/成功 → 本轮为验证轮次，最新视频为验证视频"""
+    from src.clients.jira_client import _is_ai_analysis_comment, _extract_adf_text
+    comments = ((issue.get("fields") or {}).get("comment") or {}).get("comments") or []
+    if not comments:
+        return False
+    latest = sorted(comments, key=lambda c: c.get("created", ""), reverse=True)
+    for c in latest:
+        body = c.get("body") or ""
+        if isinstance(body, dict):
+            body = _extract_adf_text(body)
+        if not body.strip() or _is_ai_analysis_comment(body):
+            continue  # 跳过 AI 分析评论和空评论
+        return bool(_VERIFY_KEYWORDS.search(body))
+    return False
+
+
+def _rank_videos(videos: list, attachments: list, created_dt=None, issue=None) -> list:
     """按“最新 gmlogger 上传日 + 同天上传时间最接近”对视频排序。
 
     优先：上传日期与最新日志包相同，且上传时间差最小；
     没有同天视频时，再回退到原来的文件名/创建时间规则。
+    验证轮次（最新评论含 pass/关闭/通过/成功）：最新上传视频移至末尾。
     """
     if len(videos) <= 1:
         return list(videos)
@@ -5553,8 +5574,9 @@ def _rank_videos(videos: list, attachments: list, created_dt=None) -> list:
     same_day = [v for v in videos if gm_upload_dt and _upload(v)
                 and _upload(v).date() == gm_upload_dt.date()]
     if same_day:
-        return sorted(same_day, key=lambda v: abs((_upload(v) - gm_upload_dt).total_seconds())) + \
-               [v for v in videos if v not in same_day]
+        result = sorted(same_day, key=lambda v: abs((_upload(v) - gm_upload_dt).total_seconds())) + \
+                 [v for v in videos if v not in same_day]
+        return _apply_verification_filter(result, issue)
 
     def _sort_key(v):
         fname = v.get("filename", "") or ""
@@ -5567,7 +5589,20 @@ def _rank_videos(videos: list, attachments: list, created_dt=None) -> list:
         if v_upload_dt and gm_upload_dt:
             return (2, abs((v_upload_dt - gm_upload_dt).total_seconds()), v.get("created", ""))
         return (3, 0, v.get("created", ""))
-    return sorted(videos, key=_sort_key)
+    result = sorted(videos, key=_sort_key)
+    return _apply_verification_filter(result, issue)
+
+
+def _apply_verification_filter(result: list, issue) -> list:
+    """验证轮次：将上传时间最新的视频移至末尾（仅多视频时生效）"""
+    if not issue or len(result) <= 1 or not _is_verification_round(issue):
+        return result
+    by_upload = sorted(result, key=lambda v: str(v.get("created") or ""), reverse=True)
+    verify_video = by_upload[0]
+    result = [v for v in result if v is not verify_video] + [verify_video]
+    logger.info("视频排序: 检测到验证轮次，最新视频 %s 移至末尾",
+                verify_video.get("filename", ""))
+    return result
 
 
 def _pick_best_video(videos: list, attachments: list) -> dict:
@@ -6215,7 +6250,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
     videos = [a for a in attachments if (a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES)]
     # 多视频：按“最新日志包上传日 + 同天上传时间最接近”排序
     try:
-        videos = _rank_videos(videos, attachments, _issue_created_dt(issue))
+        videos = _rank_videos(videos, attachments, _issue_created_dt(issue), issue=issue)
     except Exception as e:
         logger.warning("视频排序失败: %s", e)
     if not videos:
@@ -6387,7 +6422,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
     # 注意：gmlogger 上传时间 ≠ 事件时间，禁止写入 ref_pool。
     # 否则“日期取上传日”的候选会被当成验证通过（曾把 10-19 的事件算成 10-27）。
     # 按优先级排序视频
-    ranked_videos = _rank_videos(videos, attachments, created_dt=_issue_created_dt(issue))
+    ranked_videos = _rank_videos(videos, attachments, created_dt=_issue_created_dt(issue), issue=issue)
     single_video = len(ranked_videos) == 1
     # 匹配容差：内层 main 文件名可用时 5 分钟，仅外层文件名日期时 15 分钟
     if not ref_pool:
@@ -6901,7 +6936,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     cache = _load_video_time_cache()
     cache_updated = False
     # 按优先级排序，逐个尝试
-    ranked_videos = _rank_videos(videos, attachments, created_dt=_issue_created_dt(issue))
+    ranked_videos = _rank_videos(videos, attachments, created_dt=_issue_created_dt(issue), issue=issue)
     single_video = len(ranked_videos) == 1
     from src.clients.jira_client import _parse_datetime_string
     best_full = ""      # 全局兜底：第一个完整日期时间
