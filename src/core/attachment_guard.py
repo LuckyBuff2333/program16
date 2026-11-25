@@ -36,7 +36,7 @@ VIDEO_CACHE_DIR = os.path.join(PROJECT_ROOT, "data", "media_cache", "videos")
 PROJECT_TEMP_DIR = os.path.join(PROJECT_ROOT, "data", "media_cache")  # 项目专用临时目录，不影响系统 /tmp
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60            # 缓存有效期 7 天，超过自动删除
 MAX_CACHE_BYTES = 5 * 1024 * 1024 * 1024        # 缓存目录总量上限 5GB（超出按最旧删除）
-_CLEANUP_INTERVAL = 2 * 24 * 60 * 60            # 维护清理间隔 2 天，仅在启动时执行
+_CLEANUP_INTERVAL = 7 * 24 * 60 * 60            # 维护清理间隔 7 天，仅在启动时执行
 _CLEANUP_TS_FILE = os.path.join(PROJECT_ROOT, "data", ".last_maintenance_ts")
 
 
@@ -249,8 +249,8 @@ def cleanup_stale_temp(hours: int = 24) -> int:
 def maintenance() -> None:
     """启动时维护：清理过期缓存与残留临时目录。
 
-    仅在启动时执行一次，每 2 天触发一次（通过时间戳文件记录上次执行时间）。
-    距上次清理不足 2 天则跳过。
+    仅在启动时执行一次，每 7 天触发一次（通过时间戳文件记录上次执行时间）。
+    距上次清理不足 7 天则跳过。
     """
     now = time.time()
     last_ts = _read_last_maintenance_ts()

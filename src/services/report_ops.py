@@ -380,6 +380,17 @@ def _generate_daily_report_from_table(date_str: str, local_only: bool = False) -
     analysis_durations = []
     too_long_count = 0
     too_long_threshold = 900  # 15分钟
+    excluded_no_gmlogger = 0
+
+    # 无gmlogger 属于测试数据缺失，不计入执行总数/成功/失败/耗时统计
+    _kept_rows = []
+    for _r in rows:
+        _result = (_r.get("分析结果", "") or "").strip()
+        if _result == "失败" and _classify_failure(_r.get("jira号", ""), _r) == "无gmlogger":
+            excluded_no_gmlogger += 1
+            continue
+        _kept_rows.append(_r)
+    rows = _kept_rows
 
     for row in rows:
         result = (row.get("分析结果", "") or "").strip()
@@ -438,6 +449,7 @@ def _generate_daily_report_from_table(date_str: str, local_only: bool = False) -
     return {
         "total": total, "regression": regression_count, "new_count": new_count,
         "success": success_count, "fail": fail_count,
+        "excluded_no_gmlogger": excluded_no_gmlogger,
         "pending": pending_count, "failures": fail_cats, "failure_jiras": fail_jiras,
         "too_long": too_long_count,
         "avg_total_duration": avg_total_duration,
@@ -510,6 +522,7 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
     # 匹配并统计
     success_count = 0
     fail_count = 0
+    excluded_no_gmlogger = 0
     fail_cats = {}  # {分类: 数量}
     fail_jiras = {}  # {分类: [{jira号, 错误信息}]}
     durations = []
@@ -545,6 +558,10 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
             if original_source:
                 row["触发来源"] = original_source
             result = bf.get("分析结果", "")
+            # 无gmlogger 属于测试数据缺失，不计入执行总数/成功/失败/耗时统计
+            if result == "失败" and _classify_failure(jira_no, bf) == "无gmlogger":
+                excluded_no_gmlogger += 1
+                continue
             # 解析耗时
             raw_dur = bf.get("总耗时", "")
             dur_sec = _parse_dur_sec(raw_dur)
@@ -616,6 +633,7 @@ def _generate_daily_report(date_str: str, bt_map: dict = None, preloaded_batch: 
     online_meta = _collect_meta(online_rows)
     return {"total": len(rows), "regression": regression_count,
             "success": success_count, "fail": fail_count,
+            "excluded_no_gmlogger": excluded_no_gmlogger,
             "pending": pending_count, "failures": fail_cats, "failure_jiras": fail_jiras,
             "too_long": too_long_count,
             "avg_total_duration": avg_total_duration,

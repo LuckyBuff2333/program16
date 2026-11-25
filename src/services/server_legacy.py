@@ -2927,6 +2927,129 @@ def _init_dashboard_refresh_scheduler():
 
 
 
+_regression_refresh_thread = None
+_regression_refresh_stop = threading.Event()
+_regression_last_attempt_date = ""
+
+
+def _regression_data_refresh_once(day_str: str) -> dict:
+    """执行一次回归数据更新（仅线上）：
+    1) 删除失败后又成功的多余失败记录
+    2) 多次失败：把最后一次人工审核结果补到最新记录，然后只保留最新一条
+    """
+    import httpx
+
+    port = os.environ.get("WEB_PORT", "8060")
+    base = f"http://127.0.0.1:{port}"
+    start = "2026-10-01 00:00:00"
+    end = f"{day_str} 16:30:00"
+    source = "parseFullTicket"
+    result = {"deleted_failed_after_success": 0, "copied_review": 0, "deleted_old": 0, "groups": 0}
+
+    with httpx.Client(timeout=300.0, follow_redirects=True) as client:
+        def _post(path: str, payload: dict) -> dict:
+            r = client.post(base + path, json=payload)
+            r.raise_for_status()
+            return r.json()
+
+        # 1) 失败后又成功：删除多余失败
+        res = _post("/api/test/data_cleanup_preview",
+                    {"start": start, "end": end, "source": source})
+        rows = (res.get("data") or {}).get("rows") or []
+        ids = [str(r.get("record_id") or "") for r in rows if r.get("record_id")]
+        if ids:
+            _post("/api/test/data_cleanup_delete", {"record_ids": ids})
+            result["deleted_failed_after_success"] = len(ids)
+            logger.info("回归数据更新：失败后又成功，删除多余失败 %d 条", len(ids))
+
+        # 2) 多次失败：补最新人工审核结果 + 删除旧记录
+        res = _post("/api/test/data_multi_errors_query",
+                    {"start": start, "end": end, "source": source})
+        groups = (res.get("data") or {}).get("groups") or []
+        result["groups"] = len(groups)
+        for g in groups:
+            recs = g.get("records") or []
+            if len(recs) < 2:
+                continue
+            latest = recs[0]
+            if not (latest.get("人工审核结果") or "").strip():
+                # 找同错误分类的最后一次人工审核结果
+                review = ""
+                for r in recs[1:]:
+                    if (r.get("人工审核结果") or "").strip() and \
+                            (r.get("错误分类") or "") == (latest.get("错误分类") or ""):
+                        review = r.get("人工审核结果") or ""
+                        break
+                if review:
+                    _post("/api/test/data_multi_errors_copy_review",
+                          {"record_id": latest.get("record_id"), "review": review})
+                    latest["人工审核结果"] = review
+                    result["copied_review"] += 1
+            old_ids = [str(r.get("record_id") or "") for r in recs[1:] if r.get("record_id")]
+            if old_ids:
+                _post("/api/test/data_multi_errors_delete_old", {"record_ids": old_ids})
+                result["deleted_old"] += len(old_ids)
+                logger.info("回归数据更新：%s 删除旧记录 %d 条", g.get("jira"), len(old_ids))
+
+    logger.info("回归数据更新完成: %s", result)
+    return result
+
+
+def _regression_refresh_scheduler_loop():
+    """每天 16:30 执行一次回归数据更新；多机器通过播报状态表抢占。"""
+    from src.services import broadcast_state
+    global _regression_last_attempt_date
+    while not _regression_refresh_stop.is_set():
+        try:
+            now = datetime.now()
+            if now.hour * 60 + now.minute < 16 * 60 + 30:
+                _regression_refresh_stop.wait(30)
+                continue
+            day = now.strftime("%Y-%m-%d")
+            if _regression_last_attempt_date == day:
+                _regression_refresh_stop.wait(60)
+                continue
+            state, rid = broadcast_state.claim("__regression_daily_refresh__", day,
+                                               now.strftime("%H:%M"))
+            if state == "exists":
+                _regression_last_attempt_date = day
+                _regression_refresh_stop.wait(60)
+                continue
+            if state == "unavailable":
+                logger.warning("回归数据更新：云端抢占不可用，等待重试")
+                _regression_refresh_stop.wait(60)
+                continue
+            _regression_last_attempt_date = day
+            ok = False
+            try:
+                logger.info("回归数据更新：本机获得 %s 执行权", day)
+                _regression_data_refresh_once(day)
+                ok = True
+            except Exception as e:
+                logger.warning("回归数据更新失败: %s", e, exc_info=True)
+            finally:
+                if rid:
+                    try:
+                        broadcast_state.finish(rid, ok, "回归数据更新成功" if ok else "回归数据更新失败")
+                    except Exception:
+                        pass
+            _regression_refresh_stop.wait(120)
+        except Exception as e:
+            logger.warning("回归数据更新调度异常: %s", e)
+            _regression_refresh_stop.wait(60)
+
+
+def _init_regression_refresh_scheduler():
+    global _regression_refresh_thread
+    _regression_refresh_stop.clear()
+    _regression_refresh_thread = threading.Thread(
+        target=_regression_refresh_scheduler_loop,
+        name="regression-refresh-scheduler",
+        daemon=True,
+    )
+    _regression_refresh_thread.start()
+
+
 def _bot_run_single_execute(chat_id: str, bugids: list, exec_mode: str = "pc"):
     """功能6.2后台执行：提取触发时间→根据执行模式调用对应接口
 
@@ -5313,6 +5436,23 @@ def _strip_navigation_times(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _ocr_image_text(frame, max_new_tokens: int = 128) -> str:
+    """按 GPU 类型选择整图 OCR：NVIDIA→GLM-OCR，AMD/无独显→RapidOCR v6。"""
+    if _has_nvidia_gpu():
+        try:
+            from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
+            if _has_nvidia_gpu() and _glm_avail():
+                return _glm_ocr(frame, max_new_tokens=max_new_tokens) or ""
+        except Exception as e:
+            logger.warning("GLM-OCR 整图推理失败，回退 RapidOCR: %s", e)
+    try:
+        from src.services.rapid_ocr_v6 import read_text as _rapid_read
+        return " ".join(r[1] for r in _rapid_read(frame) if len(r) > 1)
+    except Exception as e:
+        logger.warning("RapidOCR v6 整图推理失败: %s", e)
+        return ""
+
+
 def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     """对状态栏/任务栏等小区域做 OCR。
 
@@ -6886,7 +7026,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                     # ── 整图 OCR：GLM-OCR（NVIDIA GPU）──
                     try:
                         from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
-                        if _glm_avail():
+                        if _has_nvidia_gpu() and _glm_avail():
                             _glm_text = _glm_ocr(frame, max_new_tokens=128) or ""
                             all_text = _glm_text.strip()
                             _has_time = bool(_valid_time_tokens(all_text))
@@ -6895,7 +7035,12 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                                 logger.info("视频兜底提取(%s)：第%d秒整图 GLM-OCR 命中时间: %s",
                                             video_label, sec + 1, all_text[:80])
                         else:
-                            logger.warning("视频兜底提取(%s)：GLM-OCR 不可用", video_label)
+                            all_text = _ocr_image_text(frame, max_new_tokens=128).strip()
+                            _has_time = bool(_valid_time_tokens(all_text))
+                            _VIDEO_OCR_STATS["full_frames"] += 1
+                            if _has_time:
+                                logger.info("视频兜底提取(%s)：第%d秒整图 RapidOCR 命中时间: %s",
+                                            video_label, sec + 1, all_text[:80])
                     except Exception as e:
                         logger.warning("视频兜底提取(%s)：第%d秒整图 OCR 异常: %s",
                                        video_label, sec + 1, e)
@@ -6908,7 +7053,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                         _timestudy_trace(bugid, "ocr:empty")
                     _timestudy_update_ctx(bugid, ocr_text=all_text[:200])
                     # ── ROI 回退：整图 OCR 为空时，尝试 ROI 区域裁剪 ──
-                    if not all_text.strip():
+                    if not all_text.strip() and _has_nvidia_gpu():
                         _roi_text = _ocr_frame_regions(frame)
                         if _roi_text and _roi_text.strip():
                             all_text = _roi_text
@@ -7378,7 +7523,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     # ── 整图 OCR：GLM-OCR（NVIDIA GPU）──
                     try:
                         from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
-                        if _glm_avail():
+                        if _has_nvidia_gpu() and _glm_avail():
                             _glm_text = _glm_ocr(frame, max_new_tokens=128) or ""
                             all_text = _glm_text.strip()
                             _has_time = bool(_valid_time_tokens(all_text))
@@ -7387,14 +7532,19 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                                 logger.info("视频帧提取(%s)：第%d秒整图 GLM-OCR 命中时间: %s",
                                             video_label, sec + 1, all_text[:80])
                         else:
-                            logger.warning("视频帧提取(%s)：GLM-OCR 不可用", video_label)
+                            all_text = _ocr_image_text(frame, max_new_tokens=128).strip()
+                            _has_time = bool(_valid_time_tokens(all_text))
+                            _VIDEO_OCR_STATS["full_frames"] += 1
+                            if _has_time:
+                                logger.info("视频帧提取(%s)：第%d秒整图 RapidOCR 命中时间: %s",
+                                            video_label, sec + 1, all_text[:80])
                     except Exception as e:
                         logger.warning("视频帧提取(%s)：第%d秒整图 OCR 异常: %s",
                                        video_label, sec + 1, e)
                     logger.info("视频帧提取(%s)：第%d秒 OCR: %s", video_label, sec + 1,
                                 all_text[:200] if all_text else "(空)")
                     # ── ROI 回退：整图 OCR 为空时，尝试 ROI 区域裁剪 ──
-                    if not all_text.strip():
+                    if not all_text.strip() and _has_nvidia_gpu():
                         _roi_text = _ocr_frame_regions(frame)
                         if _roi_text and _roi_text.strip():
                             all_text = _roi_text
@@ -7715,15 +7865,23 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
                 try:
                     try:
                         from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
-                        if _glm_avail():
+                        if _has_nvidia_gpu() and _glm_avail():
                             _glm_text = _glm_ocr(img, max_new_tokens=128) or ""
                             if _glm_text.strip():
                                 results = [[[], _glm_text.strip(), 1.0]]
                                 logger.info("%s图片 GLM-OCR: %s", f"{bugid} " if bugid else "", _glm_text[:120])
                         else:
-                            logger.warning("%s图片 OCR: GLM-OCR 不可用，跳过 %s", f"{bugid} " if bugid else "", fname)
+                            _rapid_text = _ocr_image_text(img, max_new_tokens=128).strip()
+                            if _rapid_text:
+                                results = [[[], _rapid_text, 1.0]]
+                                logger.info("%s图片 RapidOCR v6: %s",
+                                            f"{bugid} " if bugid else "", _rapid_text[:120])
                     except ImportError:
-                        logger.warning("%s图片 OCR: GLM-OCR 未安装，跳过 %s", f"{bugid} " if bugid else "", fname)
+                        _rapid_text = _ocr_image_text(img, max_new_tokens=128).strip()
+                        if _rapid_text:
+                            results = [[[], _rapid_text, 1.0]]
+                            logger.info("%s图片 RapidOCR v6: %s",
+                                        f"{bugid} " if bugid else "", _rapid_text[:120])
                 except Exception as _ocr_err:
                     logger.warning("%s图片 OCR 异常: %s", f"{bugid} " if bugid else "", _ocr_err)
                 if not results:
