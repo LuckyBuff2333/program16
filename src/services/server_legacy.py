@@ -367,6 +367,89 @@ _SPLIT_ARCHIVE_RE = re.compile(r"\.\d{2,3}$")
 
 _ARCHIVE_PROBE_MAX_BYTES = 20 * 1024 * 1024 * 1024  # gmlogger 大包也探测
 
+# ── 压缩类型自动归纳库 ───────────────────────────────────────
+_ARCHIVE_TYPE_STATS_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "archive_type_stats.json")
+_archive_type_stats = {}  # {key: {ext, split, probe, success, fail, count, samples, last_seen}}
+_archive_stats_lock = threading.Lock()
+
+
+def _flush_archive_type_stats():
+    """持久化压缩类型统计到磁盘"""
+    try:
+        with open(_ARCHIVE_TYPE_STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_archive_type_stats, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _load_archive_type_stats():
+    """从磁盘加载压缩类型统计"""
+    global _archive_type_stats
+    try:
+        if os.path.isfile(_ARCHIVE_TYPE_STATS_FILE):
+            with open(_ARCHIVE_TYPE_STATS_FILE, "r", encoding="utf-8") as f:
+                _archive_type_stats = json.load(f)
+    except Exception:
+        _archive_type_stats = {}
+
+
+def _record_archive_type(filename: str, probe_method: str, outcome: str, bugid: str = ""):
+    """记录一次压缩包探测，只统计后缀类型，每种类型保留一个典型案例
+
+    :param filename: 附件文件名（只提取后缀）
+    :param probe_method: range_zip / range_7z / stream_tar / full_extract / cmd_rar
+    :param outcome: success / failed
+    :param bugid: Jira 号，用于典型案例记录
+    """
+    if not filename:
+        return
+    fn_lower = filename.lower()
+    # 提取后缀类型：.zip / .7z.001 / .tar.gz / .part01.rar 等
+    suffix = "unknown"
+    for cs in (".tar.gz", ".tar.bz2", ".tar.xz"):
+        if fn_lower.endswith(cs):
+            suffix = cs
+            break
+        m = re.search(rf"({re.escape(cs)})\.(\d{{2,3}})$", fn_lower)
+        if m:
+            suffix = f"{cs}.{m.group(2)}"
+            break
+    else:
+        # .part1.rar / .part01.rar 在通用模式之前检查
+        m = re.search(r"\.part(\d+)\.rar$", fn_lower)
+        if m:
+            suffix = f".part{m.group(1)}.rar"
+        else:
+            m = re.search(r"\.(zip|7z|rar|tar|tgz|gz|bz2|xz)(?:\.(\d{2,3}))?$", fn_lower)
+            if m:
+                suffix = f".{m.group(1)}" + (f".{m.group(2)}" if m.group(2) else "")
+    key = f"{suffix}|{probe_method}"
+    with _archive_stats_lock:
+        if key not in _archive_type_stats:
+            _archive_type_stats[key] = {
+                "suffix": suffix, "probe": probe_method,
+                "success": 0, "fail": 0, "count": 0,
+                "sample_file": "", "sample_bugid": "", "last_seen": "",
+            }
+        entry = _archive_type_stats[key]
+        entry["count"] += 1
+        if outcome == "success":
+            entry["success"] += 1
+        elif outcome == "failed":
+            entry["fail"] += 1
+        # 每种类型仅保留一个典型案例的文件名和 Jira 号
+        if not entry.get("sample_file") and filename:
+            entry["sample_file"] = filename
+            entry["sample_bugid"] = bugid
+        from datetime import datetime as _dt_mod
+        entry["last_seen"] = _dt_mod.now().strftime("%Y-%m-%d %H:%M:%S")
+    _flush_archive_type_stats()
+
+
+_load_archive_type_stats()
+
 # 视频文件后缀
 _VIDEO_SUFFIXES = (".mp4", ".avi", ".mov", ".mkv")
 
@@ -3687,6 +3770,167 @@ def _is_zip_attachment(filename: str) -> bool:
     return fn.endswith(".zip") or bool(re.search(r"\.zip\.\d{2,3}$", fn))
 
 
+def _is_7z_attachment(filename: str) -> bool:
+    """判断文件名是否为 7Z 格式（含分卷 .7z.001 / .7z.002）"""
+    fn = (filename or "").lower()
+    return fn.endswith(".7z") or bool(re.search(r"\.7z\.\d{2,3}$", fn))
+
+
+def _7z_range_list_entries(url: str, headers: dict, file_size: int = 0, timeout: int = 30) -> list:
+    """通过 HTTP Range 请求读取 7Z 文件头，返回所有文件名列表
+
+    只下载文件头部（32字节签名 + 尾部元数据），无需下载整个压缩包。
+    仅支持未压缩的 kHeader 元数据；kEncodedHeader（压缩元数据）时返回空列表。
+    不支持 Range 或非 7Z 格式时返回空列表。
+    """
+    import struct
+    import httpx
+    try:
+        # 第一步：下载签名头（32字节）获取 NextHeaderOffset
+        range_h1 = {**headers, "Range": "bytes=0-31"}
+        resp1 = httpx.get(url, headers=range_h1, timeout=timeout,
+                          verify=False, follow_redirects=True)
+        if resp1.status_code != 206 or len(resp1.content) < 32:
+            return []
+        sig_data = resp1.content
+        # 检查 7z 签名: {'7', 'z', 0xBC, 0xAF, 0x27, 0x1C}
+        if sig_data[:6] != b"7z\xbc\xaf\x27\x1c":
+            return []
+        if not file_size and "/" in resp1.headers.get("Content-Range", ""):
+            try:
+                file_size = int(resp1.headers["Content-Range"].split("/")[-1])
+            except ValueError:
+                return []
+        if not file_size:
+            return []
+        # 从签名头读取 NextHeaderOffset / Size / CRC
+        next_offset = struct.unpack_from('<Q', sig_data, 12)[0]
+        next_size = struct.unpack_from('<Q', sig_data, 20)[0]
+        # 第二步：Range 下载 NextHeader 数据
+        end_pos = next_offset + next_size - 1
+        if end_pos >= file_size:
+            return []
+        range_h2 = {**headers, "Range": f"bytes={next_offset}-{end_pos}"}
+        resp2 = httpx.get(url, headers=range_h2, timeout=timeout,
+                          verify=False, follow_redirects=True)
+        if resp2.status_code != 206:
+            return []
+        nh_data = resp2.content
+        if not nh_data:
+            return []
+        # 判断 NextHeader 类型
+        if nh_data[0] == 0x01:
+            # kHeader：未压缩，直接解析
+            return _parse_7z_header(nh_data, 1)
+        elif nh_data[0] == 0x17:
+            # kEncodedHeader：元数据被压缩，无法仅通过 Range 获取
+            logger.info("7Z Range 探测：kEncodedHeader（元数据被压缩），需全量下载")
+            return []
+        return []
+    except Exception:
+        return []
+
+
+def _parse_7z_header(data: bytes, pos: int) -> list:
+    """解析未压缩的 7Z kHeader，返回 [{filename, compressed_size, uncompressed_size}]"""
+    import struct
+    try:
+        entries = []
+        if pos >= len(data) or data[pos] != 0x01:
+            return []
+        pos += 1  # 跳过 kHeader
+        # 遍历 Header 属性直到 kEnd (0x00)
+        while pos < len(data) and data[pos] != 0x00:
+            pid = data[pos]
+            pos += 1
+            if pid == 0x04:  # kMainStreamsInfo
+                pos = _skip_7z_property(data, pos)
+            elif pid == 0x05:  # kFilesInfo
+                entries, pos = _parse_7z_files_info(data, pos)
+            else:
+                pos = _skip_7z_property(data, pos)
+        return entries
+    except Exception:
+        return []
+
+
+def _skip_7z_property(data: bytes, pos: int) -> int:
+    """跳过一个 7Z 属性段，返回新位置"""
+    import struct
+    if pos >= len(data):
+        return pos
+    # 读取属性大小（变长编码）
+    size, pos = _read_7z_uint64(data, pos)
+    return pos + size
+
+
+def _read_7z_uint64(data: bytes, pos: int) -> tuple:
+    """读取 7Z 变长编码的 uint64"""
+    if pos >= len(data):
+        return 0, pos
+    first = data[pos]
+    pos += 1
+    if first < 0x80:
+        return first, pos
+    # 多字节编码
+    mask = 0x80
+    value = 0
+    for i in range(8):
+        if pos >= len(data):
+            return value, pos
+        b = data[pos]
+        pos += 1
+        if b < mask:
+            value |= (b << (7 * (i + 1)))
+            return value, pos
+        value |= ((b & 0x7F) << (7 * (i + 1)))
+        mask >>= 1
+    return value, pos
+
+
+def _parse_7z_files_info(data: bytes, pos: int) -> tuple:
+    """解析 kFilesInfo 属性，返回 (entries_list, new_pos)"""
+    import struct
+    if pos >= len(data):
+        return [], pos
+    num_files, pos = _read_7z_uint64(data, pos)
+    entries = [{'filename': '', 'compressed_size': 0, 'uncompressed_size': 0}
+               for _ in range(num_files)]
+    # 遍历属性直到 kEnd
+    while pos < len(data) and data[pos] != 0x00:
+        pid = data[pos]
+        pos += 1
+        if pid == 0x11:  # kName
+            # 外部标志
+            if pos >= len(data):
+                break
+            external = data[pos]
+            pos += 1
+            if external == 0:
+                # 内联 UTF-16LE 文件名，以 0x0000 分隔
+                for i in range(num_files):
+                    name_chars = []
+                    while pos + 1 < len(data):
+                        c = struct.unpack_from('<H', data, pos)[0]
+                        pos += 2
+                        if c == 0:
+                            break
+                        name_chars.append(chr(c))
+                    entries[i]['filename'] = ''.join(name_chars)
+            else:
+                # 外部数据，跳过
+                pos = _skip_7z_property(data, pos)
+        else:
+            # 其他属性（kCTime, kATime, kMTime, kAttributes 等），跳过
+            if pos >= len(data):
+                break
+            size, pos = _read_7z_uint64(data, pos)
+            pos += size
+    if pos < len(data) and data[pos] == 0x00:
+        pos += 1  # 跳过 kEnd
+    return entries, pos
+
+
 def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
     """判断 Jira 是否含可用日志（gmlogger）。智能回退：
     
@@ -3700,35 +3944,69 @@ def _has_gmlogger_logs(attachments: list, bugid: str = "") -> bool:
            or "main.log" in n or n.endswith(".log") or n.endswith(".txt") for n in names):
         return True
     headers, timeout = _jira_att_auth()
+    # 预收集 ZIP/7Z 附件（含分卷），用于 Range 探测
+    _zip_parts = []
+    _7z_parts = []
     for att in attachments:
         fn = (att.get("filename", "") or "").lower()
         if not _ARCHIVE_NAME_RE.search(fn):
             continue
         if _is_zip_attachment(att.get("filename", "")):
-            # ZIP 格式: Range 请求中央目录（只下尾部几十KB），不限分卷和大小
-            range_entries = _zip_range_list_entries(
-                att.get("content", ""), headers, file_size=att.get("size", 0), timeout=30)
-            if range_entries and any(
-                "main" in os.path.basename(e['filename']).lower()
-                or e['filename'].lower().endswith(".log")
-                or e['filename'].lower().endswith(".txt")
-                for e in range_entries if not e['filename'].endswith('/')
-            ):
-                logger.info("ZIP Range 探测到 main/.log/.txt 文件，判定有日志: %s (%s)", fn, bugid)
-                return True
-        else:
-            # 非 ZIP 格式: 跳过分卷和超大包
-            if _SPLIT_ARCHIVE_RE.search(fn):
-                continue
-            if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
-                continue
-            res = _diag_list_archive_entries(att.get("content", ""), headers, timeout, bugid, filename=att.get("filename", ""))
-            if res.get("ok") and any(
-                "main" in os.path.basename(e).lower() or e.lower().endswith(".log") or e.lower().endswith(".txt")
-                for e in res.get("entries", [])
-            ):
-                logger.info("无gmlogger文件名，但压缩包 %s 内含 main/.log/.txt 文件，判定有日志 (%s)", fn, bugid)
-                return True
+            _zip_parts.append(att)
+        elif _is_7z_attachment(att.get("filename", "")):
+            _7z_parts.append(att)
+    # ZIP Range: 用最后分卷 URL（EOCD/中央目录在尾部）+ 合计体积
+    if _zip_parts:
+        last_att = max(_zip_parts, key=lambda a: a.get("filename", ""))
+        combined = sum(a.get("size", 0) or 0 for a in _zip_parts)
+        range_entries = _zip_range_list_entries(
+            last_att.get("content", ""), headers, file_size=combined, timeout=30)
+        if range_entries and any(
+            "main" in os.path.basename(e['filename']).lower()
+            or e['filename'].lower().endswith(".log")
+            or e['filename'].lower().endswith(".txt")
+            for e in range_entries if not e['filename'].endswith('/')
+        ):
+            logger.info("ZIP Range 探测到 main/.log/.txt 文件，判定有日志 (%s)", bugid)
+            for _za in _zip_parts:
+                _record_archive_type(_za.get("filename", ""), "range_zip", "success", bugid)
+            return True
+    # 7Z Range: 用首卷 URL（签名头+NextHeaderOffset 在首部）+ 合计体积
+    # 分卷 7Z 的 NextHeader 可能跨卷偏移，优先使用非分卷附件
+    if _7z_parts:
+        non_split = [a for a in _7z_parts if not _SPLIT_ARCHIVE_RE.search(a.get("filename", "").lower())]
+        first_att = non_split[0] if non_split else _7z_parts[0]
+        combined = sum(a.get("size", 0) or 0 for a in _7z_parts)
+        range_entries = _7z_range_list_entries(
+            first_att.get("content", ""), headers, file_size=combined, timeout=30)
+        if range_entries and any(
+            "main" in os.path.basename(e['filename']).lower()
+            or e['filename'].lower().endswith(".log")
+            or e['filename'].lower().endswith(".txt")
+            for e in range_entries if not e['filename'].endswith('/')
+        ):
+            logger.info("7Z Range 探测到 main/.log/.txt 文件，判定有日志 (%s)", bugid)
+            for _za in _7z_parts:
+                _record_archive_type(_za.get("filename", ""), "range_7z", "success", bugid)
+            return True
+    # 其他格式全量下载探测（跳过分卷和超大包）
+    for att in attachments:
+        fn = (att.get("filename", "") or "").lower()
+        if not _ARCHIVE_NAME_RE.search(fn):
+            continue
+        if _is_zip_attachment(att.get("filename", "")) or _is_7z_attachment(att.get("filename", "")):
+            continue
+        if _SPLIT_ARCHIVE_RE.search(fn):
+            continue
+        if att.get("size", 0) and att["size"] > _ARCHIVE_PROBE_MAX_BYTES:
+            continue
+        res = _diag_list_archive_entries(att.get("content", ""), headers, timeout, bugid, filename=att.get("filename", ""))
+        if res.get("ok") and any(
+            "main" in os.path.basename(e).lower() or e.lower().endswith(".log") or e.lower().endswith(".txt")
+            for e in res.get("entries", [])
+        ):
+            logger.info("无gmlogger文件名，但压缩包 %s 内含 main/.log/.txt 文件，判定有日志 (%s)", fn, bugid)
+            return True
     return False
 
 
@@ -3839,6 +4117,7 @@ def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid:
         if range_entries:
             names = [e['filename'] for e in range_entries if not e['filename'].endswith('/')]
             logger.info("%sZIP Range 列出条目: %d 个（无需全量下载）", _label, len(names))
+            _record_archive_type(filename, "range_zip", "success", bugid)
             return {"ok": True, "entries": names, "reason": "", "size": 0}
         logger.info("%sZIP Range 失败，回退全量下载", _label)
 
@@ -3859,10 +4138,13 @@ def _diag_list_archive_entries(att_url: str, headers: dict, timeout: int, bugid:
             logger.info("%s附件下载完成: size=%d bytes", _label, total_size)
             ok, names = _diag_archive_names(src_path)
             if not ok:
+                _record_archive_type(filename, "full_extract", "failed", bugid)
                 return {"ok": False, "entries": [], "reason": names, "size": total_size}
             entries = names
+        _record_archive_type(filename, "full_extract", "success", bugid)
         return {"ok": True, "entries": entries, "reason": "", "size": total_size}
     except Exception as e:
+        _record_archive_type(filename, "full_extract", "failed", bugid)
         return {"ok": False, "entries": [], "reason": f"下载/解压异常: {e}", "size": total_size}
 
 
@@ -4699,15 +4981,20 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
     logger.info("gmlogger 包排序：%s", " > ".join(
         f"{os.path.basename(k)}@{_group_upload(v).strftime('%m-%d %H:%M') if _group_upload(v) != datetime.min else '?'}"
         for k, v in groups.items()))
-    # 超大包上限：ZIP 可用 Range 无需全量下载，仅对非 ZIP 组检查体积
+    # 超大包上限：ZIP/7Z 可用 Range 无需全量下载，仅对无 Range 能力的组检查体积
     has_zip_group = any(
         any(_is_zip_attachment(att.get("filename", "")) for _p, att in ps)
         for ps in groups.values()
     )
+    has_7z_group = any(
+        any(_is_7z_attachment(att.get("filename", "")) and not _SPLIT_ARCHIVE_RE.search(att.get("filename", ""))
+            for _p, att in ps)
+        for ps in groups.values()
+    )
     total_size = sum(a.get("size", 0) for ps in groups.values() for _p, a in ps)
-    if not ignore_archive_limit and not has_zip_group and total_size > _ARCHIVE_PROBE_MAX_BYTES:
+    if not ignore_archive_limit and not has_zip_group and not has_7z_group and total_size > _ARCHIVE_PROBE_MAX_BYTES:
         _limit_mb = _ARCHIVE_PROBE_MAX_BYTES // 1024 // 1024
-        logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > %dMB，无 ZIP 可用 Range）",
+        logger.info("gmlogger 内包探测：跳过（压缩包过大 %dMB > %dMB，无 ZIP/7Z 可用 Range）",
                     total_size // 1024 // 1024, _limit_mb)
         return {"status": "failed",
                 "reason": f"gmlogger 压缩包过大（{total_size // 1024 // 1024}MB>{_limit_mb}MB），已跳过内包探测",
@@ -4723,15 +5010,12 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
             parts.sort(key=lambda x: x[0])
 
             # ZIP 格式（含分卷）: Range 读取中央目录获取文件名 + 解析时间，无需下载整个压缩包
-            zip_part = None
-            for _p, att in parts:
-                if _is_zip_attachment(att.get("filename", "")):
-                    zip_part = (_p, att)
-                    break
-            if zip_part:
-                _zp, _zatt = zip_part
+            # 分卷时 EOCD/中央目录在最后分卷尾部，使用最后分卷 URL + 合计体积
+            zip_parts = [(_p, att) for _p, att in parts if _is_zip_attachment(att.get("filename", ""))]
+            if zip_parts:
+                _zp, _zatt = max(zip_parts, key=lambda x: x[1].get("filename", ""))
                 _zurl = _zatt.get("content", "")
-                _zsize = _zatt.get("size", 0)
+                _zsize = sum(att.get("size", 0) or 0 for _p, att in zip_parts)
                 if _zurl:
                     range_entries = _zip_range_list_entries(
                         _zurl, headers, file_size=_zsize, timeout=min(timeout, 30))
@@ -4757,10 +5041,47 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                         all_times = _diag_scan_entry_times(all_names)
                         logger.info("gmlogger ZIP Range 探测: base=%s, 条目=%d, main=%d, 时间=%d",
                                     base, len(all_names), len(main_entries), len(main_times))
+                        for _zp, _zatt in zip_parts:
+                            _record_archive_type(_zatt.get("filename", ""), "range_zip", "success", bugid)
                         return {"status": "ok", "reason": "",
                                 "main_entries": main_entries,
                                 "main_times": main_times, "all_times": all_times}
                     logger.info("gmlogger ZIP Range 失败，回退全量下载: %s", base)
+
+            # 7Z 格式（非分卷）: Range 读取 NextHeader 获取文件名 + 解析时间，无需下载整个压缩包
+            # 分卷 7Z 的 NextHeader 可能跨卷偏移，跳过 Range 回退全量下载
+            if any(_is_7z_attachment(att.get("filename", "")) for _p, att in parts) and \
+               not any(_SPLIT_ARCHIVE_RE.search(att.get("filename", "")) for _p, att in parts):
+                _7z_att = next(att for _p, att in parts if _is_7z_attachment(att.get("filename", "")))
+                _7z_url = _7z_att.get("content", "")
+                _7z_size = sum(att.get("size", 0) or 0 for _p, att in parts)
+                if _7z_url:
+                    range_entries = _7z_range_list_entries(
+                        _7z_url, headers, file_size=_7z_size, timeout=min(timeout, 30))
+                    if range_entries:
+                        all_names = [e['filename'] for e in range_entries
+                                     if not e['filename'].endswith('/')]
+                        main_entries = []
+                        for e in range_entries:
+                            name = e['filename']
+                            if name.endswith('/'):
+                                continue
+                            bname = os.path.basename(name.replace('\\', '/'))
+                            if 'main.log' in bname.lower():
+                                main_entries.append(bname)
+                        main_times = []
+                        for bname in main_entries[:10]:
+                            parsed = _diag_parse_main_time(bname)
+                            if parsed:
+                                main_times.append(parsed)
+                        all_times = _diag_scan_entry_times(all_names)
+                        logger.info("gmlogger 7Z Range 探测: base=%s, 条目=%d, main=%d, 时间=%d",
+                                    base, len(all_names), len(main_entries), len(main_times))
+                        _record_archive_type(_7z_att.get("filename", ""), "range_7z", "success", bugid)
+                        return {"status": "ok", "reason": "",
+                                "main_entries": main_entries,
+                                "main_times": main_times, "all_times": all_times}
+                    logger.info("gmlogger 7Z Range 失败，回退全量下载: %s", base)
 
             if base.lower().endswith(".rar"):
                 # rar 分卷：7z 需原始文件名同目录自动续卷，从首卷打开，仅提取 main 文件
@@ -4790,6 +5111,8 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                     continue
                 probe = _diag_rar_main_times(os.path.join(rar_dir, parts[0][1].get("filename", "") or "part0.rar"), rar_dir)
                 if probe["status"] == "ok":
+                    for _p, _att in parts:
+                        _record_archive_type(_att.get("filename", ""), "cmd_rar", "success", bugid)
                     return probe
                 last_reason = probe["reason"] or last_reason
                 continue
@@ -4826,6 +5149,8 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                     logger.info("gmlogger 内包探测(tar 免解压): base=%s, main 文件 %d 个, 提取时间 %d 个",
                                 base, len(tar_probe.get("main_entries", [])),
                                 len(tar_probe.get("main_times", [])))
+                    for _p, _att in parts:
+                        _record_archive_type(_att.get("filename", ""), "stream_tar", "success", bugid)
                     return tar_probe
                 last_reason = tar_probe.get("reason") or last_reason
                 logger.warning("gmlogger tar 免解压探测失败 %s: %s", base, last_reason)

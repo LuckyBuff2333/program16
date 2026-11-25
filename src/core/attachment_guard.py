@@ -22,20 +22,22 @@ from src.config import PROJECT_ROOT, load_config, setup_logger
 
 logger = setup_logger("attachment_guard")
 
-# ── 限额（与"分析三"的建议值一致）──
+# ── 限额 ──
 MAX_ATTACHMENT_BYTES = 500 * 1024 * 1024        # 单个附件下载硬上限 500MB
 MAX_RAR_VOLUME_BYTES = 2 * 1024 * 1024 * 1024   # rar 分卷总量上限 2GB
 MAX_BUG_ATTACH_BYTES = 3 * 1024 * 1024 * 1024   # 单个 bug 的附件总预算 3GB
-MAX_BATCH_ATTACH_BYTES = 20 * 1024 * 1024 * 1024  # 单批次附件总预算 20GB
 MIN_FREE_DISK_BYTES = 5 * 1024 * 1024 * 1024    # 下载前要求的最小可用磁盘 5GB
 MAX_SINGLE_ENTRY_BYTES = 2 * 1024 * 1024 * 1024  # 解压单个条目上限 2GB（7z/rar 需整条目落盘）
 MAX_MEDIA_BYTES = 1024 * 1024 * 1024            # 视频/图片附件上限 1GB（录屏常超 500MB，单独放宽）
 
-# 附件缓存：data/cache/attachments（data/* 已被 .gitignore 忽略）
-CACHE_DIR = os.path.join(PROJECT_ROOT, "data", "cache", "attachments")
-CACHE_TTL_SECONDS = 24 * 60 * 60                # 缓存有效期 24 小时
+# 附件与视频缓存：data/media_cache/（专用目录，不与其他程序共享）
+CACHE_DIR = os.path.join(PROJECT_ROOT, "data", "media_cache", "attachments")
+VIDEO_CACHE_DIR = os.path.join(PROJECT_ROOT, "data", "media_cache", "videos")
+PROJECT_TEMP_DIR = os.path.join(PROJECT_ROOT, "data", "media_cache")  # 项目专用临时目录，不影响系统 /tmp
+CACHE_TTL_SECONDS = 7 * 24 * 60 * 60            # 缓存有效期 7 天，超过自动删除
 MAX_CACHE_BYTES = 5 * 1024 * 1024 * 1024        # 缓存目录总量上限 5GB（超出按最旧删除）
-_TEMP_CLEAN_INTERVAL = 60 * 60                  # 过期临时目录清理间隔 1 小时
+_CLEANUP_INTERVAL = 2 * 24 * 60 * 60            # 维护清理间隔 2 天，仅在启动时执行
+_CLEANUP_TS_FILE = os.path.join(PROJECT_ROOT, "data", ".last_maintenance_ts")
 
 
 class AttachmentLimitError(RuntimeError):
@@ -43,24 +45,17 @@ class AttachmentLimitError(RuntimeError):
 
 
 class AttachmentBudget:
-    """按 bug 与时间窗口的附件体积预算（线程安全）
+    """按 bug 的附件体积预算（线程安全）
 
-    - begin_batch()：新的批量任务开始时重置（可选，不调用也存在兜底窗口）
+    - begin_batch()：新的批量任务开始时重置
     - begin_bug(bugid)：开始处理某个 bug 时重置该 bug 计数
-    - charge(n, bugid)：下载到 n 字节后记账，超预算抛 AttachmentLimitError
-
-    为什么用"滚动窗口"而不是严格的批次边界：批量入口有 4 处（时间提取 x2、诊断、回归），
-    逐个接线容易漏；用 6 小时滚动窗口做总量兜底，行为等价且不会因为漏改而失效。
+    - charge(n, bugid)：下载到 n 字节后记账，单 bug 超预算抛 AttachmentLimitError
     """
-
-    WINDOW_SECONDS = 6 * 3600
 
     def __init__(self):
         self._lock = threading.Lock()
         self._bug_used = {}
         self._batch_used = 0
-        self._window_used = 0
-        self._window_start = time.time()
 
     def begin_batch(self):
         with self._lock:
@@ -76,30 +71,14 @@ class AttachmentBudget:
         with self._lock:
             return self._bug_used.get(bugid, 0) if bugid else self._batch_used
 
-    def window_used(self) -> int:
-        with self._lock:
-            return self._window_used
-
-    def _roll_window_locked(self):
-        now = time.time()
-        if now - self._window_start > self.WINDOW_SECONDS:
-            self._window_start = now
-            self._window_used = 0
-
     def charge(self, size: int, bugid: str = "", ignore_limit: bool = False):
         size = max(0, int(size or 0))
         with self._lock:
             self._batch_used += size
-            self._roll_window_locked()
-            self._window_used += size
             if ignore_limit:
                 if bugid:
                     self._bug_used[bugid] = self._bug_used.get(bugid, 0) + size
                 return
-            if self._window_used > MAX_BATCH_ATTACH_BYTES:
-                raise AttachmentLimitError(
-                    f"近 {self.WINDOW_SECONDS // 3600} 小时附件下载总量超过 "
-                    f"{MAX_BATCH_ATTACH_BYTES // 1024 // 1024 // 1024}GB，已中止（请分批处理）")
             if bugid:
                 used = self._bug_used.get(bugid, 0) + size
                 self._bug_used[bugid] = used
@@ -114,8 +93,7 @@ BUDGET = AttachmentBudget()
 def begin_batch() -> None:
     """标记一个新批次开始（重置批次计数）。
 
-    适用于"一次请求内部循环处理多个 bug"的批量端点（时间批量提取等）；
-    诊断这类由前端逐 bug 发多个请求的场景没有服务端批次边界，靠滚动窗口兜底。
+    适用于"一次请求内部循环处理多个 bug"的批量端点（时间批量提取等）。
     """
     BUDGET.begin_batch()
 
@@ -226,28 +204,37 @@ def prune_cache(ttl_seconds: int = CACHE_TTL_SECONDS) -> int:
     return removed
 
 
-_last_temp_clean = 0.0
+def _read_last_maintenance_ts() -> float:
+    """读取上次维护时间戳"""
+    try:
+        if os.path.isfile(_CLEANUP_TS_FILE):
+            return float(open(_CLEANUP_TS_FILE).read().strip())
+    except (OSError, ValueError):
+        pass
+    return 0.0
 
 
-def cleanup_stale_temp(root: str = None, hours: int = 24) -> int:
-    """清理残留的临时目录（进程被强杀时 TemporaryDirectory 不会自动清理）
+def _write_last_maintenance_ts() -> None:
+    """写入当前维护时间戳"""
+    try:
+        os.makedirs(os.path.dirname(_CLEANUP_TS_FILE), exist_ok=True)
+        with open(_CLEANUP_TS_FILE, "w") as f:
+            f.write(str(time.time()))
+    except OSError:
+        pass
 
-    只清理本项目临时目录下、名字以 _diag_/tmp 开头且超过 hours 的目录，1 小时内最多执行一次。
+
+def cleanup_stale_temp(hours: int = 24) -> int:
+    """清理项目专用临时目录中超过 hours 的残留目录
+
+    仅清理 PROJECT_TEMP_DIR（data/_temp/），不触碰系统 /tmp 或其他程序的文件。
     """
-    global _last_temp_clean
+    if not os.path.isdir(PROJECT_TEMP_DIR):
+        return 0
     now = time.time()
-    if now - _last_temp_clean < _TEMP_CLEAN_INTERVAL:
-        return 0
-    _last_temp_clean = now
-    import tempfile
-    root = root or tempfile.gettempdir()
-    if not os.path.isdir(root):
-        return 0
     removed = 0
-    for name in os.listdir(root):
-        if not (name.startswith("tmp") or name.startswith("_diag_")):
-            continue
-        path = os.path.join(root, name)
+    for name in os.listdir(PROJECT_TEMP_DIR):
+        path = os.path.join(PROJECT_TEMP_DIR, name)
         try:
             if os.path.isdir(path) and now - os.path.getmtime(path) > hours * 3600:
                 shutil.rmtree(path, ignore_errors=True)
@@ -255,21 +242,23 @@ def cleanup_stale_temp(root: str = None, hours: int = 24) -> int:
         except OSError:
             continue
     if removed:
-        logger.info("已清理残留临时目录 %d 个", removed)
+        logger.info("已清理项目临时目录 %d 个残留目录", removed)
     return removed
 
 
-_last_prune = 0.0
-_PRUNE_INTERVAL = 10 * 60  # 缓存清理间隔 10 分钟
-
-
 def maintenance() -> None:
-    """例行维护：清理过期缓存与残留临时目录（内部有节流，可放心频繁调用）"""
-    global _last_prune
+    """启动时维护：清理过期缓存与残留临时目录。
+
+    仅在启动时执行一次，每 2 天触发一次（通过时间戳文件记录上次执行时间）。
+    距上次清理不足 2 天则跳过。
+    """
     now = time.time()
-    if now - _last_prune > _PRUNE_INTERVAL:
-        _last_prune = now
-        prune_cache()
+    last_ts = _read_last_maintenance_ts()
+    if now - last_ts < _CLEANUP_INTERVAL:
+        logger.info("距上次维护不足 %d 天，跳过清理", _CLEANUP_INTERVAL // 86400)
+        return
+    _write_last_maintenance_ts()
+    prune_cache()
     cleanup_stale_temp()
 
 
