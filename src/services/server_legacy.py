@@ -2266,6 +2266,18 @@ def _bot_get_trigger_times(bugids: list) -> dict:
             issue = _jc.fetch_issue(bugid)
             # gmlogger 前置检查：无 gmlogger 附件的 Jira 直接跳过（与批量提取保持一致）
             attachments = (issue.get("fields") or {}).get("attachment") or []
+            # 无日志附件前置检查：无压缩包/无.txt/无.log/无logcat → 跳过
+            if not _has_log_attachments(attachments):
+                logger.info("触发时间: %s 无日志附件，跳过", bugid)
+                _timestudy_record(bugid, "", "skipped", error_type="no_log_attachment",
+                                  error_detail="无日志附件，前置过滤跳过",
+                                  ctx={"trace": ["skip:no_log_attachment"]})
+                try:
+                    from src.clients import jira_client as _jc
+                    _jc.add_comment(bugid, "无日志附件")
+                except Exception:
+                    pass
+                continue
             has_gmlogger = any("gmlogger" in (att.get("filename", "") or "").lower() for att in attachments)
             if not has_gmlogger:
                 logger.info("触发时间: %s 无gmlogger附件，跳过", bugid)
@@ -4481,6 +4493,36 @@ _LOG_ARCHIVE_SUFFIXES = (".7z", ".rar", ".zip", ".tar", ".gz", ".tgz", ".bz2", "
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif")
 
 
+def _has_log_attachments(attachments: list) -> bool:
+    """判断 Jira 附件中是否包含任何可用于日志分析的附件。
+
+    满足以下任一条件即视为"有日志附件"：
+    - 压缩包（.7z/.rar/.zip/.tar/.gz/.tgz/.bz2/.xz/.zst，含分卷 .zip.001 等）
+    - .txt 文件
+    - .log 文件
+    - logcat 文件（无后缀，文件名为 logcat）
+    """
+    from src.clients.jira_client import is_suffixless_logcat
+    for att in attachments:
+        fn = (att.get("filename", "") or "").lower().strip()
+        if not fn:
+            continue
+        # 压缩包（含分卷：.zip.001 / .7z.002 / .rar.003 等）
+        if any(fn.endswith(s) for s in _LOG_ARCHIVE_SUFFIXES):
+            return True
+        if _SPLIT_ARCHIVE_RE.search(fn):
+            _base = _SPLIT_ARCHIVE_RE.sub("", fn)
+            if any(_base.endswith(s) for s in _LOG_ARCHIVE_SUFFIXES):
+                return True
+        # .txt / .log
+        if fn.endswith(".txt") or fn.endswith(".log"):
+            return True
+        # logcat（无后缀的 logcat 文件）
+        if is_suffixless_logcat(fn):
+            return True
+    return False
+
+
 def _parse_any_log_filename_time(fname: str):
     """从日志包文件名解析抓包时间（复用 jira_client 的实现）"""
     from src.clients.jira_client import parse_log_filename_time
@@ -6377,10 +6419,11 @@ def _find_closest_gmlogger(video_att: dict, gm_info_list: list) -> list:
     return [gm for _, _, gm in scored]
 
 
-def _image_fallback_time(issue: dict, headers: dict, timeout: int, bugid: str, ref_pool: list) -> str:
+def _image_fallback_time(issue: dict, headers: dict, timeout: int, bugid: str, ref_pool: list,
+                         require_ref: bool = False) -> str:
     """视频未命中 gmlogger 时的图片兜底：非视频图片 OCR 时钟(如20:01)与参考时间(如20:05)
-    按"时分"接近(容差10分钟)则用参考日期+图片时间拼接返回；无参考时直接返回图片时间。
-    差距过大则弃用，回退后续逻辑。"""
+    按"时分"接近(容差10分钟)则用参考日期+图片时间拼接返回。
+    require_ref=True 时，无参考时间则不接受（宁可提取不到也不提取错误）。"""
     img_ts, _img_detail = _diag_extract_time_from_images(issue, headers, timeout, bugid)
     if not img_ts:
         return ""
@@ -6388,6 +6431,9 @@ def _image_fallback_time(issue: dict, headers: dict, timeout: int, bugid: str, r
     if not img_dt:
         return ""
     if not ref_pool:
+        if require_ref:
+            logger.info("视频兜底提取(%s, 图片兜底): 无权威参考时间，不接受图片时间 %s", bugid, img_ts)
+            return ""
         logger.info("视频兜底提取(%s, 图片兜底-无参考): %s", bugid, img_ts)
         return img_ts
 
@@ -6746,7 +6792,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
     gm_times = _diag_gmlogger_times(_gm_atts or attachments)
     # 1b. 非 gmlogger 压缩包也解析文件名时间（如 nop_2026_10_26_1_18_31.zip.001）
     _archive_times = _diag_archive_filename_times(_gm_atts or attachments)
-    # 2. 直接上传的 main.log 文件（已解压，内层日期）
+    # 2. 直接上传的 .log/.txt 文件（已解压，权威内层时间）
     _inner_times = []
     for att in attachments:
         fname = att.get("filename", "") or ""
@@ -6754,14 +6800,12 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
         # 跳过 gmlogger 压缩包（已在步骤1处理）和视频/图片
         if "gmlogger" in fname.lower():
             continue
-        if not bname.endswith((".log", ".txt")):
-            continue
-        if "main" not in bname:
+        if not (bname.endswith(".log") or bname.endswith(".txt")):
             continue
         parsed = _diag_parse_entry_time(fname)
         if parsed:
             _inner_times.append(parsed)
-            logger.info("视频兜底提取(%s)：直接上传的 main 文件: %s -> %s", bugid, fname, parsed[0])
+            logger.info("视频兜底提取(%s)：直接上传的日志文件: %s -> %s", bugid, fname, parsed[0])
     # 3. 非 gmlogger 且非 main 的压缩包：解压探测包内 main 文件（场景三）
     #    外层文件名时间可能不准；即使已有 gmlogger 文件名，也要继续向内层探 main 时间。
     cfg = load_config().get("jira_api", {})
@@ -6851,15 +6895,59 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                     _inner_times.append(parsed)
                     logger.info("视频兜底提取(%s)：压缩包 %s 内 main 文件: %s -> %s",
                                 bugid, fname, entry, parsed[0])
-    # 构建 ref_pool
-    gm_dates = [(dt.year, dt.month, dt.day) for _, dt in gm_times]
-    ref_pool = [dt for _, dt in gm_times]
-    for _ats, _adt in _archive_times:
-        _ad = (_adt.year, _adt.month, _adt.day)
-        if _ad not in gm_dates:
-            gm_dates.append(_ad)
-        if _adt not in ref_pool:
-            ref_pool.append(_adt)
+    # 4. 从文本文件附件（.txt/.log/logcat）内容中提取时间作为权威参考
+    #    这三个是文本格式，命中是与文件内容里的时间命中，无年份补今年
+    from src.clients.jira_client import is_suffixless_logcat as _is_logcat
+    _known_inner = {dt for _, dt in _inner_times}
+    _this_year = str(datetime.now().year)
+    for att in attachments:
+        fn = (att.get("filename", "") or "").strip()
+        if not fn:
+            continue
+        fn_lower = fn.lower()
+        _is_text = (fn_lower.endswith(".txt") or fn_lower.endswith(".log")
+                    or _is_logcat(fn_lower))
+        if not _is_text:
+            continue
+        # 跳过大文件（>10MB）
+        if att.get("size", 0) and att["size"] > 10 * 1024 * 1024:
+            continue
+        try:
+            _raw_text = _diag_read_logcat_text(att, headers, timeout=60)
+            if not _raw_text:
+                continue
+            # 只取前 20KB 解析时间，避免大文件拖慢
+            _text_slice = _raw_text[:20000]
+            from src.clients import jira_client as _jc
+            import re as _re
+            # 收集文本中带年份的完整时间（这些是日志记录时间，不是触发事件时间）
+            _full_year_times = set()
+            for _fm in _re.finditer(
+                r'(20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}[:\uff1a]\d{2}(?:[:\uff1a]\d{2})?)',
+                _text_slice):
+                _full_year_times.add(_fm.group(1).replace('\uff1a', ':'))
+            _extracted_times = _jc._extract_times_from_text(_text_slice, year=_this_year)
+            _new_count = 0
+            for _t_str, _t_dt in _extracted_times:
+                # 过滤：带年份的时间是日志记录时间，只保留无年份的触发事件时间
+                _normalized = _t_str.replace('\uff1a', ':')
+                _has_year = any(_normalized in _ft or _ft.startswith(_normalized[:10])
+                                for _ft in _full_year_times) if _full_year_times else False
+                if _has_year:
+                    continue
+                if _t_dt not in _known_inner:
+                    _inner_times.append((_t_str, _t_dt))
+                    _known_inner.add(_t_dt)
+                    _new_count += 1
+            if _new_count > 0:
+                logger.info("视频兜底提取(%s)：从文本附件 %s 内容提取到 %d 个时间",
+                            bugid, fn, _new_count)
+        except Exception as _e:
+            logger.warning("视频兜底提取(%s)：读取文本附件 %s 失败: %s", bugid, fn, _e)
+    # 构建 ref_pool：仅使用权威时间（main文件名 + txt/log/logcat内容时间）
+    # gmlogger 外层文件名时间仅用于辅助排序/选包，不作为验证依据
+    ref_pool = []
+    gm_dates = []
     _has_inner_dates = False
     if _inner_times:
         _has_inner_dates = True
@@ -6869,7 +6957,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                 gm_dates.append(d)
             if dt not in ref_pool:
                 ref_pool.append(dt)
-        logger.info("视频兜底提取(%s)：内层 main 日期 %d 个", bugid, len(_inner_times))
+        logger.info("视频兜底提取(%s)：内层权威时间 %d 个", bugid, len(_inner_times))
     _timestudy_update_ctx(bugid, gm_count=len(gm_times) + len(_inner_times),
                           ref_times="|".join(str(dt) for _, dt in (gm_times + _inner_times)[:3]))
     _timestudy_trace(bugid, f"gm:{len(gm_times)}+inner:{len(_inner_times)}")
@@ -6889,12 +6977,13 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
     # 按优先级排序视频
     ranked_videos = _rank_videos(videos, attachments, created_dt=_issue_created_dt(issue), issue=issue)
     single_video = len(ranked_videos) == 1
-    # 匹配容差：内层 main 文件名可用时 5 分钟，仅外层文件名日期时 15 分钟
+    # 匹配容差：仅使用内层权威时间，固定 5 分钟（gmlogger 外层文件名时间不参与校验）
     if not ref_pool:
-        logger.info("视频兜底提取(%s)：gmlogger 和内层均无日期，仍尝试视频OCR（无参考日期校验）", bugid)
-    _match_tolerance = 300 if _inner_times else 900
-    logger.info("视频兜底提取(%s)：ref_pool %d 个（外层 %d + 内层 %d），匹配容差 %ds",
-                bugid, len(ref_pool), len(gm_times), len(_inner_times), _match_tolerance)
+        logger.info("视频兜底提取(%s)：无内层权威时间（外层 gm %d 个仅供参考），仍尝试视频OCR",
+                    bugid, len(gm_times))
+    _match_tolerance = 300
+    logger.info("视频兜底提取(%s)：ref_pool %d 个（仅内层权威时间，外层 %d 个仅辅助），匹配容差 %ds",
+                bugid, len(ref_pool), len(gm_times), _match_tolerance)
     best_partial = ""
     # 12h 制兜底候选（延迟决策）
     best_12h_cand = None  # (time_str, ext_dt)
@@ -7245,49 +7334,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                     _VIDEO_OCR_STATS["vote_hits"] += 1
                     return _vote_ts
 
-            # OCR 完全失败时，尝试从视频文件名提取时间（回退方案）
-            if not first_full and not first_partial:
-                _timestudy_trace(bugid, "fn:try")
-                fn_time = _parse_video_filename_time(video_name)
-                if fn_time:
-                    # 日期补充：只能用日志包日期（gmlogger），禁止用视频上传时间
-                    closest_date = None
-                    if not closest_date and closest_gm and closest_gm[0]["filename_time"]:
-                        closest_date = (closest_gm[0]["filename_time"].year,
-                                        closest_gm[0]["filename_time"].month,
-                                        closest_gm[0]["filename_time"].day)
-                    if not closest_date and gm_dates:
-                        closest_date = gm_dates[0]
-                    if closest_date:
-                        y, mo, d = closest_date
-                        full_orig = f"{y:04d}-{mo:02d}-{d:02d} {fn_time}"
-                        parsed_orig = _parse_datetime_string(full_orig)
-                        if parsed_orig:
-                            ts, ext_dt = parsed_orig
-                            if ext_dt.hour < 12:
-                                dt_alt = ext_dt + timedelta(hours=12)
-                            else:
-                                dt_alt = ext_dt - timedelta(hours=12)
-                            ts_alt = dt_alt.strftime("%Y-%m-%d %H:%M:%S")
-                            orig_match = any(abs((dt - ext_dt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
-                            alt_match = any(abs((dt - dt_alt).total_seconds()) <= _match_tolerance for dt in video_ref_pool)
-                            if alt_match and not orig_match:
-                                logger.info("视频兜底提取(%s, 文件名回退+12h): %s", video_label, ts_alt)
-                                first_partial = ts_alt
-                            elif not orig_match and not alt_match and video_ref_pool:
-                                d_orig = min(abs((dt.hour * 3600 + dt.minute * 60 + dt.second) - (ext_dt.hour * 3600 + ext_dt.minute * 60 + ext_dt.second)) for dt in video_ref_pool)
-                                d_alt = min(abs((dt.hour * 3600 + dt.minute * 60 + dt.second) - (dt_alt.hour * 3600 + dt_alt.minute * 60 + dt_alt.second)) for dt in video_ref_pool)
-                                if d_alt < d_orig and d_alt < best_12h_diff:
-                                    best_12h_diff = d_alt
-                                    best_12h_cand = (ts_alt, dt_alt)
-                                elif d_orig < best_12h_diff:
-                                    best_12h_diff = d_orig
-                                    best_12h_cand = (ts, ext_dt)
-                                logger.info("视频兜底提取(%s, 文件名回退): %s", video_label, ts)
-                                first_partial = ts
-                            else:
-                                logger.info("视频兜底提取(%s, 文件名回退): %s", video_label, ts)
-                                first_partial = ts
+            # 不使用文件名回退（文件名时间与实际触发时间经常不符，宁可提取不到也不提取错误）
             # 缓存当前视频的提取结果（仅成功时缓存）
             extracted_time = first_full or first_partial or ""
             if extracted_time:
@@ -7348,7 +7395,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
             _LAST_VIDEO_MAIN_TIME[str(issue.get("key") or "")] = _picked_ts
             return _picked_ts
     # 视频未命中 gmlogger → 图片 OCR 兜底
-    img_ts = _image_fallback_time(issue, headers, _timeout, bugid, ref_pool)
+    img_ts = _image_fallback_time(issue, headers, _timeout, bugid, ref_pool, require_ref=True)
     if img_ts:
         _timestudy_update_ctx(bugid, source="image_ocr")
         _timestudy_trace(bugid, "image:fallback")
@@ -7382,10 +7429,9 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     """从视频附件前6秒截帧，OCR 识别时间，多视频按优先级逐个尝试，命中即停。
     返回 (extracted_time, detail) 或 ("", "")。支持本地缓存避免重复下载+OCR。
 
-    当 ref_pool 为空（未解压 gmlogger）时，使用 gm_times 作为验证池：
-    - ±15分钟（900秒）内命中 → 直接返回
-    - 15分钟~1小时（3600秒）内 → 记录为候选，所有视频处理完后取最接近的
-    - 超过1小时 → 返回空，触发解压
+    仅使用 ref_pool（压缩包内 main/.txt/.log/logcat 时间）做验证：
+    - ref_pool 有值时：±5分钟内命中 → 直接返回
+    - ref_pool 为空时：不做验证，宁可提取不到也不提取错误
     """
     import tempfile
     import shutil
@@ -7397,7 +7443,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
     videos = [a for a in attachments if (a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES)]
     if not videos:
         return "", ""
-    # 确定验证池和容忍度
+    # 确定验证池和容忍度：仅使用包内权威时间（main/.txt/.log/logcat）
     if ref_pool:
         # 已解压：使用包内时间戳，±5分钟严格匹配
         # ref_pool 元素为 (str, datetime) 元组，仅取 datetime 参与校验
@@ -7405,10 +7451,11 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
         strict_tol = 300
         fallback_tol = None  # 无 fallback
     else:
-        # 未解压：使用文件名时间，±15分钟严格，±1小时 fallback
-        validation_pool = [dt for _, dt in (gm_times or [])]
-        strict_tol = 900
-        fallback_tol = 3600
+        # 无包内权威时间：不做验证（宁可提取不到也不提取错误）
+        validation_pool = []
+        strict_tol = 300
+        fallback_tol = None
+        logger.info("视频帧提取(%s)：无包内权威时间，不做外层文件名验证", issue.get("key", ""))
     # 获取 bugid 用于缓存键
     bugid = issue.get("key") or ""
     cache = _load_video_time_cache()
@@ -7713,54 +7760,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     if first_full or first_partial or _roi_has_time:
                         logger.info("视频帧提取(%s)：第%d秒已提取到有效时间，跳过后续帧", video_label, sec + 1)
                         break
-            # OCR 完全失败时，尝试从视频文件名提取时间（回退方案）
-            if not first_full and not first_partial:
-                fn_time = _parse_video_filename_time(video_name)
-                if fn_time and gmlogger_dates:
-                    y, mo, d = gmlogger_dates[0]
-                    full_orig = f"{y:04d}-{mo:02d}-{d:02d} {fn_time}"
-                    parsed_orig = _parse_datetime_string(full_orig)
-                    if parsed_orig:
-                        extracted_time, ext_dt = parsed_orig
-                        if ext_dt.hour < 12:
-                            dt_alt = ext_dt + timedelta(hours=12)
-                        else:
-                            dt_alt = ext_dt - timedelta(hours=12)
-                        ts_alt = dt_alt.strftime("%Y-%m-%d %H:%M:%S")
-                        orig_match = validation_pool and any(abs((dt - ext_dt).total_seconds()) <= strict_tol for dt in validation_pool)
-                        alt_match = validation_pool and any(abs((dt - dt_alt).total_seconds()) <= strict_tol for dt in validation_pool)
-                        if orig_match and not alt_match:
-                            detail = f"从视频{video_label}文件名提取到时间 {fn_time}，用 gmlogger 日期补充为 {extracted_time}，与 gmlogger 时间前后{strict_tol//60}分钟命中"
-                            logger.info("视频帧提取(%s, 文件名回退+命中): %s", video_label, extracted_time)
-                            _store_video_time_cache(cache, cache_key, extracted_time)
-                            _save_video_time_cache()
-                            return extracted_time, detail
-                        if alt_match and not orig_match:
-                            detail = f"从视频{video_label}文件名提取到时间 {fn_time}，12h制转换为 {ts_alt}，与 gmlogger 时间前后{strict_tol//60}分钟命中"
-                            logger.info("视频帧提取(%s, 文件名回退+12h): %s", video_label, ts_alt)
-                            _store_video_time_cache(cache, cache_key, ts_alt)
-                            _save_video_time_cache()
-                            return ts_alt, detail
-                        # 均未严格命中，记录 12h 候选（仅时间差）
-                        if not orig_match and not alt_match and validation_pool:
-                            d_orig = min(abs((dt.hour * 3600 + dt.minute * 60 + dt.second) - (ext_dt.hour * 3600 + ext_dt.minute * 60 + ext_dt.second)) for dt in validation_pool)
-                            d_alt = min(abs((dt.hour * 3600 + dt.minute * 60 + dt.second) - (dt_alt.hour * 3600 + dt_alt.minute * 60 + dt_alt.second)) for dt in validation_pool)
-                            if d_alt < d_orig and d_alt < best_12h_diff:
-                                best_12h_diff = d_alt
-                                best_12h_cand = (ts_alt, dt_alt, True)
-                            elif d_orig < best_12h_diff:
-                                best_12h_diff = d_orig
-                                best_12h_cand = (extracted_time, ext_dt, True)
-                        # fallback 候选记录（仅未解压场景）
-                        if fallback_tol and validation_pool:
-                            diffs = [abs((dt - ext_dt).total_seconds()) for dt in validation_pool]
-                            min_diff = min(diffs)
-                            if min_diff < fallback_tol and min_diff < fallback_diff:
-                                fallback_diff = min_diff
-                                fallback_candidate = extracted_time
-                                logger.info("视频帧提取(%s)：%s 作为 fallback 候选（差值 %.0f 秒）", video_label, extracted_time, min_diff)
-                        first_partial = extracted_time
-                        first_detail = f"从视频{video_label}文件名提取到时间 {fn_time}，用 gmlogger 日期补充为 {extracted_time}"
+            # 不使用文件名回退（文件名时间与实际触发时间经常不符，宁可提取不到也不提取错误）
             # 缓存当前视频提取结果（仅成功时缓存）
             extracted_time = first_full or first_partial or ""
             if extracted_time:
@@ -8351,7 +8351,7 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
     if extracted:
         # 评论/描述只有时分：用包内时间中“时分最接近”的日期补全
         extracted = _fill_time_with_main_date(
-            extracted, main_times, list(all_times or []) + list(gm_times or []))
+            extracted, main_times, list(all_times or []))
     ext_dt = _ts_parse_datetime(extracted) if extracted else None
     gm_note = f"（注：gmlogger 外侧文件名时间 {gm_times[0][0]} 仅供参考，可能不准）" if gm_times else ""
     # —— gmlogger 场景：以包内时间戳为验证依据（只要有一个文件满足条件即通过）——
@@ -8380,7 +8380,7 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
                 vid_time = video_time_hint
                 vid_detail = f"使用诊断阶段视频 OCR 结果 {vid_time}"
             if vid_time:
-                _vid_full = _fill_time_with_main_date(vid_time, main_times, list(all_times or []) + list(gm_times or []))
+                _vid_full = _fill_time_with_main_date(vid_time, main_times, list(all_times or []))
                 return "success", _vid_full, f"视频帧 OCR 兜底: {vid_detail}", _vid_full
         # 视频兜底未命中：用包内时间戳中最近的作为建议
         if ref_pool and ext_dt:
@@ -8416,11 +8416,7 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
                 return "success", vid_time, (
                     f"gmlogger 包内无法解析（文件过大/解压失败），"
                     f"视频提取时间 {vid_time}，{vid_detail}"), vid_time
-            # 评论区提取时间与 gmlogger 文件名时间接近 → 可用
-            if ext_dt and abs((gm_ref_dt - ext_dt).total_seconds()) <= 900:
-                return "success", extracted, (
-                    f"gmlogger 包内无法解析，提取时间 {extracted}（来自评论区/标题/描述/字段）"
-                    f"与 gmlogger 文件名时间 {gm_times[0][0]} 前后15分钟内命中，可用该时间作为替换"), vid_time or ""
+            # 不使用 gmlogger 外层文件名时间做结论（仅做辅助排序），无包内权威时间时跳过
             # 视频时间与提取时间接近 → 互相印证（用视频时间，因为有 12h 转换）
             if vid_dt and ext_dt and abs((vid_dt - ext_dt).total_seconds()) <= 900:
                 return "success", vid_time, (
@@ -8431,11 +8427,7 @@ def _diag_verify_suggestion(issue: dict, gm_times: list, archive_results: list, 
                     f"gmlogger 包内无法解析（文件过大/解压失败），"
                     f"视频提取时间 {vid_time}，gmlogger 文件名时间 {gm_times[0][0]}，"
                     f"提取时间 {extracted or '(无)'}（来自评论区/标题/描述/字段），三者未命中，待人工审核{gm_note}"), vid_time
-        # 无视频或视频提取失败：仅用提取时间与 gmlogger 文件名时间对比
-        if ext_dt and abs((gm_ref_dt - ext_dt).total_seconds()) <= 3600:
-            return "success", extracted, (
-                f"gmlogger 包内无法解析，提取时间 {extracted}（来自评论区/标题/描述/字段）"
-                f"与 gmlogger 文件名时间 {gm_times[0][0]} 前后60分钟内接近，可用该时间作为替换{gm_note}"), ""
+        # 无视频或视频提取失败：不使用外层文件名时间做结论，待人工审核
         return "manual", "", (
             f"gmlogger 包内无法解析（文件过大/解压失败），"
             f"提取时间 {extracted or '(未提取到)'}（来自评论区/标题/描述/字段），gmlogger 文件名时间 {gm_times[0][0]}，"
@@ -8501,7 +8493,7 @@ def _diag_time_check(issue: dict, candidate: str, gm_times: list = None,
         _m3 = _re3.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", str(candidate).strip())
         _created3 = _ts_parse_datetime(str((issue.get("fields") or {}).get("created") or "")[:19])
         if _m3:
-            _refs3 = [dt for _, dt in (all_times or [])] + [dt for _, dt in (gm_times or [])]
+            _refs3 = [dt for _, dt in (all_times or [])]
             _filled3 = _fill_time_with_main_date(str(candidate), main_times, _refs3)
             if _filled3 != str(candidate):
                 candidate = _filled3
@@ -8698,6 +8690,13 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
     :return: (best_time, source_label) — best_time 为 "YYYY-MM-DD HH:MM:SS" 或 ""
     """
     from src.clients import jira_client as _jc
+    if not _has_log_attachments(attachments):
+        logger.info("触发时间提取: %s 无日志附件，跳过", bugid)
+        try:
+            _jc.add_comment(bugid, "无日志附件")
+        except Exception:
+            pass
+        return "", ""
     if not _has_gmlogger_logs(attachments, bugid):
         return "", ""
     gm_times = _diag_gmlogger_times(attachments)
@@ -9500,43 +9499,9 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             return _ok(result, f"{bugid} 诊断完成：{category}")
         category = "触发时间问题"
         _no_ts = not main_times and not all_times
-        # gmlogger 文件名时间优先：与问题时间一致即正常（即使包内时间戳有偏差）
-        _gm_hit = [t for _s, t in gm_times if err_dt and abs((t - err_dt).total_seconds()) <= 300]
-        if _gm_hit:
-            category = "正常"
-            final_msg = "触发时间与 gmlogger 文件名时间一致"
-            verify_status, suggested_time = "success", problem_time
-            # 视频帧 OCR 内容优先：内容时间 + 包内 main 日期，比文件名/包名时间更接近实际
-            if video_time and _vid_from_content:
-                _vt = video_time
-                if not _ts_parse_datetime(_vt):
-                    _vt = _fill_time_with_main_date(
-                        _vt, main_times, (all_times or []) + (gm_times or []))
-                if not _ts_parse_datetime(_vt):
-                    _pd = _ts_parse_datetime(problem_time)
-                    _m = re.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", str(_vt).strip())
-                    if _pd and _m:
-                        _vt = (f"{_pd:%Y-%m-%d} {int(_m.group(1)):02d}:"
-                               f"{int(_m.group(2)):02d}:{int(_m.group(3) or 0):02d}")
-                _vt_dt = _ts_parse_datetime(_vt)
-                if _vt_dt and err_dt and abs((_vt_dt - err_dt).total_seconds()) <= 300:
-                    suggested_time = _vt
-                    final_msg = "视频内容时间与 gmlogger 文件名时间一致"
-                elif _vt_dt and err_dt:
-                    # 视频内容与 gmlogger 时分不一致：覆盖“正常”判定
-                    _vt_tod = _vt_dt.hour * 3600 + _vt_dt.minute * 60 + _vt_dt.second
-                    _err_tod = err_dt.hour * 3600 + err_dt.minute * 60 + err_dt.second
-                    _tod_diff = min(abs(_vt_tod - _err_tod), 86400 - abs(_vt_tod - _err_tod))
-                    if _tod_diff > 300:  # 时分差 > 5 分钟
-                        category = "触发时间问题"
-                        suggested_time = _vt  # _fill_time_with_main_date 已按时分就近选取日期
-                        verify_status = "manual"
-                        final_msg = (f"视频内容时间 {video_time} 与 gmlogger 文件名时间 "
-                                     f"{err_dt.strftime('%H:%M:%S')} 不一致（时分差 {_tod_diff//60} 分钟），"
-                                     f"以视频时间为准")
-                        logger.warning("视频时间与gmlogger不一致: video=%s gm=%s tod_diff=%dm",
-                                       video_time, err_dt.strftime("%H:%M:%S"), _tod_diff // 60)
-        elif _no_ts:
+        # gmlogger 外层文件名时间仅做辅助，不用作“正常”判定依据
+        # “正常”判定必须基于包内 main/.txt/.log/logcat 内容时间
+        if _no_ts:
             # 包内没有任何时间戳：不能用“触发时间问题”下结论
             if gm_times:
                 # 有 gmlogger 文件名时间但与问题时间不一致 → 触发时间问题，并给出参考时间
@@ -9582,14 +9547,14 @@ def _diag_run_core(bugid, err_msg, problem_time, done_time, issue, attachments,
             # 视频时间优先：避免被包内“最近时间”覆盖（如 19:34 被 19:44 覆盖）
             if video_time:
                 _vt_full = _fill_time_with_main_date(
-                    video_time, main_times, list(all_times or []) + list(gm_times or []))
+                    video_time, main_times, list(all_times or []))
                 if _vt_full and _vt_full != suggested_time:
                     suggested_time = _vt_full
                     verify_status = "corrected"
                     final_msg += "（采用视频时间）"
         # 触发时间问题必须有明确建议；没有时用最近的包内/gmlogger 时间兜底
         if category == "触发时间问题" and not suggested_time:
-            _pool = [t for _s, t in (main_times + all_times + gm_times)]
+            _pool = [t for _s, t in (main_times + all_times)]
             if _pool and err_dt:
                 suggested_time = min(_pool, key=lambda t: abs((t - err_dt).total_seconds())).strftime("%Y-%m-%d %H:%M:%S")
                 verify_status = "corrected"
