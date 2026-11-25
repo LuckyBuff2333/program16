@@ -2266,6 +2266,18 @@ def _bot_get_trigger_times(bugids: list) -> dict:
             issue = _jc.fetch_issue(bugid)
             # gmlogger 前置检查：无 gmlogger 附件的 Jira 直接跳过（与批量提取保持一致）
             attachments = (issue.get("fields") or {}).get("attachment") or []
+            # 无日志附件前置检查：无压缩包/无.txt/无.log/无logcat → 跳过
+            if not _has_log_attachments(attachments):
+                logger.info("触发时间: %s 无日志附件，跳过", bugid)
+                _timestudy_record(bugid, "", "skipped", error_type="no_log_attachment",
+                                  error_detail="无日志附件，前置过滤跳过",
+                                  ctx={"trace": ["skip:no_log_attachment"]})
+                try:
+                    from src.clients import jira_client as _jc
+                    _jc.add_comment(bugid, "无日志附件")
+                except Exception:
+                    pass
+                continue
             has_gmlogger = any("gmlogger" in (att.get("filename", "") or "").lower() for att in attachments)
             if not has_gmlogger:
                 logger.info("触发时间: %s 无gmlogger附件，跳过", bugid)
@@ -4356,6 +4368,32 @@ def _diag_archive_read_heads(path: str, names: list, size: int = 65536) -> dict:
 _LOG_NAME_HINTS = ("gmlog", "logcat", "dltlog", "bllog", "logger", "pataclogger", "log_")
 _LOG_ARCHIVE_SUFFIXES = (".7z", ".rar", ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".zst")
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif")
+
+
+def _has_log_attachments(attachments: list) -> bool:
+    """判断 Jira 附件中是否包含任何可用于日志分析的附件。
+
+    满足以下任一条件即视为"有日志附件"：
+    - 压缩包（.7z/.rar/.zip/.tar/.gz/.tgz/.bz2/.xz/.zst）
+    - .txt 文件
+    - .log 文件
+    - logcat 文件（无后缀，文件名为 logcat）
+    """
+    from src.clients.jira_client import is_suffixless_logcat
+    for att in attachments:
+        fn = (att.get("filename", "") or "").lower().strip()
+        if not fn:
+            continue
+        # 压缩包
+        if any(fn.endswith(s) for s in _LOG_ARCHIVE_SUFFIXES):
+            return True
+        # .txt / .log
+        if fn.endswith(".txt") or fn.endswith(".log"):
+            return True
+        # logcat（无后缀的 logcat 文件）
+        if is_suffixless_logcat(fn):
+            return True
+    return False
 
 
 def _parse_any_log_filename_time(fname: str):
@@ -8540,6 +8578,13 @@ def _extract_trigger_time_with_confidence(issue: dict, attachments: list,
     :return: (best_time, source_label) — best_time 为 "YYYY-MM-DD HH:MM:SS" 或 ""
     """
     from src.clients import jira_client as _jc
+    if not _has_log_attachments(attachments):
+        logger.info("触发时间提取: %s 无日志附件，跳过", bugid)
+        try:
+            _jc.add_comment(bugid, "无日志附件")
+        except Exception:
+            pass
+        return "", ""
     if not _has_gmlogger_logs(attachments, bugid):
         return "", ""
     gm_times = _diag_gmlogger_times(attachments)
