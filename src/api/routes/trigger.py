@@ -20,6 +20,50 @@ logger = setup_logger("web.trigger")
 router = APIRouter()
 
 
+def _comment_time_match_text(comment_tt: str, attachments: list) -> str:
+    """评论区时间与 txt/log/logcat 内容命中：
+    带年份的评论去掉年份匹配，命中后把原年份加回；
+    只有时分的评论，命中内容后才补当前年份。
+    """
+    import re as _re
+    from datetime import datetime as _dtnow
+    from src.services.server_legacy import _diag_read_logcat_text, _jira_att_auth
+    s = str(comment_tt or "").strip()
+    if not s:
+        return s
+    headers, timeout = _jira_att_auth()
+    text = ""
+    for a in attachments or []:
+        fn = (a.get("filename") or "").lower()
+        if not (fn.endswith(".txt") or fn.endswith(".log") or fn.endswith("logcat")):
+            continue
+        try:
+            text += "\n" + (_diag_read_logcat_text(a, headers, min(timeout, 60)) or "")
+        except Exception:
+            continue
+    if not text.strip():
+        return s
+    text = text.replace("/", "-")
+    m_full = _re.match(r"^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?", s)
+    if m_full:
+        year, mo, dd, hh, mi, ss = m_full.groups()
+        ss = ss or "00"
+        if f"{mo}-{dd} {hh}:{mi}:{ss}" in text:
+            return f"{year}-{mo}-{dd} {hh}:{mi}:{ss}"
+        return s
+    m_time = _re.search(r"(\d{1,2}):(\d{2})", s)
+    if m_time:
+        hh, mi = m_time.groups()
+        # 内容命中时分后，优先用内容里的月日 + 当前年
+        m_date = _re.search(r"(\d{1,2})-(\d{1,2})\s+" + _re.escape(f"{hh}:{mi}"), text)
+        now = _dtnow.now()
+        if m_date:
+            return f"{now.year}-{int(m_date.group(1)):02d}-{int(m_date.group(2)):02d} {hh}:{mi}:00"
+        if f"{hh}:{mi}" in text:
+            return f"{now.year}-{now.month:02d}-{now.day:02d} {hh}:{mi}:00"
+    return s
+
+
 def _attachment_name_time_allowed(attachments: list, att_tt: str) -> bool:
     """附件名兜底只允许：与 main 文件名时间相差 ≤1 分钟。"""
     if not att_tt:
@@ -120,7 +164,16 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
             source = "视频拼接"
     if _stopped():
         return "", "stopped"
-    # 2. 评论/描述/标题文本
+    # 2. 评论区优先（高于 Initial Setting 等自定义字段）
+    if not tt:
+        try:
+            comment_tt = _jc.extract_latest_comment_time(issue)
+        except Exception:
+            comment_tt = ""
+        if comment_tt:
+            tt = _comment_time_match_text(comment_tt, attachments)
+            source = "评论"
+    # 3. 其他文本/标题/描述/自定义字段
     if not tt:
         tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
         if tt:

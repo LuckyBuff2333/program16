@@ -269,7 +269,9 @@ _MEDIA_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".mp4", ".avi", ".mo
 
 def _is_valid_date(year: int, month: int, day: int) -> bool:
     """校验日期是否符合公历逻辑（如 2 月 31 日、4 月 31 日等无效日期返回 False）"""
-    if not (2020 <= year <= 2030):
+    # 允许 1970：部分控制器 RTC 未同步时日志就是 1970-01-01 08:00:xx，
+    # 这类 Jira 的正确时间就是 1970，不能当无效日期丢弃。
+    if not (1970 <= year <= 2030):
         return False
     if not (1 <= month <= 12):
         return False
