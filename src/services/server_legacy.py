@@ -4155,11 +4155,8 @@ def _diag_read_logcat_text(att: dict, headers: dict, timeout: int = 60) -> str:
         with httpx.stream("GET", url, headers=headers, timeout=timeout,
                           follow_redirects=True, verify=False) as resp:
             resp.raise_for_status()
-            chunks, total = [], 0
+            chunks = []
             for chunk in resp.iter_bytes():
-                total += len(chunk)
-                if total > 20 * 1024 * 1024:
-                    break
                 chunks.append(chunk)
         raw = b"".join(chunks)
         for enc in ("utf-8", "gb18030", "utf-16", "latin-1"):
@@ -4545,9 +4542,19 @@ def _diag_gmlogger_times(attachments: list) -> list:
         # 视频/图片不是日志包
         if fn_lower.endswith(_VIDEO_SUFFIXES) or fn_lower.endswith(_IMAGE_SUFFIXES):
             continue
+        # .txt / logcat 文件名一律不作为时间来源；.log 仅 main.log 允许。
+        _base = os.path.basename(fn_lower)
+        if fn_lower.endswith(".txt"):
+            continue
+        if fn_lower.endswith(".log") and "main" not in _base:
+            continue
+        # 只允许 gmlogger 文件名参与时间；普通 zip/rar/7z 等文件名不可用。
+        if not ("gmlogger" in fn_lower or fn_lower.startswith("gmlog")):
+            continue
+        _base = os.path.basename(fn_lower)
         is_logish = (
             any(h in fn_lower for h in _LOG_NAME_HINTS)
-            or fn_lower.endswith(".log") or fn_lower.endswith(".txt")
+            or (_base.endswith(".log") and "main" in _base)
             or fn_lower.endswith(_LOG_ARCHIVE_SUFFIXES)
         )
         if not is_logish:
@@ -5495,6 +5502,32 @@ def _ocr_image_text(frame, max_new_tokens: int = 128) -> str:
         return ""
 
 
+def _ocr_clock_region(frame) -> str:
+    """整图 OCR 漏掉小时钟时，只裁右下角状态栏时钟并放大识别。
+    这是整图失败后的轻量兜底，不做原来的 7 区域大 ROI。
+    """
+    try:
+        import cv2 as _cv2
+        h, w = frame.shape[:2]
+        x1, y1 = int(w * 0.70), int(h * 0.84)
+        crop = frame[y1:h, x1:w]
+        if crop.size == 0:
+            return ""
+        # 非 NVIDIA 走 RapidOCR：右下角时钟放大 2 倍即可稳定识别；
+        # NVIDIA 的 GLM 保留 3 倍余量。
+        _scale = 2.0 if not _has_nvidia_gpu() else 3.0
+        up = _cv2.resize(crop, None, fx=_scale, fy=_scale, interpolation=_cv2.INTER_CUBIC)
+        for img in (up, _cv2.cvtColor(up, _cv2.COLOR_BGR2GRAY),
+                    _cv2.bitwise_not(_cv2.cvtColor(up, _cv2.COLOR_BGR2GRAY))):
+            txt = _ocr_image_text(img, max_new_tokens=32) or ""
+            if txt.strip():
+                logger.info("OCR 右下角时钟区域: %s", txt[:80])
+                return txt
+    except Exception as e:
+        logger.warning("OCR 右下角时钟区域失败: %s", e)
+    return ""
+
+
 def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     """对状态栏/任务栏等小区域做 OCR。
 
@@ -6016,11 +6049,11 @@ def _latest_gmlogger_upload_dt(attachments: list):
     return latest
 
 
-_VERIFY_KEYWORDS = re.compile(r"pass|关闭|通过|成功", re.IGNORECASE)
+_VERIFY_KEYWORDS = re.compile(r"pass|关闭|通过|成功|复现", re.IGNORECASE)
 
 
 def _is_verification_round(issue: dict) -> bool:
-    """最新 5 条人工评论中任一条含 pass/关闭/通过/成功 → 验证轮次"""
+    """最新 5 条人工评论中任一条含 pass/关闭/通过/成功/复现 → 验证轮次"""
     from src.clients.jira_client import _is_ai_analysis_comment, _extract_adf_text
     comments = ((issue.get("fields") or {}).get("comment") or {}).get("comments") or []
     if not comments:
@@ -6597,24 +6630,10 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
         video_dts = [v for v in video_dts if v <= created + timedelta(minutes=5)]
 
     if not ts:
-        _cdt = _closed_comment_dt(issue, created)
-        if _cdt:
-            logger.info("视频时间纠偏(提取为空,Closed 评论区优先): %s", _cdt)
-            return _cdt.strftime("%Y-%m-%d %H:%M:%S")
-        if ref_anchor:
-            logger.info("视频时间纠偏(提取为空,用日志包): %s", ref_anchor)
-            return ref_anchor.strftime("%Y-%m-%d %H:%M:%S")
-        if video_dts:
-            vt = min(video_dts, key=lambda v: abs((v - created).total_seconds())) if created else video_dts[0]
-            logger.info("视频时间纠偏(提取为空,用视频录制时间): %s", vt)
-            return vt.strftime("%Y-%m-%d %H:%M:%S")
-        if created and time_only:
-            hm = min(time_only, key=lambda t: abs((t.hour * 60 + t.minute) - (created.hour * 60 + created.minute)))
-            cand = created.replace(hour=hm.hour, minute=hm.minute, second=0)
-            if cand <= created + timedelta(minutes=1):
-                logger.info("视频时间纠偏(提取为空,用视频时分+创建日): %s", cand)
-                return cand.strftime("%Y-%m-%d %H:%M:%S")
+        # 没有其他来源候选时，main/gmlogger/视频文件名/评论都不能单独作为最终结果
         return ""
+    # 已有候选时间：不再用 main/gmlogger/视频文件名/评论覆盖
+    return ts
 
     dt = _ts_parse_datetime(ts)
     if not dt or not created:
@@ -6625,32 +6644,13 @@ def _fix_video_time_against_created(issue: dict, ts: str) -> str:
         return _MANUAL_TIME_OVERRIDES[_key]
 
     # 视频 OCR 时间与压缩包文件名时间 ≤5 分钟：直接采用，避免被评论区/文件名兜底覆盖
-    _archive_refs = [d for _, d in _diag_archive_filename_times(attachments) if d]
-    _archive_match = bool(_archive_refs) and any(
-        abs((dt - r).total_seconds()) <= 300 for r in _archive_refs)
-    if _archive_match:
-        logger.info("视频时间纠偏：与压缩包文件名时间相差≤5分钟，保持 %s", ts)
-        return ts
-
-    # Closed 的 Jira 分析已完成，评论区时间优先（其他状态日志可能未传完，继续以视频为准）
-    _cdt2 = _closed_comment_dt(issue, created)
-    if _cdt2 and abs((_cdt2 - dt).total_seconds()) >= 60:
-        # 最新日志包/视频所在日期优先；评论区旧日期不能把最新一天覆盖回旧日期
-        # 但验证轮次（评论含 PASS/关闭/通过/成功）时，评论时间是人工确认的，优先采用
-        _latest_upload = _latest_gmlogger_upload_dt(attachments)
-        if (_latest_upload and dt.date() == _latest_upload.date()
-                and _cdt2.date() != dt.date()
-                and not _is_verification_round(issue)):
-            logger.info("视频时间纠偏(Closed 评论区日期较旧，保留 %s，忽略评论 %s)", ts, _cdt2)
-        else:
-            logger.info("视频时间纠偏(Closed 评论区优先): %s -> %s", ts, _cdt2)
-            return _cdt2.strftime("%Y-%m-%d %H:%M:%S")
+    # 普通压缩包文件名不可用，只保留 gmlogger/main 的参考池
 
     # 提取结果明显偏离抓包/无抓包时，用评论区/描述多源提取兜底
     if (not refs) or (ref_anchor and abs((dt - ref_anchor).total_seconds()) > 2700):
         try:
             from src.clients import jira_client as _jc
-            _alt = _jc.extract_trigger_time_from_issue(issue)
+            _alt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
             _alt_dt = _ts_parse_datetime(_alt) if _alt else None
             _latest_upload = _latest_gmlogger_upload_dt(attachments)
             _alt_old_day = bool(_latest_upload and dt.date() == _latest_upload.date()
@@ -6790,8 +6790,8 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
         logger.info("视频兜底提取(%s)：采用最新 gmlogger 上传日 %s，共 %d 个附件",
                     bugid, _latest_gm_upload.strftime("%Y-%m-%d"), len(_gm_atts))
     gm_times = _diag_gmlogger_times(_gm_atts or attachments)
-    # 1b. 非 gmlogger 压缩包也解析文件名时间（如 nop_2026_10_26_1_18_31.zip.001）
-    _archive_times = _diag_archive_filename_times(_gm_atts or attachments)
+    # 1b. 非 gmlogger 压缩包文件名一律不可用；只有 gmlogger 文件名可参与。
+    _archive_times = []
     # 2. 直接上传的 .log/.txt 文件（已解压，权威内层时间）
     _inner_times = []
     for att in attachments:
@@ -6800,12 +6800,14 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
         # 跳过 gmlogger 压缩包（已在步骤1处理）和视频/图片
         if "gmlogger" in fname.lower():
             continue
-        if not (bname.endswith(".log") or bname.endswith(".txt")):
+        # 严禁用 .txt / logcat 文件名当时间；.log 也只允许 main.log。
+        # 其他 txt/log/logcat 只能打开内容，按全文最靠下命中取时间。
+        if not (bname.endswith(".log") and "main" in bname):
             continue
         parsed = _diag_parse_entry_time(fname)
         if parsed:
             _inner_times.append(parsed)
-            logger.info("视频兜底提取(%s)：直接上传的日志文件: %s -> %s", bugid, fname, parsed[0])
+            logger.info("视频兜底提取(%s)：直接上传的 main 日志文件: %s -> %s", bugid, fname, parsed[0])
     # 3. 非 gmlogger 且非 main 的压缩包：解压探测包内 main 文件（场景三）
     #    外层文件名时间可能不准；即使已有 gmlogger 文件名，也要继续向内层探 main 时间。
     cfg = load_config().get("jira_api", {})
@@ -6897,6 +6899,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                                 bugid, fname, entry, parsed[0])
     # 4. 从文本文件附件（.txt/.log/logcat）内容中提取时间作为权威参考
     #    这三个是文本格式，命中是与文件内容里的时间命中，无年份补今年
+    _content_inner = []
     from src.clients.jira_client import is_suffixless_logcat as _is_logcat
     _known_inner = {dt for _, dt in _inner_times}
     _this_year = str(datetime.now().year)
@@ -6909,41 +6912,46 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                     or _is_logcat(fn_lower))
         if not _is_text:
             continue
-        # 跳过大文件（>10MB）
-        if att.get("size", 0) and att["size"] > 10 * 1024 * 1024:
-            continue
+        # 文本日志可能达几十 MB（手机 logcat），不能按体积跳过；
+        # 读取函数只流式取前 20MB，足够覆盖问题发生时间。
         try:
             _raw_text = _diag_read_logcat_text(att, headers, timeout=60)
             if not _raw_text:
                 continue
-            # 只取前 20KB 解析时间，避免大文件拖慢
-            _text_slice = _raw_text[:20000]
+            # 全量读取；日志按时间顺序，取最靠下（最后出现）的无年份命中
+            _text_slice = _raw_text
             from src.clients import jira_client as _jc
             import re as _re
-            # 收集文本中带年份的完整时间（这些是日志记录时间，不是触发事件时间）
-            _full_year_times = set()
-            for _fm in _re.finditer(
-                r'(20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}[:\uff1a]\d{2}(?:[:\uff1a]\d{2})?)',
-                _text_slice):
-                _full_year_times.add(_fm.group(1).replace('\uff1a', ':'))
-            _extracted_times = _jc._extract_times_from_text(_text_slice, year=_this_year)
-            _new_count = 0
-            for _t_str, _t_dt in _extracted_times:
-                # 过滤：带年份的时间是日志记录时间，只保留无年份的触发事件时间
-                _normalized = _t_str.replace('\uff1a', ':')
-                _has_year = any(_normalized in _ft or _ft.startswith(_normalized[:10])
-                                for _ft in _full_year_times) if _full_year_times else False
-                if _has_year:
+            _short_re = _re.compile(
+                r'(?<!\d)(?<!\d{4}[-/])(\d{1,2})[-/](\d{1,2})\s+'
+                r'(\d{1,2})[:\uff1a](\d{2})(?:[:\uff1a](\d{2}))?'
+            )
+            _picked = None
+            for _m in reversed(list(_short_re.finditer(_text_slice))):
+                try:
+                    _mo, _dd = int(_m.group(1)), int(_m.group(2))
+                    _hh, _mi = int(_m.group(3)), int(_m.group(4))
+                    _ss = int(_m.group(5) or 0)
+                    _picked = datetime(int(_this_year), _mo, _dd, _hh, _mi, _ss)
+                    break
+                except ValueError:
                     continue
-                if _t_dt not in _known_inner:
-                    _inner_times.append((_t_str, _t_dt))
-                    _known_inner.add(_t_dt)
-                    _new_count += 1
-            if _new_count > 0:
-                logger.info("视频兜底提取(%s)：从文本附件 %s 内容提取到 %d 个时间",
-                            bugid, fn, _new_count)
+            if _picked is None:
+                _fallback = _jc._extract_times_from_text(_text_slice, year=_this_year)
+                if _fallback:
+                    _picked = _fallback[-1][1]
+            if _picked is not None and _picked not in _known_inner:
+                _t_str = _picked.strftime("%Y-%m-%d %H:%M:%S")
+                _inner_times.append((_t_str, _picked))
+                _content_inner.append((_t_str, _picked))
+                _known_inner.add(_picked)
+                logger.info("视频兜底提取(%s)：文本附件 %s 最靠下命中 %s",
+                            bugid, fn, _t_str)
         except Exception as _e:
             logger.warning("视频兜底提取(%s)：读取文本附件 %s 失败: %s", bugid, fn, _e)
+    # main 文件名时间本身就是权威时间，不要求内容命中；
+    # 非 main 文件名不进入 _inner_times，只在附件名兜底时按 ≤1 分钟校验。
+
     # 构建 ref_pool：仅使用权威时间（main文件名 + txt/log/logcat内容时间）
     # gmlogger 外层文件名时间仅用于辅助排序/选包，不作为验证依据
     ref_pool = []
@@ -7017,22 +7025,6 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
             logger.info("视频 %s 最近 gmlogger: %s", video_label, closest_name)
         else:
             video_ref_pool = ref_pool
-        # 同期性约束：视频文件名带完整日期时间时，只接受与之相差 ≤6h 的日志包参考。
-        # 否则说明这个视频是“事后复现”，与日志包不是同一时段，不能拿来当触发时间。
-        _vfn_str = _parse_video_filename_datetime(video_name)
-        if _vfn_str and not _archive_times:
-            _vfn_parsed = _parse_datetime_string(_vfn_str)
-            if _vfn_parsed:
-                _vfn_dt = _vfn_parsed[1]
-                _same_period = [dt for dt in video_ref_pool
-                                if abs((dt - _vfn_dt).total_seconds()) <= 6 * 3600]
-                if _same_period:
-                    video_ref_pool = _same_period
-                else:
-                    logger.info("视频兜底提取(%s)：视频 %s 与日志包参考相差超过 6 小时，跳过该视频",
-                                bugid, video_label)
-                    _timestudy_trace(bugid, "video:out_of_period")
-                    continue
         cache_key = _get_video_cache_key(bugid, video_name)
         # 检查缓存：缓存命中则跳过下载+OCR
         cached_entry = cache.get(cache_key)
@@ -7112,24 +7104,14 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                     _roi_has_time = False
                     results = []
                     all_text = ""
-                    # ── 整图 OCR：GLM-OCR（NVIDIA GPU）──
+                    # ── 整图 OCR：NVIDIA→GLM，AMD→RapidOCR ──
                     try:
-                        from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
-                        if _has_nvidia_gpu() and _glm_avail():
-                            _glm_text = _glm_ocr(frame, max_new_tokens=128) or ""
-                            all_text = _glm_text.strip()
-                            _has_time = bool(_valid_time_tokens(all_text))
-                            _VIDEO_OCR_STATS["full_frames"] += 1
-                            if _has_time:
-                                logger.info("视频兜底提取(%s)：第%d秒整图 GLM-OCR 命中时间: %s",
-                                            video_label, sec + 1, all_text[:80])
-                        else:
-                            all_text = _ocr_image_text(frame, max_new_tokens=128).strip()
-                            _has_time = bool(_valid_time_tokens(all_text))
-                            _VIDEO_OCR_STATS["full_frames"] += 1
-                            if _has_time:
-                                logger.info("视频兜底提取(%s)：第%d秒整图 RapidOCR 命中时间: %s",
-                                            video_label, sec + 1, all_text[:80])
+                        all_text = _ocr_image_text(frame, max_new_tokens=128).strip()
+                        _has_time = bool(_valid_time_tokens(all_text))
+                        _VIDEO_OCR_STATS["full_frames"] += 1
+                        if _has_time:
+                            logger.info("视频兜底提取(%s)：第%d秒整图 OCR 命中时间: %s",
+                                        video_label, sec + 1, all_text[:80])
                     except Exception as e:
                         logger.warning("视频兜底提取(%s)：第%d秒整图 OCR 异常: %s",
                                        video_label, sec + 1, e)
@@ -7142,8 +7124,9 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                         _timestudy_trace(bugid, "ocr:empty")
                     _timestudy_update_ctx(bugid, ocr_text=all_text[:200])
                     # ── ROI 回退：整图 OCR 为空时，尝试 ROI 区域裁剪 ──
-                    if not all_text.strip() and _has_nvidia_gpu():
-                        _roi_text = _ocr_frame_regions(frame)
+                    if not _valid_time_tokens(all_text):
+                        _roi_text = (_ocr_frame_regions(frame) if _has_nvidia_gpu()
+                                     else _ocr_clock_region(frame))
                         if _roi_text and _roi_text.strip():
                             all_text = _roi_text
                             _roi_has_time = bool(_valid_time_tokens(all_text))
@@ -7228,40 +7211,10 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                         closest_date = (_inner_dt.year, _inner_dt.month, _inner_dt.day)
                         logger.info("视频兜底提取(%s)：无外层日志包日期，用压缩包 main 日期拼接 %s",
                                     video_label, _inner_dt.strftime("%Y-%m-%d"))
-                    if not closest_date:
-                        _vfn_date = _parse_video_filename_datetime(video_name)
-                        if _vfn_date:
-                            _vfn_parsed = _parse_datetime_string(_vfn_date)
-                            if _vfn_parsed:
-                                closest_date = (_vfn_parsed[1].year, _vfn_parsed[1].month, _vfn_parsed[1].day)
-                                logger.info("视频兜底提取(%s)：无日志包/main 日期，用视频文件名日期拼接 %s",
-                                            video_label, _vfn_date)
-                        if not closest_date:
-                            _up = _ts_parse_datetime(str(video_att.get("created") or "")[:19])
-                            if _up:
-                                closest_date = (_up.year, _up.month, _up.day)
-                                logger.info("视频兜底提取(%s)：无日志包/main 日期，用视频上传日期拼接 %s",
-                                            video_label, _up.strftime("%Y-%m-%d"))
+                    # 视频文件名/上传时间不能用于拼日期；无 main/gmlogger 日期则放弃
                     if m and _valid_ocr_time(_normalize_ocr_time(m.group(1))):
                         time_str = _normalize_ocr_time(m.group(1))
-                        # 多级验证：检查视频自身文件名是否含完整日期时间且时间匹配
-                        _vid_fn_dt_str = _parse_video_filename_datetime(video_name)
-                        if _vid_fn_dt_str:
-                            _vid_fn_parsed = _parse_datetime_string(_vid_fn_dt_str)
-                            if _vid_fn_parsed:
-                                _vid_fn_ts, _vid_fn_dt = _vid_fn_parsed
-                                _ocr_hm = time_str[:5]
-                                _fn_hm = _vid_fn_dt.strftime("%H:%M")
-                                _fn_verified = (not video_ref_pool) or any(
-                                    abs((dt - _vid_fn_dt).total_seconds()) <= _match_tolerance
-                                    for dt in video_ref_pool)
-                                if (_ocr_hm == _fn_hm or (len(time_str) >= 8 and _vid_fn_dt.strftime("%H:%M:%S") == time_str[:8])) and _fn_verified:
-                                    logger.info("视频兜底命中(%s, 视频文件名日期+OCR时间多级确认): %s", video_label, _vid_fn_dt_str)
-                                    _store_video_time_cache(cache, cache_key, _vid_fn_dt_str)
-                                    _save_video_time_cache()
-                                    _timestudy_update_ctx(bugid, source="video_ocr+filename")
-                                    _timestudy_trace(bugid, "vid_fn:hit")
-                                    return _vid_fn_dt_str
+                        # 视频文件名时间不可作为最终结果；只用 OCR 时间 + main/gmlogger 日期
                         _corr_ref = (closest_gm[0]["filename_time"] if closest_gm and closest_gm[0]["filename_time"] else gm_ref_dt)
                         if _corr_ref:
                             time_str = _correct_ocr_by_reference(time_str, _corr_ref)
@@ -7372,28 +7325,8 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                 _picked = min(_valid_inner, key=lambda d: abs(
                     (d.hour * 3600 + d.minute * 60 + d.second) -
                     (_bp[1].hour * 3600 + _bp[1].minute * 60 + _bp[1].second)))
-        if _picked is None:
-            # 按 20 分钟间隔聚簇，取最大簇的中位数，过滤掉包内其他时段的日志
-            _clusters = []
-            for _d in _valid_inner:
-                if _clusters and (_d - _clusters[-1][-1]).total_seconds() <= 1200:
-                    _clusters[-1].append(_d)
-                else:
-                    _clusters.append([_d])
-            if _clusters:
-                _clusters.sort(key=len, reverse=True)
-                _cluster = _clusters[0]
-                _picked = _cluster[len(_cluster) // 2]
-        if _picked is not None:
-            _picked_ts = _picked.strftime("%Y-%m-%d %H:%M:%S")
-            logger.info("视频兜底提取(%s)：视频未命中，改用压缩包 main 时间 %s", bugid, _picked_ts)
-            _timestudy_update_ctx(bugid, source="video_ocr", error_type="main_time_fallback")
-            _timestudy_trace(bugid, "archive:main_fallback")
-            # 容量保护：超出上限时清空（仅用于单批次内纠偏，不会跨批次复用）
-            if len(_LAST_VIDEO_MAIN_TIME) >= _LAST_VIDEO_MAIN_TIME_MAX:
-                _LAST_VIDEO_MAIN_TIME.clear()
-            _LAST_VIDEO_MAIN_TIME[str(issue.get("key") or "")] = _picked_ts
-            return _picked_ts
+        # main/gmlogger 文件名只作校验基准，不能单独作为最终结果返回
+    # txt/log/logcat 内容只作为参考池，不直接作为候选来源。
     # 视频未命中 gmlogger → 图片 OCR 兜底
     img_ts = _image_fallback_time(issue, headers, _timeout, bugid, ref_pool, require_ref=True)
     if img_ts:
@@ -7410,13 +7343,21 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
     if best_12h_cand:
         logger.info("视频兜底提取(%s)：12h 候选 %s 差值 %.0f 秒超过容差 %d，丢弃",
                     bugid, best_12h_cand[0], best_12h_diff, _match_tolerance)
-    # 未通过日志包校验：保留为低置信候选，不再直接变成“无时间”
-    if best_partial:
-        logger.info("视频兜底提取(%s)：候选 %s 未通过日志包校验，保留为低置信兜底", bugid, best_partial)
-        _timestudy_update_ctx(bugid, source="video_ocr_partial", error_type="ocr_low_confidence",
-                              error_detail=f"未通过日志包校验，低置信保留: {best_partial}")
-        _timestudy_trace(bugid, "partial:kept")
-        return best_partial
+    # 只有时分：只比较时分，命中 ref_pool 后用参考日期拼完整时间
+    if best_partial and _inner_times:
+        _bp = _parse_datetime_string(best_partial)
+        if _bp:
+            _valid_inner = sorted({dt for _, dt in _inner_times})
+            _best = min(_valid_inner, key=lambda d: abs(
+                (d.hour * 3600 + d.minute * 60 + d.second) -
+                (_bp[1].hour * 3600 + _bp[1].minute * 60 + _bp[1].second)))
+            _diff = abs((_best.hour * 3600 + _best.minute * 60 + _best.second) -
+                        (_bp[1].hour * 3600 + _bp[1].minute * 60 + _bp[1].second))
+            if _diff <= _match_tolerance:
+                _full = _best.replace(hour=_bp[1].hour, minute=_bp[1].minute, second=_bp[1].second)
+                logger.info("视频兜底提取(%s)：时分命中 %s，用参考日期拼成 %s",
+                            bugid, best_partial, _full.strftime("%Y-%m-%d %H:%M:%S"))
+                return _full.strftime("%Y-%m-%d %H:%M:%S")
     logger.info("视频兜底提取(%s)：所有视频封面及前6帧均未识别到时间", bugid)
     _timestudy_update_ctx(bugid, error_type="ocr_no_time_pattern", error_detail="所有视频OCR均未识别到时间")
     _timestudy_trace(bugid, "ocr:no_pattern")
@@ -7579,7 +7520,16 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                                 logger.info("视频帧提取(%s)：第%d秒整图 GLM-OCR 命中时间: %s",
                                             video_label, sec + 1, all_text[:80])
                         else:
-                            all_text = _ocr_image_text(frame, max_new_tokens=128).strip()
+                            # 非 NVIDIA 不做整图 OCR，直接右下角 ROI；NVIDIA 保留 GLM 整图+ROI
+                            if not _has_nvidia_gpu():
+                                all_text = _ocr_clock_region(frame).strip()
+                            else:
+                                all_text = _ocr_image_text(frame, max_new_tokens=128).strip()
+                                import re as _re_clock
+                                if not _re_clock.search(r'\d{1,2}[:：]\d{2}', all_text):
+                                    _clock_txt = _ocr_clock_region(frame)
+                                    if _clock_txt:
+                                        all_text = (all_text + " " + _clock_txt).strip()
                             _has_time = bool(_valid_time_tokens(all_text))
                             _VIDEO_OCR_STATS["full_frames"] += 1
                             if _has_time:
@@ -7591,8 +7541,9 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     logger.info("视频帧提取(%s)：第%d秒 OCR: %s", video_label, sec + 1,
                                 all_text[:200] if all_text else "(空)")
                     # ── ROI 回退：整图 OCR 为空时，尝试 ROI 区域裁剪 ──
-                    if not all_text.strip() and _has_nvidia_gpu():
-                        _roi_text = _ocr_frame_regions(frame)
+                    if not _valid_time_tokens(all_text):
+                        _roi_text = (_ocr_frame_regions(frame) if _has_nvidia_gpu()
+                                     else _ocr_clock_region(frame))
                         if _roi_text and _roi_text.strip():
                             all_text = _roi_text
                             _roi_has_time = bool(_valid_time_tokens(all_text))
@@ -7678,24 +7629,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                         if not first_partial:
                             first_partial = time_str
                             first_detail = f"从视频{video_label}第{sec+1}秒 OCR 识别到 {time_str}"
-                        # 优先检查视频自身文件名是否含完整日期时间且时间匹配
-                        _vid_fn_dt_str = _parse_video_filename_datetime(video_name)
-                        if _vid_fn_dt_str:
-                            _vid_fn_parsed = _parse_datetime_string(_vid_fn_dt_str)
-                            if _vid_fn_parsed:
-                                _vid_fn_ts, _vid_fn_dt = _vid_fn_parsed
-                                # 视频文件名时间与 OCR 时间一致（容差 1 分钟）
-                                _ocr_hm = time_str[:5]  # HH:MM
-                                _fn_hm = _vid_fn_dt.strftime("%H:%M")
-                                _fn_verified = (not validation_pool) or any(
-                                    abs((dt - _vid_fn_dt).total_seconds()) <= strict_tol
-                                    for dt in validation_pool)
-                                if (_ocr_hm == _fn_hm or (len(time_str) >= 5 and _vid_fn_dt.strftime("%H:%M:%S") == time_str[:8])) and _fn_verified:
-                                    detail = f"从视频{video_label}第{sec+1}秒 OCR 识别到 {time_str}，视频文件名含 {_vid_fn_dt_str}，时间完全匹配"
-                                    logger.info("视频帧提取命中(视频文件名日期+OCR时间): %s", _vid_fn_dt_str)
-                                    _store_video_time_cache(cache, cache_key, _vid_fn_dt_str)
-                                    _save_video_time_cache()
-                                    return _vid_fn_dt_str, detail
+                        # 视频文件名时间不可作为最终结果；只用 OCR 时间 + gmlogger/main 日期
                         # 参照 gmlogger 时间纠正数字混淆
                         if gm_ref_dt:
                             time_str = _correct_ocr_by_reference(time_str, gm_ref_dt)

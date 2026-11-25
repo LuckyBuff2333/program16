@@ -17,6 +17,10 @@ _CPU_ENGINE = None
 _LOCK = threading.Lock()
 _INFER_LOCK = threading.Lock()  # DirectML session 非线程安全，串行推理
 _USE_DML = os.environ.get("RAPID_OCR_USE_DML", "1") != "0"
+_OCR_PROCESSES = max(1, int(os.environ.get("RAPID_OCR_PROCESSES", "2")))
+_IS_WORKER = os.environ.get("RAPID_OCR_WORKER", "0") == "1"
+_POOL = None
+_POOL_LOCK = threading.Lock()
 logger = logging.getLogger("bug_doc_tool")
 
 
@@ -85,37 +89,77 @@ def _get_engine(use_dml: bool = True):
         return eng
 
 
-def read_text(image_bgr, already_enhanced: bool = False) -> list:
-    """返回 [[bbox, text, conf], ...]；不可用时返回空列表。"""
-    if image_bgr is None or getattr(image_bgr, "size", 0) == 0 or not available():
-        return []
-    def _run(engine):
-        result, _ = engine(image_bgr)
-        out: list[Any] = []
-        for item in result or []:
-            if len(item) < 2:
-                continue
-            bbox = item[0]
-            text = str(item[1])
-            conf = float(item[2]) if len(item) > 2 else 0.0
-            out.append([bbox, text, conf])
-        return out
+def _run_engine(engine, image_bgr):
+    result, _ = engine(image_bgr)
+    out: list[Any] = []
+    for item in result or []:
+        if len(item) < 2:
+            continue
+        bbox = item[0]
+        if hasattr(bbox, "tolist"):
+            bbox = bbox.tolist()
+        text = str(item[1])
+        conf = float(item[2]) if len(item) > 2 else 0.0
+        out.append([bbox, text, conf])
+    return out
 
+
+def _worker_read(image_bgr):
+    """子进程入口：每个进程独立加载自己的 DirectML session。"""
+    try:
+        engine = _get_engine(use_dml=_USE_DML)
+        if engine is None:
+            return []
+        return _run_engine(engine, image_bgr)
+    except Exception as e:
+        logger.warning("RapidOCR 子进程推理异常: %s", repr(e))
+        return []
+
+
+def _get_pool():
+    global _POOL
+    if _IS_WORKER or _OCR_PROCESSES <= 1:
+        return None
+    if _POOL is not None:
+        return _POOL
+    with _POOL_LOCK:
+        if _POOL is None:
+            from concurrent.futures import ProcessPoolExecutor
+            import multiprocessing
+            _POOL = ProcessPoolExecutor(
+                max_workers=_OCR_PROCESSES,
+                mp_context=multiprocessing.get_context("spawn"),
+            )
+            logger.info("RapidOCR 多进程池已启动: %d 路", _OCR_PROCESSES)
+    return _POOL
+
+
+def _read_local(image_bgr):
     with _INFER_LOCK:
         if _USE_DML:
             try:
                 engine = _get_engine(use_dml=True)
                 if engine is not None:
-                    return _run(engine)
+                    return _run_engine(engine, image_bgr)
             except Exception as e:
-                # ORT 在中文 Windows 下可能把底层错误信息按 GBK 解码，抛 UnicodeDecodeError；
-                # 此时不要直接放弃，切 CPU 再试一次。
                 logger.warning("RapidOCR v6 DirectML 推理异常，尝试 CPU 回退: %s", repr(e))
-        # GPU 不可用/推理异常时回退 CPU；可用 RAPID_OCR_USE_DML=0 强制 CPU。
         try:
             cpu = _get_engine(use_dml=False)
             if cpu is not None:
-                return _run(cpu)
+                return _run_engine(cpu, image_bgr)
         except Exception as e:
             logger.warning("RapidOCR v6 CPU 推理失败: %s", repr(e))
     return []
+
+
+def read_text(image_bgr, already_enhanced: bool = False) -> list:
+    """返回 [[bbox, text, conf], ...]；AMD 默认 2 个独立进程并发推理。"""
+    if image_bgr is None or getattr(image_bgr, "size", 0) == 0 or not available():
+        return []
+    pool = _get_pool()
+    if pool is not None:
+        try:
+            return pool.submit(_worker_read, image_bgr).result(timeout=300)
+        except Exception as e:
+            logger.warning("RapidOCR 多进程推理失败，回退单进程: %s", repr(e))
+    return _read_local(image_bgr)

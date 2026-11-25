@@ -20,6 +20,24 @@ logger = setup_logger("web.trigger")
 router = APIRouter()
 
 
+def _attachment_name_time_allowed(attachments: list, att_tt: str) -> bool:
+    """附件名兜底只允许：与 main 文件名时间相差 ≤1 分钟。"""
+    if not att_tt:
+        return False
+    from src.services.server_legacy import _diag_parse_entry_time, _ts_parse_datetime
+    att_dt = _ts_parse_datetime(str(att_tt)[:19])
+    if not att_dt:
+        return False
+    for a in attachments or []:
+        fn = (a.get("filename") or "").strip()
+        if "main" not in os.path.basename(fn).lower():
+            continue
+        parsed = _diag_parse_entry_time(fn)
+        if parsed and abs((parsed[1] - att_dt).total_seconds()) <= 60:
+            return True
+    return False
+
+
 def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
                          img_to: int, bugid: str, stop_event=None,
                          ignore_archive_limit: bool = False) -> tuple:
@@ -115,14 +133,7 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
             issue, img_headers, img_to, bugid, stop_event=stop_event)
         if img_tt:
             tt, source = img_tt, "图片拼接"
-    # 4. 附件名兜底
-    if not tt:
-        try:
-            att_tt = _jc.extract_attachment_time(issue)
-        except Exception:
-            att_tt = ""
-        if att_tt:
-            tt, source = att_tt, "附件名兜底"
+    # 4. 文件名只作校验基准，不能作为最终结果；不再做附件名兜底
     if tt:
         if not isinstance(tt, str):
             tt = tt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tt, "strftime") else str(tt)
@@ -1267,13 +1278,7 @@ async def compare_extract_time(file: UploadFile = File(...), filter_statuses: st
                     if img_tt:
                         tt = img_tt
                         source = "图片拼接"
-                if not tt:
-                    try:
-                        att_tt = _jc.extract_attachment_time(issue)
-                    except Exception:
-                        att_tt = ""
-                    if att_tt:
-                        tt, source = att_tt, "附件名兜底"
+                # 文件名为校验基准，不作为最终结果
                 _created = None
                 try:
                     _c = fields.get("created")
