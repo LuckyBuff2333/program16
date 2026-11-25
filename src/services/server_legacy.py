@@ -7199,18 +7199,26 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                     # 仅时间+日期补充：优先日志包日期；没有日志包时用视频文件名/上传日期拼接
                     m = _OCR_TIME_ONLY_RE.search(all_text)
                     closest_date = None
+                    # 只有时分时：优先从 main/gmlogger 内容时间里选“时分最接近”的日期
+                    if m and _inner_times:
+                        _raw_hm = _normalize_ocr_time(m.group(1))
+                        _tm = re.search(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", _raw_hm)
+                        if _tm:
+                            _sec = int(_tm.group(1)) * 3600 + int(_tm.group(2)) * 60 + int(_tm.group(3) or 0)
+                            _inner_dt = min(
+                                (dt for _, dt in _inner_times),
+                                key=lambda d: (abs((d.hour * 3600 + d.minute * 60 + d.second) - _sec),
+                                               -d.timestamp()))
+                            closest_date = (_inner_dt.year, _inner_dt.month, _inner_dt.day)
+                            logger.info("视频兜底提取(%s)：按最接近时分选 main 日期 %s（main %s）",
+                                        video_label, closest_date,
+                                        _inner_dt.strftime("%Y-%m-%d %H:%M:%S"))
                     if not closest_date and closest_gm and closest_gm[0]["filename_time"]:
                         closest_date = (closest_gm[0]["filename_time"].year,
                                         closest_gm[0]["filename_time"].month,
                                         closest_gm[0]["filename_time"].day)
                     if not closest_date and gm_dates:
                         closest_date = gm_dates[0]
-                    if not closest_date and _inner_times:
-                        # 压缩包内 main 文件名时间优先于视频/上传时间
-                        _inner_dt = sorted(dt for _, dt in _inner_times)[0]
-                        closest_date = (_inner_dt.year, _inner_dt.month, _inner_dt.day)
-                        logger.info("视频兜底提取(%s)：无外层日志包日期，用压缩包 main 日期拼接 %s",
-                                    video_label, _inner_dt.strftime("%Y-%m-%d"))
                     # 视频文件名/上传时间不能用于拼日期；无 main/gmlogger 日期则放弃
                     if m and _valid_ocr_time(_normalize_ocr_time(m.group(1))):
                         time_str = _normalize_ocr_time(m.group(1))
@@ -7772,6 +7780,17 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
         return "", ""
     # 按创建时间倒序取最新 5 张
     images = sorted(images, key=lambda a: a.get("created", "") or "", reverse=True)[:5]
+    # 图片本身没有时间时，允许用图片文件名时间（如 image-2026-10-28-14-44-15-036.png）
+    _image_fn_times = []
+    for _a in images:
+        _m = re.search(r"(\d{4})-(\d{2})-(\d{2})[-_](\d{2})-(\d{2})-(\d{2})",
+                       _a.get("filename", "") or "")
+        if _m:
+            try:
+                _image_fn_times.append(datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3)),
+                                                int(_m.group(4)), int(_m.group(5)), int(_m.group(6))))
+            except ValueError:
+                pass
     logger.info("%s图片 OCR: 开始处理 %d 张图片", f"{bugid} " if bugid else "", len(images))
     # 收集所有提取的时间
     all_times = []       # [(time_str, datetime, is_marked, image_name)]
@@ -7874,6 +7893,18 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
             except Exception as e:
                 logger.warning("%s图片 OCR 处理 %s 异常: %s", f"{bugid} " if bugid else "", fname, e)
                 continue
+    # 图片 OCR 没拿到时间，或 OCR 时间与图片文件名时间相差过大：
+    # 图片文件名为准（图片本身无时钟时，这是唯一可靠时间）
+    if _image_fn_times:
+        _ocr_near_fn = any(
+            dt and any(abs((dt - fdt).total_seconds()) <= 300 for fdt in _image_fn_times)
+            for _, dt, _, _ in all_times
+        )
+        if not all_times or not _ocr_near_fn:
+            _latest_fn = max(_image_fn_times)
+            logger.info("%s图片 OCR 未命中/偏离文件名，改用图片文件名时间 %s",
+                        f"{bugid} " if bugid else "", _latest_fn.strftime("%Y-%m-%d %H:%M:%S"))
+            return _latest_fn.strftime("%Y-%m-%d %H:%M:%S"), "图片文件名时间"
     if not all_times:
         return "", ""
     # 优先级选择

@@ -1206,7 +1206,11 @@ def extract_latest_comment_time(issue: dict) -> str:
 
 
 def _extract_latest_comment_time_raw(issue: dict) -> str:
-    """按“最新优先”提取评论时间：先找最新结论/日志分析语句里的时间，再找最新普通时间。"""
+    """按“最新优先”提取评论时间。
+
+    评论区同时有“正常情况/异常情况”时，异常段才是问题发生时间；
+    优先取异常段里的 main.log 文件名时间，再看结论/日志分析语句。
+    """
     fields = issue.get("fields") or {}
     raw = (fields.get("comment") or {}).get("comments") or []
     raw = sorted(raw, key=lambda c: c.get("created", ""), reverse=True)
@@ -1217,7 +1221,37 @@ def _extract_latest_comment_time_raw(issue: dict) -> str:
             body = _extract_adf_text(body)
         if not body.strip() or _is_ai_analysis_comment(body):
             continue
+        # 异常情况段：只认这一段里的 main.log 文件名时间
+        if "异常" in body:
+            _abn = body.split("异常情况", 1)[-1] if "异常情况" in body else body.split("异常", 1)[-1]
+            _abn = _abn.split("正常情况", 1)[0]
+            for _m in re.finditer(
+                    r"main\.log_(\d{4})_(\d{1,2})_(\d{1,2})_(\d{1,2})_(\d{1,2})(?:_(\d{1,2}))?",
+                    _abn):
+                try:
+                    _dt = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3)),
+                                   int(_m.group(4)), int(_m.group(5)), int(_m.group(6) or 0))
+                    logger.info("评论区异常段 main.log 时间: %s", _dt.strftime("%Y-%m-%d %H:%M:%S"))
+                    return _dt.strftime("%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    continue
+        # 普通日志分析：同一行有多个时间时，只取 main.log 后面第一个时间，
+        # 不能取该行后面的其他时间，否则会抓到更早/更晚的日志行。
         year = (c.get("created") or "")[:4]
+        for _ln in body.split("\n"):
+            if "main.log" not in _ln:
+                continue
+            # 不假设范围段：直接取 main.log 后位置最靠前的第一个时间
+            _tail = _ln.split("main.log", 1)[1]
+            _tm = re.search(r"(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})", _tail)
+            if _tm:
+                try:
+                    _dt = datetime(int(year), int(_tm.group(1)), int(_tm.group(2)),
+                                   int(_tm.group(3)), int(_tm.group(4)), int(_tm.group(5)))
+                    logger.info("评论区 main.log 后第一个时间: %s", _dt.strftime("%Y-%m-%d %H:%M:%S"))
+                    return _dt.strftime("%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    pass
         lines = [ln for ln in body.split("\n") if ln.strip()]
         preferred = [ln for ln in lines if any(k in ln for k in prefer_keys)]
         for group in (preferred, lines):
