@@ -5317,7 +5317,6 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
     """对状态栏/任务栏等小区域做 OCR。
 
     NVIDIA 独显 → GLM-OCR + ROI（无放大，90 条实测命中率 80%）
-    其他 → RapidOCR v6 + ROI（原尺寸裁剪，DirectML 优先）
 
     录屏时间通常出现在：手机顶部状态栏、车载 HMI 中央顶部、Windows 右下角任务栏、
     导航应用底部中央导航栏（时间字体较大）。
@@ -5367,34 +5366,9 @@ def _ocr_frame_regions(frame, status_only: bool = False) -> str:
                 if parts:
                     return _strip_progress_bar(" ".join(parts))
         except ImportError:
-            pass  # GLM-OCR 未安装，回退 RapidOCR v6
-
-        # ── 回退：RapidOCR v6 + ROI（原尺寸裁剪；DirectML 优先）──
-        from src.services.rapid_ocr_v6 import read_text as _read_text, available as _ocr_avail
-        if _ocr_avail():
-            for region in regions:
-                name, x1, y1, x2, y2 = region
-                if x2 - x1 < 40 or y2 - y1 < 12:
-                    continue
-                crop = frame[y1:y2, x1:x2]
-                _res = _read_text(crop)
-                txt = " ".join(r[1] for r in _res if len(r) > 1)
-                txt = _fix_ocr_missing_colon(txt)
-                txt = _normalize_time_spacing(txt)
-                txt = _strip_video_progress_times(txt, lower=(y1 >= int(h * 0.55)))
-                txt = _strip_navigation_times(txt)
-                if txt.strip():
-                    parts.append(txt)
-                    logger.info("RapidOCR v6 ROI[%s] 识别到: %s", name, txt[:80])
-                    if name in _ROI_REGION_STATS and _t_chk.search(txt):
-                        _ROI_REGION_STATS[name] += 1
-                    if _valid_time_tokens(txt) and name in ("right_clock", "right_upper", "top_bar"):
-                        logger.info("RapidOCR v6 ROI[%s] 命中时间，跳过剩余区域", name)
-                        break
-            if parts:
-                return _strip_progress_bar(" ".join(parts))
-        else:
-            logger.warning("OCR 引擎均不可用，跳过 ROI OCR")
+            pass  # GLM-OCR 未安装
+        if not parts:
+            logger.warning("OCR 引擎不可用，跳过 ROI OCR")
     except Exception as _roi_err:
         logger.warning("_ocr_frame_regions 外层异常: %s", _roi_err, exc_info=True)
         return ""
@@ -6909,19 +6883,19 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                     _roi_has_time = False
                     results = []
                     all_text = ""
-                    # ── 整图 OCR：RapidOCR v6（默认策略，不做 ROI）──
+                    # ── 整图 OCR：GLM-OCR（NVIDIA GPU）──
                     try:
-                        from src.services.rapid_ocr_v6 import read_text as _read_text, available as _ocr_avail
-                        if _ocr_avail():
-                            results = _read_text(frame)
-                            all_text = " ".join(r[1] for r in results if len(r) > 1)
+                        from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
+                        if _glm_avail():
+                            _glm_text = _glm_ocr(frame, max_new_tokens=128) or ""
+                            all_text = _glm_text.strip()
                             _has_time = bool(_valid_time_tokens(all_text))
                             _VIDEO_OCR_STATS["full_frames"] += 1
                             if _has_time:
-                                logger.info("视频兜底提取(%s)：第%d秒整图 OCR 命中时间: %s",
+                                logger.info("视频兜底提取(%s)：第%d秒整图 GLM-OCR 命中时间: %s",
                                             video_label, sec + 1, all_text[:80])
                         else:
-                            logger.warning("视频兜底提取(%s)：RapidOCR v6 不可用", video_label)
+                            logger.warning("视频兜底提取(%s)：GLM-OCR 不可用", video_label)
                     except Exception as e:
                         logger.warning("视频兜底提取(%s)：第%d秒整图 OCR 异常: %s",
                                        video_label, sec + 1, e)
@@ -6933,12 +6907,20 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                     else:
                         _timestudy_trace(bugid, "ocr:empty")
                     _timestudy_update_ctx(bugid, ocr_text=all_text[:200])
-                    # OCR 质量门槛：整体置信度极低且无完整日期时跳过时间提取（手机拍屏乱码场景）
-                    _avg_conf = sum((r[2] for r in results if len(r) > 2), 0) / max(len(results), 1) if results else 0
+                    # ── ROI 回退：整图 OCR 为空时，尝试 ROI 区域裁剪 ──
+                    if not all_text.strip():
+                        _roi_text = _ocr_frame_regions(frame)
+                        if _roi_text and _roi_text.strip():
+                            all_text = _roi_text
+                            _roi_has_time = bool(_valid_time_tokens(all_text))
+                            logger.info("视频兜底提取(%s)：第%d秒 ROI 识别到: %s",
+                                        video_label, sec + 1, all_text[:80])
+                            _collected_texts[-1] = (sec, all_text)  # 更新已收集的文本
+                    # OCR 质量门槛：文本为空且无完整日期时跳过时间提取
                     _has_full_dt = bool(_OCR_TIME_FULL_RE.search(all_text))
-                    if _avg_conf < 0.10 and not _has_full_dt and not _roi_has_time:
-                        logger.info("视频兗底提取(%s)：第%d秒 OCR 质量过低 (avg_conf=%.2f)，跳过时间提取",
-                                    video_label, sec + 1, _avg_conf)
+                    if not all_text.strip() and not _has_full_dt:
+                        logger.info("视频兜底提取(%s)：第%d秒 OCR 质量过低，跳过时间提取",
+                                    video_label, sec + 1)
                         continue
                     all_text = _fix_ocr_missing_colon(all_text)
                     all_text = _fix_ocr_char_confusion(all_text)
@@ -7393,30 +7375,37 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     _roi_has_time = False
                     results = []
                     all_text = ""
-                    # ── 整图 OCR：RapidOCR v6 ──
+                    # ── 整图 OCR：GLM-OCR（NVIDIA GPU）──
                     try:
-                        from src.services.rapid_ocr_v6 import read_text as _read_text, available as _ocr_avail
-                        if _ocr_avail():
-                            results = _read_text(frame)
-                            all_text = " ".join(r[1] for r in results if len(r) > 1)
+                        from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
+                        if _glm_avail():
+                            _glm_text = _glm_ocr(frame, max_new_tokens=128) or ""
+                            all_text = _glm_text.strip()
                             _has_time = bool(_valid_time_tokens(all_text))
                             _VIDEO_OCR_STATS["full_frames"] += 1
                             if _has_time:
-                                logger.info("视频帧提取(%s)：第%d秒整图 OCR 命中时间: %s",
+                                logger.info("视频帧提取(%s)：第%d秒整图 GLM-OCR 命中时间: %s",
                                             video_label, sec + 1, all_text[:80])
                         else:
-                            logger.warning("视频帧提取(%s)：RapidOCR v6 不可用", video_label)
+                            logger.warning("视频帧提取(%s)：GLM-OCR 不可用", video_label)
                     except Exception as e:
                         logger.warning("视频帧提取(%s)：第%d秒整图 OCR 异常: %s",
                                        video_label, sec + 1, e)
                     logger.info("视频帧提取(%s)：第%d秒 OCR: %s", video_label, sec + 1,
                                 all_text[:200] if all_text else "(空)")
-                    # OCR 质量门槛：整体置信度极低且无完整日期时跳过时间提取
-                    _avg_conf = sum((r[2] for r in results if len(r) > 2), 0) / max(len(results), 1) if results else 0
+                    # ── ROI 回退：整图 OCR 为空时，尝试 ROI 区域裁剪 ──
+                    if not all_text.strip():
+                        _roi_text = _ocr_frame_regions(frame)
+                        if _roi_text and _roi_text.strip():
+                            all_text = _roi_text
+                            _roi_has_time = bool(_valid_time_tokens(all_text))
+                            logger.info("视频帧提取(%s)：第%d秒 ROI 识别到: %s",
+                                        video_label, sec + 1, all_text[:80])
+                    # OCR 质量门槛：文本为空且无完整日期时跳过时间提取
                     _has_full_dt = bool(_OCR_TIME_FULL_RE.search(all_text))
-                    if _avg_conf < 0.10 and not _has_full_dt and not _roi_has_time:
-                        logger.info("视频帧提取(%s)：第%d秒 OCR 质量过低 (avg_conf=%.2f)，跳过时间提取",
-                                    video_label, sec + 1, _avg_conf)
+                    if not all_text.strip() and not _has_full_dt:
+                        logger.info("视频帧提取(%s)：第%d秒 OCR 质量过低，跳过时间提取",
+                                    video_label, sec + 1)
                         continue
                     all_text = _fix_ocr_missing_colon(all_text)
                     all_text = _fix_ocr_char_confusion(all_text)
@@ -7717,35 +7706,24 @@ def _diag_extract_time_from_images_impl(issue: dict, headers: dict, timeout: int
                                  bugid=bugid, max_bytes=_MAX_MEDIA_BYTES,
                                  filename=fname or "image.bin", use_cache=False,
                                  stop_event=stop_event)
-                # OCR 识别：NVIDIA 优先 GLM-OCR，其他走 RapidOCR v6
+                # OCR 识别：GLM-OCR（NVIDIA GPU）
                 img = _cv_imread_unicode(img_path)
                 if img is None:
                     logger.warning("%s图片 OCR: cv2.imread 失败 %s", f"{bugid} " if bugid else "", fname)
                     continue
                 results = []
                 try:
-                    # ── 优先：GLM-OCR（仅 NVIDIA 独显）──
-                    _used_glm = False
                     try:
                         from src.services.glm_ocr import ocr_text as _glm_ocr, available as _glm_avail
-                        if _has_nvidia_gpu() and _glm_avail():
+                        if _glm_avail():
                             _glm_text = _glm_ocr(img, max_new_tokens=128) or ""
                             if _glm_text.strip():
                                 results = [[[], _glm_text.strip(), 1.0]]
-                                _used_glm = True
                                 logger.info("%s图片 GLM-OCR: %s", f"{bugid} " if bugid else "", _glm_text[:120])
-                    except ImportError:
-                        pass
-                    # ── 回退：RapidOCR v6（AMD GPU / 无独显）──
-                    if not _used_glm:
-                        from src.services.rapid_ocr_v6 import read_text as _read_text, available as _ocr_avail
-                        if _ocr_avail():
-                            results = _read_text(img)
-                            if results:
-                                logger.info("%s图片 RapidOCR v6: %s", f"{bugid} " if bugid else "",
-                                            " ".join(r[1] for r in results)[:120])
                         else:
-                            logger.warning("%s图片 OCR: OCR 引擎均不可用，跳过 %s", f"{bugid} " if bugid else "", fname)
+                            logger.warning("%s图片 OCR: GLM-OCR 不可用，跳过 %s", f"{bugid} " if bugid else "", fname)
+                    except ImportError:
+                        logger.warning("%s图片 OCR: GLM-OCR 未安装，跳过 %s", f"{bugid} " if bugid else "", fname)
                 except Exception as _ocr_err:
                     logger.warning("%s图片 OCR 异常: %s", f"{bugid} " if bugid else "", _ocr_err)
                 if not results:
