@@ -529,8 +529,8 @@ def _search_trigger_time_single(bugid: str) -> dict:
 def _search_trigger_time_batch(bugids: list) -> tuple:
     """用 filter_expr OR 分块搜索 Jira 号，返回 ({bugid: trigger_time}, {已记录的bugid})
 
-    每次查 20 个，最多 5 轮（100 条），适合 < 100 个 bugid 的场景。
-    超过 100 条应走全量加载 _load_cloud_trigger_cache。
+    每次查 50 个，最多 10 轮（500 条），适合 < 500 个 bugid 的场景。
+    超过 500 条应走全量加载 _load_cloud_trigger_cache。
     第二个返回值为云端已存在的所有 bugid（含空时间记录），用于避免重复提取。
     """
     from src.clients import feishu_client
@@ -540,8 +540,8 @@ def _search_trigger_time_batch(bugids: list) -> tuple:
     result = {}
     all_found_keys = set()  # 云端已存在的所有 jira号（含空时间）
     remaining = list(bugids)
-    chunk_size = 20
-    max_rounds = 5
+    chunk_size = 50
+    max_rounds = 10
     total_rounds = 0
     import concurrent.futures as _cf
 
