@@ -6898,7 +6898,8 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                     logger.info("视频兜底提取(%s)：压缩包 %s 内 main 文件: %s -> %s",
                                 bugid, fname, entry, parsed[0])
     # 4. 从文本文件附件（.txt/.log/logcat）内容中提取时间作为权威参考
-    #    这三个是文本格式，命中是与文件内容里的时间命中，无年份补今年
+    #    这三种是文本格式，完整时间（带年份）直接作为最终结果；
+    #    短格式（无年份）取最后一条命中，年份自动补今年
     _content_inner = []
     from src.clients.jira_client import is_suffixless_logcat as _is_logcat
     _known_inner = {dt for _, dt in _inner_times}
@@ -6918,24 +6919,44 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
             _raw_text = _diag_read_logcat_text(att, headers, timeout=60)
             if not _raw_text:
                 continue
-            # 全量读取；日志按时间顺序，取最靠下（最后出现）的无年份命中
+            # 全量读取；日志按时间顺序，优先匹配完整时间（带年份），其次短格式（无年份补今年）
             _text_slice = _raw_text
             from src.clients import jira_client as _jc
             import re as _re
-            _short_re = _re.compile(
-                r'(?<!\d)(?<!\d{4}[-/])(\d{1,2})[-/](\d{1,2})\s+'
+            _picked = None
+            _match_type = ""
+            # 1. 完整时间匹配：YYYY-MM-DD HH:MM:SS（含年份，直接作为最终结果）
+            _full_re = _re.compile(
+                r'(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\s+'
                 r'(\d{1,2})[:\uff1a](\d{2})(?:[:\uff1a](\d{2}))?'
             )
-            _picked = None
-            for _m in reversed(list(_short_re.finditer(_text_slice))):
+            for _m in reversed(list(_full_re.finditer(_text_slice))):
                 try:
-                    _mo, _dd = int(_m.group(1)), int(_m.group(2))
-                    _hh, _mi = int(_m.group(3)), int(_m.group(4))
-                    _ss = int(_m.group(5) or 0)
-                    _picked = datetime(int(_this_year), _mo, _dd, _hh, _mi, _ss)
+                    _y = int(_m.group(1))
+                    _mo, _dd = int(_m.group(2)), int(_m.group(3))
+                    _hh, _mi = int(_m.group(4)), int(_m.group(5))
+                    _ss = int(_m.group(6) or 0)
+                    _picked = datetime(_y, _mo, _dd, _hh, _mi, _ss)
+                    _match_type = "完整时间"
                     break
                 except ValueError:
                     continue
+            # 2. 短格式兜底：MM-DD HH:MM:SS（无年份，取最后一条，年份补今年）
+            if _picked is None:
+                _short_re = _re.compile(
+                    r'(?<!\d)(?<!\d{4}[-/])(\d{1,2})[-/](\d{1,2})\s+'
+                    r'(\d{1,2})[:\uff1a](\d{2})(?:[:\uff1a](\d{2}))?'
+                )
+                for _m in reversed(list(_short_re.finditer(_text_slice))):
+                    try:
+                        _mo, _dd = int(_m.group(1)), int(_m.group(2))
+                        _hh, _mi = int(_m.group(3)), int(_m.group(4))
+                        _ss = int(_m.group(5) or 0)
+                        _picked = datetime(int(_this_year), _mo, _dd, _hh, _mi, _ss)
+                        _match_type = "短格式补今年"
+                        break
+                    except ValueError:
+                        continue
             if _picked is None:
                 _fallback = _jc._extract_times_from_text(_text_slice, year=_this_year)
                 if _fallback:
@@ -6945,8 +6966,8 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                 _inner_times.append((_t_str, _picked))
                 _content_inner.append((_t_str, _picked))
                 _known_inner.add(_picked)
-                logger.info("视频兜底提取(%s)：文本附件 %s 最靠下命中 %s",
-                            bugid, fn, _t_str)
+                logger.info("视频兜底提取(%s)：文本附件 %s 命中 %s（%s）",
+                            bugid, fn, _t_str, _match_type or "兜底")
         except Exception as _e:
             logger.warning("视频兜底提取(%s)：读取文本附件 %s 失败: %s", bugid, fn, _e)
     # main 文件名时间本身就是权威时间，不要求内容命中；
