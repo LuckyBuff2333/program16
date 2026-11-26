@@ -331,8 +331,8 @@
             <el-button type="success" :loading="timeEdit.saving" :disabled="!changedTimeRows.length" @click="saveCloudTimes">
               保存修改（{{ changedTimeRows.length }} 条）
             </el-button>
-            <el-button type="warning" :loading="timeEdit.writebackVcsLoading" :disabled="!timeEditWithTimeCount" @click="writebackVcsBug">
-              写回VCS BUG（{{ timeEditWithTimeCount }} 条）
+            <el-button type="warning" :loading="timeEdit.writebackVcsLoading" :disabled="!timeEdit.rows.length" @click="writebackVcsBug">
+              写回VCS BUG（{{ timeEdit.rows.length }} 条）
             </el-button>
             <el-button type="info" plain size="small" :icon="CopyDocument" :disabled="!timeEditWithTimeCount" @click="copyTimeEditKeys">
               复制有时间Key（{{ timeEditWithTimeCount }}）
@@ -826,8 +826,8 @@ export default {
           method: 'POST', body: JSON.stringify({ items }),
         });
         for (const it of items) {
-          const row = this.timeEdit.rows.find((r: any) => r.bugid === it.bugid);
-          if (row) row.current_time = it.new_time;
+          const matched = this.timeEdit.rows.filter((r: any) => r.bugid === it.bugid);
+          for (const row of matched) { row.current_time = it.new_time; row.new_time = it.new_time; }
         }
         this.timeEdit.statusMsg = res.message || `已保存 ${items.length} 条`;
         ElMessage.success(res.message || `已保存 ${items.length} 条`);
@@ -838,11 +838,10 @@ export default {
       }
     },
     async writebackVcsBug() {
-      // 即使与当前值相同也允许写回；只写有时间的行，避免误清空 VCS 空记录
+      // 写回所有行（含无时间的），确保 VCS BUG 表数据与云端保持一致
       const items = this.timeEdit.rows
-        .filter((r: any) => r.new_time)
         .map((r: any) => ({
-          bugid: r.bugid, new_time: formatMinute(r.new_time),
+          bugid: r.bugid, new_time: formatMinute(r.new_time || ''),
         }));
       if (!items.length) return ElMessage.info('没有需要写回的数据');
       const desc = `更新 ${items.length} 条`;
@@ -857,8 +856,8 @@ export default {
           method: 'POST', body: JSON.stringify({ items }),
         });
         for (const it of items) {
-          const row = this.timeEdit.rows.find((r: any) => r.bugid === it.bugid);
-          if (row) row.vcs_time = it.new_time;
+          const matched = this.timeEdit.rows.filter((r: any) => r.bugid === it.bugid);
+          for (const row of matched) row.vcs_time = it.new_time;
         }
         ElMessage.success(res.message || `已写回 ${items.length} 条`);
       } catch (e) {

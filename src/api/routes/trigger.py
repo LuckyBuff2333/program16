@@ -455,7 +455,7 @@ def batch_update_trigger_time(req: BatchUpdateRequest):
     if _create_recs:
         first_tid = _get_trigger_time_table_cfg()[1][0]
         try:
-            feishu_client.create_bitable_records(
+            feishu_client.batch_create_records(
                 app_token, first_tid, [r["fields"] for r in _create_recs])
             logger.info("批量新建问题发生时间: 共 %d 条", len(_create_recs))
         except Exception as e:
