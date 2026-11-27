@@ -271,6 +271,9 @@ _OCR_TIME_ONLY_RE = re.compile(r'(?<!\d)(\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?)(?!\
 _OCR_RELATIVE_DATE_TIME_RE = re.compile(r'(昨天|今天|前天|大前天)[\s\-]*?(\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?)')
 
 _OCR_BARE_TIME_RE = re.compile(r'(?<![a-zA-Z0-9\-/.])(\d{2})(\d{2})(?![a-zA-Z0-9\-/.])')
+# 仅严格孤立的4位数字才补冒号：前后不能紧挨数字/字母/中文/单位
+_OCR_ISOLATED_BARE_TIME_RE = re.compile(
+    r'(?<![\w\u4e00-\u9fff])(\d{2})(\d{2})(?![\w\u4e00-\u9fff])')
 
 # 视频播放器进度条：HH:MM:SS / HH:MM:SS 或 HH:MM / HH:MM（不是真实录制时间）
 _OCR_PROGRESS_BAR_RE = re.compile(r'\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?\s*/\s*\d{1,2}[.:,;]\d{2}(?:[.:,;]\d{2})?')
@@ -365,6 +368,7 @@ _ARCHIVE_NAME_RE = re.compile(r"\.(zip|7z|rar|tar|tgz|gz|bz2|xz)(\.\d{2,3})?$", 
 
 _SPLIT_ARCHIVE_RE = re.compile(r"\.\d{2,3}$")
 
+_LAST_VIDEO_DURATION_SEC = 0.0
 _ARCHIVE_PROBE_MAX_BYTES = 20 * 1024 * 1024 * 1024  # gmlogger 大包也探测
 
 # ── 压缩类型自动归纳库 ───────────────────────────────────────
@@ -3902,7 +3906,8 @@ def _zip_range_list_entries(url: str, headers: dict, file_size: int = 0, timeout
 def _is_zip_attachment(filename: str) -> bool:
     """判断文件名是否为 ZIP 格式（含分卷 .zip.001 / .zip.002）"""
     fn = (filename or "").lower()
-    return fn.endswith(".zip") or bool(re.search(r"\.zip\.\d{2,3}$", fn))
+    return (fn.endswith(".zip") or bool(re.search(r"\.zip\.\d{2,3}$", fn))
+            or bool(re.search(r"\.z\d{1,3}$", fn)))
 
 
 def _is_7z_attachment(filename: str) -> bool:
@@ -5137,10 +5142,16 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
         if not include_non_gmlogger and not (any(h in _fn for h in _LOG_NAME_HINTS) or _fn.endswith((".log", ".txt"))):
             continue
         m = _re.search(r"(?:\.part(\d+))?\.(zip|7z|rar|tar|tgz|gz|bz2|xz)(\.(\d{2,3}))?$", fname, _re.I)
-        if not m:
-            continue
-        part = int(m.group(1) or m.group(4) or 0)
-        base = fname[:m.start()] + "." + m.group(2).lower()
+        if m:
+            part = int(m.group(1) or m.group(4) or 0)
+            base = fname[:m.start()] + "." + m.group(2).lower()
+        else:
+            # 标准 ZIP 分卷：xxx.z01 + xxx.z02 + ... + xxx.zip
+            mz = _re.match(r"^(.*)\.z(\d{1,3})$", fname, _re.I)
+            if not mz:
+                continue
+            base = mz.group(1) + ".zip"
+            part = int(mz.group(2))
         groups.setdefault(base, []).append((part, att))
     if not groups:
         return {"status": "failed", "reason": "无 gmlogger 压缩包附件", "main_entries": [], "main_times": []}
@@ -5179,6 +5190,11 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
         for base, parts in groups.items():
             if bugid:
                 _check_diag_cancel(bugid)
+            # .z01/.z02 是前置卷，.zip 是最后一卷，必须排到最后
+            if any(_re.search(r"\.z\d{1,3}$", a.get("filename", "") or "", _re.I)
+                   for _p, a in parts):
+                parts = [(9999 if (a.get("filename", "") or "").lower().endswith(".zip") else _p, a)
+                         for _p, a in parts]
             parts.sort(key=lambda x: x[0])
 
             # ZIP 格式（含分卷）: Range 读取中央目录获取文件名 + 解析时间，无需下载整个压缩包
@@ -5332,6 +5348,34 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
             ext_ok, _ext_info = _diag_extract_to_dir(merged, ext_dir)
             if not ext_ok:
                 logger.warning("gmlogger 解压失败 %s: %s", base, _ext_info)
+                # 解压失败不直接放弃：只要还能列出 main.log，就用文件名继续命中
+                try:
+                    import zipfile as _zf
+                    _last_zip = next((a for _p, a in reversed(parts)
+                                      if (a.get("filename") or "").lower().endswith(".zip")), None)
+                    if _last_zip:
+                        _zpath = os.path.join(tmp, "fallback_list.zip")
+                        _stream_download(_last_zip.get("content", ""), headers, _zpath,
+                                         timeout=timeout, bugid=bugid,
+                                         filename=_last_zip.get("filename") or "a.zip", use_cache=True)
+                        with _zf.ZipFile(_zpath) as _z:
+                            _names = [n for n in _z.namelist() if not n.endswith("/")]
+                        _mains = [os.path.basename(n) for n in _names
+                                  if "main.log" in os.path.basename(n).lower()]
+                        _times = []
+                        for _b in _mains[:10]:
+                            _pp = _diag_parse_main_time(_b)
+                            if _pp:
+                                _times.append(_pp)
+                        if _mains:
+                            logger.info("gmlogger 解压失败但列出 main: base=%s, main=%d, 时间=%d",
+                                        base, len(_mains), len(_times))
+                            return {"status": "ok", "reason": "",
+                                    "main_entries": _mains,
+                                    "main_times": _times,
+                                    "all_times": _diag_scan_entry_times(_names)}
+                except Exception as _le:
+                    logger.warning("gmlogger 解压失败后列目录也失败 %s: %s", base, _le)
                 return {"status": "failed", "reason": f"gmlogger 解压失败: {_ext_info}",
                         "main_entries": [], "main_times": []}
             main_files, all_names = _diag_find_main_in_tree(ext_dir, max_depth=3)
@@ -5509,8 +5553,8 @@ def _ocr_clock_region(frame) -> str:
     try:
         import cv2 as _cv2
         h, w = frame.shape[:2]
-        x1, y1 = int(w * 0.70), int(h * 0.84)
-        crop = frame[y1:h, x1:w]
+        x1, y0, y1 = int(w * 0.70), int(h * 0.78), int(h * 0.93)
+        crop = frame[y0:y1, x1:w]
         if crop.size == 0:
             return ""
         # 非 NVIDIA 走 RapidOCR：右下角时钟放大 2 倍即可稳定识别；
@@ -5526,6 +5570,136 @@ def _ocr_clock_region(frame) -> str:
     except Exception as e:
         logger.warning("OCR 右下角时钟区域失败: %s", e)
     return ""
+
+
+def _ocr_top_right_clock(frame) -> str:
+    """裁剪右上角状态栏时钟并放大识别。"""
+    try:
+        import cv2 as _cv2
+        h, w = frame.shape[:2]
+        x1, y0, y1 = int(w * 0.70), 0, int(h * 0.14)
+        crop = frame[y0:y1, x1:w]
+        if crop.size == 0:
+            return ""
+        _scale = 2.0 if not _has_nvidia_gpu() else 3.0
+        up = _cv2.resize(crop, None, fx=_scale, fy=_scale, interpolation=_cv2.INTER_CUBIC)
+        for img in (up, _cv2.cvtColor(up, _cv2.COLOR_BGR2GRAY),
+                    _cv2.bitwise_not(_cv2.cvtColor(up, _cv2.COLOR_BGR2GRAY))):
+            txt = _ocr_image_text(img, max_new_tokens=32) or ""
+            if txt.strip():
+                logger.info("OCR 右上角时钟区域: %s", txt[:80])
+                return txt
+    except Exception as e:
+        logger.warning("OCR 右上角时钟区域失败: %s", e)
+    return ""
+
+
+def _extract_time_from_archive_video(issue: dict, attachments: list, headers: dict,
+                                     timeout: int, bugid: str = "") -> str:
+    """压缩包第一层有视频时：解出视频 OCR，再用包内 main 文件名日期匹配。"""
+    import tempfile
+    import zipfile
+
+    archives = [a for a in (attachments or [])
+                if (a.get("filename") or "").lower().endswith(".zip")]
+    archives.sort(key=lambda a: a.get("size", 0) or 0, reverse=True)
+    for att in archives:
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                src = os.path.join(tmp, "archive.zip")
+                _stream_download(att.get("content", ""), headers, src, timeout=timeout,
+                                 bugid=bugid, filename=att.get("filename") or "archive.zip",
+                                 use_cache=True)
+                with zipfile.ZipFile(src) as zf:
+                    names = zf.namelist()
+                    videos = [n for n in names if n.lower().endswith((".mp4", ".mov", ".avi", ".mkv"))
+                              and n.count("/") <= 1]
+                    mains = [n for n in names if "main.log" in os.path.basename(n).lower()]
+                    if not videos:
+                        continue
+                    video_path = zf.extract(videos[0], tmp)
+                    frames = _extract_video_frames_gpu(video_path, positions=[0, 1, 2, 8])
+                    full_dt = None
+                    only_hm = None
+                    for _sec, frame in frames:
+                        txt = _ocr_image_text(frame, max_new_tokens=128) or ""
+                        m = re.search(r"(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})", txt)
+                        if m:
+                            try:
+                                full_dt = datetime(*map(int, m.groups()))
+                            except ValueError:
+                                pass
+                            break
+                        m = re.search(r"(\d{1,2}):(\d{2})", txt)
+                        if m and only_hm is None:
+                            only_hm = (int(m.group(1)), int(m.group(2)))
+                    if full_dt:
+                        return full_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    if only_hm:
+                        main_times = []
+                        for n in mains:
+                            p = _diag_parse_entry_time(n)
+                            if p:
+                                main_times.append(p[1])
+                        if main_times:
+                            _h, _m = only_hm
+                            _best = min(main_times, key=lambda d: (
+                                abs(d.hour * 60 + d.minute - (_h * 60 + _m)), -d.timestamp()))
+                            return _best.replace(hour=_h, minute=_m, second=0).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception as e:
+            logger.warning("压缩包内视频提取(%s)失败: %s", bugid, e)
+            continue
+    return ""
+
+
+def _diag_single_text_archive_time(attachments: list, headers: dict,
+                                    timeout: int, bugid: str = ""):
+    """压缩包内只有一个文本文件时，读取其内容返回最靠下的无年份时间。"""
+    import tempfile
+    for att in attachments or []:
+        fn = (att.get("filename") or "").lower()
+        if not fn.endswith((".7z", ".zip")):
+            continue
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                src = os.path.join(tmp, "a" + (".7z" if fn.endswith(".7z") else ".zip"))
+                _stream_download(att.get("content", ""), headers, src, timeout=timeout,
+                                 bugid=bugid, filename=att.get("filename") or "archive",
+                                 use_cache=True)
+                text = ""
+                if fn.endswith(".7z"):
+                    import py7zr
+                    with py7zr.SevenZipFile(src, "r") as z:
+                        names = [n for n in z.getnames() if not n.endswith("/")]
+                        if len(names) != 1:
+                            continue
+                        z.extractall(tmp)
+                        full = os.path.join(tmp, names[0])
+                        text = open(full, encoding="utf-8", errors="ignore").read()
+                else:
+                    import zipfile
+                    with zipfile.ZipFile(src) as z:
+                        names = [n for n in z.namelist() if not n.endswith("/")]
+                        if len(names) != 1:
+                            continue
+                        text = z.read(names[0]).decode("utf-8", errors="ignore")
+                if not text:
+                    continue
+                _no_year = re.compile(r'(?<!\d)(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})')
+                for line in reversed(text.splitlines()):
+                    if re.search(r'20\d{2}[-/]\d{1,2}[-/]\d{1,2}', line):
+                        continue
+                    m = _no_year.search(line)
+                    if not m:
+                        continue
+                    mo, dd = int(m.group(1)), int(m.group(2))
+                    if mo == 1 and dd == 1:
+                        continue
+                    return datetime(_dt.now().year, mo, dd,
+                                    int(m.group(3)), int(m.group(4)), int(m.group(5)))
+        except Exception as e:
+            logger.warning("单文本压缩包解析失败 %s: %s", fn, e)
+    return None
 
 
 def _ocr_frame_regions(frame, status_only: bool = False) -> str:
@@ -5701,7 +5875,7 @@ def _fix_ocr_missing_colon(text: str) -> str:
         if 0 <= hh <= 23 and 0 <= mm <= 59:
             return f"{m.group(1)}:{m.group(2)}"
         return m.group(0)
-    return _OCR_BARE_TIME_RE.sub(_try_insert_colon, text)
+    return _OCR_ISOLATED_BARE_TIME_RE.sub(_try_insert_colon, text)
 
 
 def _current_year_for_ocr() -> int:
@@ -5921,50 +6095,8 @@ def _cv_imread_unicode(img_path: str):
 
 
 def _correct_ocr_by_reference(time_str: str, ref_dt) -> str:
-    """参照 gmlogger 时间纠正 OCR 数字混淆（如 07:10 被识别为 19:19）
-    在参考时间±5分钟范围内生成候选，选择与 OCR 结果数字差异最少的候选。
-    普通场景最多允许1位差异；12h偏移场景（AM/PM混淆）允许3位差异。
-    OCR 时间与参考时间差值在 10 分钟内视为正确，不做纠正。
-    """
-    m = re.match(r'(\d{2}):(\d{2})(?::(\d{2}))?', time_str)
-    if not m or ref_dt is None:
-        return time_str
-    hh_str, mm_str = m.group(1), m.group(2)
-    ss = m.group(3) or "00"
-    ocr_digits = [int(hh_str[0]), int(hh_str[1]), int(mm_str[0]), int(mm_str[1])]
-    ocr_hh = ocr_digits[0] * 10 + ocr_digits[1]
-    ref_minutes = ref_dt.hour * 60 + ref_dt.minute
-    # OCR 时间与参考时间差值在 10 分钟内视为正确，无需纠正
-    ocr_minutes = ocr_digits[0] * 600 + ocr_digits[1] * 60 + ocr_digits[2] * 10 + ocr_digits[3]
-    if abs(ocr_minutes - ref_minutes) <= 10:
-        return time_str
-    best = None
-    best_diff_count = 5
-    best_time_diff = 9999
-    for offset in range(-5, 6):
-        cand_min = (ref_minutes + offset) % 1440
-        ch, cm = divmod(cand_min, 60)
-        if ch > 23:
-            continue
-        cand_digits = [ch // 10, ch % 10, cm // 10, cm % 10]
-        diff_count = sum(1 for i in range(4) if cand_digits[i] != ocr_digits[i])
-        if diff_count == 0:
-            continue
-        # 普通场景最多1位差异；12h偏移(AM/PM混淆)允许3位
-        hour_diff = abs(ch - ocr_hh)
-        is_12h_confusion = 10 <= hour_diff <= 14
-        max_diff = 2 if is_12h_confusion else 1
-        if diff_count > max_diff:
-            continue
-        time_diff = abs(offset)
-        if diff_count < best_diff_count or (diff_count == best_diff_count and time_diff < best_time_diff):
-            best = f"{ch:02d}:{cm:02d}:{ss}"
-            best_diff_count = diff_count
-            best_time_diff = time_diff
-    if best and best != time_str:
-        logger.info("OCR数字混淆纠正: %s -> %s (参考: %02d:%02d, 差异%d位)", time_str, best, ref_dt.hour, ref_dt.minute, best_diff_count)
-    return best or time_str
-
+    """不再做 OCR 数字纠正：保留 OCR 原值，避免 13:07 被改成 13:47。"""
+    return time_str
 
 def _resolve_12h_ambiguity(time_str: str, date_tuple: tuple, ref_pool: list,
                             gm_ref_dt=None, parse_fn=None) -> tuple:
@@ -6054,7 +6186,7 @@ _VERIFY_KEYWORDS = re.compile(r"pass|关闭|通过|成功|复现", re.IGNORECASE
 
 def _is_verification_round(issue: dict) -> bool:
     """最新 5 条人工评论中任一条含 pass/关闭/通过/成功/复现 → 验证轮次"""
-    from src.clients.jira_client import _is_ai_analysis_comment, _extract_adf_text
+    from src.clients.jira_client import _is_ai_analysis_comment, _is_dirty_comment, _extract_adf_text
     comments = ((issue.get("fields") or {}).get("comment") or {}).get("comments") or []
     if not comments:
         return False
@@ -6064,8 +6196,8 @@ def _is_verification_round(issue: dict) -> bool:
         body = c.get("body") or ""
         if isinstance(body, dict):
             body = _extract_adf_text(body)
-        if not body.strip() or _is_ai_analysis_comment(body):
-            continue  # 跳过 AI 分析评论和空评论
+        if not body.strip() or _is_ai_analysis_comment(body) or _is_dirty_comment(body):
+            continue  # 跳过 AI 分析评论、构建脏数据和空评论
         human_count += 1
         if _VERIFY_KEYWORDS.search(body):
             return True
@@ -6919,60 +7051,60 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
             _raw_text = _diag_read_logcat_text(att, headers, timeout=60)
             if not _raw_text:
                 continue
-            # 全量读取；日志按时间顺序，优先匹配完整时间（带年份），其次短格式（无年份补今年）
+            # 从下往上逐行搜索：跳过带年份的行；命中英文日期则判定该附件不可用；
+            # 第一行“无年份 月日时分秒”作为参考时间，补当前年份。
             _text_slice = _raw_text
-            from src.clients import jira_client as _jc
             import re as _re
+            _no_year_re = _re.compile(
+                r'(?<!\d)(?<!\d{4}[-/])(\d{1,2})[-/](\d{1,2})\s+'
+                r'(\d{1,2})[:：](\d{2})(?:[:：](\d{2}))?'
+            )
+            _year_line_re = _re.compile(r'20\d{2}[-/]\d{1,2}[-/]\d{1,2}')
+            _en_date_re = _re.compile(
+                r'\b[A-Za-z]{3,9}\.?\s+\d{1,2}(?:,?\s+\d{4})?\s+\d{1,2}:\d{2}'
+            )
             _picked = None
             _match_type = ""
-            # 1. 完整时间匹配：YYYY-MM-DD HH:MM:SS（含年份，直接作为最终结果）
-            _full_re = _re.compile(
-                r'(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\s+'
-                r'(\d{1,2})[:\uff1a](\d{2})(?:[:\uff1a](\d{2}))?'
-            )
-            for _m in reversed(list(_full_re.finditer(_text_slice))):
+            for _line in reversed(_text_slice.splitlines()):
+                if _en_date_re.search(_line):
+                    logger.warning("视频兜底提取(%s)：文本附件 %s 命中英文日期，附件不可用",
+                                   bugid, fn)
+                    _picked = None
+                    break
+                if _year_line_re.search(_line):
+                    continue
+                _m = _no_year_re.search(_line)
+                if not _m:
+                    continue
                 try:
-                    _y = int(_m.group(1))
-                    _mo, _dd = int(_m.group(2)), int(_m.group(3))
-                    _hh, _mi = int(_m.group(4)), int(_m.group(5))
-                    _ss = int(_m.group(6) or 0)
-                    _picked = datetime(_y, _mo, _dd, _hh, _mi, _ss)
-                    _match_type = "完整时间"
+                    _mo, _dd = int(_m.group(1)), int(_m.group(2))
+                    if _mo == 1 and _dd == 1:
+                        # 01-01 多是 RTC/占位尾部，跳过继续往上找
+                        continue
+                    _picked = datetime(int(_this_year), _mo, _dd,
+                                       int(_m.group(3)), int(_m.group(4)), int(_m.group(5) or 0))
+                    _match_type = "从下往上无年份补今年"
                     break
                 except ValueError:
                     continue
-            # 2. 短格式兜底：MM-DD HH:MM:SS（无年份，取最后一条，年份补今年）
-            if _picked is None:
-                _short_re = _re.compile(
-                    r'(?<!\d)(?<!\d{4}[-/])(\d{1,2})[-/](\d{1,2})\s+'
-                    r'(\d{1,2})[:\uff1a](\d{2})(?:[:\uff1a](\d{2}))?'
-                )
-                for _m in reversed(list(_short_re.finditer(_text_slice))):
-                    try:
-                        _mo, _dd = int(_m.group(1)), int(_m.group(2))
-                        _hh, _mi = int(_m.group(3)), int(_m.group(4))
-                        _ss = int(_m.group(5) or 0)
-                        _picked = datetime(int(_this_year), _mo, _dd, _hh, _mi, _ss)
-                        _match_type = "短格式补今年"
-                        break
-                    except ValueError:
-                        continue
-            if _picked is None:
-                _fallback = _jc._extract_times_from_text(_text_slice, year=_this_year)
-                if _fallback:
-                    _picked = _fallback[-1][1]
             if _picked is not None and _picked not in _known_inner:
                 _t_str = _picked.strftime("%Y-%m-%d %H:%M:%S")
                 _inner_times.append((_t_str, _picked))
                 _content_inner.append((_t_str, _picked))
                 _known_inner.add(_picked)
-                logger.info("视频兜底提取(%s)：文本附件 %s 命中 %s（%s）",
-                            bugid, fn, _t_str, _match_type or "兜底")
+                logger.info("视频兜底提取(%s)：文本附件 %s 从下往上命中 %s（%s）",
+                            bugid, fn, _t_str, _match_type)
         except Exception as _e:
             logger.warning("视频兜底提取(%s)：读取文本附件 %s 失败: %s", bugid, fn, _e)
     # main 文件名时间本身就是权威时间，不要求内容命中；
     # 非 main 文件名不进入 _inner_times，只在附件名兜底时按 ≤1 分钟校验。
 
+    _single_text_dt = _diag_single_text_archive_time(attachments, headers, 60, bugid)
+    if _single_text_dt and _single_text_dt not in _known_inner:
+        _inner_times.append((_single_text_dt.strftime("%Y-%m-%d %H:%M:%S"), _single_text_dt))
+        _known_inner.add(_single_text_dt)
+        logger.info("视频兜底提取(%s)：单文本压缩包命中 %s", bugid,
+                    _single_text_dt.strftime("%Y-%m-%d %H:%M:%S"))
     # 构建 ref_pool：仅使用权威时间（main文件名 + txt/log/logcat内容时间）
     # gmlogger 外层文件名时间仅用于辅助排序/选包，不作为验证依据
     ref_pool = []
@@ -7094,7 +7226,15 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
             continue
         try:
             # 步骤1：默认只取第 0/1/2 秒整图；前 3 帧无时间即判定无时间，不做 ROI 兜底
-            video_positions = [0, 1, 2]
+            video_positions = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 15]
+            global _LAST_VIDEO_DURATION_SEC
+            try:
+                import av as _av
+                with _av.open(video_path) as _vc:
+                    if _vc.duration:
+                        _LAST_VIDEO_DURATION_SEC = float(_vc.duration) / 1_000_000.0
+            except Exception:
+                pass
             frames = _extract_video_frames_gpu(video_path, positions=video_positions) or []
             if not frames:
                 logger.warning("视频兜底提取：无法提取视频帧 %s，尝试下一个", video_label)
@@ -7127,7 +7267,19 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                     all_text = ""
                     # ── 整图 OCR：NVIDIA→GLM，AMD→RapidOCR ──
                     try:
-                        all_text = _ocr_image_text(frame, max_new_tokens=128).strip()
+                        # 右下角最高，其次右上角；只有两者都无时间才用整图 OCR
+                        all_text = ""
+                        _br_txt = _strip_video_progress_times(_ocr_clock_region(frame))
+                        if _valid_time_tokens(_fix_ocr_missing_colon(_br_txt or "")):
+                            all_text = _br_txt
+                        else:
+                            _tr_txt = _ocr_top_right_clock(frame)
+                            if _valid_time_tokens(_fix_ocr_missing_colon(_tr_txt or "")):
+                                all_text = _tr_txt
+                        if not all_text:
+                            all_text = _ocr_image_text(frame, max_new_tokens=128).strip()
+                        # 先补孤立 4 位数字（1004 -> 10:04），否则会被误判为无时间而走 ROI 覆盖
+                        all_text = _fix_ocr_missing_colon(all_text)
                         _has_time = bool(_valid_time_tokens(all_text))
                         _VIDEO_OCR_STATS["full_frames"] += 1
                         if _has_time:
@@ -7163,6 +7315,16 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                     all_text = _fix_ocr_missing_colon(all_text)
                     all_text = _fix_ocr_char_confusion(all_text)
                     all_text = _preprocess_ocr_datetime(all_text)
+                    # 补无分隔符时间：1004 -> 10:04
+                    if not _OCR_TIME_ONLY_RE.search(all_text):
+                        for _bm in _OCR_ISOLATED_BARE_TIME_RE.finditer(all_text):
+                            try:
+                                _bh, _bmn = int(_bm.group(1)), int(_bm.group(2))
+                                if 0 <= _bh <= 23 and 0 <= _bmn <= 59:
+                                    all_text += f" {_bh:02d}:{_bmn:02d}"
+                                    break
+                            except ValueError:
+                                continue
                     # 完整日期+时间
                     m = _OCR_TIME_FULL_RE.search(all_text)
                     if m:
@@ -7226,8 +7388,12 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
                         _tm = re.search(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", _raw_hm)
                         if _tm:
                             _sec = int(_tm.group(1)) * 3600 + int(_tm.group(2)) * 60 + int(_tm.group(3) or 0)
+                            _date_pool = [dt for _, dt in _inner_times
+                                          if not (dt.month == 1 and dt.day == 1)]
+                            if not _date_pool:
+                                _date_pool = [dt for _, dt in _inner_times]
                             _inner_dt = min(
-                                (dt for _, dt in _inner_times),
+                                _date_pool,
                                 key=lambda d: (abs((d.hour * 3600 + d.minute * 60 + d.second) - _sec),
                                                -d.timestamp()))
                             closest_date = (_inner_dt.year, _inner_dt.month, _inner_dt.day)
@@ -7517,7 +7683,7 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                 else:
                     if first_full or first_partial:
                         break
-                    other_frames = _extract_video_frames_gpu(video_path, positions=[1, 2]) or []
+                    other_frames = _extract_video_frames_gpu(video_path, positions=[1, 2, 8]) or []
                     if not other_frames:
                         break
                     frames = other_frames
@@ -7587,6 +7753,16 @@ def _diag_extract_time_from_video(issue: dict, headers: dict, timeout: int,
                     all_text = _fix_ocr_missing_colon(all_text)
                     all_text = _fix_ocr_char_confusion(all_text)
                     all_text = _preprocess_ocr_datetime(all_text)
+                    # 补无分隔符时间：1004 -> 10:04
+                    if not _OCR_TIME_ONLY_RE.search(all_text):
+                        for _bm in _OCR_ISOLATED_BARE_TIME_RE.finditer(all_text):
+                            try:
+                                _bh, _bmn = int(_bm.group(1)), int(_bm.group(2))
+                                if 0 <= _bh <= 23 and 0 <= _bmn <= 59:
+                                    all_text += f" {_bh:02d}:{_bmn:02d}"
+                                    break
+                            except ValueError:
+                                continue
                     # 完整日期+时间
                     m = _OCR_TIME_FULL_RE.search(all_text)
                     if m:

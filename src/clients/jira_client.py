@@ -238,7 +238,7 @@ def _extract_adf_text(adf: dict) -> str:
 _TIMESTAMP_FULL_RE = re.compile(r"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})")
 _TIMESTAMP_SHORT_RE = re.compile(r"(?<!\d)(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})(?:\.\d+)?")
 # 斜杠日期格式：YYYY/M/D HH:MM 或 YYYY/MM/DD HH:MM:SS（月/日支持单位数）
-_TIMESTAMP_SLASH_RE = re.compile(r"(\d{4}/\d{1,2}/\d{1,2}\s+\d{2}:\d{2}(?::\d{2})?)")
+_TIMESTAMP_SLASH_RE = re.compile(r"(\d{4}/\d{1,2}/\d{1,2}\s+\d{2}[:.]\d{2}(?::\d{2})?)")
 # 点分隔日期格式：YYYY.M.D HH:MM 或 YYYY.M.DD HH:MM:SS（月/日支持单位数，如 2026.8.28 14:50）
 _TIMESTAMP_DOT_RE = re.compile(r"(\d{4}\.\d{1,2}\.\d{1,2}\s+\d{2}:\d{2}(?::\d{2})?)")
 # ISO 8601 格式：YYYY-MM-DDTHH:MM:SS（可带毫秒和时区，捕获时区用于转换）
@@ -288,6 +288,8 @@ def _parse_datetime_string(text: str) -> tuple:
                YYYY-MM-DDTHH:MM:SS, YYYY-MM-DD HH:MM
     """
     text = _normalize_datetime_text(text.strip())
+    # 兼容 2026/10/28 16.29 这种“点分”时分
+    text = re.sub(r"(\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2})\.(\d{2})", r"\1:\2", text)
     # YYYY-MM-DD HH:MM:SS
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M",
                 "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
@@ -1034,7 +1036,7 @@ def _extract_trigger_time_from_issue_impl(issue: dict, return_source: bool = Fal
         if not body.strip():
             continue
         # 跳过 AI 分析系统自动发布的评论（避免提取到旧分析时间戳）
-        if _is_ai_analysis_comment(body):
+        if _is_ai_analysis_comment(body) or _is_dirty_comment(body):
             continue
         created = c.get("created", "")
         comment_year = created[:4] if created and len(created) >= 4 else ""
@@ -1053,6 +1055,17 @@ def _extract_trigger_time_from_issue_impl(issue: dict, return_source: bool = Fal
     if isinstance(description, dict):
         description = _extract_adf_text(description)
     if description:
+        # 描述中任意“崩溃”行如果带时间，优先取该行时间（按字面值，不做时区换算）
+        for _line in description.splitlines():
+            if "崩溃" not in _line:
+                continue
+            _crash_m = re.search(
+                r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:[+-]\d{2}:\d{2})?",
+                _line)
+            if _crash_m:
+                _crash_ts = f"{_crash_m.group(1)} {_crash_m.group(2)}"
+                logger.info("从描述崩溃行提取到: %s", _crash_ts)
+                return _ret(_supplement_from_gmlogger(issue, _crash_ts), "描述崩溃")
         desc_times = _extract_times_from_text(description, date_str=created_date)
         if desc_times:
             best = _pick_best_time(description, desc_times)
@@ -1205,6 +1218,15 @@ def extract_latest_comment_time(issue: dict) -> str:
     return _guard_jira_time(issue, _extract_latest_comment_time_raw(issue))
 
 
+def _is_dirty_comment(body: str) -> bool:
+    """BOSCH_SYNC_TOOL / 构建信息类评论是脏数据，不参与时间提取。"""
+    b = body or ""
+    return any(k in b for k in (
+        "BOSCH_SYNC_TOOL", "BUILD_TIMESTAMP=", "BUILD_ID=",
+        "MANIFEST_REVISION=", "PATAC_BUILD_NUMBER=", "MANIFEST_FILE=",
+    ))
+
+
 def _extract_latest_comment_time_raw(issue: dict) -> str:
     """按“最新优先”提取评论时间。
 
@@ -1219,7 +1241,13 @@ def _extract_latest_comment_time_raw(issue: dict) -> str:
         body = c.get("body") or ""
         if isinstance(body, dict):
             body = _extract_adf_text(body)
-        if not body.strip() or _is_ai_analysis_comment(body):
+        if not body.strip() or _is_ai_analysis_comment(body) or _is_dirty_comment(body):
+            continue
+        # 只看“最新一条带日志行”的人工评论；普通讨论评论不参与取时间
+        if not re.search(
+                r"main\.log|logcat|----- pid|Cmd line|Build fingerprint|"
+                r"\d{2}[-/]\d{1,2}\s+\d{1,2}:\d{2}:\d{2}|\d{4}/\d{1,2}/\d{1,2}",
+                body, re.I):
             continue
         # 异常情况段：只认这一段里的 main.log 文件名时间
         if "异常" in body:
@@ -1252,7 +1280,10 @@ def _extract_latest_comment_time_raw(issue: dict) -> str:
                     return _dt.strftime("%Y-%m-%d %H:%M:%S")
                 except ValueError:
                     pass
-        lines = [ln for ln in body.split("\n") if ln.strip()]
+        # 排除 ANR/logcat 头：----- pid 2478 at 2026-... -----
+        _header_re = re.compile(r"^\s*-{3,}\s*pid\b.*\bat\b.*-{3,}\s*$", re.I)
+        lines = [ln for ln in body.split("\n")
+                 if ln.strip() and not _header_re.search(ln)]
         preferred = [ln for ln in lines if any(k in ln for k in prefer_keys)]
         for group in (preferred, lines):
             for ln in group:

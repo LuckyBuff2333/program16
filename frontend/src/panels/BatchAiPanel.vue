@@ -877,6 +877,12 @@ export default {
         const data = res.data || {};
         this.aiDirect.problemTimes = data.problem_times || {};
         this.aiDirect.problemTimeHit = data.hit || 0;
+        // 查询后同步展示明细表（包含命中与未命中的 Jira）
+        this.aiDirect.timeRows = this.aiDirect.parsed.map((k: string) => ({
+          'jira号': k,
+          '问题发生时间': this.aiDirect.problemTimes[k] || '',
+          '来源': this.aiDirect.problemTimes[k] ? '问题发生时间' : '无',
+        }));
         ElMessage.success(res.message || `查询到 ${this.aiDirect.problemTimeHit} 条有问题发生时间`);
       } catch (e) { ElMessage.error('查询问题发生时间失败: ' + (e.message || '')); }
       finally { this.aiDirect.problemTimeLoading = false; }

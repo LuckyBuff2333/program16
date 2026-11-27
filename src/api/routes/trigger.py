@@ -1,6 +1,7 @@
 """触发时间管理路由：批量读取、更新、重新提取、云端缓存批量操作"""
 import asyncio
 import os
+import re
 
 from fastapi import APIRouter, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
@@ -44,24 +45,123 @@ def _comment_time_match_text(comment_tt: str, attachments: list) -> str:
     if not text.strip():
         return s
     text = text.replace("/", "-")
+    lines = text.splitlines()
+    _year_re = _re.compile(r"20\d{2}[-/]\d{1,2}[-/]\d{1,2}")
+    _en_re = _re.compile(r"\b[A-Za-z]{3,9}\.?\s+\d{1,2}(?:,?\s+\d{4})?\s+\d{1,2}:\d{2}")
     m_full = _re.match(r"^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?", s)
     if m_full:
         year, mo, dd, hh, mi, ss = m_full.groups()
-        ss = ss or "00"
-        if f"{mo}-{dd} {hh}:{mi}:{ss}" in text:
-            return f"{year}-{mo}-{dd} {hh}:{mi}:{ss}"
+        # 秒不参与匹配
+        for line in reversed(lines):
+            if _en_re.search(line):
+                return s
+            if _year_re.search(line):
+                continue
+            if _re.search(rf"(?<!\d){mo}-{dd}\s+{hh}:{mi}(?::\d{{2}})?", line):
+                return f"{year}-{mo}-{dd} {hh}:{mi}:{ss or '00'}"
         return s
     m_time = _re.search(r"(\d{1,2}):(\d{2})", s)
     if m_time:
         hh, mi = m_time.groups()
-        # 内容命中时分后，优先用内容里的月日 + 当前年
-        m_date = _re.search(r"(\d{1,2})-(\d{1,2})\s+" + _re.escape(f"{hh}:{mi}"), text)
         now = _dtnow.now()
-        if m_date:
-            return f"{now.year}-{int(m_date.group(1)):02d}-{int(m_date.group(2)):02d} {hh}:{mi}:00"
-        if f"{hh}:{mi}" in text:
-            return f"{now.year}-{now.month:02d}-{now.day:02d} {hh}:{mi}:00"
+        for line in reversed(lines):
+            if _en_re.search(line):
+                return s
+            if _year_re.search(line):
+                continue
+            m = _re.search(rf"(?<!\d)(\d{{1,2}})-(\d{{1,2}})\s+{hh}:{mi}(?::\d{{2}})?", line)
+            if m:
+                return f"{now.year}-{int(m.group(1)):02d}-{int(m.group(2)):02d} {hh}:{mi}:00"
+        return s
     return s
+
+
+def _comment_time_hits_main(issue: dict, comment_tt: str, attachments: list,
+                            headers: dict, timeout: int, bugid: str) -> bool:
+    """评论完整时间是否能在压缩包 main 时间中命中（按分钟）。"""
+    import re
+    from src.services.server_legacy import _diag_gmlogger_main_times, _ts_parse_datetime
+    cdt = _ts_parse_datetime(str(comment_tt)[:19])
+    if not cdt:
+        return False
+    archives = [a for a in (attachments or [])
+                if (a.get("filename") or "").lower().endswith(
+                    (".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".zst"))
+                or re.search(r"\.(zip|7z|rar)\.\d+$", (a.get("filename") or "").lower())
+                or re.search(r"\.z\d{1,3}$", (a.get("filename") or "").lower())]
+    if not archives:
+        return True
+    try:
+        probe = _diag_gmlogger_main_times(
+            attachments, headers, timeout, bugid, include_non_gmlogger=True,
+            ignore_archive_limit=True)
+        times = (probe.get("main_times") or []) + (probe.get("all_times") or [])
+        _has_date = bool(re.match(r"^\d{4}-\d{2}-\d{2}", str(comment_tt)))
+        for _, dt in times:
+            if _has_date:
+                # 完整时间：日期和时分命中，秒忽略
+                if (dt.year, dt.month, dt.day, dt.hour, dt.minute) == (
+                        cdt.year, cdt.month, cdt.day, cdt.hour, cdt.minute):
+                    return True
+            else:
+                # 只有时分：只比较时分，日期和秒忽略
+                if (dt.hour, dt.minute) == (cdt.hour, cdt.minute):
+                    return True
+        # 1970 RTC 特殊：无 2026 参考时保留评论时间
+        if cdt.year == 1970 and not any(dt.year >= 2020 for _, dt in times):
+            return True
+    except Exception as e:
+        logger.warning("评论时间 main 校验失败: %s", e)
+    return False
+
+
+def _main_time_in_video_window(candidate: str, attachments: list, headers: dict,
+                               timeout: int, bugid: str) -> str:
+    """视频起始时间 + 视频时长范围内命中 main，返回命中的 main 时间。"""
+    import math
+    from datetime import timedelta as _td
+    from src.services.server_legacy import (
+        _diag_gmlogger_main_times, _ts_parse_datetime, _LAST_VIDEO_DURATION_SEC)
+    cdt = _ts_parse_datetime(str(candidate)[:19])
+    if not cdt or not _LAST_VIDEO_DURATION_SEC:
+        return ""
+    try:
+        probe = _diag_gmlogger_main_times(
+            attachments, headers, timeout, bugid, include_non_gmlogger=True,
+            ignore_archive_limit=True)
+        times = sorted((probe.get("main_times") or []) + (probe.get("all_times") or []),
+                       key=lambda x: x[1])
+        end = cdt + _td(minutes=math.ceil(_LAST_VIDEO_DURATION_SEC / 60.0))
+        for _, dt in times:
+            if cdt <= dt <= end:
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        pass
+    return ""
+
+
+def _expand_time_range(issue: dict, base_tt: str) -> list:
+    """把字段里的 HH:MM--HH:MM 范围展开成范围内每个整分时间。"""
+    from src.services.server_legacy import _ts_parse_datetime
+    from datetime import timedelta as _td
+    text = "\n".join(str(v) for v in (issue.get("fields") or {}).values()
+                     if isinstance(v, str))
+    m = re.search(
+        r"(?<![\d:])(\d{1,2}):(\d{2})(?![:\d])\s*[-~—至到]{1,3}\s*"
+        r"(\d{1,2}):(\d{2})(?![:\d])", text)
+    if not m:
+        return []
+    base = _ts_parse_datetime(str(base_tt)[:19])
+    if not base:
+        return []
+    sh, sm, eh, em = map(int, m.groups())
+    start = base.replace(hour=sh, minute=sm, second=0)
+    end = base.replace(hour=eh, minute=em, second=0)
+    out, cur = [], start
+    while cur <= end:
+        out.append(cur.strftime("%Y-%m-%d %H:%M:%S"))
+        cur += _td(minutes=1)
+    return out
 
 
 def _attachment_name_time_allowed(attachments: list, att_tt: str) -> bool:
@@ -95,7 +195,7 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
         _diag_extract_time_from_video_simple, _diag_extract_time_from_images,
         _align_time_to_gmlogger, _VIDEO_SUFFIXES, _latest_gmlogger_upload_dt,
         _ts_parse_datetime, _diag_read_logcat_text, _jira_att_auth,
-        _is_verification_round,
+        _is_verification_round, _extract_time_from_archive_video,
     )
     from src.clients.jira_client import extract_logcat_time
 
@@ -107,6 +207,10 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
     try:
         if (_jc.extract_status(issue) or "").lower() == "closed":
             tt = _jc.extract_latest_comment_time(issue)
+            if tt:
+                # Closed 的人工评论时间直接采用，优先于视频
+                tt = _align_time_to_gmlogger(issue, tt, attachments)
+                return tt, "评论"
             if tt:
                 # 在直接上传的 .txt/.log 文件内容中验证评论时间的 HH:MM
                 _log_confirmed = False
@@ -123,6 +227,13 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
                             logger.info("Closed 评论时间 %s 在日志 %s 中命中",
                                         tt, _a.get("filename", ""))
                             break
+                if not _log_confirmed:
+                    # 没有直接 txt/log 时，用压缩包 main 校验
+                    try:
+                        _log_confirmed = _comment_time_hits_main(
+                            issue, tt, attachments, _headers, _timeout, bugid)
+                    except Exception:
+                        _log_confirmed = False
                 if not _log_confirmed:
                     logger.info("Closed 评论时间 %s 未在日志文件内容中命中，降级到其他提取方式", tt)
                     tt = ""
@@ -156,8 +267,8 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
         return "", "stopped"
     has_video = any((a.get("filename", "") or "").lower().endswith(_VIDEO_SUFFIXES)
                     for a in (attachments or []))
-    # 1. 视频 OCR（非 Closed 最高优先级）
-    if has_video:
+    # 1. 视频 OCR
+    if not tt and has_video:
         tt = _diag_extract_time_from_video_simple(
             issue, stop_event=stop_event, ignore_archive_limit=ignore_archive_limit)
         if tt:
@@ -171,13 +282,62 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
         except Exception:
             comment_tt = ""
         if comment_tt:
-            tt = _comment_time_match_text(comment_tt, attachments)
-            source = "评论"
-    # 3. 其他文本/标题/描述/自定义字段
+            # 评论时间晚于 gmlogger 抓包时间太多，说明不是本次问题时间
+            try:
+                _gmts = [d for _, d in (_gm_times_of(attachments) or []) if d]
+                _cdt = _ts_parse_datetime(str(comment_tt)[:19])
+                if _gmts and _cdt and (_cdt - max(_gmts)).total_seconds() > 6 * 3600:
+                    logger.info("评论时间 %s 晚于最新 gmlogger %s，舍弃", comment_tt, max(_gmts))
+                    comment_tt = ""
+            except Exception:
+                pass
+        if comment_tt:
+            try:
+                _ch, _ct = _jira_att_auth()
+                _main_hit = _comment_time_hits_main(
+                    issue, comment_tt, attachments, _ch, _ct, bugid)
+            except Exception:
+                _main_hit = True
+            if _main_hit:
+                tt = _comment_time_match_text(comment_tt, attachments)
+                source = "评论"
+            else:
+                logger.info("评论时间 %s 未命中压缩包 main，继续其他方式", comment_tt)
+    # 评论/自定义字段都没拿到时，尝试压缩包第一层视频
     if not tt:
-        tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
-        if tt:
-            source = "文本"
+        try:
+            _ah, _at = _jira_att_auth()
+            _arc_video_tt = _extract_time_from_archive_video(
+                issue, attachments, _ah, _at, bugid)
+        except Exception:
+            _arc_video_tt = ""
+        if _arc_video_tt:
+            tt, source = _arc_video_tt, "压缩包视频"
+    # 3. 其他文本/标题/描述/自定义字段（拿到后仍需 main 命中）
+    if not tt:
+        _text_tt = _jc.extract_trigger_time_from_issue(issue, skip_attachment=True)
+        if _text_tt:
+            try:
+                _th, _ttm = _jira_att_auth()
+                _range_cands = _expand_time_range(issue, _text_tt)
+                if _range_cands:
+                    for _rc in _range_cands:
+                        if _comment_time_hits_main(issue, _rc, attachments, _th, _ttm, bugid):
+                            tt, source = _rc, "文本"
+                            break
+                    if tt:
+                        return tt, source
+                if _comment_time_hits_main(issue, _text_tt, attachments, _th, _ttm, bugid):
+                    tt, source = _text_tt, "文本"
+                else:
+                    _win_tt = _main_time_in_video_window(
+                        _text_tt, attachments, _th, _ttm, bugid)
+                    if _win_tt:
+                        tt, source = _win_tt, "文本"
+                    else:
+                        logger.info("文本时间 %s 未命中压缩包 main，舍弃", _text_tt)
+            except Exception:
+                tt, source = _text_tt, "文本"
     if _stopped():
         return "", "stopped"
     # 3. 图片 OCR
@@ -185,7 +345,16 @@ def _extract_time_common(issue: dict, attachments: list, img_headers: dict,
         img_tt, _ = _diag_extract_time_from_images(
             issue, img_headers, img_to, bugid, stop_event=stop_event)
         if img_tt:
-            tt, source = img_tt, "图片拼接"
+            try:
+                _ih, _it = _jira_att_auth()
+                _img_ok = _comment_time_hits_main(
+                    issue, img_tt, attachments, _ih, _it, bugid)
+            except Exception:
+                _img_ok = True
+            if _img_ok:
+                tt, source = img_tt, "图片拼接"
+            else:
+                logger.info("图片时间 %s 未命中压缩包 main，舍弃", img_tt)
     # 4. 文件名只作校验基准，不能作为最终结果；不再做附件名兜底
     if tt:
         if not isinstance(tt, str):
@@ -456,7 +625,7 @@ def batch_update_trigger_time(req: BatchUpdateRequest):
         first_tid = _get_trigger_time_table_cfg()[1][0]
         try:
             feishu_client.batch_create_records(
-                app_token, first_tid, [r["fields"] for r in _create_recs])
+                app_token, first_tid, _create_recs)
             logger.info("批量新建问题发生时间: 共 %d 条", len(_create_recs))
         except Exception as e:
             logger.warning("批量新建问题发生时间失败: %s", e)
