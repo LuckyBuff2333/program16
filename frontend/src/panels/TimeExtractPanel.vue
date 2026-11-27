@@ -296,10 +296,18 @@
 
         <el-card v-if="timeEdit.rows.length" shadow="never" style="margin-top:14px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
-            <span style="font-weight:600">共 {{ timeEdit.rows.length }} 条，待修改 {{ changedTimeRows.length }} 条</span>
-            <span style="font-size:12px;color:#909399">时间格式 YYYY-MM-DD HH:mm:ss，修改后点击保存写回云端</span>
+            <span style="font-weight:600">共 {{ timeEdit.rows.length }} 条，显示 {{ filteredTimeEditRows.length }} 条，待修改 {{ changedTimeRows.length }} 条</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <el-select v-model="timeEdit.errorMappingFilter" size="small" style="width:170px">
+                <el-option label="全部" value="all"></el-option>
+                <el-option label="有最新错误映射" value="has"></el-option>
+                <el-option label="无最新错误映射" value="none"></el-option>
+              </el-select>
+              <span style="font-size:12px;color:#909399">时间格式 YYYY-MM-DD HH:mm:ss，修改后点击保存写回云端</span>
+            </div>
           </div>
-          <el-table :data="timeEdit.rows" row-key="bugid" size="small" stripe border max-height="420">
+          <el-table :data="filteredTimeEditRows" row-key="bugid" size="small" stripe border max-height="420"
+            empty-text="当前筛选条件下没有记录">
             <el-table-column type="index" label="#" width="50" align="center"></el-table-column>
             <el-table-column prop="bugid" label="Jira号" width="150"></el-table-column>
             <el-table-column label="当前云端时间" width="200">
@@ -405,6 +413,7 @@ export default {
       },
       timeEdit: {
         input: '', rows: [] as any[], loading: false, saving: false, writebackVcsLoading: false, statusMsg: '',
+        errorMappingFilter: 'all',
       },
     };
   },
@@ -439,8 +448,18 @@ export default {
         return nt !== vt;
       });
     },
+    filteredTimeEditRows() {
+      const rows = this.timeEdit.rows || [];
+      if (this.timeEdit.errorMappingFilter === 'has') {
+        return rows.filter((r: any) => !!String(r.error_mapping || '').trim() && r.error_mapping !== '-');
+      }
+      if (this.timeEdit.errorMappingFilter === 'none') {
+        return rows.filter((r: any) => !String(r.error_mapping || '').trim() || r.error_mapping === '-');
+      }
+      return rows;
+    },
     timeEditWithTimeCount() {
-      return this.timeEdit.rows.filter((r: any) => r.current_time || r.new_time).length;
+      return this.filteredTimeEditRows.filter((r: any) => r.current_time || r.new_time).length;
     },
   },
   deactivated() {
@@ -455,7 +474,7 @@ export default {
       navigator.clipboard.writeText(ids.join(',')).then(() => ElMessage.success(`已复制 ${ids.length} 个Jira号`)).catch(() => ElMessage.error('复制失败'));
     },
     copyTimeEditKeys() {
-      const ids = this.timeEdit.rows.filter((r: any) => r.current_time || r.new_time).map((r: any) => r.bugid).filter(Boolean);
+      const ids = this.filteredTimeEditRows.filter((r: any) => r.current_time || r.new_time).map((r: any) => r.bugid).filter(Boolean);
       if (!ids.length) return ElMessage.warning('无有时间的记录');
       navigator.clipboard.writeText(ids.join(',')).then(() => ElMessage.success(`已复制 ${ids.length} 个Key`)).catch(() => ElMessage.error('复制失败'));
     },
