@@ -96,17 +96,27 @@ def _comment_time_hits_main(issue: dict, comment_tt: str, attachments: list,
             attachments, headers, timeout, bugid, include_non_gmlogger=True,
             ignore_archive_limit=True)
         times = (probe.get("main_times") or []) + (probe.get("all_times") or [])
-        _has_date = bool(re.match(r"^\d{4}-\d{2}-\d{2}", str(comment_tt)))
-        for _, dt in times:
-            if _has_date:
-                # 完整时间：日期和时分命中，秒忽略
-                if (dt.year, dt.month, dt.day, dt.hour, dt.minute) == (
-                        cdt.year, cdt.month, cdt.day, cdt.hour, cdt.minute):
-                    return True
-            else:
-                # 只有时分：只比较时分，日期和秒忽略
-                if (dt.hour, dt.minute) == (cdt.hour, cdt.minute):
-                    return True
+        def _matches(times):
+            _has_date = bool(re.match(r"^\d{4}-\d{2}-\d{2}", str(comment_tt)))
+            for _, dt in times:
+                if _has_date:
+                    if (dt.year, dt.month, dt.day, dt.hour, dt.minute) == (
+                            cdt.year, cdt.month, cdt.day, cdt.hour, cdt.minute):
+                        return True
+                else:
+                    if (dt.hour, dt.minute) == (cdt.hour, cdt.minute):
+                        return True
+            return False
+        if _matches(times):
+            return True
+        if probe.get("partial"):
+            logger.info("部分探测未命中，回退全量解压: %s", comment_tt)
+            probe2 = _diag_gmlogger_main_times(
+                attachments, headers, timeout, bugid, include_non_gmlogger=True,
+                ignore_archive_limit=True, force_full=True)
+            times2 = (probe2.get("main_times") or []) + (probe2.get("all_times") or [])
+            if _matches(times2):
+                return True
         # 1970 RTC 特殊：无 2026 参考时保留评论时间
         if cdt.year == 1970 and not any(dt.year >= 2020 for _, dt in times):
             return True

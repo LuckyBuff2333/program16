@@ -5121,7 +5121,7 @@ def _check_archives_corrupted(gm_probe_result: dict, attachments: list) -> bool:
 
 
 def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bugid: str = "", include_non_gmlogger: bool = False,
-                              ignore_archive_limit: bool = False) -> dict:
+                              ignore_archive_limit: bool = False, force_full: bool = False) -> dict:
     """下载 gmlogger 压缩包（支持 .001/.002 分卷合并），查找包内 main 相关 log 文件并提取时间
 
     外侧文件名时间可能不准，包内 main log 的时间才是日志记录的权威时间戳。
@@ -5200,6 +5200,52 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
             # ZIP 格式（含分卷）: Range 读取中央目录获取文件名 + 解析时间，无需下载整个压缩包
             # 分卷时 EOCD/中央目录在最后分卷尾部，使用最后分卷 URL + 合计体积
             zip_parts = [(_p, att) for _p, att in parts if _is_zip_attachment(att.get("filename", ""))]
+            # .z01/.z02 + .zip：中央目录在最后的 .zip，只下最后一卷即可列 main
+            if (not force_full) and zip_parts and any((a.get("filename", "") or "").lower().endswith(".z01")
+                                 for _p, a in zip_parts):
+                _last_zip = next((a for _p, a in reversed(parts)
+                                  if (a.get("filename", "") or "").lower().endswith(".zip")), None)
+                if _last_zip:
+                    try:
+                        # 先 Range 读最后 .zip 中央目录，真正免下载
+                        _zc_range = _zip_range_list_entries(
+                            _last_zip.get("content", ""), headers,
+                            file_size=_last_zip.get("size", 0) or 0,
+                            timeout=min(timeout, 30))
+                        if _zc_range:
+                            _names = [e["filename"] for e in _zc_range
+                                      if not e["filename"].endswith("/")]
+                            _mains = [os.path.basename(n) for n in _names
+                                      if "main.log" in os.path.basename(n).lower()]
+                            _times = _diag_scan_entry_times(_names)
+                            if _mains:
+                                logger.info("gmlogger z01+zip Range: base=%s, 条目=%d, main=%d, 时间=%d",
+                                            base, len(_names), len(_mains), len(_times))
+                                return {"status": "ok", "reason": "",
+                                        "main_entries": _mains, "main_times": _times,
+                                        "all_times": _times, "partial": False}
+                    except Exception as _zre:
+                        logger.warning("gmlogger z01+zip Range 失败 %s: %s", base, _zre)
+                    try:
+                        import zipfile as _zf
+                        _zpath = os.path.join(tmp, "last_volume.zip")
+                        _stream_download(_last_zip.get("content", ""), headers, _zpath,
+                                         timeout=timeout, bugid=bugid,
+                                         filename=_last_zip.get("filename") or "last.zip",
+                                         use_cache=True)
+                        with _zf.ZipFile(_zpath) as _z:
+                            _names = [n for n in _z.namelist() if not n.endswith("/")]
+                        _mains = [os.path.basename(n) for n in _names
+                                  if "main.log" in os.path.basename(n).lower()]
+                        _times = _diag_scan_entry_times(_names)
+                        if _mains:
+                            logger.info("gmlogger z01+zip 只读最后 .zip: base=%s, 条目=%d, main=%d, 时间=%d",
+                                        base, len(_names), len(_mains), len(_times))
+                            return {"status": "ok", "reason": "",
+                                    "main_entries": _mains, "main_times": _times,
+                                    "all_times": _times}
+                    except Exception as _ze:
+                        logger.warning("gmlogger z01+zip 最后卷列目录失败 %s: %s", base, _ze)
             if zip_parts:
                 _zp, _zatt = max(zip_parts, key=lambda x: x[1].get("filename", ""))
                 _zurl = _zatt.get("content", "")
@@ -5272,6 +5318,31 @@ def _diag_gmlogger_main_times(attachments: list, headers: dict, timeout: int, bu
                     logger.info("gmlogger 7Z Range 失败，回退全量下载: %s", base)
 
             if base.lower().endswith(".rar"):
+                # RAR 分卷：只下 part1 就能列目录，先做轻量探测
+                try:
+                    if force_full:
+                        raise RuntimeError("force_full")
+                    import rarfile as _rf
+                    _setup_rarfile()
+                    _first = parts[0][1]
+                    _first_path = os.path.join(tmp, _first.get("filename") or "part1.rar")
+                    _stream_download(_first.get("content", ""), headers, _first_path,
+                                     timeout=timeout, bugid=bugid,
+                                     filename=_first.get("filename") or "part1.rar",
+                                     use_cache=True)
+                    with _rf.RarFile(_first_path) as _rar:
+                        _names = [i.filename for i in _rar.infolist()]
+                    _mains = [os.path.basename(n) for n in _names
+                              if "main.log" in os.path.basename(n).lower()]
+                    _times = _diag_scan_entry_times(_names)
+                    if _mains:
+                        logger.info("gmlogger RAR 只读 part1: base=%s, 条目=%d, main=%d, 时间=%d",
+                                    base, len(_names), len(_mains), len(_times))
+                        return {"status": "ok", "reason": "",
+                                "main_entries": _mains, "main_times": _times,
+                                "all_times": _times, "partial": True}
+                except Exception as _re_fast:
+                    logger.warning("gmlogger RAR part1 列目录失败 %s: %s", base, _re_fast)
                 # rar 分卷：7z 需原始文件名同目录自动续卷，从首卷打开，仅提取 main 文件
                 rar_dir = os.path.join(tmp, os.path.basename(base) + "_rar")
                 os.makedirs(rar_dir, exist_ok=True)
@@ -5618,7 +5689,7 @@ def _extract_time_from_archive_video(issue: dict, attachments: list, headers: di
                     if not videos:
                         continue
                     video_path = zf.extract(videos[0], tmp)
-                    frames = _extract_video_frames_gpu(video_path, positions=[0, 1, 2, 8])
+                    frames = _extract_video_frames_gpu(video_path, positions=[0, 1, 2, 8, 9, 10, 15])
                     full_dt = None
                     only_hm = None
                     for _sec, frame in frames:
@@ -5695,7 +5766,7 @@ def _diag_single_text_archive_time(attachments: list, headers: dict,
                     mo, dd = int(m.group(1)), int(m.group(2))
                     if mo == 1 and dd == 1:
                         continue
-                    return datetime(_dt.now().year, mo, dd,
+                    return datetime(datetime.now().year, mo, dd,
                                     int(m.group(3)), int(m.group(4)), int(m.group(5)))
         except Exception as e:
             logger.warning("单文本压缩包解析失败 %s: %s", fn, e)
@@ -7225,8 +7296,8 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
             logger.warning("视频兜底提取：视频文件不存在 %s", video_label)
             continue
         try:
-            # 步骤1：默认只取第 0/1/2 秒整图；前 3 帧无时间即判定无时间，不做 ROI 兜底
-            video_positions = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 15]
+            # 分阶段取帧：0/1/2 → 8/9 → 10/15；前一阶段拿到时间即停止
+            video_positions = [0, 1, 2, 8, 9, 10, 15]
             global _LAST_VIDEO_DURATION_SEC
             try:
                 import av as _av
@@ -7246,7 +7317,7 @@ def _diag_extract_time_from_video_simple_impl(issue: dict, stop_event=None,
             _collected_texts = []  # [(sec, text)] 供循环结束后投票（复用已 OCR 文本）
             for _phase in [0]:
                 if True:
-                    logger.info("视频兜底提取(%s)：截取 %d 帧（0~8s 每秒 + 10/15s 兜底）",
+                    logger.info("视频兜底提取(%s)：截取 %d 帧（0/1/2 → 8/9 → 10/15 分阶段）",
                                 video_label, len(frames))
                 
                 _prev_sig = None
